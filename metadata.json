@@ -1,0 +1,6 @@
+{
+  "name": "Lernex CoreX Engine - BYOK AI IDE Studio Workspace",
+  "description": "Absolute Minimalist Dark Ink Matrix BYOK AI IDE Studio Workspace with 35/65 Split Matrix, Chat Terminal, Source Code View, Real-Time Preview, and Parameter Drawer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
