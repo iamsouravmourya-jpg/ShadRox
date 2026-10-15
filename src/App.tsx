@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { GoogleGenAI } from '@google/genai';
 import { 
   Terminal, Code2, Play, Settings, X, FolderOpen, ArrowLeft, Bug, 
   Send, Key, CheckCircle, RefreshCw, FileCode, Cpu, Layers, HardDrive, 
@@ -140,7 +141,7 @@ export default function DevoraEngine() {
         </div>
         <div className="p-4 border border-neutral-800 bg-neutral-950">
           <div className="text-xs text-neutral-400">AI Gateway Nodes</div>
-          <div className="text-base font-bold text-white mt-1">Gemini 2.5 Active</div>
+          <div className="text-base font-bold text-white mt-1">Gemini 3.8 Active</div>
         </div>
       </div>
 
@@ -271,7 +272,13 @@ export default function App() {
   );
   const [isEditingInstructions, setIsEditingInstructions] = useState<boolean>(false);
   const [apiKeyInput, setApiKeyInput] = useState<string>('');
-  const [savedApiKey, setSavedApiKey] = useState<string>('');
+  const [savedApiKey, setSavedApiKey] = useState<string>(() => {
+    try {
+      return localStorage.getItem('DEVORA_GEMINI_KEY') || '';
+    } catch {
+      return '';
+    }
+  });
   const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false);
   const [keySavedMessage, setKeySavedMessage] = useState<boolean>(false);
   const [testKeyStatus, setTestKeyStatus] = useState<{ loading: boolean; success?: boolean; latency?: number; message?: string } | null>(null);
@@ -387,10 +394,10 @@ export default function App() {
       role: 'model',
       content: `### Devora AI Studio Ready
 
-- **Multilingual Voice Engine**: Speak in Hindi, Hinglish, or English via the microphone below.
-- **Context Attachments**: Click **(+)** to attach files, images, or quick prompt templates.
-- **Model Mode**: Toggle between **Default**, **Flash**, or **Pro Think**.
-- **Settings HUD**: Click **⚙ SETTINGS** to open the new **Chat, Share, Publish, Versions, GitHub, Integrations** panel.`,
+- **Multilingual Voice Engine**: Speak in Hindi, Hinglish, or English using the microphone below.
+- **Context & Vision**: Click **(+)** to attach files, UI screenshots, or engineering presets.
+- **Model Reasoning**: Toggle between **Default**, **Flash**, or **Pro Think** engines.
+- **Studio Drawer**: Open **⚙ SETTINGS** to configure BYOK Keys, Git Sync, AST RAG, and WebContainers.`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
   ]);
@@ -546,6 +553,133 @@ export default function App() {
     setActiveStage('STAGE_3');
   };
 
+  // Web File System API to mount local directory
+  const mountLocalDirectory = async () => {
+    try {
+      if (typeof window !== 'undefined' && 'showDirectoryPicker' in window) {
+        const dirHandle = await (window as any).showDirectoryPicker();
+        console.log("Mounted Workspace:", dirHandle.name);
+        
+        const loadedFiles: WorkspaceFile[] = [];
+
+        async function readDirectoryRecursive(handle: any, prefix = '') {
+          for await (const entry of handle.values()) {
+            if (entry.kind === 'file') {
+              const lower = entry.name.toLowerCase();
+              if (
+                lower.startsWith('.') || 
+                lower.endsWith('.png') || 
+                lower.endsWith('.jpg') || 
+                lower.endsWith('.jpeg') || 
+                lower.endsWith('.gif') || 
+                lower.endsWith('.ico') || 
+                lower.endsWith('.lock') || 
+                lower.endsWith('.exe') ||
+                lower.endsWith('.pdf') ||
+                lower.endsWith('.mp4') ||
+                lower.endsWith('.zip')
+              ) {
+                continue;
+              }
+              try {
+                const fileData = await entry.getFile();
+                const text = await fileData.text();
+                const ext = lower.split('.').pop() || '';
+                const language = ['ts', 'tsx'].includes(ext) ? 'typescript' : ['js', 'jsx'].includes(ext) ? 'javascript' : ext === 'json' ? 'json' : ext === 'css' ? 'css' : ext === 'html' ? 'html' : 'plaintext';
+                loadedFiles.push({
+                  name: prefix ? `${prefix}/${entry.name}` : entry.name,
+                  content: text,
+                  language
+                });
+              } catch (readErr) {
+                console.warn(`Could not read file ${entry.name}:`, readErr);
+              }
+            } else if (entry.kind === 'directory') {
+              if (
+                entry.name !== 'node_modules' && 
+                entry.name !== '.git' && 
+                entry.name !== 'dist' && 
+                entry.name !== 'build' &&
+                entry.name !== '.next' &&
+                entry.name !== 'dist_desktop'
+              ) {
+                await readDirectoryRecursive(entry, prefix ? `${prefix}/${entry.name}` : entry.name);
+              }
+            }
+          }
+        }
+
+        await readDirectoryRecursive(dirHandle);
+
+        if (loadedFiles.length > 0) {
+          const newWorkspace: WorkspaceFolder = {
+            id: `local-${Date.now()}`,
+            name: dirHandle.name,
+            path: dirHandle.name,
+            files: loadedFiles
+          };
+          setWorkspaces(prev => [newWorkspace, ...prev]);
+          setSelectedWorkspace(newWorkspace);
+          setActiveFileIndex(0);
+          setActiveTab('CODE');
+          setActiveStage('STAGE_3');
+          setCheckpointToast(`Mounted local folder: ${dirHandle.name} (${loadedFiles.length} files)`);
+          setTimeout(() => setCheckpointToast(null), 3000);
+        } else {
+          alert('Selected folder does not contain supported code/text files.');
+        }
+      } else {
+        const input = document.getElementById('native-folder-input') as HTMLInputElement;
+        if (input) input.click();
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        console.error("Directory access error:", err);
+        const input = document.getElementById('native-folder-input') as HTMLInputElement;
+        if (input) input.click();
+      }
+    }
+  };
+
+  // Client-Side BYOK AI Engine (Gemini 3.8 Flash)
+  const callGeminiClientSide = async (prompt: string, modelName = 'gemini-3.8-flash', customPrompt?: string, attachedImgUrl?: string) => {
+    const activeKey = localStorage.getItem('DEVORA_GEMINI_KEY') || savedApiKey;
+    if (!activeKey) {
+      throw new Error("Please configure your API Token in Settings!");
+    }
+
+    const ai = new GoogleGenAI({ 
+      apiKey: activeKey, 
+      allowDangerousClientSideKeys: true // Crucial for Vercel/Client runtime
+    } as any);
+
+    const contents: any[] = [];
+    if (attachedImgUrl && attachedImgUrl.startsWith('data:image')) {
+      const parts = attachedImgUrl.split(',');
+      const mimeMatch = attachedImgUrl.match(/data:([^;]+);/);
+      const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+      contents.push({
+        inlineData: {
+          mimeType,
+          data: parts[1]
+        }
+      });
+    }
+    contents.push(prompt);
+
+    const effectiveModel = (!modelName || modelName.includes('2.5')) ? 'gemini-3.8-flash' : modelName;
+
+    const response = await ai.models.generateContent({
+      model: effectiveModel,
+      contents,
+      config: {
+        systemInstruction: customPrompt || customInstructions || 'You are Devora, an elite AI coding engine inside an ultra-clean minimalist IDE studio workspace. Help the developer write clean, robust code, debug quickly, and build applications.'
+      }
+    });
+
+    return response.text;
+  };
+
   // Real Folder Drop / Upload into Workspace
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -586,10 +720,11 @@ export default function App() {
   const handleTestApiKey = async () => {
     setTestKeyStatus({ loading: true });
     try {
+      const activeKey = apiKeyInput || savedApiKey || localStorage.getItem('DEVORA_GEMINI_KEY') || undefined;
       const response = await fetch('/api/test-key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: apiKeyInput || savedApiKey || undefined })
+        body: JSON.stringify({ apiKey: activeKey })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
@@ -613,6 +748,11 @@ export default function App() {
   const handleSaveApiKey = (e: React.FormEvent) => {
     e.preventDefault();
     setSavedApiKey(apiKeyInput);
+    try {
+      localStorage.setItem('DEVORA_GEMINI_KEY', apiKeyInput);
+    } catch (err) {
+      console.error('LocalStorage error:', err);
+    }
     setKeySavedMessage(true);
     setTimeout(() => setKeySavedMessage(false), 1500);
   };
@@ -949,39 +1089,55 @@ export default function App() {
     setIsGenerating(true);
 
     try {
-      const modelToUse = promptMode === 'Pro Think' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+      const modelToUse = 'gemini-3.8-flash';
+      const activeKey = localStorage.getItem('DEVORA_GEMINI_KEY') || savedApiKey;
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [...messages, userMsg].map(m => ({ role: m.role, content: m.content })),
-          systemInstruction: `${customInstructions}\n\nWorkspace: ${selectedWorkspace?.name || 'None'}. Active file: ${selectedWorkspace?.files[activeFileIndex]?.name || 'None'}. Current code:\n\`\`\`\n${selectedWorkspace?.files[activeFileIndex]?.content || ''}\n\`\`\``,
-          apiKey: savedApiKey || undefined,
-          model: modelToUse
-        })
-      });
+      let replyContent = '';
+      let tokensUsed = 0;
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
+      if (activeKey) {
+        // Direct Client-Side BYOK Gemini Execution (Zero Server Cost)
+        const contextStr = selectedWorkspace ? `\n\n[Active Workspace: ${selectedWorkspace.name}, File: ${selectedWorkspace.files[activeFileIndex]?.name || 'App.tsx'}]\n\`\`\`${selectedWorkspace.files[activeFileIndex]?.language || 'typescript'}\n${selectedWorkspace.files[activeFileIndex]?.content || ''}\n\`\`\`` : '';
+        const systemPrompt = `${customInstructions}${contextStr}`;
+        const generated = await callGeminiClientSide(promptText, modelToUse, systemPrompt, attachedImageFile?.url);
+        replyContent = generated || 'Response synthesized.';
+        tokensUsed = Math.round((promptText.length + replyContent.length) / 4);
+      } else {
+        // Fallback to server proxy
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: [...messages, userMsg].map(m => ({ role: m.role, content: m.content })),
+            systemInstruction: `${customInstructions}\n\nWorkspace: ${selectedWorkspace?.name || 'None'}. Active file: ${selectedWorkspace?.files[activeFileIndex]?.name || 'None'}. Current code:\n\`\`\`\n${selectedWorkspace?.files[activeFileIndex]?.content || ''}\n\`\`\``,
+            apiKey: savedApiKey || undefined,
+            model: modelToUse
+          })
+        });
+
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'AI generation failed');
+        replyContent = data.reply;
+        tokensUsed = data.tokens || 120;
+      }
 
       setMessages(prev => [
         ...prev,
         {
           id: `msg-${Date.now() + 1}`,
           role: 'model',
-          content: data.reply,
+          content: replyContent,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }
       ]);
-      setTotalTokens(prev => prev + (data.tokens || 120));
+      setTotalTokens(prev => prev + tokensUsed);
     } catch (err: any) {
       setMessages(prev => [
         ...prev,
         {
           id: `msg-${Date.now() + 1}`,
           role: 'model',
-          content: `[DEVORA SYSTEM ERROR]: ${err.message}. Please verify your API Key in Settings > Chat.`,
+          content: `[DEVORA SYSTEM ERROR]: ${err.message}. Please configure your Gemini API Key in Studio Settings.`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }
       ]);
@@ -1058,26 +1214,26 @@ export default function App() {
             </div>
 
             <div className="text-xs uppercase tracking-[0.3em] text-neutral-400 mb-3 font-semibold">
-              DEVORA // WORKSTATION V1.0
+              DEVORA // AUTONOMOUS AI WORKSTATION V2.0
             </div>
             
             <h1 className="text-4xl font-bold tracking-tight mb-3 text-white">
-              Devora
+              Devora AI Studio
             </h1>
             
             <p className="text-sm text-neutral-400 mb-8 max-w-md leading-relaxed font-normal">
-              High-efficiency $0-server-cost local AI IDE. Zero latency client execution, multilingual Indic voice prompting, and direct GitHub synchronization.
+              Next-generation autonomous AI workstation with zero-cost client execution, multilingual Indic voice prompting, AST semantic dependency slicing, and direct GitHub synchronization.
             </p>
 
             <button
               onClick={handleDemoSignIn}
               className="px-8 py-3.5 border border-neutral-700 hover:border-white text-xs font-semibold uppercase tracking-widest transition-all duration-200 bg-neutral-950 text-white hover:bg-white hover:text-black active:scale-95 cursor-pointer shadow-lg"
             >
-              DEMO SIGN IN
+              ENTER WORKSPACE
             </button>
 
             <div className="mt-10 text-xs text-neutral-600 font-mono tracking-wider">
-              ZERO SERVER LOAD // PORT 3000
+              ZERO INFRASTRUCTURE OVERHEAD // LOCAL CLIENT RUNTIME
             </div>
           </div>
         </div>
@@ -1096,11 +1252,11 @@ export default function App() {
                 Devora
               </div>
               <span className="text-neutral-600 text-xs font-mono">/</span>
-              <span className="text-xs text-neutral-400 font-medium">Workspace Router</span>
+              <span className="text-xs text-neutral-400 font-medium">Workspace Hub</span>
             </div>
 
             <div className="flex items-center gap-3">
-              <span className="text-xs text-neutral-400 font-medium">Local Session Active</span>
+              <span className="text-xs text-neutral-400 font-medium">Client Engine Ready</span>
               <div className="w-8 h-8 rounded-full border border-neutral-800 flex items-center justify-center text-xs font-bold text-white bg-neutral-900 shadow-inner">
                 S
               </div>
@@ -1113,31 +1269,35 @@ export default function App() {
               
               <div className="text-center mb-6">
                 <h2 className="text-lg font-bold tracking-tight text-white mb-1">
-                  Project Workspace Discovery
+                  Workspace & Project Launcher
                 </h2>
                 <p className="text-xs text-neutral-400 font-normal">
-                  Open an existing project folder or pick one of the quick Devora templates below.
+                  Open an existing local project directory or select a pre-configured architecture template below.
                 </p>
               </div>
 
               {/* Large Clean Dropzone CTA */}
-              <label className="w-full border border-dashed border-neutral-800 hover:border-neutral-500 p-8 flex flex-col items-center justify-center cursor-pointer transition-all bg-neutral-950/40 hover:bg-neutral-900/30 mb-6 group">
+              <div 
+                onClick={mountLocalDirectory}
+                className="w-full border border-dashed border-neutral-800 hover:border-neutral-500 p-8 flex flex-col items-center justify-center cursor-pointer transition-all bg-neutral-950/40 hover:bg-neutral-900/30 mb-6 group"
+              >
                 <div className="w-10 h-10 rounded-full border border-neutral-800 bg-black flex items-center justify-center mb-3 group-hover:border-neutral-600 transition-colors">
                   <FolderOpen className="w-5 h-5 text-neutral-300 group-hover:text-white" />
                 </div>
                 <span className="text-xs tracking-wider text-white uppercase font-bold">
-                  OPEN PROJECT FOLDER SELECTOR
+                  OPEN LOCAL PROJECT DIRECTORY
                 </span>
                 <span className="text-xs text-neutral-500 mt-1.5 font-normal">
-                  Click to mount local directory or select a template below
+                  Mount local directory via Web File System API or select an architecture preset below
                 </span>
                 <input 
+                  id="native-folder-input"
                   type="file" 
                   multiple 
                   className="hidden" 
                   onChange={handleFileUpload} 
                 />
-              </label>
+              </div>
 
               {/* Grid of Clean Workspace Presets */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full mb-6">
@@ -1164,7 +1324,7 @@ export default function App() {
               {/* Workspace History Stack Footer */}
               <div className="w-full">
                 <div className="text-xs text-neutral-400 uppercase tracking-wider mb-2 font-semibold">
-                  RECENT WORKSPACES HISTORY
+                  RECENT WORKSPACE ENVIRONMENTS
                 </div>
                 <div className="space-y-1.5 border-t border-neutral-900 pt-2">
                   {workspaces.map((ws, idx) => (
@@ -1199,7 +1359,7 @@ export default function App() {
                 className="flex items-center gap-2 text-xs font-medium text-neutral-300 hover:text-white transition-colors cursor-pointer py-1 px-2 hover:bg-neutral-900"
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
-                <span>← BACK TO DASHBOARD</span>
+                <span>← WORKSPACES</span>
               </button>
               
               <div className="h-4 w-px bg-neutral-800 hidden sm:block" />
@@ -1223,14 +1383,14 @@ export default function App() {
                 onClick={() => setShowBugModal(true)}
                 className="text-xs px-3 py-1 font-medium border border-neutral-800 hover:border-red-500 hover:text-red-400 transition-all cursor-pointer"
               >
-                BUG REPORT
+                DIAGNOSTICS
               </button>
               <button
                 onClick={() => setIsSettingsOpen(true)}
                 className="text-xs px-3 py-1 font-medium border border-neutral-800 hover:border-white transition-all cursor-pointer flex items-center gap-1.5"
               >
                 <Settings className="w-3.5 h-3.5" />
-                <span>⚙ SETTINGS</span>
+                <span>⚙ STUDIO SETTINGS</span>
               </button>
             </div>
           </header>
@@ -1252,7 +1412,7 @@ export default function App() {
                   </div>
                   <span className="text-neutral-600 font-mono text-xs">/</span>
                   <span className="text-[11px] text-neutral-400 font-mono">
-                    2.5-flash
+                    3.8-flash
                   </span>
                 </div>
 
@@ -1271,9 +1431,9 @@ export default function App() {
               <div className="px-4 py-1.5 border-b border-neutral-900/60 bg-neutral-950/40 flex items-center justify-between text-[11px] text-neutral-500 font-mono">
                 <div className="flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span>Devora 2.5-flash</span>
+                  <span>Devora 3.8-flash</span>
                   <span>•</span>
-                  <span>Active Session</span>
+                  <span>Ready for Prompts</span>
                 </div>
                 <button
                   onClick={() => {
@@ -1362,13 +1522,13 @@ export default function App() {
                       {/* If AI message contains code, offer 1-click apply button */}
                       {msg.role === 'model' && msg.content.includes('```') && (
                         <div className="mt-3 pt-3 border-t border-neutral-800/60 flex items-center justify-between">
-                          <span className="text-[10px] text-neutral-500 font-mono">Code block ready</span>
+                          <span className="text-[10px] text-neutral-500 font-mono">Production patch ready</span>
                           <button
                             onClick={() => handleOpenDiffModal(msg.content)}
                             className="px-3 py-1 text-[11px] font-semibold bg-emerald-950/60 border border-emerald-700/80 hover:bg-emerald-800 hover:text-white text-emerald-400 rounded transition-all cursor-pointer flex items-center gap-1.5 shadow"
                           >
                             <FileCheck className="w-3.5 h-3.5" />
-                            <span>View & Apply to {selectedWorkspace.files[activeFileIndex]?.name}</span>
+                            <span>Review & Apply to {selectedWorkspace.files[activeFileIndex]?.name}</span>
                           </button>
                         </div>
                       )}
@@ -1416,7 +1576,7 @@ export default function App() {
                             onClick={() => handleOpenDiffModal(msg.content)}
                             className="text-xs text-neutral-400 hover:text-white transition-colors cursor-pointer py-1 px-1.5 rounded hover:bg-neutral-900"
                           >
-                            View changes
+                            Inspect diff
                           </button>
                         </div>
 
@@ -1443,10 +1603,10 @@ export default function App() {
                   <div className="p-3 border border-emerald-500/40 bg-emerald-950/30 text-xs space-y-1.5 text-emerald-400 rounded-xl animate-pulse">
                     <div className="flex items-center gap-2 font-bold">
                       <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Multilingual Voice Transformation Active</span>
+                      <span>Autonomous Voice Pipeline Active</span>
                     </div>
                     <div className="text-[11px] text-neutral-300 font-mono">
-                      {refinementStep || 'Translating Hindi/Indic speech into structured developer prompt...'}
+                      {refinementStep || 'Transcribing and translating Indic audio stream into developer instructions...'}
                     </div>
                   </div>
                 )}
@@ -1454,7 +1614,7 @@ export default function App() {
                 {isGenerating && (
                   <div className="flex items-center gap-2 text-neutral-400 text-xs py-2 px-1">
                     <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
-                    <span>Devora Engine is writing code...</span>
+                    <span>Devora Engine is synthesizing AST code patch...</span>
                   </div>
                 )}
               </div>
@@ -1469,13 +1629,13 @@ export default function App() {
                   <div className="mb-2 p-2.5 rounded-xl border border-red-500/50 bg-red-950/40 flex items-center justify-between text-xs text-red-300 animate-pulse">
                     <div className="flex items-center gap-2">
                       <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
-                      <span className="font-medium">Listening to your voice... Speak in Hindi, Hinglish, or any language</span>
+                      <span className="font-medium">Listening to microphone... Speak in Hindi, Hinglish, or English</span>
                     </div>
                     <button
                       onClick={toggleListening}
                       className="px-2.5 py-1 bg-red-900 hover:bg-red-800 border border-red-400 text-[10px] uppercase tracking-wider text-white rounded cursor-pointer font-bold"
                     >
-                      Done / Translate
+                      Stop & Synthesize
                     </button>
                   </div>
                 )}
@@ -1488,7 +1648,7 @@ export default function App() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="text-xs font-semibold text-white truncate">{attachedImageFile.name}</div>
-                      <div className="text-[10px] text-neutral-500">Image Reference</div>
+                      <div className="text-[10px] text-neutral-500">Vision Context Attachment</div>
                     </div>
                     <button
                       onClick={() => setAttachedImageFile(null)}
@@ -1523,7 +1683,7 @@ export default function App() {
                     value={inputPrompt}
                     onChange={(e) => setInputPrompt(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="Make changes, add new features, ask for anything"
+                    placeholder="Describe features, refactor components, paste code, or speak in Hindi/English..."
                     className="w-full bg-transparent text-white text-xs leading-relaxed outline-none resize-none font-sans placeholder:text-neutral-500 select-text"
                   />
 
@@ -1544,7 +1704,7 @@ export default function App() {
                       {/* Popover Menu for (+) button */}
                       {showAddMenu && (
                         <div className="absolute bottom-9 left-0 w-64 bg-neutral-950 border border-neutral-800 rounded-xl shadow-2xl p-2 z-50 space-y-1 text-xs">
-                          <div className="text-[10px] uppercase font-bold text-neutral-500 px-2 py-1">Attach Context</div>
+                          <div className="text-[10px] uppercase font-bold text-neutral-500 px-2 py-1">Context & Knowledge Graph</div>
                           
                           <button
                             type="button"
@@ -1555,7 +1715,7 @@ export default function App() {
                             className="w-full text-left px-2 py-1.5 rounded hover:bg-neutral-900 text-neutral-300 hover:text-white flex items-center gap-2 cursor-pointer"
                           >
                             <FileCode className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>Attach Active File ({selectedWorkspace.files[activeFileIndex]?.name})</span>
+                            <span>Attach Active Editor File ({selectedWorkspace.files[activeFileIndex]?.name})</span>
                           </button>
 
                           <button
@@ -1567,7 +1727,7 @@ export default function App() {
                             className="w-full text-left px-2 py-1.5 rounded hover:bg-neutral-900 text-neutral-300 hover:text-white flex items-center gap-2 cursor-pointer"
                           >
                             <Layers className="w-3.5 h-3.5 text-amber-400" />
-                            <span>Attach Full Workspace ({selectedWorkspace.files.length} files)</span>
+                            <span>Attach Complete Workspace ({selectedWorkspace.files.length} files)</span>
                           </button>
 
                           <button
@@ -1576,11 +1736,11 @@ export default function App() {
                             className="w-full text-left px-2 py-1.5 rounded hover:bg-neutral-900 text-neutral-300 hover:text-white flex items-center gap-2 cursor-pointer"
                           >
                             <ImageIcon className="w-3.5 h-3.5 text-cyan-400" />
-                            <span>Attach UI Screenshot (image.png)</span>
+                            <span>Attach UI Screenshot for Multimodal Vision</span>
                           </button>
 
                           <div className="border-t border-neutral-900 my-1 pt-1">
-                            <div className="text-[10px] uppercase font-bold text-neutral-500 px-2 py-1">Quick Prompts</div>
+                            <div className="text-[10px] uppercase font-bold text-neutral-500 px-2 py-1">Engine Action Presets</div>
                             <button
                               type="button"
                               onClick={() => {
@@ -1589,7 +1749,7 @@ export default function App() {
                               }}
                               className="w-full text-left px-2 py-1.5 rounded hover:bg-neutral-900 text-neutral-300 hover:text-white text-[11px] cursor-pointer"
                             >
-                              ⚡ Refactor to clean modular code
+                              ⚡ Refactor to modular TypeScript architecture
                             </button>
                             <button
                               type="button"
@@ -1599,7 +1759,7 @@ export default function App() {
                               }}
                               className="w-full text-left px-2 py-1.5 rounded hover:bg-neutral-900 text-neutral-300 hover:text-white text-[11px] cursor-pointer"
                             >
-                              ⚡ Audit code for bugs & edge cases
+                              ⚡ Full security & runtime exception audit
                             </button>
                           </div>
                         </div>
@@ -1631,9 +1791,9 @@ export default function App() {
                         {showModeDropdown && (
                           <div className="absolute bottom-9 right-0 w-52 bg-neutral-950 border border-neutral-800 rounded-xl shadow-2xl p-1.5 z-50 space-y-1 text-xs">
                             {[
-                              { label: 'Default', desc: 'Balanced · Gemini 3.8 Flash' },
-                              { label: 'Flash', desc: 'Instant Code Generation' },
-                              { label: 'Pro Think', desc: 'Deep Reasoning Architecture' }
+                              { label: 'Default', desc: 'Fast & Versatile · Gemini 3.8 Flash' },
+                              { label: 'Flash', desc: 'Ultra-low Latency Patching' },
+                              { label: 'Pro Think', desc: 'Complex Multi-File Reasoning' }
                             ].map(item => (
                               <button
                                 key={item.label}
@@ -1725,7 +1885,7 @@ export default function App() {
                         : 'border-transparent text-neutral-400 hover:text-white'
                     }`}
                   >
-                    SOURCE CODE VIEW
+                    CODE EDITOR
                   </button>
                   <button
                     onClick={() => setActiveTab('PREVIEW')}
@@ -1735,7 +1895,7 @@ export default function App() {
                         : 'border-transparent text-neutral-400 hover:text-white'
                     }`}
                   >
-                    REAL-TIME PREVIEW
+                    LIVE PREVIEW
                   </button>
                 </div>
 
@@ -1809,7 +1969,7 @@ export default function App() {
                     <div className="h-8 border-b border-neutral-900 px-4 flex items-center justify-between text-xs text-neutral-400 bg-neutral-950/60 font-mono">
                       <div className="flex items-center gap-2">
                         <span>{selectedWorkspace.path}/{activeFile?.name}</span>
-                        <span className="text-[10px] text-emerald-400 bg-emerald-950/40 px-1.5 py-0.2 border border-emerald-900/50">EDITABLE</span>
+                        <span className="text-[10px] text-emerald-400 bg-emerald-950/40 px-1.5 py-0.2 border border-emerald-900/50">LIVE SYNC</span>
                       </div>
                       
                       <div className="flex items-center gap-3">
@@ -1818,7 +1978,7 @@ export default function App() {
                           className="hover:text-white transition-colors cursor-pointer text-xs flex items-center gap-1 font-sans"
                         >
                           <Search className="w-3 h-3" />
-                          <span>Find</span>
+                          <span>Find in file</span>
                         </button>
                         
                         <button 
@@ -1826,7 +1986,7 @@ export default function App() {
                           className="flex items-center gap-1.5 hover:text-white transition-colors cursor-pointer text-xs font-sans font-medium"
                         >
                           {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                          <span>{copiedCode ? 'COPIED' : 'COPY CODE'}</span>
+                          <span>{copiedCode ? 'COPIED' : 'COPY'}</span>
                         </button>
                       </div>
                     </div>
@@ -1837,7 +1997,7 @@ export default function App() {
                         <Search className="w-3.5 h-3.5 text-neutral-400" />
                         <input
                           type="text"
-                          placeholder="Search in file..."
+                          placeholder="Search in active file..."
                           value={searchQuery}
                           onChange={(e) => setSearchQuery(e.target.value)}
                           className="flex-1 bg-black border border-neutral-800 text-xs px-2 py-1 text-white outline-none font-mono"
@@ -1932,14 +2092,14 @@ export default function App() {
                         <div className="p-3 bg-red-950/80 border-b border-red-800 text-red-300 text-xs flex items-center justify-between font-mono">
                           <div className="flex items-center gap-2">
                             <AlertCircle className="w-4 h-4 text-red-400 animate-bounce" />
-                            <span>Runtime Exception: {previewError}</span>
+                            <span>Sandbox Exception: {previewError}</span>
                           </div>
                           <button
                             onClick={handleTriggerSelfHeal}
                             disabled={isSelfHealing}
                             className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white font-bold text-[10px] uppercase rounded cursor-pointer disabled:opacity-50"
                           >
-                            {isSelfHealing ? 'AI Self-Healing...' : '✨ Auto-Fix with AI'}
+                            {isSelfHealing ? 'Synthesizing Hotfix...' : '✨ Autonomous AI Self-Heal'}
                           </button>
                         </div>
                       )}
@@ -1947,7 +2107,7 @@ export default function App() {
                       {isSelfHealing && (
                         <div className="p-3 bg-emerald-950/80 border-b border-emerald-800 text-emerald-300 text-xs flex items-center gap-2 font-mono animate-pulse">
                           <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
-                          <span>{selfHealLog || 'Devora AI is analyzing stack trace & auto-patching runtime error...'}</span>
+                          <span>{selfHealLog || 'Devora AI is analyzing stack trace & synthesizing runtime hotfix...'}</span>
                         </div>
                       )}
 
@@ -1968,7 +2128,7 @@ export default function App() {
                             className="text-[10px] px-2 py-0.5 border border-amber-800/80 bg-amber-950/40 text-amber-400 hover:bg-amber-900/60 rounded font-mono cursor-pointer"
                             title="Simulate Runtime Error to Test Self-Healing"
                           >
-                            Simulate Error
+                            Trigger Test Exception
                           </button>
                           <button 
                             onClick={() => setIsFullscreenPreview(!isFullscreenPreview)}
@@ -1998,12 +2158,12 @@ export default function App() {
                               </h3>
                             </div>
                             <span className="text-[10px] text-emerald-400 bg-emerald-950/50 border border-emerald-800 px-2 py-0.5 font-mono">
-                              0ms LATENCY
+                              0ms LOCAL LATENCY
                             </span>
                           </div>
 
                           <p className="text-xs text-neutral-400 leading-relaxed font-normal">
-                            All components compile and render locally in zero-server infrastructure mode.
+                            All components compile and render locally within the client-side container.
                           </p>
 
                           <div className="pt-2 flex flex-wrap gap-3">
@@ -2011,13 +2171,13 @@ export default function App() {
                               onClick={() => alert(`Executed component event on ${selectedWorkspace.name}`)}
                               className="px-4 py-2 bg-white text-black text-xs font-semibold uppercase tracking-wider hover:bg-neutral-200 transition-all cursor-pointer"
                             >
-                              Trigger Action
+                              Execute Event
                             </button>
                             <button 
                               onClick={() => setActiveTab('CODE')}
                               className="px-4 py-2 border border-neutral-800 hover:border-neutral-600 text-xs font-semibold uppercase tracking-wider text-neutral-300 hover:text-white transition-all cursor-pointer"
                             >
-                              Inspect Source
+                              Jump to Source
                             </button>
                           </div>
                         </div>
@@ -2025,7 +2185,7 @@ export default function App() {
                         {/* File Structure Preview */}
                         <div className="border border-neutral-900 p-4 bg-neutral-950/30">
                           <div className="text-[11px] text-neutral-400 uppercase tracking-wider mb-2 font-mono">
-                            Workspace File Tree ({selectedWorkspace.files.length})
+                            Workspace File Structure ({selectedWorkspace.files.length})
                           </div>
                           <div className="space-y-1 text-xs font-mono text-neutral-300">
                             {selectedWorkspace.files.map((f, i) => (
@@ -2059,7 +2219,7 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <FileCheck className="w-4 h-4 text-emerald-400" />
                     <span className="text-xs font-bold uppercase tracking-wider text-white">
-                      Code Changes Diff · {diffModal.fileName}
+                      AST Semantic Diff · {diffModal.fileName}
                     </span>
                   </div>
                   <button
@@ -2074,7 +2234,7 @@ export default function App() {
                 <div className="flex-1 p-4 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-4 font-mono text-xs">
                   <div className="border border-neutral-800 bg-black p-4 rounded-lg flex flex-col">
                     <div className="text-[11px] text-neutral-500 pb-2 border-b border-neutral-900 mb-2 flex items-center justify-between">
-                      <span>CURRENT FILE CONTENT</span>
+                      <span>CURRENT WORKING TREE</span>
                       <span className="text-red-400">- Existing</span>
                     </div>
                     <pre className="flex-1 overflow-auto whitespace-pre-wrap text-neutral-400 leading-relaxed max-h-[50vh]">
@@ -2084,7 +2244,7 @@ export default function App() {
 
                   <div className="border border-emerald-900/40 bg-neutral-950 p-4 rounded-lg flex flex-col">
                     <div className="text-[11px] text-emerald-400 pb-2 border-b border-emerald-950/60 mb-2 flex items-center justify-between">
-                      <span>DEVORA AI SUGGESTION</span>
+                      <span>DEVORA SYNTHESIZED PATCH</span>
                       <span className="text-emerald-400 font-bold">+ Incoming</span>
                     </div>
                     <pre className="flex-1 overflow-auto whitespace-pre-wrap text-emerald-200 leading-relaxed max-h-[50vh]">
@@ -2096,21 +2256,21 @@ export default function App() {
                 {/* Diff Modal Footer Actions */}
                 <div className="h-14 border-t border-neutral-800 px-6 flex items-center justify-between bg-neutral-950 shrink-0">
                   <span className="text-xs text-neutral-400">
-                    Review and apply changes directly into your active workspace.
+                    Review changes line-by-line and commit the patch to your active workspace.
                   </span>
                   <div className="flex items-center gap-3">
                     <button
                       onClick={() => setDiffModal(null)}
                       className="px-4 py-2 border border-neutral-800 hover:border-neutral-700 text-xs uppercase tracking-wider text-neutral-400 hover:text-white rounded cursor-pointer"
                     >
-                      Cancel
+                      Discard
                     </button>
                     <button
                       onClick={handleApplyDiffChanges}
                       className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase tracking-wider rounded transition-all cursor-pointer shadow-lg flex items-center gap-1.5"
                     >
                       <Check className="w-4 h-4" />
-                      <span>Apply Changes</span>
+                      <span>Accept & Apply Patch</span>
                     </button>
                   </div>
                 </div>
@@ -2325,12 +2485,12 @@ export default function App() {
                 {/* ================================================================= */}
                 {settingsTab === 'CHAT' && (
                   <div className="space-y-6">
-                    <h2 className="text-xl font-bold tracking-tight text-white">Chat settings</h2>
+                    <h2 className="text-xl font-bold tracking-tight text-white">AI Engine & Chat Settings</h2>
 
                     {/* Section: Select model to use in Chat */}
                     <div className="space-y-2">
                       <label className="text-xs text-neutral-400 block font-normal">
-                        Select model to use in Chat
+                        Primary LLM Model Configuration
                       </label>
                       
                       <div className="relative">
@@ -2340,8 +2500,8 @@ export default function App() {
                           className="w-full bg-[#1b1b1e] border border-neutral-800 text-white text-xs px-3.5 py-3 rounded-xl outline-none appearance-none cursor-pointer pr-10 focus:border-neutral-600 transition-all font-medium"
                         >
                           <option value="Default (Gemini 3.8 Flash)">Default (Gemini 3.8 Flash)</option>
-                          <option value="Gemini 2.5 Pro (Deep Think)">Gemini 2.5 Pro (Deep Think)</option>
-                          <option value="Gemini 2.5 Flash (Ultra Fast)">Gemini 2.5 Flash (Ultra Fast)</option>
+                          <option value="Gemini 3.8 Flash (Deep Reasoning)">Gemini 3.8 Flash (Deep Reasoning)</option>
+                          <option value="Gemini 3.8 Flash (Ultra Fast)">Gemini 3.8 Flash (Ultra Fast)</option>
                         </select>
                         <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                       </div>
@@ -2350,7 +2510,7 @@ export default function App() {
                     {/* Section: System instructions (EXACT CARD IN SCREENSHOT 1) */}
                     <div className="space-y-2">
                       <label className="text-xs text-neutral-400 block font-normal">
-                        System instructions
+                        Workspace System Prompt
                       </label>
 
                       <div 
@@ -2358,7 +2518,7 @@ export default function App() {
                         className="p-4 bg-[#1b1b1e] border border-neutral-800 rounded-2xl hover:border-neutral-700 transition-all cursor-pointer group space-y-2"
                       >
                         <div className="flex items-center justify-between">
-                          <span className="text-sm font-semibold text-white">Custom instructions</span>
+                          <span className="text-sm font-semibold text-white">Autonomous Persona & Rules</span>
                           <ChevronRight className={`w-4 h-4 text-neutral-400 transition-transform ${isEditingInstructions ? 'rotate-90' : 'group-hover:translate-x-0.5'}`} />
                         </div>
                         <p className="text-xs text-neutral-400 leading-relaxed font-normal">
@@ -2394,7 +2554,7 @@ export default function App() {
                     {/* Section: Usage (EXACT CARD IN SCREENSHOT 1) */}
                     <div className="space-y-2">
                       <label className="text-xs text-neutral-400 block font-normal">
-                        Usage
+                        API Token & Quota Tier
                       </label>
 
                       <div className="p-4 bg-[#1b1b1e] border border-neutral-800 rounded-2xl space-y-2">
@@ -2415,10 +2575,10 @@ export default function App() {
                         </div>
 
                         <div className="text-sm font-semibold text-white">
-                          {savedApiKey ? "You're using custom BYOK API endpoint." : "You're currently using free tier requests."}
+                          {savedApiKey ? "Active BYOK Gemini API key authenticated." : "Client-side default pipeline active."}
                         </div>
                         <div className="text-xs text-neutral-400">
-                          {savedApiKey ? "Unlimited requests unlocked with your personal token." : "Upgrade to unlock higher limits."}
+                          {savedApiKey ? "Dedicated direct model endpoints unlocked." : "Add your personal API key for unmetered generation."}
                         </div>
                       </div>
 
@@ -2467,9 +2627,9 @@ export default function App() {
                 {/* ================================================================= */}
                 {settingsTab === 'SHARE' && (
                   <div className="space-y-6 animate-in fade-in duration-150">
-                    <h2 className="text-xl font-bold tracking-tight text-white">Share project</h2>
+                    <h2 className="text-xl font-bold tracking-tight text-white">Collaborative Sharing</h2>
                     <p className="text-xs text-neutral-400 leading-relaxed">
-                      Generate public shareable preview links or embed interactive widgets into external websites.
+                      Generate public sandbox links or embed interactive widgets into external sites.
                     </p>
 
                     {/* Share Link Card */}
@@ -2543,9 +2703,9 @@ export default function App() {
                 {/* ================================================================= */}
                 {settingsTab === 'PUBLISH' && (
                   <div className="space-y-6 animate-in fade-in duration-150">
-                    <h2 className="text-xl font-bold tracking-tight text-white">Publish & Deploy</h2>
+                    <h2 className="text-xl font-bold tracking-tight text-white">Production Deployment</h2>
                     <p className="text-xs text-neutral-400 leading-relaxed">
-                      Deploy your active workspace to high-availability zero-cost infrastructure with custom domain and automatic HTTPS SSL.
+                      Deploy active workspace to zero-cost edge infrastructure with automated SSL and global CDN distribution.
                     </p>
 
                     {/* Live Status Card */}
@@ -2553,7 +2713,7 @@ export default function App() {
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                          <span className="text-xs font-bold text-white uppercase tracking-wider">Production Live</span>
+                          <span className="text-xs font-bold text-white uppercase tracking-wider">Edge Production Live</span>
                         </div>
                         <span className="text-[10px] text-emerald-400 font-mono bg-emerald-950/60 border border-emerald-800/80 px-2 py-0.5 rounded">
                           0ms Server Load
@@ -2581,7 +2741,7 @@ export default function App() {
 
                     {/* Deploy Action */}
                     <div className="p-4 bg-[#1b1b1e] border border-neutral-800 rounded-2xl space-y-3">
-                      <div className="text-xs font-bold text-white">Production Build & Sync</div>
+                      <div className="text-xs font-bold text-white">Zero-Cost Edge Distribution</div>
                       <p className="text-xs text-neutral-400">
                         Bundles active workspace files ({selectedWorkspace.files.length} items) and updates live URL.
                       </p>
@@ -2592,7 +2752,7 @@ export default function App() {
                         className="w-full py-3 bg-white text-black hover:bg-neutral-200 text-xs font-bold uppercase tracking-wider rounded-xl transition-all cursor-pointer shadow-lg flex items-center justify-center gap-2 disabled:opacity-40"
                       >
                         <Rocket className="w-4 h-4 text-emerald-600" />
-                        <span>{isDeploying ? 'Deploying to Cloud...' : 'Publish Latest Changes'}</span>
+                        <span>{isDeploying ? 'Deploying to Cloud...' : 'Deploy Latest Workspace Build'}</span>
                       </button>
 
                       {isDeploying && (
@@ -2612,14 +2772,14 @@ export default function App() {
                 {/* ================================================================= */}
                 {settingsTab === 'VERSIONS' && (
                   <div className="space-y-6 animate-in fade-in duration-150">
-                    <h2 className="text-xl font-bold tracking-tight text-white">Version History</h2>
+                    <h2 className="text-xl font-bold tracking-tight text-white">Workspace Snapshots & Checkpoints</h2>
                     <p className="text-xs text-neutral-400 leading-relaxed">
-                      Create checkpoints and rollback to previous iterations of your code at any time.
+                      Create immutable state snapshots and instantly revert to any historical code checkpoint.
                     </p>
 
                     {/* Create Checkpoint Form */}
                     <form onSubmit={handleCreateVersionSnapshot} className="p-4 bg-[#1b1b1e] border border-neutral-800 rounded-2xl space-y-3">
-                      <div className="text-xs font-bold text-white">Save Current State as Snapshot</div>
+                      <div className="text-xs font-bold text-white">Create State Snapshot</div>
                       <div className="flex items-center gap-2">
                         <input
                           type="text"
@@ -2679,9 +2839,9 @@ export default function App() {
                 {/* ================================================================= */}
                 {settingsTab === 'GITHUB' && (
                   <div className="space-y-6 animate-in fade-in duration-150">
-                    <h2 className="text-xl font-bold tracking-tight text-white">GitHub Sync</h2>
+                    <h2 className="text-xl font-bold tracking-tight text-white">GitHub Version Control</h2>
                     <p className="text-xs text-neutral-400 leading-relaxed font-normal">
-                      Connect your GitHub account using a Personal Access Token to create repositories and push code directly.
+                      Connect via GitHub Personal Access Token to synchronize repositories, branches, and commits directly from the browser.
                     </p>
 
                     {/* Token Auth Form */}
@@ -2779,14 +2939,14 @@ export default function App() {
                 {/* ================================================================= */}
                 {settingsTab === 'INTEGRATIONS' && (
                   <div className="space-y-6 animate-in fade-in duration-150">
-                    <h2 className="text-xl font-bold tracking-tight text-white">Integrations & Secrets</h2>
+                    <h2 className="text-xl font-bold tracking-tight text-white">Environment Secrets & Integrations</h2>
                     <p className="text-xs text-neutral-400 leading-relaxed font-normal">
-                      Store environment variables and project credentials for local execution.
+                      Configure encrypted environment variables and service tokens accessible across the local execution pipeline.
                     </p>
 
                     {/* Add Secret Form */}
                     <form onSubmit={handleAddSecret} className="p-4 bg-[#1b1b1e] border border-neutral-800 rounded-2xl space-y-3">
-                      <div className="text-xs font-bold text-white">Add Environment Secret</div>
+                      <div className="text-xs font-bold text-white">Add Environment Variable</div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         <input
                           type="text"
@@ -2809,7 +2969,7 @@ export default function App() {
                           disabled={!newSecretKey.trim()}
                           className="px-4 py-2 bg-white text-black text-xs font-bold rounded-xl cursor-pointer disabled:opacity-40"
                         >
-                          + Add Secret
+                          + Add Variable
                         </button>
                       </div>
                     </form>
@@ -2817,7 +2977,7 @@ export default function App() {
                     {/* Secrets List */}
                     <div className="space-y-2">
                       <div className="text-xs text-neutral-400 uppercase tracking-wider font-semibold">
-                        Configured Secrets ({secretsList.length})
+                        Configured Environment Secrets ({secretsList.length})
                       </div>
                       <div className="space-y-1.5">
                         {secretsList.map((sec) => (
@@ -3026,7 +3186,7 @@ export default function App() {
                   <div className="space-y-6 animate-in fade-in duration-150">
                     <h2 className="text-xl font-bold tracking-tight text-white">Mixture of Agents (MoA) Orchestration</h2>
                     <p className="text-xs text-neutral-400 leading-relaxed">
-                      Multi-model consensus pipeline. Queries Gemini 2.5 Pro (Architecture) and Gemini 2.5 Flash (Syntax) in parallel, then synthesizes supreme consensus code.
+                      Multi-model consensus pipeline. Queries Gemini 3.8 Flash (Architecture) and Gemini 3.8 Flash (Syntax) in parallel, then synthesizes supreme consensus code.
                     </p>
 
                     <div className="p-4 bg-[#1b1b1e] border border-neutral-800 rounded-2xl space-y-3">
@@ -3037,11 +3197,11 @@ export default function App() {
                       <div className="space-y-2 text-xs font-mono">
                         <div className="p-3 bg-black border border-neutral-900">
                           <div className="text-cyan-400 text-[10px]">Agent Alpha (Syntax & Speed)</div>
-                          <div className="text-neutral-300 mt-1">Gemini 2.5 Flash ➔ Initial AST & code generation</div>
+                          <div className="text-neutral-300 mt-1">Gemini 3.8 Flash ➔ Initial AST & code generation</div>
                         </div>
                         <div className="p-3 bg-black border border-neutral-900">
                           <div className="text-amber-400 text-[10px]">Agent Beta (Architecture & Security)</div>
-                          <div className="text-neutral-300 mt-1">Gemini 2.5 Pro ➔ Deep reasoning & edge case hardening</div>
+                          <div className="text-neutral-300 mt-1">Gemini 3.8 Flash ➔ Deep reasoning & edge case hardening</div>
                         </div>
                       </div>
                     </div>
@@ -3185,7 +3345,7 @@ export default function App() {
                 <div className="flex items-center justify-between border-b border-neutral-900 pb-3">
                   <div className="text-xs uppercase tracking-wider text-red-400 font-bold flex items-center gap-2">
                     <Bug className="w-4 h-4" />
-                    DEVORA TELEMETRY & BUG REPORT
+                    DEVORA DIAGNOSTIC REPORT
                   </div>
                   <button 
                     onClick={() => setShowBugModal(false)}
@@ -3195,13 +3355,13 @@ export default function App() {
                   </button>
                 </div>
                 <p className="text-xs text-neutral-400 leading-relaxed font-normal">
-                  Log active workspace stack trace or download complete diagnostic state as a JSON report.
+                  Capture runtime diagnostic logs, active environment variables, and stack trace state into an exportable JSON report.
                 </p>
                 <textarea 
                   rows={4}
                   value={bugDescription}
                   onChange={(e) => setBugDescription(e.target.value)}
-                  placeholder="Describe bug or telemetry anomaly..."
+                  placeholder="Describe any diagnostic anomalies or runtime exceptions..."
                   className="w-full bg-black border border-neutral-800 focus:border-neutral-600 text-white text-xs p-3 outline-none font-sans rounded-xl"
                 />
                 <div className="flex justify-end gap-2 pt-2">
@@ -3216,7 +3376,7 @@ export default function App() {
                     className="px-4 py-2 border border-neutral-700 hover:border-white text-xs font-semibold uppercase cursor-pointer bg-neutral-900 text-white flex items-center gap-1.5 rounded-xl"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>Download Report</span>
+                    <span>Export Diagnostics</span>
                   </button>
                 </div>
               </div>

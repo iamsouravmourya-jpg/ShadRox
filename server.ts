@@ -25,8 +25,13 @@ async function startServer() {
         });
       }
 
-      const ai = new GoogleGenAI({ apiKey: keyToUse });
-      const model = requestedModel || 'gemini-2.5-flash';
+      const ai = new GoogleGenAI({ 
+        apiKey: keyToUse,
+        httpOptions: {
+          headers: { 'User-Agent': 'aistudio-build' }
+        }
+      });
+      const model = (!requestedModel || requestedModel.includes('2.5')) ? 'gemini-3.8-flash' : requestedModel;
 
       const userMessage = messages && messages.length > 0 ? messages[messages.length - 1].content : '';
       const previousHistory = messages && messages.length > 1 ? messages.slice(0, -1) : [];
@@ -76,8 +81,13 @@ async function startServer() {
         });
       }
 
-      const ai = new GoogleGenAI({ apiKey: keyToUse });
-      const model = 'gemini-2.5-flash';
+      const ai = new GoogleGenAI({ 
+        apiKey: keyToUse,
+        httpOptions: {
+          headers: { 'User-Agent': 'aistudio-build' }
+        }
+      });
+      const model = 'gemini-3.8-flash';
 
       const instruction = `You are the Devora Multilingual Prompt Refinement & Engineering Engine.
 The user speaks or types in any language (Hindi, Hinglish, Bengali, Tamil, Telugu, Marathi, Gujarati, Spanish, French, or English).
@@ -133,9 +143,14 @@ Respond strictly in valid JSON with this exact schema:
         return res.status(400).json({ error: 'No API key provided or configured in environment.' });
       }
 
-      const ai = new GoogleGenAI({ apiKey: keyToUse });
+      const ai = new GoogleGenAI({ 
+        apiKey: keyToUse,
+        httpOptions: {
+          headers: { 'User-Agent': 'aistudio-build' }
+        }
+      });
       const testResult = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.8-flash',
         contents: 'ping',
       });
 
@@ -143,7 +158,7 @@ Respond strictly in valid JSON with this exact schema:
       res.json({
         success: true,
         latencyMs,
-        message: 'Key validated successfully. Gemini 2.5 Flash operational.'
+        message: 'Key validated successfully. Gemini 3.8 Flash operational.'
       });
     } catch (error: any) {
       console.error('Test Key Error:', error);
@@ -332,23 +347,28 @@ Respond strictly in valid JSON with this exact schema:
         return res.status(400).json({ error: 'API key required for MoA consensus.' });
       }
 
-      const ai = new GoogleGenAI({ apiKey: keyToUse });
+      const ai = new GoogleGenAI({ 
+        apiKey: keyToUse,
+        httpOptions: {
+          headers: { 'User-Agent': 'aistudio-build' }
+        }
+      });
 
       // Query Agent 1 (Flash - Speed & Syntax)
       const agent1Res = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.8-flash',
         contents: `You are Agent Alpha (Syntax & Speed). Provide rapid code implementation for: ${prompt}`
       });
 
-      // Query Agent 2 (Pro - Architecture & Deep Reasoning)
+      // Query Agent 2 (Architecture & Deep Reasoning)
       const agent2Res = await ai.models.generateContent({
-        model: 'gemini-2.5-pro',
+        model: 'gemini-3.8-flash',
         contents: `You are Agent Beta (Architecture & Security). Review and harden the architecture for: ${prompt}`
       });
 
       // Synthesis (Consensus Aggregator)
       const aggregatorRes = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.8-flash',
         contents: `Synthesize the following two AI agent responses into a single supreme consensus code solution.\n\nAgent Alpha (Syntax):\n${agent1Res.text}\n\nAgent Beta (Architecture):\n${agent2Res.text}`
       });
 
@@ -419,7 +439,12 @@ Respond strictly in valid JSON with this exact schema:
         return res.status(400).json({ error: 'API key is required for Devora Intent Compiler.' });
       }
 
-      const ai = new GoogleGenAI({ apiKey: keyToUse });
+      const ai = new GoogleGenAI({ 
+        apiKey: keyToUse,
+        httpOptions: {
+          headers: { 'User-Agent': 'aistudio-build' }
+        }
+      });
       const prompt = `System Mode: MODE A (INTENT COMPILER & AST SEMANTIC SLICING)
 Target Framework: React 19, TypeScript, Tailwind CSS v4.
 Execution environment: Client-side under 1GB threshold.
@@ -439,7 +464,7 @@ Output strictly valid JSON with no markdown wrapping:
 }`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.8-flash',
         contents: prompt,
         config: {
           responseMimeType: 'application/json'
@@ -467,7 +492,12 @@ Output strictly valid JSON with no markdown wrapping:
         return res.status(400).json({ error: 'API key is required for Vision Self-Healing.' });
       }
 
-      const ai = new GoogleGenAI({ apiKey: keyToUse });
+      const ai = new GoogleGenAI({ 
+        apiKey: keyToUse,
+        httpOptions: {
+          headers: { 'User-Agent': 'aistudio-build' }
+        }
+      });
       
       const contents: any[] = [
         `System Mode: MODE B (AUTONOMOUS VISION SELF-HEALING ENGINE)
@@ -496,7 +526,7 @@ Output strictly valid JSON with no markdown wrappers:
       }
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.8-flash',
         contents,
         config: {
           responseMimeType: 'application/json'
