@@ -8,7 +8,7 @@ import {
   sseSend,
   type ApiRequest,
   type ApiResponse
-} from '../_http';
+} from '../_http.js';
 
 type ProviderId = 'gemini' | 'groq';
 

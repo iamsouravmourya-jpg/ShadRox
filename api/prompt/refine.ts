@@ -1,4 +1,4 @@
-import { readErrorPayload, readJsonBody, sendError, sendJson, type ApiRequest, type ApiResponse } from '../_http';
+import { readErrorPayload, readJsonBody, sendError, sendJson, type ApiRequest, type ApiResponse } from '../_http.js';
 
 type ProviderId = 'gemini' | 'groq';
 

@@ -1,4 +1,4 @@
-import { readJsonBody, sendError, sendJson, type ApiRequest, type ApiResponse } from '../_http';
+import { readJsonBody, sendError, sendJson, type ApiRequest, type ApiResponse } from '../_http.js';
 
 interface ValidateGithubBody {
   token?: string;
