@@ -100,6 +100,82 @@ interface GitHubRepo {
   updated_at: string;
 }
 
+function detectLanguage(fileName: string): string {
+  const ext = fileName.toLowerCase().split('.').pop() || '';
+  switch (ext) {
+    case 'py':
+    case 'python':
+      return 'python';
+    case 'html':
+    case 'htm':
+      return 'html';
+    case 'md':
+    case 'markdown':
+      return 'markdown';
+    case 'ts':
+    case 'tsx':
+      return 'typescript';
+    case 'js':
+    case 'jsx':
+    case 'mjs':
+    case 'cjs':
+      return 'javascript';
+    case 'json':
+      return 'json';
+    case 'css':
+    case 'scss':
+      return 'css';
+    case 'sql':
+      return 'sql';
+    case 'sh':
+    case 'bash':
+      return 'shell';
+    case 'yaml':
+    case 'yml':
+      return 'yaml';
+    case 'xml':
+    case 'svg':
+      return 'xml';
+    default:
+      return 'plaintext';
+  }
+}
+
+function renderMarkdownContent(content: string) {
+  const lines = content.split('\n');
+  return (
+    <div className="space-y-2 font-sans">
+      {lines.map((line, idx) => {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('# ')) {
+          return <h1 key={idx} className="text-lg font-bold text-white border-b border-neutral-800 pb-1 mt-3 mb-2">{trimmed.slice(2)}</h1>;
+        }
+        if (trimmed.startsWith('## ')) {
+          return <h2 key={idx} className="text-base font-semibold text-emerald-400 mt-3 mb-1">{trimmed.slice(3)}</h2>;
+        }
+        if (trimmed.startsWith('### ')) {
+          return <h3 key={idx} className="text-sm font-semibold text-neutral-200 mt-2 mb-1">{trimmed.slice(4)}</h3>;
+        }
+        if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+          return (
+            <div key={idx} className="flex items-start gap-2 pl-2 text-neutral-300">
+              <span className="text-emerald-400 font-bold">•</span>
+              <span>{trimmed.slice(2)}</span>
+            </div>
+          );
+        }
+        if (trimmed.startsWith('```')) {
+          return null;
+        }
+        if (!trimmed) {
+          return <div key={idx} className="h-1" />;
+        }
+        return <p key={idx} className="text-neutral-300 leading-relaxed">{line}</p>;
+      })}
+    </div>
+  );
+}
+
 const DEFAULT_WORKSPACES: WorkspaceFolder[] = [
   {
     id: 'devora-saas-engine',
@@ -204,6 +280,111 @@ app.listen(3001, () => {
     ]
   },
   {
+    id: 'python-neural-agent',
+    name: 'python-neural-agent',
+    path: 'src/workspace/local/python-neural-agent',
+    files: [
+      {
+        name: 'main.py',
+        language: 'python',
+        content: `# main.py - Devora Autonomous Python Agent
+import time
+import json
+
+def run_agent():
+    print("Devora Autonomous Python Agent initialized.")
+    tasks = ["Vector Shard Synchronization", "AST Semantic Analysis", "Synthesizing Hotfix Patch"]
+    for i, task in enumerate(tasks, 1):
+        print(f"[{i}/3] Executing: {task} ... OK")
+    print("Process executed with 0ms server overhead.")
+
+if __name__ == '__main__':
+    run_agent()
+`
+      },
+      {
+        name: 'README.md',
+        language: 'markdown',
+        content: `# Devora Python Agent
+This workspace demonstrates standalone \`.py\` and \`.md\` file execution inside Devora Studio.
+
+### Capabilities:
+- Open any individual **.py**, **.html**, or **.md** file directly.
+- Real-time syntax highlighting & editing.
+- Live sandbox preview with zero server overhead.
+`
+      }
+    ]
+  },
+  {
+    id: 'devora-web-canvas',
+    name: 'devora-web-canvas',
+    path: 'src/workspace/local/devora-web-canvas',
+    files: [
+      {
+        name: 'index.html',
+        language: 'html',
+        content: `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Devora Web Preview</title>
+  <style>
+    body {
+      margin: 0;
+      background: #09090b;
+      color: #fafafa;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .card {
+      border: 1px solid #27272a;
+      background: #18181b;
+      padding: 2rem;
+      border-radius: 12px;
+      max-width: 480px;
+      text-align: center;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+    h1 { margin-top: 0; font-size: 1.5rem; color: #10b981; }
+    p { color: #a1a1aa; font-size: 0.875rem; line-height: 1.5; }
+    .btn {
+      background: #fff;
+      color: #000;
+      border: none;
+      padding: 8px 16px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: 6px;
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Devora Live HTML Sandbox</h1>
+    <p>Standalone HTML file rendered live in the Devora Studio client canvas.</p>
+    <button class="btn" onclick="alert('Hello from Devora standalone HTML preview!')">Click Test Event</button>
+  </div>
+</body>
+</html>`
+      },
+      {
+        name: 'notes.md',
+        language: 'markdown',
+        content: `# Web Canvas Notes
+Single **HTML** and **Markdown** documents are fully supported with instant live preview.
+- Switch between Code and Live Preview to test interactions!
+`
+      }
+    ]
+  },
+  {
     id: 'devora-ai-matrix',
     name: 'devora-ai-matrix',
     path: 'src/workspace/local/devora-ai-matrix',
@@ -260,6 +441,8 @@ export default function App() {
   const [showNewFileDialog, setShowNewFileDialog] = useState<boolean>(false);
   const [previewViewport, setPreviewViewport] = useState<ViewportSize>('desktop');
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
+  const [pythonOutput, setPythonOutput] = useState<string | null>(null);
+  const [isRunningPython, setIsRunningPython] = useState<boolean>(false);
 
   // Settings Drawer State (Matches User's Screenshot Tabs: 1. Chat, 2. Share, 3. Publish, 4. Versions, 5. GitHub, 6. Integrations)
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
@@ -584,8 +767,7 @@ export default function App() {
               try {
                 const fileData = await entry.getFile();
                 const text = await fileData.text();
-                const ext = lower.split('.').pop() || '';
-                const language = ['ts', 'tsx'].includes(ext) ? 'typescript' : ['js', 'jsx'].includes(ext) ? 'javascript' : ext === 'json' ? 'json' : ext === 'css' ? 'css' : ext === 'html' ? 'html' : 'plaintext';
+                const language = detectLanguage(entry.name);
                 loadedFiles.push({
                   name: prefix ? `${prefix}/${entry.name}` : entry.name,
                   content: text,
@@ -641,6 +823,177 @@ export default function App() {
     }
   };
 
+  // Open single / individual files (.py, .html, .md, etc.)
+  const handleLoadedSingleFiles = (newFiles: WorkspaceFile[]) => {
+    if (!newFiles.length) return;
+
+    if (activeStage === 'STAGE_3' && selectedWorkspace) {
+      const existingNames = new Set(newFiles.map(f => f.name));
+      const remainingOld = selectedWorkspace.files.filter(f => !existingNames.has(f.name));
+      const updatedFiles = [...remainingOld, ...newFiles];
+      const newWs = {
+        ...selectedWorkspace,
+        files: updatedFiles
+      };
+      setSelectedWorkspace(newWs);
+      const targetIdx = updatedFiles.findIndex(f => f.name === newFiles[0].name);
+      setActiveFileIndex(targetIdx >= 0 ? targetIdx : 0);
+      setActiveTab('CODE');
+      setCheckpointToast(`Opened ${newFiles.length === 1 ? newFiles[0].name : `${newFiles.length} files`} in workspace`);
+      setTimeout(() => setCheckpointToast(null), 3000);
+    } else {
+      const folderName = newFiles.length === 1 ? newFiles[0].name : `standalone-files-${Date.now()}`;
+      const newWorkspace: WorkspaceFolder = {
+        id: `file-ws-${Date.now()}`,
+        name: folderName,
+        path: `src/files/${folderName}`,
+        files: newFiles
+      };
+      setWorkspaces(prev => [newWorkspace, ...prev]);
+      setSelectedWorkspace(newWorkspace);
+      setActiveFileIndex(0);
+      setActiveTab('CODE');
+      setActiveStage('STAGE_3');
+      setCheckpointToast(`Opened standalone file: ${newFiles[0].name}`);
+      setTimeout(() => setCheckpointToast(null), 3000);
+    }
+  };
+
+  const openSingleFilePicker = async () => {
+    try {
+      if (typeof window !== 'undefined' && 'showOpenFilePicker' in window) {
+        const fileHandles = await (window as any).showOpenFilePicker({
+          multiple: true,
+          types: [
+            {
+              description: 'Code & Document Files (.py, .html, .md, .tsx, .js, .json, etc.)',
+              accept: {
+                'text/*': ['.py', '.html', '.htm', '.md', '.markdown', '.txt', '.js', '.jsx', '.ts', '.tsx', '.json', '.css', '.scss', '.yaml', '.yml', '.sql', '.sh']
+              }
+            }
+          ]
+        });
+
+        if (fileHandles && fileHandles.length > 0) {
+          const loadedFiles: WorkspaceFile[] = [];
+          for (const handle of fileHandles) {
+            const fileData = await handle.getFile();
+            const text = await fileData.text();
+            loadedFiles.push({
+              name: fileData.name,
+              content: text,
+              language: detectLanguage(fileData.name)
+            });
+          }
+
+          if (loadedFiles.length > 0) {
+            handleLoadedSingleFiles(loadedFiles);
+          }
+        }
+      } else {
+        const input = document.getElementById('native-single-file-input') as HTMLInputElement;
+        if (input) input.click();
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        console.error("Single file pick error:", err);
+        const input = document.getElementById('native-single-file-input') as HTMLInputElement;
+        if (input) input.click();
+      }
+    }
+  };
+
+  const handleSingleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const parsedFiles: WorkspaceFile[] = [];
+    Array.from(files).forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const content = (event.target?.result as string) || '';
+        parsedFiles.push({
+          name: file.name,
+          content,
+          language: detectLanguage(file.name)
+        });
+
+        if (parsedFiles.length === files.length) {
+          handleLoadedSingleFiles(parsedFiles);
+          e.target.value = '';
+        }
+      };
+      reader.readAsText(file);
+    });
+  };
+
+  const handleDropFiles = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const files = Array.from(e.dataTransfer.files);
+      const parsedFiles: WorkspaceFile[] = [];
+      files.forEach((file) => {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const content = (event.target?.result as string) || '';
+          parsedFiles.push({
+            name: file.name,
+            content,
+            language: detectLanguage(file.name)
+          });
+          if (parsedFiles.length === files.length) {
+            handleLoadedSingleFiles(parsedFiles);
+          }
+        };
+        reader.readAsText(file);
+      });
+    }
+  };
+
+  // Standalone Python Runner Simulator
+  const runPythonScript = () => {
+    const curFile = selectedWorkspace?.files[activeFileIndex];
+    if (!curFile) return;
+    setIsRunningPython(true);
+    setPythonOutput('Initializing Python runtime environment...\n');
+
+    setTimeout(() => {
+      try {
+        const lines = curFile.content.split('\n');
+        const outputLines: string[] = [
+          `[Devora Python v3.12 Engine // Standalone Execution]`,
+          `>>> Running ${curFile.name} ...`,
+          `----------------------------------------------------`
+        ];
+        let hasPrint = false;
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('print(') && trimmed.endsWith(')')) {
+            hasPrint = true;
+            const inner = trimmed.slice(6, -1).trim();
+            if ((inner.startsWith('"') && inner.endsWith('"')) || (inner.startsWith("'") && inner.endsWith("'"))) {
+              outputLines.push(inner.slice(1, -1));
+            } else if (inner.startsWith('f"') || inner.startsWith("f'")) {
+              outputLines.push(inner.slice(2, -1).replace(/\{([^}]+)\}/g, (_, exp) => `[${exp.trim()}]`));
+            } else {
+              outputLines.push(inner);
+            }
+          }
+        }
+        if (!hasPrint) {
+          outputLines.push('Program finished with 0 errors.');
+        }
+        outputLines.push(`----------------------------------------------------`);
+        outputLines.push(`[✓] Process completed with returncode 0 (0.00s latency)`);
+        setPythonOutput(outputLines.join('\n'));
+      } catch (err: any) {
+        setPythonOutput(`Traceback (most recent call last):\n  File "${curFile.name}", line 1\nRuntimeError: ${err.message}`);
+      } finally {
+        setIsRunningPython(false);
+      }
+    }, 400);
+  };
+
   // Client-Side BYOK AI Engine (Gemini 3.8 Flash)
   const callGeminiClientSide = async (prompt: string, modelName = 'gemini-3.8-flash', customPrompt?: string, attachedImgUrl?: string) => {
     const activeKey = localStorage.getItem('DEVORA_GEMINI_KEY') || savedApiKey;
@@ -692,8 +1045,7 @@ export default function App() {
       const reader = new FileReader();
       reader.onload = (event) => {
         const content = event.target?.result as string || '';
-        const ext = file.name.split('.').pop() || '';
-        const language = ['ts', 'tsx'].includes(ext) ? 'typescript' : ['js', 'jsx'].includes(ext) ? 'javascript' : ext === 'json' ? 'json' : ext === 'css' ? 'css' : 'plaintext';
+        const language = detectLanguage(file.name);
         
         parsedFiles.push({
           name: file.name,
@@ -957,13 +1309,22 @@ export default function App() {
     e.preventDefault();
     if (!newFileName.trim() || !selectedWorkspace) return;
 
-    const ext = newFileName.split('.').pop() || '';
-    const language = ['ts', 'tsx'].includes(ext) ? 'typescript' : ['js', 'jsx'].includes(ext) ? 'javascript' : ext === 'json' ? 'json' : 'plaintext';
+    const trimmed = newFileName.trim();
+    const language = detectLanguage(trimmed);
+
+    let content = `// ${trimmed}\n// Created in Devora AI Studio\n\nexport default function Component() {\n  return <div>Component Ready</div>;\n}\n`;
+    if (language === 'python') {
+      content = `# ${trimmed} - Standalone Python Script\n\ndef main():\n    print("Hello from ${trimmed}!")\n\nif __name__ == '__main__':\n    main()\n`;
+    } else if (language === 'html') {
+      content = `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>${trimmed}</title>\n</head>\n<body>\n  <h1>${trimmed}</h1>\n  <p>Rendered live in Devora Web Preview.</p>\n</body>\n</html>\n`;
+    } else if (language === 'markdown') {
+      content = `# ${trimmed}\nDocument created in Devora AI Studio.\n\n- Feature 1\n- Feature 2\n`;
+    }
 
     const newFile: WorkspaceFile = {
-      name: newFileName.trim(),
+      name: trimmed,
       language,
-      content: `// ${newFileName.trim()}\n// Created in Devora AI Studio\n\nexport default function Component() {\n  return <div>Component Ready</div>;\n}\n`
+      content
     };
 
     const updatedFiles = [...selectedWorkspace.files, newFile];
@@ -1276,31 +1637,68 @@ export default function App() {
                 </p>
               </div>
 
-              {/* Large Clean Dropzone CTA */}
-              <div 
-                onClick={mountLocalDirectory}
-                className="w-full border border-dashed border-neutral-800 hover:border-neutral-500 p-8 flex flex-col items-center justify-center cursor-pointer transition-all bg-neutral-950/40 hover:bg-neutral-900/30 mb-6 group"
-              >
-                <div className="w-10 h-10 rounded-full border border-neutral-800 bg-black flex items-center justify-center mb-3 group-hover:border-neutral-600 transition-colors">
-                  <FolderOpen className="w-5 h-5 text-neutral-300 group-hover:text-white" />
+              {/* Dual Clean Dropzones for Directory and Single Files */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full mb-6">
+                {/* 1. Open Local Directory */}
+                <div 
+                  onClick={mountLocalDirectory}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={handleDropFiles}
+                  className="border border-dashed border-neutral-800 hover:border-neutral-500 p-6 flex flex-col items-center justify-center cursor-pointer transition-all bg-neutral-950/40 hover:bg-neutral-900/30 group text-center"
+                >
+                  <div className="w-10 h-10 rounded-full border border-neutral-800 bg-black flex items-center justify-center mb-3 group-hover:border-neutral-600 transition-colors">
+                    <FolderOpen className="w-5 h-5 text-neutral-300 group-hover:text-white" />
+                  </div>
+                  <span className="text-xs tracking-wider text-white uppercase font-bold">
+                    OPEN PROJECT DIRECTORY
+                  </span>
+                  <span className="text-xs text-neutral-500 mt-1 font-normal">
+                    Mount complete local folder via Web File System API
+                  </span>
+                  <input 
+                    id="native-folder-input"
+                    type="file" 
+                    multiple 
+                    className="hidden" 
+                    onChange={handleFileUpload} 
+                  />
                 </div>
-                <span className="text-xs tracking-wider text-white uppercase font-bold">
-                  OPEN LOCAL PROJECT DIRECTORY
-                </span>
-                <span className="text-xs text-neutral-500 mt-1.5 font-normal">
-                  Mount local directory via Web File System API or select an architecture preset below
-                </span>
-                <input 
-                  id="native-folder-input"
-                  type="file" 
-                  multiple 
-                  className="hidden" 
-                  onChange={handleFileUpload} 
-                />
+
+                {/* 2. Open Standalone Single File (.py, .html, .md, etc.) */}
+                <div 
+                  onClick={openSingleFilePicker}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={handleDropFiles}
+                  className="border border-dashed border-neutral-800 hover:border-emerald-600/70 p-6 flex flex-col items-center justify-center cursor-pointer transition-all bg-neutral-950/40 hover:bg-neutral-900/30 group text-center"
+                >
+                  <div className="w-10 h-10 rounded-full border border-neutral-800 bg-black flex items-center justify-center mb-3 group-hover:border-emerald-500 transition-colors">
+                    <FileCode className="w-5 h-5 text-emerald-400 group-hover:text-emerald-300" />
+                  </div>
+                  <span className="text-xs tracking-wider text-white uppercase font-bold group-hover:text-emerald-400 transition-colors">
+                    OPEN SINGLE FILE (.PY, .HTML, .MD)
+                  </span>
+                  <span className="text-xs text-neutral-500 mt-1 font-normal">
+                    Open standalone Python, HTML, Markdown or script files
+                  </span>
+                  <div className="flex items-center gap-1.5 mt-2">
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-neutral-900 border border-neutral-800 text-emerald-400 rounded">.py</span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-neutral-900 border border-neutral-800 text-cyan-400 rounded">.html</span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-neutral-900 border border-neutral-800 text-amber-400 rounded">.md</span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-neutral-900 border border-neutral-800 text-neutral-400 rounded">.tsx</span>
+                  </div>
+                  <input 
+                    id="native-single-file-input"
+                    type="file" 
+                    multiple 
+                    accept=".py,.html,.htm,.md,.markdown,.js,.jsx,.ts,.tsx,.json,.css,.txt,.*"
+                    className="hidden" 
+                    onChange={handleSingleFileInput} 
+                  />
+                </div>
               </div>
 
               {/* Grid of Clean Workspace Presets */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full mb-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 w-full mb-6">
                 {workspaces.map(ws => (
                   <div
                     key={ws.id}
@@ -1373,6 +1771,14 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-2.5">
+              <button
+                onClick={openSingleFilePicker}
+                className="text-xs px-2.5 py-1 font-medium border border-neutral-800 hover:border-emerald-500 hover:text-emerald-400 transition-all cursor-pointer flex items-center gap-1.5"
+                title="Open single file (.py, .html, .md, etc.)"
+              >
+                <FileCode className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="hidden sm:inline">OPEN FILE</span>
+              </button>
               {githubUser && (
                 <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 text-xs border border-neutral-800 bg-neutral-900/40 text-neutral-300">
                   <Github className="w-3 h-3 text-white" />
@@ -1927,9 +2333,17 @@ export default function App() {
                     <button
                       onClick={() => setShowNewFileDialog(true)}
                       title="Create New File in Workspace"
-                      className="text-xs px-2 py-1 text-neutral-400 hover:text-white border border-transparent hover:border-neutral-800 transition-all cursor-pointer"
+                      className="text-xs px-2 py-1 text-neutral-400 hover:text-white border border-transparent hover:border-neutral-800 transition-all cursor-pointer font-bold"
                     >
                       +
+                    </button>
+                    <button
+                      onClick={openSingleFilePicker}
+                      title="Open Standalone File (.py, .html, .md, etc.)"
+                      className="text-xs px-2 py-1 text-emerald-400 hover:text-emerald-300 border border-transparent hover:border-neutral-800 transition-all cursor-pointer flex items-center gap-1 font-mono"
+                    >
+                      <FolderOpen className="w-3 h-3" />
+                      <span>Open File</span>
                     </button>
                   </div>
                 ) : (
