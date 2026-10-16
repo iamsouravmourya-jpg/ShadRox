@@ -1,0 +1,22 @@
+Devora — Proprietary Software License
+====================================
+
+Copyright (c) 2026 Sourav Maurya. All rights reserved.
+
+This software, its source code, its design and its name are the exclusive
+intellectual property of Sourav Maurya ("the Owner").
+
+No part of this repository may be copied, reproduced, modified, translated,
+distributed, sublicensed, published, hosted, sold, or used to create derivative
+works, in whole or in part, by any means, without the prior written permission
+of the Owner.
+
+The source code is published for viewing and reference only. Access to it does
+not grant any license, right of use, or ownership interest. No rights are
+granted by implication, estoppel, or otherwise.
+
+Third-party dependencies listed in package.json remain the property of their
+respective authors and are governed by their own license terms.
+
+For commercial licensing, partnership, or any other permission request, contact
+the Owner.

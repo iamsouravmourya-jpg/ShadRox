@@ -1,194 +1,352 @@
-# Devora // Web-Native AI IDE Studio & Enterprise Workstation
+# Devora
 
-> **The World's Most Advanced $0-Infrastructure Browser-Based Autonomous AI Workstation**  
-> Powered by **Web File System Access API**, **Client-Side BYOK Gemini 3.8 Flash Engine**, **AST Semantic Slicing**, **Autonomous Vision Self-Healing**, and **Multilingual Indic Voice Pipeline**. Deployable to Vercel in 1-Click with zero server costs.
+A browser-based AI coding workspace. You open a folder or a few files straight from your own disk, chat with an AI model about that code, and the assistant edits the open files for you.
 
----
+Devora brings its own key model (**BYOK**): you paste a Groq or Google Gemini API key, it is validated in the browser, and every model that key can actually use shows up in the picker. There is also an optional shared **Devora key** that lives in a server environment variable, so people without their own key can still use the app.
 
-## ⚡ Executive Summary: 100% Web-Native Paradigm
-
-Devora eliminates all desktop/electron baggage and expensive server infrastructure. By shifting file handles directly to the browser via the **File System Access API** and routing AI inference through **Client-Side Bring-Your-Own-Key (BYOK)** with `@google/genai`, Devora achieves:
-
-| Component | Legacy Desktop / Cloud Architecture | Devora Web-Native ($0 Cost) |
-| :--- | :--- | :--- |
-| **Workspace Storage** | Cloud DB / Heavy Node `fs` backend | **Web File System API (`showDirectoryPicker`)** directly mounts user disk |
-| **AI Workloads** | Expensive Server Proxy ($$$) | **Client-Side BYOK Gemini 3.8 Flash** directly from browser tab |
-| **Hosting & Infra** | Dedicated Virtual Machines / Docker | **1-Click Static Web App on Vercel / Netlify ($0.00)** |
-| **Distribution** | 250MB+ Desktop `.exe` / `.dmg` installers | **Instant Global CDN Delivery (< 1MB Initial Load)** |
-| **Preview Runtime** | Local Port Forwarding & WebSockets | **In-Browser Sandbox with 0ms Latency** |
-| **Telemetry & Privacy** | Centralized Logging & Code Uploads | **100% Local Execution — Source Code Never Leaves Browser** |
+The whole app is a static Vite build plus a handful of stateless proxy functions. There is no database, no queue, no worker, and nothing about your workspace is written to a Devora server.
 
 ---
 
-## 🚀 Core Architectural Innovations
+## Honest status
 
-### 1. Web File System Access API (Native Folder Mounting)
-- Click **OPEN LOCAL PROJECT DIRECTORY** to directly mount local project folders from your machine into Devora.
-- Recursively reads directory handles using `window.showDirectoryPicker()` without uploading files to any cloud server.
-- Supports instant file editing, tabs, search, and additions with live client synchronization.
+This is a working early build, not a finished product. It is worth knowing up front:
 
-```typescript
-// Web File System API to mount local directory
-async function mountLocalDirectory() {
-  try {
-    const dirHandle = await window.showDirectoryPicker();
-    console.log("Mounted Workspace:", dirHandle.name);
-    return dirHandle;
-  } catch (error) {
-    console.error("Directory access denied:", error);
-  }
-}
+- **Editor changes are not written back to disk yet.** Edits you make and edits the AI makes live in browser memory (and in a local IndexedDB snapshot). Reloading restores the snapshot, but your real files on disk stay untouched. `FileSystemFileHandle.createWritable()` is planned, not implemented.
+- **Preview runs real HTML and Markdown only.** React/TSX/CSS cannot be executed in the preview iframe yet — there is no bundler in the browser.
+- **Sign-in is a stub.** There is no Supabase/OAuth yet; `Continue` just writes a demo session token.
+- **The shared Devora key has no auth or rate limit yet.** If you enable it in production, anyone who finds the URL can spend it. See `TODO(phase-3)` in [chat.ts](api/ai/chat.ts).
+- **Folder/file pickers are Chromium-only** (File System Access API). Drag and drop works in other browsers.
+
+---
+
+## Core ideas
+
+**1. Files stay on disk.** Folders are mounted with `showDirectoryPicker()` and read recursively in the browser. Nothing is uploaded to Devora.
+
+**2. Keys stay in the browser.** A BYOK key is stored in `localStorage` and forwarded per request as a passthrough credential. Devora never persists or logs it.
+
+**3. The server is a thin proxy.** The API routes exist for three reasons: streaming model output through one normalised contract, keeping the shared Devora key off the client, and avoiding CORS. They hold no state between requests.
+
+**4. The AI writes whole files, not diffs.** When you ask for a change, the model replies with a fenced code block whose info line names the file and whose body is the complete new file. Devora resolves that name against the files you actually have open and writes it. Full details in [The file edit protocol](#the-file-edit-protocol).
+
+---
+
+## Features
+
+### Workspace
+
+| Action | How it works |
+| :--- | :--- |
+| Open a folder | `showDirectoryPicker()` → recursive read, relative paths preserved (`src/App.tsx`) |
+| Open files | `showOpenFilePicker({ multiple: true })` → flat file names |
+| Drag and drop | Stage 2 cards accept dropped files; the same handler covers both cards |
+| Reopen a recent | Restores from a local snapshot — no picker |
+| New / close file | `+` in the tab strip, `×` on a tab (a workspace always keeps at least one file) |
+
+Reading a folder skips dotfiles, binary extensions (images, fonts, archives, `*.lock`) and the usual noise directories (`node_modules`, `.git`, `dist`, `.next`, `out`, `coverage`, `.cache`, `.vercel`, `.turbo`, `vendor`, `__pycache__`). A mount is capped at **400 files**.
+
+### Recently opened
+
+Two layers, because they answer different questions:
+
+- **Metadata** in `localStorage` (`devora.recents`) — name, path, file count, kind, timestamp. Last **8** entries, de-duplicated by path.
+- **Content snapshot** in **IndexedDB** (`devora-workspace` → `snapshots`, keyed by path) — the actual files, so the entry can be restored directly instead of asking for the folder again.
+
+IndexedDB is used for snapshots because a mounted folder blows past the ~5 MB `localStorage` quota. Snapshots are written immediately on mount and then debounced by 600 ms as you type. When an entry falls out of the recent list, its snapshot is pruned.
+
+Entries created before snapshots existed cannot be restored directly — Devora says so and asks you to pick once more.
+
+### Chat
+
+- Streaming replies over SSE, with a **Stop** button that aborts the upstream request.
+- Model picker grouped into **Free** and **Pro**, with context window shown for models that report one.
+- **Attach a workspace file** as extra context for a single turn.
+- **Voice input** via the Web Speech API (`hi-IN`).
+- **Refine prompt** (the wand): sends your text — in any language — through a small pipeline that detects the language, translates it, extracts intent, and returns a tightened prompt. The detected language and intent are shown as a card on your message.
+- Clear chat.
+
+### The file edit protocol
+
+This is the part that makes the chat *do* things instead of just printing code.
+
+The system prompt tells the model which files exist (up to 80 names), plus the active file's content (first 12,000 characters) and any attached file's content. It then requires this shape for a change:
+
+````
+```tsx path=src/App.tsx
+// complete new file contents, nothing omitted
 ```
+````
 
-### 2. Client-Side BYOK AI Engine (Gemini 3.8 Flash)
-- Direct client execution using the official `@google/genai` TypeScript SDK:
-```typescript
-import { GoogleGenAI } from '@google/genai';
+On the client, the finished reply is scanned by `extractFilePatches()`. For each fenced block it works out a target using these signals, in order, and **every signal is matched against the real open file names** — the model cannot aim a write at a file you do not have:
 
-async function callGeminiClientSide(prompt: string) {
-  const activeKey = localStorage.getItem('DEVORA_GEMINI_KEY');
-  if (!activeKey) return alert("Please configure your API Token in Settings!");
+1. An explicit declaration in the info line — `path=`, `file=`, `filename=`, `filepath=`.
+2. A quoted file name — ` ```tsx title="App.tsx" `.
+3. A real open file named in the info line or on the line directly above the block.
+4. A real open file named inside a comment in the first 3 lines of the block.
+5. If exactly one file is open and the fence language fits that file's extension.
 
-  const ai = new GoogleGenAI({ 
-    apiKey: activeKey, 
-    allowDangerousClientSideKeys: true // Crucial for Vercel/Client runtime
-  });
+Rules that keep this safe:
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.8-flash',
-    contents: prompt,
-  });
-  return response.text;
-}
-```
-- **Gemini 3.8 Flash**: Ultra-low latency code generation, AST patch synthesis, and fast iteration.
-- **Deep Reasoning**: Advanced logic analysis and multi-file architecture hardening.
-- Keys are securely stored in your browser's `localStorage` (`DEVORA_GEMINI_KEY`) and never transmitted to third-party servers.
+- **Nothing is written unless it maps to a real file** (or the block explicitly names a new one). A block that carries code but no resolvable target is counted as *unmapped* and reported with a toast instead of being silently dropped.
+- **An unterminated fence is never written.** If the stream stops mid-block, half a file would corrupt your code, so the scan bails out.
+- **Language has to agree** for the single-file fallback, and the match is a strict token comparison — with `app.js` open, a ` ```json ` example will not be applied.
+- An existing file whose content already matches is reported as *unchanged*.
 
-### 3. Mixture of Agents (MoA) Multi-Model Consensus
-- Parallel orchestration between **Agent Alpha (Syntax & Speed)** and **Agent Beta (Architecture & Security)**.
-- Automated consensus synthesizer merges reasoning streams to eliminate hallucinations and output rock-solid production code.
+After the write, the chat shows a one-line note per file (`• src/App.tsx — update ho gaya, code editor me dekho`) instead of repeating hundreds of lines of code. Code blocks that are *not* tied to a file stay visible, so genuine examples still read normally.
 
-### 4. AST Semantic Slicing & Dependency RAG
-- In-memory Abstract Syntax Tree parser mapping symbols, functions, and cross-file dependencies.
-- **78% Token Reduction**: Transmits only targeted functional chunks and interface contracts rather than wasteful entire-file dumps.
+Because the write target and the chat note come from the same resolution function, what the chat claims is exactly what was written.
 
-### 5. Autonomous Vision Self-Healing Engine
-- Sandbox runtime errors and layout anomalies trigger automated capture of stack traces and base64 UI screenshots.
-- Feeds multimodal context to Gemini 3.8 Flash to synthesize zero-reload hotfixes without manual debugging.
+### Preview
 
-### 6. Multilingual Indic Voice Pipeline
-- Speak in **Hindi, Hinglish, Bengali, Tamil, Telugu, Marathi, Gujarati, Spanish, French, or English**.
-- Real-time Web Audio API frequency analysis transforms natural voice into high-context, structured developer prompt instructions.
+- **`.html`** files render as-is in a sandboxed iframe.
+- **`.md`** files are converted by a small built-in Markdown → HTML step.
+- Anything else (or an HTML file that is not active) falls back to the workspace's `index.html` if one exists, and the preview header says why.
+- If nothing can be rendered, the pane explains the limitation instead of showing fake output.
+- Viewport switcher (desktop / tablet / mobile), manual reload, and a runtime error banner fed by a `postMessage` bridge that forwards `error`, `unhandledrejection` and `console.error` out of the sandbox.
 
-### 7. Differential Git Staging & GitHub Sync
-- Connect using GitHub Personal Access Tokens (repo scope).
-- Create remote repositories, stage file changes, inspect semantic AST diffs, and push commits directly from the browser HUD.
+The iframe runs with `sandbox="allow-scripts allow-forms allow-modals allow-popups"` — deliberately without `allow-same-origin`, so sandboxed code cannot reach the parent document.
+
+### BYOK
+
+Both providers are first-class and use the same flow:
+
+1. Paste a key in **Settings → Models & Keys**.
+2. `Save & test` posts it to `/api/byok/validate`.
+3. The handler calls the provider's model-list endpoint, keeps only chat-capable models, and returns them with latency.
+4. The client splits them into Free/Pro and picks a sensible default.
+
+Failure modes are reported explicitly, because a silent "nothing happened" is the worst outcome:
+
+- A key pasted into the wrong provider's field is detected by prefix (`gsk_` = Groq, `AIza` = Gemini) and says so.
+- A key that does not look like the right provider's format is rejected before any network call.
+- A missing or malformed server response, a 20-second timeout, and a network failure each produce a distinct message.
+- Validation state is announced through a `role="status"` live region.
+
+Only keys that **passed validation** are used for chat. Tier classification is a curated list checked against provider docs in **October 2026**; anything unrecognised is treated as `pro` rather than promising a free model that isn't. Non-chat models (speech, TTS, moderation, embeddings, image and video generation) are filtered out of the picker entirely.
+
+The **"Devora ki shared key"** checkbox sends no key from the client, so the request falls back to `DEVORA_GEMINI_API_KEY` on the server.
+
+### Settings drawer
+
+Three tabs, deliberately small: **Models & Keys** (provider, BYOK key, shared key, model list, temperature), **GitHub**, **Secrets**.
+
+- **GitHub** — connect with a Personal Access Token (`repo` scope), see your account and recent repositories, choose a repo, write a commit message, push the workspace. The token stays in component memory for the session and is never persisted. Pushes send files one at a time so a single failure does not abort the batch, and report which files succeeded or failed. Capped at **60 files per push**. (`/api/github/create-repo` exists and works, but the drawer does not expose repository creation yet.)
+- **Secrets** — local key/value pairs with reveal/hide. They never leave the browser; only their **names** are included in the model's context so it knows what exists.
+
+### Bug report
+
+The bug icon copies a diagnostics block to your clipboard: workspace name and file count, active file, provider, model, the last preview runtime error, and the user agent.
 
 ---
 
-## 📦 Project Structure
+## Tech stack
+
+| Layer | Choice |
+| :--- | :--- |
+| UI | React 19, TypeScript, Tailwind CSS v4 |
+| Build | Vite 8 (`@vitejs/plugin-react`, `@tailwindcss/vite`) |
+| Icons | `lucide-react` |
+| Dev server | Express + Vite in middleware mode (`tsx server.ts`, port 3000) |
+| Production | Static `dist/` on any CDN + Vercel serverless functions under `api/` |
+| AI transport | Plain `fetch` — no provider SDK, one normalised SSE contract |
+| Browser storage | `localStorage` for settings, IndexedDB for workspace snapshots |
+| Markdown | A small in-repo renderer — no markdown dependency |
+
+There is no state library, no router, no UI kit, and no editor dependency.
+
+---
+
+## Project structure
 
 ```
 Devora/
-├── server.ts                 # Express dev server mounting Vite middlewares (Port 3000)
-├── vite.config.ts            # Vite 8 + Tailwind CSS v4 compiler
-├── package.json              # Clean Web-Native manifest (zero Electron baggage)
-├── tsconfig.json             # Strict TypeScript configuration
-├── index.html                # High-DPI viewport entry point
-├── metadata.json             # Applet capabilities & metadata
+├── api/                        # Same handlers run locally and on Vercel
+│   ├── _http.ts                # Request/response helpers, SSE helpers
+│   ├── ai/chat.ts              # Streaming chat proxy (Gemini + Groq)
+│   ├── byok/validate.ts        # Key validation + real model discovery
+│   ├── prompt/refine.ts        # Language → intent → structured prompt
+│   └── github/
+│       ├── validate.ts         # PAT → user + recent repos
+│       ├── create-repo.ts      # Create a repository
+│       └── push.ts             # Commit workspace files (one PUT per file)
 ├── src/
-│   ├── main.tsx              # React 19 Root Hydration
-│   ├── index.css             # Tailwind CSS v4 theme layers
-│   └── App.tsx               # 35/65 Split Matrix, Workspace Engine, HUD, Settings
-└── README.md                 # Complete Architecture & Deployment Documentation
+│   ├── components/
+│   │   ├── Stage1Auth.tsx      # Landing / demo sign-in
+│   │   ├── Stage2Hub.tsx       # Open folder/files, recently opened
+│   │   ├── ChatPanel.tsx       # Messages, model menu, voice, attach, refine
+│   │   ├── CodeEditor.tsx      # Tabs + line gutter + textarea
+│   │   ├── PreviewPane.tsx     # Sandboxed iframe, viewports, error banner
+│   │   ├── SettingsDrawer.tsx  # Models & Keys / GitHub / Secrets
+│   │   └── Logo.tsx
+│   ├── hooks/
+│   │   ├── useWorkspace.ts     # Mount, recents, snapshots, patch writes
+│   │   ├── useByok.ts          # Providers, keys, models, validation state
+│   │   └── useSpeechRecognition.ts
+│   ├── lib/
+│   │   ├── workspace.ts        # File System Access API + drop handling
+│   │   ├── languages.ts        # Extension → language, skip rules
+│   │   ├── providers.ts        # Provider metadata, tier rules, key heuristics
+│   │   ├── ai.ts               # Client wrappers for the API routes
+│   │   ├── markdown.tsx        # Chat renderer, patch extraction, masking
+│   │   ├── preview.ts          # Preview document builder + error bridge
+│   │   ├── snapshots.ts        # IndexedDB snapshot store
+│   │   ├── storage.ts          # localStorage keys and recent list
+│   │   └── types.ts            # Shared types
+│   ├── App.tsx                 # Stage routing, layout, chat orchestration
+│   ├── main.tsx
+│   └── index.css               # Tailwind import + base theme
+├── server.ts                   # Local dev server
+├── vercel.json                 # Framework, rewrites, function duration
+├── metadata.json               # App manifest
+├── LICENSE                     # Proprietary — Sourav Maurya
+└── README.md
 ```
 
 ---
 
-## 🛠️ Quick Start (Local Development)
+## How a request flows
 
-### 1. Prerequisites
-- Node.js 18+ (Node 20+ or 22+ recommended)
-- Modern browser (Chrome, Edge, Brave, or Firefox with File System API support)
+1. You type a message. `App.tsx` builds a system instruction from the workspace: file names, the active file's content, any attached file, secret names.
+2. `streamChat()` posts to `/api/ai/chat` with `{ provider, model, apiKey?, messages, systemInstruction }`.
+3. The handler picks the key — your BYOK key if present, otherwise the server's Devora key — and streams from Gemini (`streamGenerateContent?alt=sse`) or Groq (`chat/completions` with `stream: true`).
+4. Both providers are normalised into the same events: `{type:'delta',text}`, then `{type:'done',tokens,provider,model,tier}`, or `{type:'error',message}`. The stream ends with `data: [DONE]`.
+5. The client appends deltas live.
+6. When the reply completes, `extractFilePatches()` resolves the file writes, `applyFilePatches()` updates the workspace, and the chat is rendered through `maskFileWrites()` so the code the AI just wrote is not repeated back at you.
 
-### 2. Install & Run
+---
+
+## Getting started
+
+Requires **Node.js 18+** (20 or 22 recommended) and a Chromium-based browser for the pickers.
+
 ```bash
-# Clone the repository
 git clone https://github.com/iamsouravmourya-jpg/Devora.git
 cd Devora
-
-# Install pure web dependencies
 npm install
-
-# Start development server
 npm run dev
 ```
 
-Devora will immediately launch on `http://localhost:3000`.
+Open `http://localhost:3000`. The dev server mounts the exact handler files Vercel deploys, so local behaviour matches production — including the SSE streaming.
+
+### Scripts
+
+| Script | Purpose |
+| :--- | :--- |
+| `npm run dev` | Express + Vite middleware dev server on port 3000 |
+| `npm run build` | Production build into `dist/` |
+| `npm run preview` | Serve the built `dist/` with Vite |
+| `npm run typecheck` | `tsc --noEmit` (also aliased as `npm run lint`) |
+| `npm start` | Same as `dev` |
 
 ---
 
-## 🌐 1-Click Vercel Deployment Guide
+## Environment variables
 
-Deploying Devora to Vercel requires **zero server configuration**:
+Users bring their own key, so these are only needed if you want the shared Devora key to work. Copy `.env.example` to `.env` locally, or set them in Vercel → Project → Settings → Environment Variables.
 
-### Step 1: Initialize Git & Commit
-```bash
-git init
-git add .
-git commit -m "feat: complete devora web native mvp with polished copy and gemini 3.8"
-```
+| Variable | Required | Purpose |
+| :--- | :--- | :--- |
+| `DEVORA_GEMINI_API_KEY` | No | Primary key used when a request carries no BYOK key |
+| `GEMINI_API_KEY` | No | Fallback for the above; either one is enough |
+| `PORT` | No | Dev server port (default `3000`) |
 
-### Step 2: Push to GitHub
-```bash
-# Link to your GitHub repository
-git remote add origin https://github.com/<your-username>/Devora.git
-git branch -M main
-git push -u origin main
-```
-
-### Step 3: Deploy on Vercel
-1. Log in to [vercel.com](https://vercel.com) using your GitHub account.
-2. Click **Add New...** -> **Project** and select your **Devora** repository.
-3. Configure settings:
-   - **Framework Preset**: `Vite`
-   - **Build Command**: `npm run build` (or `vite build`)
-   - **Output Directory**: `dist`
-   - **Install Command**: `npm install`
-4. Click **Deploy**!
-5. In under 60 seconds, your live production workstation is available globally with HTTPS (e.g., `https://devora-ai.vercel.app`).
+`.env*` is gitignored; `.env.example` is committed.
 
 ---
 
-## ⚙️ Settings Drawer (14 Modular Tabs)
+## Deploying to Vercel
 
-Devora features a sliding 40% HUD drawer with complete parameter management:
+`vercel.json` already sets the framework, build command, output directory, and a catch-all rewrite to `index.html` that excludes `/api/*`. Import the repository in Vercel and deploy — no further configuration is required.
 
-1. **Chat**: Select model (Gemini 3.8 Flash), configure system rules, and manage BYOK key.
-2. **Share**: Generate public sandbox preview links and instant mobile QR test codes.
-3. **Publish**: Edge production deployment status and CDN routing.
-4. **Versions**: Create immutable workspace checkpoints and rollback with 1-click.
-5. **GitHub**: Personal Access Token authentication, repo creation, and direct commit pushing.
-6. **Integrations**: Encrypted environment variables and secrets manager.
-7. **AST RAG**: Workspace symbol index, dependency graph, and token reduction metrics.
-8. **WebContainer**: In-browser Node.js runtime and terminal stdout stream.
-9. **Git Diff**: Differential staging index and visual comparison.
-10. **Voice Buffer**: 48 kHz Web Audio waveform analyzer and language detection telemetry.
-11. **MoA Agents**: Multi-agent consensus nodes (Alpha Syntax + Beta Architecture).
-12. **Test Runner**: Virtual Vitest unit test runner with self-healing CI.
-13. **Multiplayer**: WebRTC peer collaboration and live cursor indicators.
-14. **Groq Llama 3**: BYOK high-throughput Llama 3 70B inference configuration.
+Two things worth knowing:
+
+- **API modules must use explicit `.js` extensions on relative imports.** `package.json` has `"type": "module"`, so Vercel evaluates the functions as ESM, where extensionless relative imports fail with `ERR_MODULE_NOT_FOUND`. That surfaces as an opaque `500` from the function itself rather than a `4xx` from your handler. `tsx` resolves them locally, so this only breaks in production.
+- **`/api/health` is dev-only.** It is defined inline in `server.ts` and has no counterpart in `api/`, so on Vercel it is not routed.
+
+### Adding an API route
+
+Create the file under `api/`, default-export an `async (req, res)` handler, and use the helpers in `api/_http.ts` (`readJsonBody`, `sendJson`, `sendError`, `sendSseHeaders`, `sseSend`, `sseEnd`). It works on Vercel immediately; to use it locally, add a `mount(...)` line in `server.ts`.
 
 ---
 
-## 🔐 Security & Privacy Constitution
+## API reference
 
-- **Client Storage Only**: All workspace source code and API tokens reside exclusively in your browser memory and `localStorage`.
-- **Zero Intermediary Servers**: When using Client BYOK, prompts stream directly from your browser to Google Generative AI endpoints.
-- **Permission Scoping**: Web File System API asks for explicit user confirmation before accessing any local disk directory.
+All routes are `POST` and return JSON unless noted.
+
+| Route | Body | Returns |
+| :--- | :--- | :--- |
+| `POST /api/byok/validate` | `{ provider, apiKey }` | `{ ok, provider, latencyMs, models[] }`, or `401` with `{ ok: false, error }` |
+| `POST /api/ai/chat` | `{ provider, model, apiKey?, messages[], systemInstruction?, temperature? }` | SSE stream of `delta` / `done` / `error` events |
+| `POST /api/prompt/refine` | `{ rawPrompt, provider, apiKeyByProvider? }` | `{ detectedLanguage, translatedText, intent, refinedPrompt }` |
+| `POST /api/github/validate` | `{ token }` | `{ user, repos[] }` |
+| `POST /api/github/create-repo` | `{ token, name, description?, isPrivate? }` | `{ success, repo }` |
+| `POST /api/github/push` | `{ token, owner, repo, files[], commitMessage? }` | `{ success, results[], repoUrl }` |
+| `GET /api/health` | — | `{ status, hasDevoraKey }` — **dev server only** |
+
+Copy is in Hinglish inside the API error messages, matching the app's UI language.
+
+`api/ai/chat.ts` and `api/prompt/refine.ts` export `config = { maxDuration: 60 | 30 }`, mirrored by `functions["api/**/*.ts"].maxDuration` in `vercel.json`.
 
 ---
 
-## 📄 License
-Copyright © 2026 Devora. All rights reserved. Built for modern high-velocity software engineering teams.
+## Where data lives
+
+| Key | Store | Contents |
+| :--- | :--- | :--- |
+| `devora.byok.gemini` / `devora.byok.groq` | localStorage | BYOK API keys |
+| `devora.model.gemini` / `devora.model.groq` | localStorage | Selected model per provider |
+| `devora.provider.active` | localStorage | Active provider |
+| `devora.session` | localStorage | Session token (demo value today) |
+| `devora.recents` | localStorage | Recent workspaces, max 8 |
+| `devora-workspace` → `snapshots` | IndexedDB | Full workspace copies, keyed by path |
+
+Not persisted anywhere: your GitHub token, the Devora shared key, and any key you are still testing.
+
+---
+
+## Browser support
+
+| Capability | Requirement |
+| :--- | :--- |
+| Open folder / open files | File System Access API — Chrome, Edge, Brave, Opera |
+| Drag and drop files | Any modern browser (fallback for the above) |
+| Voice input | Web Speech API (`SpeechRecognition`) |
+| Everything else | Standard modern browser |
+
+Firefox and Safari get a clear message pointing at drag and drop instead of a broken picker.
+
+---
+
+## Known limitations
+
+- No disk write-back — see [Honest status](#honest-status).
+- No browser bundler, so no live React/TSX preview.
+- The editor is a plain `textarea` with a line gutter: no syntax highlighting, no autocomplete, no find-and-replace.
+- 400 files per mount, 60 files per GitHub push, 8 recent workspaces.
+- The active file's context is truncated at 12,000 characters, and at most 80 file names are listed, so very large workspaces are only partially visible to the model.
+- Model tiers are curated data, not a live pricing feed. Unknown models default to `pro`.
+- Recents and keys are per browser profile — there is no sync.
+- No tests yet; `npm run typecheck` is the current safety net.
+
+---
+
+## Roadmap
+
+- Write edits back to disk with `createWritable()`.
+- Bundle React/TSX in the browser so the preview covers real projects.
+- Supabase auth, plans, and per-user rate limiting in front of the shared key.
+- A real editor (CodeMirror or Monaco) behind the same component interface.
+- Diff review before applying AI edits, for people who want to approve each change.
+
+---
+
+## License
+
+Proprietary. Copyright © 2026 **Sourav Maurya**. All rights reserved.
+
+Devora is an independent, closed-source product. The source is published for
+reference only — no license or right of use is granted. See [LICENSE](LICENSE)
+for the full terms.
+
+Third-party dependencies keep their own licenses.

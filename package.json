@@ -2,6 +2,9 @@
   "name": "devora",
   "private": true,
   "version": "0.1.0",
+  "description": "Browser-based AI coding workspace with bring-your-own-key model access.",
+  "author": "Sourav Maurya",
+  "license": "UNLICENSED",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

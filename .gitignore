@@ -7,5 +7,4 @@ coverage/
 *.log
 .env*
 !.env.example
-.aistudio/
 
