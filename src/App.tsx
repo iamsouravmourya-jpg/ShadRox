@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Bug, Code2, Eye, FolderOpen, Loader2, Settings } from 'lucide-react';
+import { ArrowLeft, Bug, Code2, Eye, FolderOpen, Loader2, Save, Settings } from 'lucide-react';
 import { DevoraLogo } from './components/Logo';
 import { Stage1Auth } from './components/Stage1Auth';
 import { Stage2Hub } from './components/Stage2Hub';
@@ -9,13 +9,16 @@ import { ChatPanel } from './components/ChatPanel';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { useWorkspace } from './hooks/useWorkspace';
 import { useByok } from './hooks/useByok';
-import { refinePrompt, streamChat, type ChatTurn } from './lib/ai';
+import { getRefineMode, refinePrompt, streamChat, type ChatTurn, type RefineModeMeta } from './lib/ai';
+import { bundleDocument, bundleProject, canBundle, describeBundleError } from './lib/bundler';
 import { extractFilePatches } from './lib/markdown';
-import { previewCapabilityMessage, resolvePreviewDocument } from './lib/preview';
+import { PREVIEW_BASE_STYLE, PREVIEW_ERROR_BRIDGE, previewCapabilityMessage, resolvePreviewDocument } from './lib/preview';
+import { renderRetrievedContext, retrieveContext } from './lib/retrieval';
 import { getSessionToken, setSessionToken } from './lib/storage';
 import type {
   ChatMessage,
   RecentEntry,
+  RefineMode,
   RefinedPromptMeta,
   SecretItem,
   SettingsTab,
@@ -23,6 +26,13 @@ import type {
   TabType,
   ViewportSize
 } from './lib/types';
+
+/** Result of the esbuild-wasm compile that powers the live preview. */
+type BundleState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'ready'; html: string; label: string }
+  | { status: 'error'; message: string };
 
 function formatTime(date = new Date()): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -54,6 +64,9 @@ export default function App() {
   const [refineStep, setRefineStep] = useState('');
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [refineMode, setRefineMode] = useState<RefineMode>('code');
+  const [restoringCheckpointId, setRestoringCheckpointId] = useState<string | null>(null);
+  const [bundleState, setBundleState] = useState<BundleState>({ status: 'idle' });
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -105,63 +118,150 @@ export default function App() {
     setActiveStage('STAGE_2');
   }, [workspace]);
 
-  const previewDocument = useMemo(
+  const activeModel = useMemo(
+    () => byok.models.find((model) => model.id === byok.selectedModel) ?? null,
+    [byok.models, byok.selectedModel]
+  );
+
+  const files = workspace.files;
+  const bundlable = useMemo(() => canBundle(files), [files]);
+
+  // Bundle the project in the browser so React/TSX files actually run, and keep
+  // the last good frame on screen while the next one compiles.
+  useEffect(() => {
+    if (!bundlable) {
+      setBundleState({ status: 'idle' });
+      return;
+    }
+
+    let cancelled = false;
+    setBundleState((previous) => (previous.status === 'ready' ? previous : { status: 'loading' }));
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await bundleProject(files);
+        if (cancelled) return;
+        setBundleState({
+          status: 'ready',
+          html: bundleDocument(result, PREVIEW_ERROR_BRIDGE, PREVIEW_BASE_STYLE),
+          label: `Running ${result.entry} — live project bundle`
+        });
+      } catch (error) {
+        if (cancelled) return;
+        setBundleState({ status: 'error', message: describeBundleError(error) });
+      }
+    }, 700);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [bundlable, files]);
+
+  const staticPreview = useMemo(
     () => resolvePreviewDocument(workspace.files, workspace.activeFile ?? undefined),
     [workspace.files, workspace.activeFile]
   );
 
-  const buildSystemInstruction = useCallback((): string => {
-    const lines = [
-      'You are Devora, an expert AI coding assistant embedded in a browser-based IDE.',
-      'Answer in the same language the user writes in. Be concise, practical and code-first.',
-      '',
-      'FILE EDIT PROTOCOL:',
-      '- Decide which file to change from the user request and the real file names listed below. Never invent a path.',
-      '- To change a file, output a fenced code block whose info line names that exact file, and put the COMPLETE new file content in the body:',
-      '```tsx path=src/App.tsx',
-      '// full file contents, nothing omitted',
-      '```',
-      '- Always write the file name in the fence line exactly as shown above. This is how the change reaches the editor.',
-      '- One block per file, with the exact file name from the list below.',
-      '- Never write partial snippets, diffs, or "// rest unchanged" placeholders inside a path= block. Those blocks are written to disk verbatim.',
-      '- A code block without a file name is treated as an example only, so use one when you mean "look at this, do not save it".',
-      '- Only edit a file when the user actually asked for that change. If the request is just a question, reply in prose with no path= block.',
-      '- Briefly explain what you changed before the code blocks.'
-    ];
+  /** A runnable bundle beats the static HTML/Markdown rendering. */
+  const previewDocument = useMemo(() => {
+    if (bundleState.status === 'ready') {
+      return { html: bundleState.html, label: bundleState.label, source: 'bundle' };
+    }
+    return staticPreview;
+  }, [bundleState, staticPreview]);
 
-    if (workspace.workspace) {
-      lines.push(`Workspace: ${workspace.workspace.name} with ${workspace.files.length} file(s).`);
-      lines.push(`Files: ${workspace.files.slice(0, 80).map((file) => file.name).join(', ')}`);
-    }
-    if (workspace.activeFile) {
-      lines.push(
-        `Active file (${workspace.activeFile.name}):\n\`\`\`${workspace.activeFile.language}\n${workspace.activeFile.content.slice(0, 12000)}\n\`\`\``
-      );
-    }
-    if (attachedFileName) {
-      const attached = workspace.files.find((file) => file.name === attachedFileName);
-      if (attached) {
-        lines.push(`Attached file (${attached.name}):\n\`\`\`${attached.language}\n${attached.content.slice(0, 12000)}\n\`\`\``);
+  const buildSystemInstruction = useCallback(
+    (query: string, mode: RefineModeMeta): string => {
+      const lines = [
+        'You are Devora, an expert AI coding assistant embedded in a browser-based IDE.',
+        'Answer in the same language the user writes in. Be concise, practical and code-first.',
+        ''
+      ];
+
+      if (mode.writesFiles) {
+        lines.push(
+          'FILE EDIT PROTOCOL:',
+          '- Decide which file to change from the user request and the real file names listed below. Never invent a path.',
+          '- To change a file, output a fenced code block whose info line names that exact file, and put the COMPLETE new file content in the body:',
+          '```tsx path=src/App.tsx',
+          '// full file contents, nothing omitted',
+          '```',
+          '- Always write the file name in the fence line exactly as shown above. This is how the change reaches the editor.',
+          '- One block per file, with the exact file name from the list below.',
+          '- Never write partial snippets, diffs, or "// rest unchanged" placeholders inside a path= block. Those blocks are written to disk verbatim.',
+          '- A code block without a file name is treated as an example only, so use one when you mean "look at this, do not save it".',
+          '- Only edit a file when the user actually asked for that change. If the request is just a question, reply in prose with no path= block.',
+          '- Briefly explain what you changed before the code blocks.'
+        );
+      } else {
+        lines.push(
+          'PLAN MODE:',
+          '- The user asked for planning and architecture only. Do NOT rewrite a file and do NOT output a path= code block.',
+          '- Explain the approach, which files would change, the trade-offs and the order of work.',
+          '- Short illustrative snippets are fine, but never present them as file rewrites.'
+        );
       }
-    }
-    if (secrets.length > 0) {
-      lines.push(`Available local secrets (names only): ${secrets.map((secret) => secret.key).join(', ')}`);
-    }
 
-    return lines.join('\n\n');
-  }, [workspace.workspace, workspace.files, workspace.activeFile, attachedFileName, secrets]);
+      if (workspace.files.length > 0) {
+        // The budget comes from the selected model, so a small model is not
+        // handed more code than it can actually read.
+        const contextWindow = activeModel?.contextWindow || 32000;
+        const budgetChars = Math.max(8000, Math.min(160000, Math.round(contextWindow * 2)));
+        const retrieval = retrieveContext(workspace.files, query, budgetChars);
+
+        lines.push(`Workspace: ${workspace.workspace?.name ?? 'untitled'} — ${workspace.files.length} file(s).`);
+        lines.push(`REPO MAP (every file in this workspace):\n${retrieval.repoMap}`);
+
+        const relevant = renderRetrievedContext(retrieval);
+        if (relevant) {
+          lines.push(`MOST RELEVANT CODE for this request (auto-selected):\n${relevant}`);
+        }
+      }
+
+      if (workspace.activeFile) {
+        lines.push(
+          `Active file (${workspace.activeFile.name}):\n\`\`\`${workspace.activeFile.language}\n${workspace.activeFile.content.slice(0, 12000)}\n\`\`\``
+        );
+      }
+      if (attachedFileName) {
+        const attached = workspace.files.find((file) => file.name === attachedFileName);
+        if (attached) {
+          lines.push(`Attached file (${attached.name}):\n\`\`\`${attached.language}\n${attached.content.slice(0, 12000)}\n\`\`\``);
+        }
+      }
+      if (secrets.length > 0) {
+        lines.push(`Available local secrets (names only): ${secrets.map((secret) => secret.key).join(', ')}`);
+      }
+      if (workspace.dirtyFiles.length > 0) {
+        lines.push(`Edited in the browser but not saved to disk yet: ${workspace.dirtyFiles.join(', ')}`);
+      }
+
+      return lines.join('\n\n');
+    },
+    [
+      workspace.workspace,
+      workspace.files,
+      workspace.activeFile,
+      workspace.dirtyFiles,
+      attachedFileName,
+      secrets,
+      activeModel
+    ]
+  );
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || isGenerating) return;
 
+    const mode = getRefineMode(refineMode);
     const timestamp = formatTime();
     const userMessage: ChatMessage = {
       id: makeId('user'),
       role: 'user',
       content: text,
       timestamp,
-      refinedMeta: pendingRefine || undefined,
+      refinedMeta: pendingRefine ? { ...pendingRefine, mode: refineMode } : undefined,
       attachments: attachedFileName ? [attachedFileName] : undefined
     };
 
@@ -217,6 +317,15 @@ export default function App() {
       if (applied) return;
       applied = true;
 
+      // Plan mode must never touch the workspace — that is the whole point.
+      if (!mode.writesFiles) {
+        if (extractFilePatches(reply, workspace.files).patches.length > 0) {
+          setToast('Plan mode on tha — reply me file changes the, par apply nahi kiye.');
+          window.setTimeout(() => setToast(null), 5000);
+        }
+        return;
+      }
+
       const scan = extractFilePatches(reply, workspace.files);
 
       if (scan.patches.length === 0) {
@@ -240,6 +349,9 @@ export default function App() {
       window.setTimeout(() => setToast(null), 4000);
     };
 
+    // Snapshot the pre-change files so this reply can be undone from the chat.
+    void workspace.markCheckpoint(modelMessage.id, text);
+
     try {
       await streamChat(
         {
@@ -247,7 +359,8 @@ export default function App() {
           model: byok.selectedModel,
           apiKey: byok.useDevoraKey ? undefined : byok.activeKey,
           messages: history,
-          systemInstruction: buildSystemInstruction(),
+          systemInstruction: buildSystemInstruction(text, mode),
+          thinking: mode.thinking,
           signal: controller.signal
         },
         {
@@ -291,6 +404,7 @@ export default function App() {
     isGenerating,
     pendingRefine,
     attachedFileName,
+    refineMode,
     messages,
     byok.useDevoraKey,
     byok.activeKey,
@@ -325,6 +439,7 @@ export default function App() {
         provider: byok.activeProvider,
         geminiKey: byok.apiKeyDraft.gemini || undefined,
         groqKey: byok.apiKeyDraft.groq || undefined,
+        mode: refineMode,
         contextInfo: workspace.workspace ? `${workspace.workspace.name} (${workspace.files.length} files)` : 'New empty workspace'
       });
       setInput(refined.refinedPrompt);
@@ -333,7 +448,8 @@ export default function App() {
         detectedLanguage: refined.detectedLanguage,
         translated: refined.translatedText,
         intent: refined.intent,
-        refinedPrompt: refined.refinedPrompt
+        refinedPrompt: refined.refinedPrompt,
+        mode: refineMode
       });
       setToast('Prompt refine ho gaya');
     } catch (error) {
@@ -347,11 +463,37 @@ export default function App() {
     input,
     isRefining,
     isGenerating,
+    refineMode,
     byok.activeProvider,
     byok.apiKeyDraft,
     workspace.workspace,
     workspace.files
   ]);
+
+  const handleRestoreCheckpoint = useCallback(
+    async (id: string) => {
+      setRestoringCheckpointId(id);
+      try {
+        const restored = await workspace.restoreCheckpoint(id);
+        setToast(restored ? 'Purana code wapas aa gaya — disk par save karna ho to Save dabao.' : 'Restore nahi ho paya.');
+      } finally {
+        setRestoringCheckpointId(null);
+        window.setTimeout(() => setToast(null), 4000);
+      }
+    },
+    [workspace]
+  );
+
+  // Ctrl/Cmd+S writes the dirty files back to the user's disk.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's') return;
+      event.preventDefault();
+      void workspace.saveAll();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [workspace]);
 
   const handleNewFile = useCallback(() => {
     const name = window.prompt('Nayi file ka naam (jaise utils.ts)');
@@ -415,10 +557,41 @@ export default function App() {
             {workspace.workspace?.name ?? 'Devora'}
           </span>
           <span className="hidden sm:inline text-[11px] text-neutral-600">{workspace.files.length} files</span>
+          {workspace.dirtyFiles.length > 0 && (
+            <span className="hidden sm:inline text-[10px] text-amber-400" title="Disk par abhi save nahi hua">
+              {workspace.dirtyFiles.length} unsaved
+            </span>
+          )}
           {workspace.isBusy && <Loader2 className="w-3 h-3 animate-spin text-neutral-500" />}
         </div>
 
         <div className="flex items-center gap-1">
+          {workspace.canWriteToDisk && (
+            <>
+              <button
+                type="button"
+                onClick={() => void workspace.saveAll()}
+                disabled={workspace.dirtyFiles.length === 0 || workspace.isSaving}
+                title="Dirty files disk par save karo (Ctrl/Cmd+S)"
+                className="flex items-center gap-1.5 px-2 py-1 text-[11px] text-neutral-400 hover:text-white disabled:opacity-30 transition-colors cursor-pointer"
+              >
+                {workspace.isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => workspace.setAutoSave(!workspace.autoSave)}
+                title="Auto-save: edit hote hi disk par likh do (browser permission milne par)"
+                className={`px-2 py-1 border text-[10px] uppercase tracking-wide transition-colors cursor-pointer ${
+                  workspace.autoSave
+                    ? 'border-emerald-900/60 bg-emerald-950/30 text-emerald-400'
+                    : 'border-neutral-800 text-neutral-500 hover:text-white'
+                }`}
+              >
+                Auto-save {workspace.autoSave ? 'on' : 'off'}
+              </button>
+            </>
+          )}
           <div className="flex items-center border border-neutral-800 mr-1">
             <button
               type="button"
@@ -460,6 +633,12 @@ export default function App() {
         </div>
       </header>
 
+      {workspace.diskMessage && (
+        <div className="shrink-0 px-3 py-1.5 border-b border-neutral-900 bg-neutral-950 text-[11px] text-neutral-400">
+          {workspace.diskMessage}
+        </div>
+      )}
+
       <div className="flex-1 min-h-0 flex flex-col md:flex-row">
         <div className="w-full md:w-[35%] md:min-w-[320px] h-1/2 md:h-full min-h-0">
           <ChatPanel
@@ -473,6 +652,8 @@ export default function App() {
             isRefining={isRefining}
             refineStep={refineStep}
             onRefinePrompt={handleRefinePrompt}
+            refineMode={refineMode}
+            onRefineModeChange={setRefineMode}
             models={byok.models}
             selectedModel={byok.selectedModel}
             onSelectModel={byok.selectModel}
@@ -481,6 +662,9 @@ export default function App() {
             attachedFileName={attachedFileName}
             onAttachedFileChange={setAttachedFileName}
             workspaceFiles={workspace.files}
+            checkpoints={workspace.checkpoints}
+            onRestoreCheckpoint={handleRestoreCheckpoint}
+            restoringCheckpointId={restoringCheckpointId}
           />
         </div>
 
@@ -501,10 +685,15 @@ export default function App() {
             <CodeEditor
               files={workspace.files}
               activeFileIndex={workspace.activeFileIndex}
+              dirtyFiles={workspace.dirtyFiles}
+              canWriteToDisk={workspace.canWriteToDisk}
+              isSaving={workspace.isSaving}
               onSelectFile={workspace.selectFile}
+              onCloseFile={workspace.closeFile}
               onChangeContent={workspace.updateActiveContent}
               onDeleteFile={workspace.deleteFile}
               onNewFile={handleNewFile}
+              onSaveAll={() => void workspace.saveAll()}
             />
           ) : (
             <PreviewPane
@@ -514,6 +703,8 @@ export default function App() {
               onViewportChange={setViewport}
               runtimeError={runtimeError}
               onDismissError={() => setRuntimeError(null)}
+              isBundling={bundleState.status === 'loading'}
+              bundleError={bundleState.status === 'error' ? bundleState.message : null}
             />
           )}
         </div>

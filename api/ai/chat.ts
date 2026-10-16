@@ -24,6 +24,8 @@ interface ChatRequestBody {
   messages?: ChatMessageInput[];
   systemInstruction?: string;
   temperature?: number;
+  /** 'high' asks the model to reason before answering; 'low' keeps it snappy. */
+  thinking?: 'low' | 'high';
 }
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -64,10 +66,11 @@ async function streamGemini(options: {
   messages: ChatMessageInput[];
   systemInstruction?: string;
   temperature: number;
+  thinking?: 'low' | 'high';
   res: ApiResponse;
   signal: AbortSignal;
 }): Promise<number> {
-  const { apiKey, model, messages, systemInstruction, temperature, res, signal } = options;
+  const { apiKey, model, messages, systemInstruction, temperature, thinking, res, signal } = options;
 
   const contents = messages
     .filter((message) => message.role !== 'system')
@@ -85,16 +88,32 @@ async function streamGemini(options: {
 
   const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    signal,
-    body: JSON.stringify({
-      contents,
-      ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
-      generationConfig: { temperature }
-    })
-  });
+  const send = (generationConfig: Record<string, unknown>) =>
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      body: JSON.stringify({
+        contents,
+        ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
+        generationConfig
+      })
+    });
+
+  const baseConfig: Record<string, unknown> = { temperature };
+  if (thinking) {
+    // Not every Gemini model exposes a thinking budget, so a rejection of this
+    // field falls back to a plain request instead of failing the whole turn.
+    baseConfig.thinkingConfig = { thinkingBudget: thinking === 'high' ? 8192 : 0 };
+  }
+
+  let response = await send(baseConfig);
+
+  if (!response.ok && thinking) {
+    const payload = await readErrorPayload(response);
+    if (!/thinking|generation_config|Unknown name/i.test(payload)) throw new Error(payload);
+    response = await send({ temperature });
+  }
 
   if (!response.ok) {
     throw new Error(await readErrorPayload(response));
@@ -142,29 +161,41 @@ async function streamGroq(options: {
   messages: ChatMessageInput[];
   systemInstruction?: string;
   temperature: number;
+  thinking?: 'low' | 'high';
   res: ApiResponse;
   signal: AbortSignal;
 }): Promise<number> {
-  const { apiKey, model, messages, systemInstruction, temperature, res, signal } = options;
+  const { apiKey, model, messages, systemInstruction, temperature, thinking, res, signal } = options;
 
   const payloadMessages: Array<{ role: string; content: string }> = [];
   if (systemInstruction) payloadMessages.push({ role: 'system', content: systemInstruction });
   messages.forEach((message) => payloadMessages.push({ role: message.role, content: message.content }));
 
-  const response = await fetch(`${GROQ_API_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    signal,
-    body: JSON.stringify({
-      model,
-      messages: payloadMessages,
-      temperature,
-      stream: true
-    })
-  });
+  const send = (reasoningEffort?: 'low' | 'high') =>
+    fetch(`${GROQ_API_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      signal,
+      body: JSON.stringify({
+        model,
+        messages: payloadMessages,
+        temperature,
+        stream: true,
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {})
+      })
+    });
+
+  let response = await send(thinking);
+
+  if (!response.ok && thinking) {
+    // Only some Groq models accept `reasoning_effort`; retry plainly otherwise.
+    const payload = await readErrorPayload(response);
+    if (!/reasoning_effort|reasoning/i.test(payload)) throw new Error(payload);
+    response = await send(undefined);
+  }
 
   if (!response.ok) {
     throw new Error(await readErrorPayload(response));
@@ -243,6 +274,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   const fallbackModel = provider === 'gemini' ? DEFAULT_GEMINI_MODEL : DEFAULT_GROQ_MODEL;
   const model = (body.model || '').trim() || fallbackModel;
   const temperature = typeof body.temperature === 'number' ? body.temperature : 0.7;
+  const thinking = body.thinking === 'high' || body.thinking === 'low' ? body.thinking : undefined;
 
   const abort = new AbortController();
   req.on('close', () => abort.abort());
@@ -258,6 +290,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
             messages,
             systemInstruction: body.systemInstruction,
             temperature,
+            thinking,
             res,
             signal: abort.signal
           })
@@ -267,6 +300,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
             messages,
             systemInstruction: body.systemInstruction,
             temperature,
+            thinking,
             res,
             signal: abort.signal
           });

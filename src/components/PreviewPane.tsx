@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, Laptop, RefreshCw, Smartphone, Tablet, X } from 'lucide-react';
+import { AlertTriangle, Laptop, Loader2, RefreshCw, Smartphone, Tablet, X } from 'lucide-react';
 import type { ViewportSize } from '../lib/types';
 import type { PreviewDocument } from '../lib/preview';
 
@@ -10,6 +10,10 @@ interface PreviewPaneProps {
   onViewportChange: (viewport: ViewportSize) => void;
   runtimeError: string | null;
   onDismissError: () => void;
+  /** True while esbuild-wasm is compiling the project. */
+  isBundling?: boolean;
+  /** Compile failure for the workspace, shown instead of an empty frame. */
+  bundleError?: string | null;
 }
 
 const VIEWPORT_WIDTHS: Record<ViewportSize, string> = {
@@ -30,15 +34,18 @@ export function PreviewPane({
   viewport,
   onViewportChange,
   runtimeError,
-  onDismissError
+  onDismissError,
+  isBundling = false,
+  bundleError = null
 }: PreviewPaneProps) {
   const [reloadKey, setReloadKey] = useState(0);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-neutral-950">
       <div className="h-9 shrink-0 flex items-center justify-between px-3 border-b border-neutral-900">
-        <span className="text-[11px] text-neutral-500 truncate max-w-[50%]">
-          {document ? document.label : 'Preview unavailable'}
+        <span className="flex items-center gap-2 text-[11px] text-neutral-500 truncate max-w-[50%]">
+          {isBundling && <Loader2 className="w-3 h-3 animate-spin shrink-0" />}
+          {document ? document.label : isBundling ? 'Project bundle ho raha hai...' : 'Preview unavailable'}
         </span>
         <div className="flex items-center gap-3">
           <div className="flex items-center border border-neutral-800">
@@ -87,7 +94,20 @@ export function PreviewPane({
       )}
 
       <div className="flex-1 min-h-0 overflow-auto flex justify-center bg-[repeating-linear-gradient(45deg,#0a0a0a_0,#0a0a0a_10px,#0d0d0d_10px,#0d0d0d_20px)]">
-        {document ? (
+        {bundleError ? (
+          <div className="w-full max-w-2xl self-center px-6 py-8">
+            <div className="flex items-center gap-2 text-red-400">
+              <AlertTriangle className="w-4 h-4" />
+              <span className="text-xs font-semibold">Build fail hua</span>
+            </div>
+            <pre className="mt-3 border border-red-900/60 bg-red-950/20 p-3 text-[11px] leading-relaxed text-red-300 font-mono whitespace-pre-wrap break-words">
+              {bundleError}
+            </pre>
+            <p className="mt-3 text-[11px] text-neutral-500">
+              Code editor me file theek karo ya chat me error bhejo — Devora fix kar dega.
+            </p>
+          </div>
+        ) : document ? (
           <iframe
             key={reloadKey}
             title="Devora preview"
@@ -96,13 +116,15 @@ export function PreviewPane({
             className="h-full border-0 bg-black"
             style={{ width: VIEWPORT_WIDTHS[viewport] }}
           />
+        ) : isBundling ? (
+          <div className="self-center px-6 py-8 text-center">
+            <Loader2 className="w-5 h-5 text-neutral-500 mx-auto animate-spin" />
+            <p className="mt-3 text-xs text-neutral-400">Project bundle ho raha hai...</p>
+          </div>
         ) : (
           <div className="max-w-sm self-center px-6 py-8 text-center">
             <AlertTriangle className="w-5 h-5 text-neutral-600 mx-auto" />
             <p className="mt-3 text-xs text-neutral-400 leading-relaxed">{capabilityMessage}</p>
-            <p className="mt-3 text-[11px] text-neutral-600 leading-relaxed">
-              Live React/TSX bundling next phase me aayega. Tab tak .html aur .md files ka real preview milega.
-            </p>
           </div>
         )}
       </div>

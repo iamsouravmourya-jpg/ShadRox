@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { detectLanguage } from '../lib/languages';
 import type { FilePatch } from '../lib/markdown';
+import { loadHandles, pruneHandles, saveHandles } from '../lib/fileHandles';
+import { listCheckpoints, loadCheckpointFiles, saveCheckpoint, type CheckpointMeta } from '../lib/history';
 import { getSnapshot, pruneSnapshots, saveSnapshot } from '../lib/snapshots';
 import { getRecentWorkspaces, pushRecentWorkspace } from '../lib/storage';
 import {
@@ -8,7 +10,9 @@ import {
   pickDirectory,
   pickFiles,
   supportsDirectoryPicker,
-  supportsFilePicker
+  supportsDiskWrite,
+  supportsFilePicker,
+  type HandleEntry
 } from '../lib/workspace';
 import type { RecentEntry, WorkspaceFile, WorkspaceFolder } from '../lib/types';
 
@@ -17,6 +21,11 @@ export interface ApplyPatchesResult {
   updated: string[];
   created: string[];
   unchanged: string[];
+}
+
+interface MountOptions {
+  handles?: HandleEntry[];
+  directoryHandle?: unknown;
 }
 
 interface UseWorkspaceResult {
@@ -33,34 +42,105 @@ interface UseWorkspaceResult {
   /** Reopens a remembered workspace straight from its local snapshot. */
   openRecent: (entry: RecentEntry) => Promise<void>;
   selectFile: (index: number) => void;
+  /** Leaves the editor and goes back to the file list. */
+  closeFile: () => void;
   updateActiveContent: (content: string) => void;
   applyFilePatches: (patches: FilePatch[]) => ApplyPatchesResult;
   createFile: (name: string) => void;
   deleteFile: (index: number) => void;
   closeWorkspace: () => void;
+
+  // --- disk write-back -----------------------------------------------------
+  /** True when this browser exposes the File System Access API at all. */
+  diskWriteSupported: boolean;
+  /** True when the open workspace actually carries handles we can write through. */
+  canWriteToDisk: boolean;
+  /** Workspace-relative names whose editor content differs from disk. */
+  dirtyFiles: string[];
+  isSaving: boolean;
+  diskMessage: string | null;
+  autoSave: boolean;
+  setAutoSave: (value: boolean) => void;
+  saveActiveFile: () => Promise<void>;
+  saveAll: () => Promise<void>;
+
+  // --- restore timeline ----------------------------------------------------
+  checkpoints: CheckpointMeta[];
+  /** Snapshots the current files so a later chat turn can be undone. */
+  markCheckpoint: (messageId: string, label: string) => Promise<void>;
+  restoreCheckpoint: (id: string) => Promise<boolean>;
 }
 
 const EMPTY_FILES: WorkspaceFile[] = [];
 
 export function useWorkspace(): UseWorkspaceResult {
   const [workspace, setWorkspace] = useState<WorkspaceFolder | null>(null);
-  const [activeFileIndex, setActiveFileIndex] = useState(0);
+  // Nothing is selected on mount: the user sees the file list first and picks.
+  const [activeFileIndex, setActiveFileIndex] = useState(-1);
   const [recents, setRecents] = useState<RecentEntry[]>(() => getRecentWorkspaces());
   const [isBusy, setIsBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
+  const [diskBaseline, setDiskBaseline] = useState<Record<string, string>>({});
+  const [canWriteToDisk, setCanWriteToDisk] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [diskMessage, setDiskMessage] = useState<string | null>(null);
+  const [autoSave, setAutoSave] = useState(false);
+  const [checkpoints, setCheckpoints] = useState<CheckpointMeta[]>([]);
+
   const files = workspace?.files ?? EMPTY_FILES;
   const activeFile = files[activeFileIndex] ?? null;
 
-  const mount = useCallback((name: string, path: string, kind: 'folder' | 'file', nextFiles: WorkspaceFile[]) => {
-    setWorkspace({ id: `${kind}-${path}`, name, path, files: nextFiles });
-    setActiveFileIndex(0);
-    setStatusMessage(null);
-    setRecents(pushRecentWorkspace({ name, path, fileCount: nextFiles.length, kind }));
-    // Capture the picked content right away so leaving before the debounced
-    // save fires still leaves a snapshot behind.
-    void saveSnapshot({ path, name, kind, files: nextFiles });
+  const filesRef = useRef<WorkspaceFile[]>(files);
+  const baselineRef = useRef<Record<string, string>>(diskBaseline);
+  const handlesRef = useRef<Map<string, any>>(new Map());
+  const directoryHandleRef = useRef<any>(null);
+  const canWriteRef = useRef(false);
+
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
+
+  useEffect(() => {
+    baselineRef.current = diskBaseline;
+  }, [diskBaseline]);
+
+  /** Files edited in the browser but not (yet) written back to the user's disk. */
+  const dirtyFiles = useMemo(() => {
+    if (!canWriteToDisk) return [];
+    return files.filter((file) => diskBaseline[file.name] !== file.content).map((file) => file.name);
+  }, [files, diskBaseline, canWriteToDisk]);
+
+  const refreshCheckpoints = useCallback(async (workspacePath: string) => {
+    setCheckpoints(await listCheckpoints(workspacePath));
   }, []);
+
+  const mount = useCallback(
+    (name: string, path: string, kind: 'folder' | 'file', nextFiles: WorkspaceFile[], options: MountOptions = {}) => {
+      const handles = options.handles ?? [];
+      handlesRef.current = new Map(handles.map((entry) => [entry.path, entry.handle]));
+      directoryHandleRef.current = options.directoryHandle ?? null;
+      const writable = handles.length > 0 || Boolean(options.directoryHandle);
+      canWriteRef.current = writable;
+      setCanWriteToDisk(writable);
+
+      // Everything just came off disk, so nothing is dirty yet.
+      setDiskBaseline(Object.fromEntries(nextFiles.map((file) => [file.name, file.content])));
+      setDiskMessage(writable ? null : 'Ye files drop hui hain — browser inhe read-only deta hai, disk par save nahi hoga.');
+
+      setWorkspace({ id: `${kind}-${path}`, name, path, files: nextFiles });
+      // Stay on the file list instead of jumping straight into a file.
+      setActiveFileIndex(-1);
+      setStatusMessage(null);
+      setRecents(pushRecentWorkspace({ name, path, fileCount: nextFiles.length, kind }));
+      // Capture the picked content right away so leaving before the debounced
+      // save fires still leaves a snapshot behind.
+      void saveSnapshot({ path, name, kind, files: nextFiles });
+      if (handles.length > 0) void saveHandles(path, handles);
+      void refreshCheckpoints(path);
+    },
+    [refreshCheckpoints]
+  );
 
   const openFolder = useCallback(async () => {
     if (!supportsDirectoryPicker()) {
@@ -75,7 +155,10 @@ export function useWorkspace(): UseWorkspaceResult {
         setStatusMessage('Us folder me koi readable code file nahi mili.');
         return;
       }
-      mount(directory.name, directory.name, 'folder', directory.files);
+      mount(directory.name, directory.name, 'folder', directory.files, {
+        handles: directory.handles,
+        directoryHandle: directory.directoryHandle
+      });
     } catch (error) {
       if ((error as { name?: string })?.name === 'AbortError') return;
       setStatusMessage('Folder open nahi ho paya. Dobara try karo.');
@@ -92,12 +175,13 @@ export function useWorkspace(): UseWorkspaceResult {
     setIsBusy(true);
     try {
       const picked = await pickFiles();
-      if (!picked || picked.length === 0) return;
+      if (!picked || picked.files.length === 0) return;
       mount(
-        picked.length === 1 ? picked[0].name : `${picked.length} files`,
-        `files:${picked.map((file) => file.name).sort().join('|')}`,
+        picked.files.length === 1 ? picked.files[0].name : `${picked.files.length} files`,
+        `files:${picked.files.map((file) => file.name).sort().join('|')}`,
         'file',
-        picked
+        picked.files,
+        { handles: picked.handles }
       );
     } catch (error) {
       if ((error as { name?: string })?.name === 'AbortError') return;
@@ -135,7 +219,10 @@ export function useWorkspace(): UseWorkspaceResult {
       try {
         const snapshot = await getSnapshot(entry.path);
         if (snapshot && snapshot.files.length > 0) {
-          mount(snapshot.name, snapshot.path, snapshot.kind, snapshot.files);
+          // Handles live in their own store, so a reopened workspace can still
+          // write to disk once the browser re-grants permission.
+          const handles = await loadHandles(entry.path);
+          mount(snapshot.name, snapshot.path, snapshot.kind, snapshot.files, { handles });
           return;
         }
         // Entries saved before snapshots existed can only be restored by picking again.
@@ -153,6 +240,8 @@ export function useWorkspace(): UseWorkspaceResult {
 
   const selectFile = useCallback((index: number) => setActiveFileIndex(index), []);
 
+  const closeFile = useCallback(() => setActiveFileIndex(-1), []);
+
   const updateActiveContent = useCallback(
     (content: string) => {
       setWorkspace((previous) => {
@@ -165,6 +254,112 @@ export function useWorkspace(): UseWorkspaceResult {
     },
     [activeFileIndex]
   );
+
+  // --- disk write-back -------------------------------------------------------
+
+  /** Finds (or creates) the handle for a workspace-relative path. */
+  const resolveHandle = useCallback(async (path: string): Promise<any | null> => {
+    const existing = handlesRef.current.get(path);
+    if (existing) return existing;
+
+    const root = directoryHandleRef.current;
+    if (!root) return null;
+
+    try {
+      const segments = path.split('/').filter(Boolean);
+      let directory = root;
+      for (let index = 0; index < segments.length - 1; index += 1) {
+        directory = await directory.getDirectoryHandle(segments[index], { create: true });
+      }
+      const handle = await directory.getFileHandle(segments[segments.length - 1], { create: true });
+      handlesRef.current.set(path, handle);
+      return handle;
+    } catch (error) {
+      console.warn('[devora] could not resolve a disk handle for', path, error);
+      return null;
+    }
+  }, []);
+
+  /**
+   * `requestPermission` only works inside a user gesture, so this can succeed
+   * from the Save button and fail silently from a debounced auto-save.
+   */
+  const ensureWritePermission = useCallback(async (handle: any): Promise<boolean> => {
+    const descriptor = { mode: 'readwrite' as const };
+    try {
+      if (typeof handle.queryPermission === 'function' && (await handle.queryPermission(descriptor)) === 'granted') {
+        return true;
+      }
+      if (typeof handle.requestPermission === 'function' && (await handle.requestPermission(descriptor)) === 'granted') {
+        return true;
+      }
+    } catch (error) {
+      console.warn('[devora] write permission check failed', error);
+    }
+    return false;
+  }, []);
+
+  const writeOne = useCallback(
+    async (file: WorkspaceFile): Promise<boolean> => {
+      const handle = await resolveHandle(file.name);
+      if (!handle) return false;
+
+      if (!(await ensureWritePermission(handle))) {
+        setDiskMessage('Browser ne write permission nahi di. Ek baar "Save to disk" dabao — permission sirf click par milti hai.');
+        return false;
+      }
+
+      const writable = await handle.createWritable();
+      await writable.write(file.content);
+      await writable.close();
+      setDiskBaseline((previous) => ({ ...previous, [file.name]: file.content }));
+      return true;
+    },
+    [resolveHandle, ensureWritePermission]
+  );
+
+  const saveFilesToDisk = useCallback(
+    async (names: string[]): Promise<void> => {
+      if (!canWriteRef.current || names.length === 0) return;
+
+      setIsSaving(true);
+      setDiskMessage(null);
+
+      let written = 0;
+      let failed = false;
+
+      try {
+        const snapshot = filesRef.current;
+        for (const name of names) {
+          const file = snapshot.find((candidate) => candidate.name === name);
+          if (!file) continue;
+          if (await writeOne(file)) written += 1;
+          else failed = true;
+        }
+        if (written > 0) setDiskMessage(`${written} file${written > 1 ? 's' : ''} disk par save ho gayi.`);
+        else if (failed) setDiskMessage('Save nahi ho paya — permission ya handle missing hai.');
+      } catch (error) {
+        setDiskMessage(error instanceof Error ? `Save fail hua: ${error.message}` : 'Save fail hua.');
+      } finally {
+        setIsSaving(false);
+      }
+    },
+    [writeOne]
+  );
+
+  const saveAll = useCallback(async () => {
+    const baseline = baselineRef.current;
+    await saveFilesToDisk(
+      filesRef.current.filter((file) => baseline[file.name] !== file.content).map((file) => file.name)
+    );
+  }, [saveFilesToDisk]);
+
+  const saveActiveFile = useCallback(async () => {
+    const file = filesRef.current[activeFileIndex];
+    if (file) await saveFilesToDisk([file.name]);
+  }, [activeFileIndex, saveFilesToDisk]);
+
+  // --- assistant edits -------------------------------------------------------
 
   /**
    * Writes assistant-authored file rewrites into the workspace.
@@ -248,16 +443,57 @@ export function useWorkspace(): UseWorkspaceResult {
     setWorkspace((previous) => {
       if (!previous || previous.files.length <= 1) return previous;
       const nextFiles = previous.files.filter((_, fileIndex) => fileIndex !== index);
-      setActiveFileIndex((current) => Math.max(0, Math.min(current, nextFiles.length - 1)));
+      // -1 means the user is on the file list — deleting must not force a file open.
+      setActiveFileIndex((current) => (current === -1 ? -1 : Math.max(0, Math.min(current, nextFiles.length - 1))));
       return { ...previous, files: nextFiles };
     });
   }, []);
 
   const closeWorkspace = useCallback(() => {
     setWorkspace(null);
-    setActiveFileIndex(0);
+    setActiveFileIndex(-1);
     setStatusMessage(null);
+    setDiskMessage(null);
+    setCheckpoints([]);
+    handlesRef.current = new Map();
+    directoryHandleRef.current = null;
+    canWriteRef.current = false;
+    setCanWriteToDisk(false);
   }, []);
+
+  // --- restore timeline ------------------------------------------------------
+
+  const markCheckpoint = useCallback(
+    async (messageId: string, label: string) => {
+      const current = filesRef.current;
+      if (!workspace || current.length === 0) return;
+      const meta = await saveCheckpoint({
+        workspacePath: workspace.path,
+        messageId,
+        label,
+        files: current
+      });
+      if (meta) setCheckpoints((previous) => [meta, ...previous]);
+    },
+    [workspace]
+  );
+
+  const restoreCheckpoint = useCallback(
+    async (id: string): Promise<boolean> => {
+      const restored = await loadCheckpointFiles(id);
+      if (!restored || restored.length === 0) return false;
+
+      const activeName = filesRef.current[activeFileIndex]?.name;
+      setWorkspace((previous) =>
+        previous ? { ...previous, files: restored } : previous
+      );
+      const nextIndex = restored.findIndex((file) => file.name === activeName);
+      setActiveFileIndex(nextIndex);
+      setDiskMessage('Purana version restore ho gaya. Disk par write karne ke liye Save dabao.');
+      return true;
+    },
+    [activeFileIndex]
+  );
 
   // Keep the local snapshot in step with the live workspace so "Recently opened"
   // can restore it directly instead of asking the user to pick the folder again.
@@ -274,9 +510,22 @@ export function useWorkspace(): UseWorkspaceResult {
     return () => window.clearTimeout(timer);
   }, [workspace]);
 
-  // Once a workspace falls out of the recent list, its snapshot is dead weight.
+  // Auto-save is opt-in: it can only write when a permission grant already
+  // exists, so it is off by default and never prompts on its own.
+  const dirtyKey = dirtyFiles.join('\n');
   useEffect(() => {
-    void pruneSnapshots(recents.map((entry) => entry.path));
+    if (!autoSave || !dirtyKey) return;
+    const timer = window.setTimeout(() => {
+      void saveAll();
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [autoSave, dirtyKey, saveAll]);
+
+  // Once a workspace falls out of the recent list, its stored data is dead weight.
+  useEffect(() => {
+    const keep = recents.map((entry) => entry.path);
+    void pruneSnapshots(keep);
+    void pruneHandles(keep);
   }, [recents]);
 
   return useMemo(
@@ -293,11 +542,24 @@ export function useWorkspace(): UseWorkspaceResult {
       openDropped,
       openRecent,
       selectFile,
+      closeFile,
       updateActiveContent,
       applyFilePatches,
       createFile,
       deleteFile,
-      closeWorkspace
+      closeWorkspace,
+      diskWriteSupported: supportsDiskWrite(),
+      canWriteToDisk,
+      dirtyFiles,
+      isSaving,
+      diskMessage,
+      autoSave,
+      setAutoSave,
+      saveActiveFile,
+      saveAll,
+      checkpoints,
+      markCheckpoint,
+      restoreCheckpoint
     }),
     [
       workspace,
@@ -312,11 +574,22 @@ export function useWorkspace(): UseWorkspaceResult {
       openDropped,
       openRecent,
       selectFile,
+      closeFile,
       updateActiveContent,
       applyFilePatches,
       createFile,
       deleteFile,
-      closeWorkspace
+      closeWorkspace,
+      canWriteToDisk,
+      dirtyFiles,
+      isSaving,
+      diskMessage,
+      autoSave,
+      saveActiveFile,
+      saveAll,
+      checkpoints,
+      markCheckpoint,
+      restoreCheckpoint
     ]
   );
 }

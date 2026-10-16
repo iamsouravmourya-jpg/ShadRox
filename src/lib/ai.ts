@@ -1,4 +1,5 @@
 import { buildModelList, type ModelInfo, type ProviderId } from './providers';
+import type { RefineMode } from './types';
 
 export interface ValidateKeyResult {
   latencyMs: number;
@@ -10,12 +11,58 @@ export interface ChatTurn {
   content: string;
 }
 
+/** How much reasoning the upstream model should spend before answering. */
+export type ThinkingLevel = 'low' | 'high';
+
+export interface RefineModeMeta {
+  id: RefineMode;
+  label: string;
+  /** Compact label for the segmented control. */
+  short: string;
+  hint: string;
+  thinking: ThinkingLevel;
+  /** `plan` is the only mode that must never emit file blocks. */
+  writesFiles: boolean;
+}
+
+export const REFINE_MODES: RefineModeMeta[] = [
+  {
+    id: 'code',
+    label: 'Code + low thinking',
+    short: 'Code',
+    hint: 'Seedha code likhwao — fast, kam reasoning, sasta.',
+    thinking: 'low',
+    writesFiles: true
+  },
+  {
+    id: 'plan',
+    label: 'Plan only',
+    short: 'Plan',
+    hint: 'Sirf architecture aur planning. AI koi file nahi likhega.',
+    thinking: 'high',
+    writesFiles: false
+  },
+  {
+    id: 'complex',
+    label: 'Complex code + high thinking',
+    short: 'Complex',
+    hint: 'Bade refactor ya tricky logic ke liye gehri reasoning.',
+    thinking: 'high',
+    writesFiles: true
+  }
+];
+
+export function getRefineMode(mode: RefineMode): RefineModeMeta {
+  return REFINE_MODES.find((entry) => entry.id === mode) || REFINE_MODES[0];
+}
+
 export interface StreamChatOptions {
   provider: ProviderId;
   model: string;
   apiKey?: string;
   messages: ChatTurn[];
   systemInstruction?: string;
+  thinking?: ThinkingLevel;
   signal?: AbortSignal;
 }
 
@@ -88,7 +135,7 @@ export async function validateProviderKey(provider: ProviderId, apiKey: string):
 
 /** Streams a chat completion as normalised SSE events from /api/ai/chat. */
 export async function streamChat(options: StreamChatOptions, handlers: StreamChatHandlers): Promise<void> {
-  const { provider, model, apiKey, messages, systemInstruction, signal } = options;
+  const { provider, model, apiKey, messages, systemInstruction, thinking, signal } = options;
 
   let response: Response;
   try {
@@ -96,7 +143,7 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal,
-      body: JSON.stringify({ provider, model, apiKey, messages, systemInstruction })
+      body: JSON.stringify({ provider, model, apiKey, messages, systemInstruction, thinking })
     });
   } catch (error) {
     if (signal?.aborted) return;
@@ -179,6 +226,7 @@ export async function refinePrompt(options: {
   groqKey?: string;
   provider: ProviderId;
   contextInfo: string;
+  mode?: RefineMode;
 }): Promise<RefinedPrompt> {
   const response = await fetch('/api/prompt/refine', {
     method: 'POST',
@@ -187,6 +235,7 @@ export async function refinePrompt(options: {
       rawPrompt: options.rawPrompt,
       provider: options.provider,
       contextInfo: options.contextInfo,
+      mode: options.mode,
       apiKeyByProvider: { gemini: options.geminiKey, groq: options.groqKey }
     })
   });

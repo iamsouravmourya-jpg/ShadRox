@@ -90,7 +90,7 @@ function markdownToHtml(markdown: string): string {
   return out.join('\n');
 }
 
-const PREVIEW_BASE_STYLE = `
+export const PREVIEW_BASE_STYLE = `
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body {
@@ -121,7 +121,7 @@ const PREVIEW_BASE_STYLE = `
  * Forwards runtime errors and console errors from inside the sandboxed iframe
  * back to the parent window so the self-heal pipeline gets a real stack trace.
  */
-const PREVIEW_ERROR_BRIDGE = `
+export const PREVIEW_ERROR_BRIDGE = `
   (function () {
     function post(payload) {
       try { window.parent.postMessage(Object.assign({ source: 'devora-preview' }, payload), '*'); } catch (e) {}

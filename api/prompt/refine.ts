@@ -2,12 +2,15 @@ import { readErrorPayload, readJsonBody, sendError, sendJson, type ApiRequest, t
 
 type ProviderId = 'gemini' | 'groq';
 
+type RefineMode = 'code' | 'plan' | 'complex';
+
 interface RefineRequestBody {
   rawPrompt?: string;
   provider?: ProviderId;
   apiKey?: string;
   apiKeyByProvider?: Partial<Record<ProviderId, string>>;
   contextInfo?: string;
+  mode?: RefineMode;
 }
 
 export const config = { maxDuration: 30 };
@@ -17,13 +20,25 @@ const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b';
 
-function buildInstruction(contextInfo: string): string {
+/** How the refined prompt should be shaped, per thinking mode. */
+const MODE_DIRECTIVE: Record<RefineMode, string> = {
+  code:
+    'Mode: CODE. Shape the prompt so the model produces working code with minimal deliberation. Keep it tight and implementation-focused.',
+  plan:
+    'Mode: PLAN ONLY. The user wants architecture and planning, not code. Shape the prompt so the model answers with a plan: approach, file-by-file changes, data flow, trade-offs and risks. Explicitly tell it NOT to output any code block or file rewrite.',
+  complex:
+    'Mode: COMPLEX CODE. Shape the prompt for a hard change: include the constraints, edge cases and invariants the model must respect, and ask it to work through the design before producing code.'
+};
+
+function buildInstruction(contextInfo: string, mode: RefineMode): string {
   return `You are the Devora Multilingual Prompt Refinement Engine.
 The developer speaks or types in any language (Hindi, Hinglish, Bengali, Tamil, Telugu, Marathi, Gujarati, Spanish, French or English).
 Run this 3 step pipeline:
 1. Identify the input language and translate it into clear developer English.
 2. Work out the real intent (which feature, bug, component or logic the developer wants).
 3. Turn it into one structured, high-context prompt for a coding model. Workspace context: ${contextInfo}.
+
+${MODE_DIRECTIVE[mode]}
 
 Reply strictly as JSON with this schema:
 {
@@ -114,7 +129,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     return;
   }
 
-  const instruction = buildInstruction(body.contextInfo || 'React + TypeScript workspace');
+  const mode: RefineMode =
+    body.mode === 'plan' || body.mode === 'complex' || body.mode === 'code' ? body.mode : 'code';
+  const instruction = buildInstruction(body.contextInfo || 'React + TypeScript workspace', mode);
 
   try {
     const raw = geminiKey

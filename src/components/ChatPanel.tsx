@@ -5,6 +5,7 @@ import {
   Mic,
   MicOff,
   Paperclip,
+  RotateCcw,
   Send,
   Settings,
   Sparkles,
@@ -14,8 +15,10 @@ import {
 } from 'lucide-react';
 import { maskFileWrites, renderMarkdownContent } from '../lib/markdown';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
+import { getRefineMode, REFINE_MODES } from '../lib/ai';
 import { getProviderMeta, type ModelInfo, type ModelTier, type ProviderId } from '../lib/providers';
-import type { ChatMessage, WorkspaceFile } from '../lib/types';
+import type { ChatMessage, RefineMode, WorkspaceFile } from '../lib/types';
+import type { CheckpointMeta } from '../lib/history';
 
 interface ChatPanelProps {
   messages: ChatMessage[];
@@ -28,6 +31,8 @@ interface ChatPanelProps {
   isRefining: boolean;
   refineStep: string;
   onRefinePrompt: () => void;
+  refineMode: RefineMode;
+  onRefineModeChange: (mode: RefineMode) => void;
   models: ModelInfo[];
   selectedModel: string;
   onSelectModel: (modelId: string) => void;
@@ -36,6 +41,10 @@ interface ChatPanelProps {
   attachedFileName: string | null;
   onAttachedFileChange: (fileName: string | null) => void;
   workspaceFiles: WorkspaceFile[];
+  /** Snapshots taken before each reply, used by the per-message restore button. */
+  checkpoints: CheckpointMeta[];
+  onRestoreCheckpoint: (id: string) => void;
+  restoringCheckpointId: string | null;
 }
 
 const TIER_STYLES: Record<ModelTier, string> = {
@@ -54,6 +63,8 @@ export function ChatPanel({
   isRefining,
   refineStep,
   onRefinePrompt,
+  refineMode,
+  onRefineModeChange,
   models,
   selectedModel,
   onSelectModel,
@@ -61,12 +72,16 @@ export function ChatPanel({
   onOpenSettings,
   attachedFileName,
   onAttachedFileChange,
-  workspaceFiles
+  workspaceFiles,
+  checkpoints,
+  onRestoreCheckpoint,
+  restoringCheckpointId
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
   const speech = useSpeechRecognition('hi-IN');
+  const activeMode = getRefineMode(refineMode);
 
   useEffect(() => {
     if (speech.transcript) onInputChange(speech.transcript);
@@ -205,6 +220,9 @@ export function ChatPanel({
                 </div>
                 <div className="mt-1.5 text-neutral-400">Lang: {message.refinedMeta.detectedLanguage}</div>
                 {message.refinedMeta.intent && <div className="text-neutral-400">Intent: {message.refinedMeta.intent}</div>}
+                {message.refinedMeta.mode && (
+                  <div className="text-neutral-400">Mode: {getRefineMode(message.refinedMeta.mode).label}</div>
+                )}
               </div>
             )}
 
@@ -230,6 +248,28 @@ export function ChatPanel({
                     soch raha hai...
                   </span>
                 ) : null}
+
+                {!message.streaming &&
+                  (() => {
+                    const checkpoint = checkpoints.find((entry) => entry.messageId === message.id);
+                    if (!checkpoint) return null;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => onRestoreCheckpoint(checkpoint.id)}
+                        disabled={restoringCheckpointId === checkpoint.id}
+                        title={`Is reply se pehle wala code wapas lao (${checkpoint.fileCount} files)`}
+                        className="mt-1.5 flex items-center gap-1 text-[10px] text-neutral-500 hover:text-amber-400 disabled:opacity-40 transition-colors cursor-pointer"
+                      >
+                        {restoringCheckpointId === checkpoint.id ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <RotateCcw className="w-3 h-3" />
+                        )}
+                        Restore code before this reply
+                      </button>
+                    );
+                  })()}
               </div>
             )}
           </div>
@@ -237,6 +277,25 @@ export function ChatPanel({
       </div>
 
       <div className="shrink-0 border-t border-neutral-900 p-3">
+        <div className="mb-2 flex items-center gap-1">
+          {REFINE_MODES.map((mode) => (
+            <button
+              key={mode.id}
+              type="button"
+              onClick={() => onRefineModeChange(mode.id)}
+              title={mode.hint}
+              className={`px-2 py-1 border text-[10px] transition-colors cursor-pointer ${
+                mode.id === refineMode
+                  ? 'border-emerald-800/70 bg-emerald-950/30 text-emerald-300'
+                  : 'border-neutral-800 text-neutral-500 hover:text-neutral-300'
+              }`}
+            >
+              {mode.short}
+            </button>
+          ))}
+          <span className="ml-1 truncate text-[10px] text-neutral-600">{activeMode.hint}</span>
+        </div>
+
         {isRefining && (
           <div className="mb-2 flex items-center gap-2 text-[11px] text-emerald-400/80">
             <Loader2 className="w-3 h-3 animate-spin" />

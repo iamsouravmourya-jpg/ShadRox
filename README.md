@@ -1,6 +1,6 @@
 # Devora
 
-A browser-based AI coding workspace. You open a folder or a few files straight from your own disk, chat with an AI model about that code, and the assistant edits the open files for you.
+A browser-based AI coding workspace. You open a folder or a few files straight from your own disk, chat with an AI model about that code, watch a live bundle of the project in a sandboxed iframe, and save the edits — yours or the AI's — back to the same files on disk.
 
 Devora brings its own key model (**BYOK**): you paste a Groq or Google Gemini API key, it is validated in the browser, and every model that key can actually use shows up in the picker. There is also an optional shared **Devora key** that lives in a server environment variable, so people without their own key can still use the app.
 
@@ -12,8 +12,8 @@ The whole app is a static Vite build plus a handful of stateless proxy functions
 
 This is a working early build, not a finished product. It is worth knowing up front:
 
-- **Editor changes are not written back to disk yet.** Edits you make and edits the AI makes live in browser memory (and in a local IndexedDB snapshot). Reloading restores the snapshot, but your real files on disk stay untouched. `FileSystemFileHandle.createWritable()` is planned, not implemented.
-- **Preview runs real HTML and Markdown only.** React/TSX/CSS cannot be executed in the preview iframe yet — there is no bundler in the browser.
+- **Writing to disk needs one permission click.** The workspace is mounted with read-write `FileSystemDirectoryHandle`s, so **Save** (or `Ctrl/Cmd+S`) writes your edits and the AI's edits straight back to your real files. The browser only hands out `readwrite` permission inside a user gesture, so a debounced auto-save can silently fail — that is why **auto-save is a toggle that defaults to OFF**. Folders and files added by drag and drop carry no handle and stay read-only.
+- **The preview bundles real projects.** `esbuild-wasm` compiles the workspace in a Web Worker-free in-page build, so `src/main.tsx` and its import graph actually run inside the sandboxed iframe, with React and ReactDOM pulled from a CDN import map. Plain `.html` and `.md` still render without the bundler.
 - **Sign-in is a stub.** There is no Supabase/OAuth yet; `Continue` just writes a demo session token.
 - **The shared Devora key has no auth or rate limit yet.** If you enable it in production, anyone who finds the URL can spend it. See `TODO(phase-3)` in [chat.ts](api/ai/chat.ts).
 - **Folder/file pickers are Chromium-only** (File System Access API). Drag and drop works in other browsers.
@@ -22,13 +22,15 @@ This is a working early build, not a finished product. It is worth knowing up fr
 
 ## Core ideas
 
-**1. Files stay on disk.** Folders are mounted with `showDirectoryPicker()` and read recursively in the browser. Nothing is uploaded to Devora.
+**1. Files stay on disk — and go back to disk.** Folders are mounted with `showDirectoryPicker({ mode: 'readwrite' })` and read recursively in the browser. Nothing is uploaded to Devora. When you edit, the browser writes the file back through your own directory handle; the file never leaves your machine.
 
 **2. Keys stay in the browser.** A BYOK key is stored in `localStorage` and forwarded per request as a passthrough credential. Devora never persists or logs it.
 
 **3. The server is a thin proxy.** The API routes exist for three reasons: streaming model output through one normalised contract, keeping the shared Devora key off the client, and avoiding CORS. They hold no state between requests.
 
 **4. The AI writes whole files, not diffs.** When you ask for a change, the model replies with a fenced code block whose info line names the file and whose body is the complete new file. Devora resolves that name against the files you actually have open and writes it. Full details in [The file edit protocol](#the-file-edit-protocol).
+
+**5. Context is retrieved, not dumped.** A whole repository never fits in a prompt, so [retrieval.ts](src/lib/retrieval.ts) indexes the workspace and sends the model a compact **repo map** of every file plus a BM25-ranked shortlist of the code that actually matches the question.
 
 ---
 
@@ -38,13 +40,31 @@ This is a working early build, not a finished product. It is worth knowing up fr
 
 | Action | How it works |
 | :--- | :--- |
-| Open a folder | `showDirectoryPicker()` → recursive read, relative paths preserved (`src/App.tsx`) |
+| Open a folder | `showDirectoryPicker({ mode: 'readwrite' })` → recursive read, relative paths preserved (`src/App.tsx`), handles kept for write-back |
 | Open files | `showOpenFilePicker({ multiple: true })` → flat file names |
-| Drag and drop | Stage 2 cards accept dropped files; the same handler covers both cards |
-| Reopen a recent | Restores from a local snapshot — no picker |
-| New / close file | `+` in the tab strip, `×` on a tab (a workspace always keeps at least one file) |
+| Drag and drop | Stage 2 cards accept dropped files; the same handler covers both cards (read-only, no handle) |
+| Reopen a recent | Restores from a local snapshot — no picker, and its disk handles are reloaded too |
+| New / close file | `New file` in the file list or editor toolbar; the back arrow returns to the list (a workspace always keeps at least one file) |
 
 Reading a folder skips dotfiles, binary extensions (images, fonts, archives, `*.lock`) and the usual noise directories (`node_modules`, `.git`, `dist`, `.next`, `out`, `coverage`, `.cache`, `.vercel`, `.turbo`, `vendor`, `__pycache__`). A mount is capped at **400 files**.
+
+### Editor
+
+The code pane is **CodeMirror 6** ([CodeEditor.tsx](src/components/CodeEditor.tsx)), not a textarea:
+
+- **A file list first.** Opening the code pane shows the list of files in the workspace — even when only one file is open. Nothing is displayed until you click a file, and the back arrow returns you to the list.
+- **Syntax colouring** for TypeScript/JSX, JavaScript, HTML/XML, CSS, JSON, Markdown and Python, via `@codemirror/lang-*` on top of the One Dark theme, with the app's black shell kept around it.
+- **An in-file search box** in the toolbar (only while a file is open) that drives CodeMirror's search state directly, with `Enter` for the next match.
+- **A dirty dot** on any file whose editor content differs from disk, both in the list and in the toolbar.
+
+### Disk write-back
+
+Edits stay local until you decide otherwise:
+
+- **Save** in the header or editor toolbar writes every dirty file back through your original directory handle. `Ctrl/Cmd+S` does the same.
+- **Auto-save** is a toggle, **default OFF**. When on, edits are flushed 1.2 s after you stop typing — but only if a `readwrite` permission grant already exists, because `requestPermission()` cannot be called from a debounce.
+- Files with no handle (drag and drop) are marked read-only and the Save button explains why.
+- A status line under the header reports what was written and surfaces the permission prompt when the browser withholds it.
 
 ### Recently opened
 
@@ -64,13 +84,20 @@ Entries created before snapshots existed cannot be restored directly — Devora 
 - **Attach a workspace file** as extra context for a single turn.
 - **Voice input** via the Web Speech API (`hi-IN`).
 - **Refine prompt** (the wand): sends your text — in any language — through a small pipeline that detects the language, translates it, extracts intent, and returns a tightened prompt. The detected language and intent are shown as a card on your message.
+- **Three refine modes**, a segmented control above the input that changes what the assistant is allowed to do:
+  | Mode | Thinking | Writes files | Use it for |
+  | :--- | :--- | :--- | :--- |
+  | **Code** | low | yes | Fast, cheap, direct edits |
+  | **Plan** | high | **no** | Architecture and approach only — the AI is told not to emit `path=` blocks, and if it does, Devora refuses to apply them and says so |
+  | **Complex** | high | yes | Large refactors and tricky logic |
+- **Restore timeline.** Before every reply the current files are snapshotted. Each finished assistant message gets a **Restore code before this reply** button that rolls the workspace back to that snapshot, so a bad edit is one click away from undone.
 - Clear chat.
 
 ### The file edit protocol
 
 This is the part that makes the chat *do* things instead of just printing code.
 
-The system prompt tells the model which files exist (up to 80 names), plus the active file's content (first 12,000 characters) and any attached file's content. It then requires this shape for a change:
+The system prompt is built from the workspace: a **repo map** listing every file, a **BM25-ranked selection of the code most relevant to your question**, the active file's content, any attached file's content, and the names of your local secrets. The token budget is derived from the selected model's context window (clamped to an 8,000–160,000 character range) so a small model is never handed more code than it can read. It then requires this shape for a change:
 
 ````
 ```tsx path=src/App.tsx
@@ -99,9 +126,12 @@ Because the write target and the chat note come from the same resolution functio
 
 ### Preview
 
-- **`.html`** files render as-is in a sandboxed iframe.
-- **`.md`** files are converted by a small built-in Markdown → HTML step.
-- Anything else (or an HTML file that is not active) falls back to the workspace's `index.html` if one exists, and the preview header says why.
+**Real projects run first.** When the workspace has a viable entry point (`src/main.tsx`, `src/index.tsx`, `index.tsx`, `main.tsx`, `App.tsx`, …), [bundler.ts](src/lib/bundler.ts) loads **esbuild-wasm** in the browser and compiles the whole import graph from memory — the workspace files are exposed to esbuild through a virtual filesystem plugin, so nothing is uploaded and no server is involved. Bare specifiers (`react`, `react-dom`, `react-dom/client`) are left external and resolved by an import map in the generated document, pinned to the same major versions the app uses. The result is a self-contained HTML document that boots your project inside the iframe.
+
+- The bundle is debounced by 700 ms as you edit, and the **last good frame stays on screen** while the next one compiles, so the preview does not flash.
+- A compile failure replaces the frame with the esbuild error text instead of a blank page.
+- The `postMessage` error bridge is injected into the bundle too, so runtime errors in *your* code reach the same banner.
+- If the workspace cannot be bundled, the pane falls back to static rendering: **`.html`** files render as-is, **`.md`** files go through a small built-in Markdown → HTML step, and otherwise the workspace's `index.html` is used, with the header explaining which mode you are in.
 - If nothing can be rendered, the pane explains the limitation instead of showing fake output.
 - Viewport switcher (desktop / tablet / mobile), manual reload, and a runtime error banner fed by a `postMessage` bridge that forwards `error`, `unhandledrejection` and `console.error` out of the sandbox.
 
@@ -147,13 +177,15 @@ The bug icon copies a diagnostics block to your clipboard: workspace name and fi
 | UI | React 19, TypeScript, Tailwind CSS v4 |
 | Build | Vite 8 (`@vitejs/plugin-react`, `@tailwindcss/vite`) |
 | Icons | `lucide-react` |
+| Editor | CodeMirror 6 (`@uiw/react-codemirror` + `@codemirror/lang-*`) |
+| In-browser bundler | `esbuild-wasm` |
 | Dev server | Express + Vite in middleware mode (`tsx server.ts`, port 3000) |
 | Production | Static `dist/` on any CDN + Vercel serverless functions under `api/` |
 | AI transport | Plain `fetch` — no provider SDK, one normalised SSE contract |
-| Browser storage | `localStorage` for settings, IndexedDB for workspace snapshots |
+| Browser storage | `localStorage` for settings, IndexedDB for snapshots and checkpoints |
 | Markdown | A small in-repo renderer — no markdown dependency |
 
-There is no state library, no router, no UI kit, and no editor dependency.
+There is no state library, no router and no UI kit. The editor and bundler are the only heavy client dependencies, and the bundler's WASM binary is lazy-loaded the first time a project can actually be bundled.
 
 ---
 
@@ -174,22 +206,26 @@ Devora/
 │   ├── components/
 │   │   ├── Stage1Auth.tsx      # Landing / demo sign-in
 │   │   ├── Stage2Hub.tsx       # Open folder/files, recently opened
-│   │   ├── ChatPanel.tsx       # Messages, model menu, voice, attach, refine
-│   │   ├── CodeEditor.tsx      # Tabs + line gutter + textarea
-│   │   ├── PreviewPane.tsx     # Sandboxed iframe, viewports, error banner
+│   │   ├── ChatPanel.tsx       # Messages, model menu, voice, attach, refine modes, restore
+│   │   ├── CodeEditor.tsx      # CodeMirror 6, file list, in-file search, save
+│   │   ├── PreviewPane.tsx     # Bundled project, viewports, error banner
 │   │   ├── SettingsDrawer.tsx  # Models & Keys / GitHub / Secrets
 │   │   └── Logo.tsx
 │   ├── hooks/
-│   │   ├── useWorkspace.ts     # Mount, recents, snapshots, patch writes
+│   │   ├── useWorkspace.ts     # Mount, recents, snapshots, patch writes, disk save, checkpoints
 │   │   ├── useByok.ts          # Providers, keys, models, validation state
 │   │   └── useSpeechRecognition.ts
 │   ├── lib/
 │   │   ├── workspace.ts        # File System Access API + drop handling
 │   │   ├── languages.ts        # Extension → language, skip rules
 │   │   ├── providers.ts        # Provider metadata, tier rules, key heuristics
-│   │   ├── ai.ts               # Client wrappers for the API routes
+│   │   ├── ai.ts               # Client wrappers for the API routes + refine modes
+│   │   ├── bundler.ts          # esbuild-wasm virtual FS build → preview document
+│   │   ├── retrieval.ts        # Repo map + BM25 context retrieval
 │   │   ├── markdown.tsx        # Chat renderer, patch extraction, masking
 │   │   ├── preview.ts          # Preview document builder + error bridge
+│   │   ├── fileHandles.ts      # IndexedDB store for disk write handles
+│   │   ├── history.ts          # Content-addressed checkpoint store
 │   │   ├── snapshots.ts        # IndexedDB snapshot store
 │   │   ├── storage.ts          # localStorage keys and recent list
 │   │   └── types.ts            # Shared types
@@ -207,12 +243,13 @@ Devora/
 
 ## How a request flows
 
-1. You type a message. `App.tsx` builds a system instruction from the workspace: file names, the active file's content, any attached file, secret names.
-2. `streamChat()` posts to `/api/ai/chat` with `{ provider, model, apiKey?, messages, systemInstruction }`.
-3. The handler picks the key — your BYOK key if present, otherwise the server's Devora key — and streams from Gemini (`streamGenerateContent?alt=sse`) or Groq (`chat/completions` with `stream: true`).
-4. Both providers are normalised into the same events: `{type:'delta',text}`, then `{type:'done',tokens,provider,model,tier}`, or `{type:'error',message}`. The stream ends with `data: [DONE]`.
-5. The client appends deltas live.
-6. When the reply completes, `extractFilePatches()` resolves the file writes, `applyFilePatches()` updates the workspace, and the chat is rendered through `maskFileWrites()` so the code the AI just wrote is not repeated back at you.
+1. You type a message. `App.tsx` builds a system instruction from the workspace — repo map, BM25-retrieved code, the active file, any attached file, secret names — scoped to the selected model's context window and to the active refine mode.
+2. Before streaming starts, the current files are snapshotted as a checkpoint keyed to the reply, so it can be undone later.
+3. `streamChat()` posts to `/api/ai/chat` with `{ provider, model, apiKey?, messages, systemInstruction, thinking }`.
+4. The handler picks the key — your BYOK key if present, otherwise the server's Devora key — and streams from Gemini (`streamGenerateContent?alt=sse`) or Groq (`chat/completions` with `stream: true`).
+5. Both providers are normalised into the same events: `{type:'delta',text}`, then `{type:'done',tokens,provider,model,tier}`, or `{type:'error',message}`. The stream ends with `data: [DONE]`.
+6. The client appends deltas live.
+7. When the reply completes, `extractFilePatches()` resolves the file writes, `applyFilePatches()` updates the workspace, and the chat is rendered through `maskFileWrites()` so the code the AI just wrote is not repeated back at you. In **Plan** mode this step is skipped entirely.
 
 ---
 
@@ -277,8 +314,8 @@ All routes are `POST` and return JSON unless noted.
 | Route | Body | Returns |
 | :--- | :--- | :--- |
 | `POST /api/byok/validate` | `{ provider, apiKey }` | `{ ok, provider, latencyMs, models[] }`, or `401` with `{ ok: false, error }` |
-| `POST /api/ai/chat` | `{ provider, model, apiKey?, messages[], systemInstruction?, temperature? }` | SSE stream of `delta` / `done` / `error` events |
-| `POST /api/prompt/refine` | `{ rawPrompt, provider, apiKeyByProvider? }` | `{ detectedLanguage, translatedText, intent, refinedPrompt }` |
+| `POST /api/ai/chat` | `{ provider, model, apiKey?, messages[], systemInstruction?, temperature?, thinking? }` | SSE stream of `delta` / `done` / `error` events |
+| `POST /api/prompt/refine` | `{ rawPrompt, provider, apiKeyByProvider?, mode?, contextInfo? }` | `{ detectedLanguage, translatedText, intent, refinedPrompt }` |
 | `POST /api/github/validate` | `{ token }` | `{ user, repos[] }` |
 | `POST /api/github/create-repo` | `{ token, name, description?, isPrivate? }` | `{ success, repo }` |
 | `POST /api/github/push` | `{ token, owner, repo, files[], commitMessage? }` | `{ success, results[], repoUrl }` |
@@ -300,8 +337,13 @@ Copy is in Hinglish inside the API error messages, matching the app's UI languag
 | `devora.session` | localStorage | Session token (demo value today) |
 | `devora.recents` | localStorage | Recent workspaces, max 8 |
 | `devora-workspace` → `snapshots` | IndexedDB | Full workspace copies, keyed by path |
+| `devora-handles` → `handles` | IndexedDB | Disk write handles, keyed by workspace path |
+| `devora-history` → `checkpoints` | IndexedDB | One entry per assistant reply: file names + content hashes |
+| `devora-history` → `blobs` | IndexedDB | Content-addressed file bodies, each stored once and shared |
 
 Not persisted anywhere: your GitHub token, the Devora shared key, and any key you are still testing.
+
+Checkpoints are **content-addressed**: a checkpoint stores `{ name, hash }` per file and the bodies live in a separate blob store keyed by hash. Twelve replies that touch one file therefore store twelve tiny checkpoint records and at most a handful of unique bodies. History is capped at **50 checkpoints per workspace**, and both the checkpoint records and any blob no longer referenced are pruned.
 
 ---
 
@@ -310,7 +352,9 @@ Not persisted anywhere: your GitHub token, the Devora shared key, and any key yo
 | Capability | Requirement |
 | :--- | :--- |
 | Open folder / open files | File System Access API — Chrome, Edge, Brave, Opera |
-| Drag and drop files | Any modern browser (fallback for the above) |
+| Save edits to disk | `FileSystemFileHandle.createWritable()` — same browsers |
+| Drag and drop files | Any modern browser (fallback for the above; read-only) |
+| Live project preview | WebAssembly, `import.meta.url` and ES modules |
 | Voice input | Web Speech API (`SpeechRecognition`) |
 | Everything else | Standard modern browser |
 
@@ -320,11 +364,12 @@ Firefox and Safari get a clear message pointing at drag and drop instead of a br
 
 ## Known limitations
 
-- No disk write-back — see [Honest status](#honest-status).
-- No browser bundler, so no live React/TSX preview.
-- The editor is a plain `textarea` with a line gutter: no syntax highlighting, no autocomplete, no find-and-replace.
-- 400 files per mount, 60 files per GitHub push, 8 recent workspaces.
-- The active file's context is truncated at 12,000 characters, and at most 80 file names are listed, so very large workspaces are only partially visible to the model.
+- **The first save after a reload needs a click.** A `readwrite` grant does not survive a page reload, and the browser only re-grants it inside a user gesture, so auto-save cannot silently recover it.
+- **Bare imports resolve to a CDN.** The bundler leaves `react`, `react-dom` and `react-dom/client` external and maps them to `esm.sh`; other npm packages are not installed from a manifest yet, so a project that imports an arbitrary dependency will not bundle.
+- **Non-JS stacks render statically.** A Python or Go project gets the HTML/Markdown fallback, not a running process.
+- **400 files per mount, 60 files per GitHub push, 8 recent workspaces, 50 checkpoints per workspace.**
+- **The editor has no autocomplete or diagnostics.** It colours code and searches text, but it does not type-check or lint.
+- **Context is retrieved heuristically.** BM25 plus the repo map is not a full language-server index, so a question that depends on an unusual symbol name can miss the file that matters.
 - Model tiers are curated data, not a live pricing feed. Unknown models default to `pro`.
 - Recents and keys are per browser profile — there is no sync.
 - No tests yet; `npm run typecheck` is the current safety net.
@@ -333,11 +378,11 @@ Firefox and Safari get a clear message pointing at drag and drop instead of a br
 
 ## Roadmap
 
-- Write edits back to disk with `createWritable()`.
-- Bundle React/TSX in the browser so the preview covers real projects.
+- Read a `package.json` and install the workspace's real dependencies instead of relying on a CDN import map.
+- A diff view before an AI edit lands, for people who want to approve each change.
+- Autocomplete and inline diagnostics in the editor.
 - Supabase auth, plans, and per-user rate limiting in front of the shared key.
-- A real editor (CodeMirror or Monaco) behind the same component interface.
-- Diff review before applying AI edits, for people who want to approve each change.
+- More precise retrieval — an AST/symbol index on top of BM25.
 
 ---
 

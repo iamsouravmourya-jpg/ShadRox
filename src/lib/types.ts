@@ -6,6 +6,12 @@ export type SettingsTab = 'CHAT' | 'GITHUB' | 'SECRETS';
 
 export type ViewportSize = 'desktop' | 'tablet' | 'mobile';
 
+/**
+ * How much thinking the assistant should do, and whether it may write files.
+ * `plan` is the one mode that never touches the code.
+ */
+export type RefineMode = 'code' | 'plan' | 'complex';
+
 export interface WorkspaceFile {
   name: string;
   content: string;
@@ -25,6 +31,7 @@ export interface RefinedPromptMeta {
   translated: string;
   intent: string;
   refinedPrompt?: string;
+  mode?: RefineMode;
 }
 
 export interface ChatMessage {
