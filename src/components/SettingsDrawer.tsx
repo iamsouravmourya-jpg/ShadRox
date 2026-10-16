@@ -239,7 +239,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   <button
                     type="button"
                     onClick={() => onValidateKey(activeProvider)}
-                    disabled={!currentSavedKey || currentStatus?.state === 'checking'}
+                    disabled={currentStatus?.state === 'checking'}
                     className="px-3 py-2 border border-neutral-700 text-xs text-white hover:bg-neutral-900 disabled:opacity-40 transition-colors cursor-pointer whitespace-nowrap"
                   >
                     {currentStatus?.state === 'checking' ? 'Testing...' : 'Save & test'}
@@ -248,7 +248,9 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
 
                 {currentStatus && currentStatus.state !== 'idle' && (
                   <div
-                    className={`mt-2 flex items-start gap-2 px-3 py-2 text-[11px] border ${
+                    role="status"
+                    aria-live="polite"
+                    className={`mt-2 flex items-start gap-2 px-3 py-2 text-[11px] leading-relaxed border ${
                       currentStatus.state === 'ok'
                         ? 'border-emerald-900/60 bg-emerald-950/20 text-emerald-400'
                         : currentStatus.state === 'error'
@@ -265,8 +267,10 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     )}
                     <span>
                       {currentStatus.state === 'ok'
-                        ? `Key valid — ${currentStatus.modelCount} models mile (${currentStatus.latencyMs}ms).`
-                        : currentStatus.message}
+                        ? `${currentMeta.label} key valid — ${currentStatus.modelCount} models mile (${currentStatus.latencyMs}ms).`
+                        : currentStatus.state === 'error'
+                          ? `Error: ${currentStatus.message}`
+                          : 'Key test ho rahi hai...'}
                     </span>
                   </div>
                 )}

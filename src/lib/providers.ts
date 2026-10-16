@@ -148,3 +148,14 @@ export function looksLikeKeyFor(provider: ProviderId, apiKey: string): boolean {
   if (provider === 'groq') return key.startsWith('gsk_');
   return key.startsWith('AIza');
 }
+
+/**
+ * Guesses which provider a key belongs to from its prefix. Used to catch the
+ * common mistake of pasting a Groq key into the Gemini field (or vice versa).
+ */
+export function detectProviderFromKey(apiKey: string): ProviderId | null {
+  const key = apiKey.trim();
+  if (key.startsWith('gsk_')) return 'groq';
+  if (key.startsWith('AIza')) return 'gemini';
+  return null;
+}

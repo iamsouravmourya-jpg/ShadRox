@@ -10,10 +10,12 @@ import { SettingsDrawer } from './components/SettingsDrawer';
 import { useWorkspace } from './hooks/useWorkspace';
 import { useByok } from './hooks/useByok';
 import { refinePrompt, streamChat, type ChatTurn } from './lib/ai';
+import { extractFilePatches } from './lib/markdown';
 import { previewCapabilityMessage, resolvePreviewDocument } from './lib/preview';
 import { getSessionToken, setSessionToken } from './lib/storage';
 import type {
   ChatMessage,
+  RecentEntry,
   RefinedPromptMeta,
   SecretItem,
   SettingsTab,
@@ -87,12 +89,21 @@ export default function App() {
   }, []);
 
   const handleReopenRecent = useCallback(
-    (kind: 'folder' | 'file') => {
-      if (kind === 'folder') void workspace.openFolder();
-      else void workspace.openFiles();
+    (entry: RecentEntry) => {
+      void workspace.openRecent(entry);
     },
     [workspace]
   );
+
+  /**
+   * Back leaves the editor. The workspace has to be closed too, otherwise the
+   * auto-forward effect below (workspace mounted + STAGE_2) pushes the user
+   * straight back into the editor and back never appears to work.
+   */
+  const handleBackToHub = useCallback(() => {
+    workspace.closeWorkspace();
+    setActiveStage('STAGE_2');
+  }, [workspace]);
 
   const previewDocument = useMemo(
     () => resolvePreviewDocument(workspace.files, workspace.activeFile ?? undefined),
@@ -103,7 +114,19 @@ export default function App() {
     const lines = [
       'You are Devora, an expert AI coding assistant embedded in a browser-based IDE.',
       'Answer in the same language the user writes in. Be concise, practical and code-first.',
-      'Always put proposed code in fenced code blocks with the correct language tag.'
+      '',
+      'FILE EDIT PROTOCOL:',
+      '- Decide which file to change from the user request and the real file names listed below. Never invent a path.',
+      '- To change a file, output a fenced code block whose info line names that exact file, and put the COMPLETE new file content in the body:',
+      '```tsx path=src/App.tsx',
+      '// full file contents, nothing omitted',
+      '```',
+      '- Always write the file name in the fence line exactly as shown above. This is how the change reaches the editor.',
+      '- One block per file, with the exact file name from the list below.',
+      '- Never write partial snippets, diffs, or "// rest unchanged" placeholders inside a path= block. Those blocks are written to disk verbatim.',
+      '- A code block without a file name is treated as an example only, so use one when you mean "look at this, do not save it".',
+      '- Only edit a file when the user actually asked for that change. If the request is just a question, reply in prose with no path= block.',
+      '- Briefly explain what you changed before the code blocks.'
     ];
 
     if (workspace.workspace) {
@@ -186,47 +209,83 @@ export default function App() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    await streamChat(
-      {
-        provider: byok.activeProvider,
-        model: byok.selectedModel,
-        apiKey: byok.useDevoraKey ? undefined : byok.activeKey,
-        messages: history,
-        systemInstruction: buildSystemInstruction(),
-        signal: controller.signal
-      },
-      {
-        onDelta: (chunk) =>
-          setMessages((previous) =>
-            previous.map((message) =>
-              message.id === modelMessage.id ? { ...message, content: message.content + chunk } : message
-            )
-          ),
-        onDone: () =>
-          setMessages((previous) =>
-            previous.map((message) =>
-              message.id === modelMessage.id ? { ...message, streaming: false } : message
-            )
-          ),
-        onError: (error) =>
-          setMessages((previous) =>
-            previous.map((message) =>
-              message.id === modelMessage.id
-                ? {
-                    ...message,
-                    streaming: false,
-                    content: message.content
-                      ? `${message.content}\n\n_${error}_`
-                      : `Request fail ho gayi: ${error}`
-                  }
-                : message
-            )
-          )
-      }
-    );
+    let reply = '';
+    let applied = false;
 
-    setIsGenerating(false);
-    abortRef.current = null;
+    /** Writes the files the assistant asked for, once the reply is complete. */
+    const applyReplyPatches = () => {
+      if (applied) return;
+      applied = true;
+
+      const scan = extractFilePatches(reply, workspace.files);
+
+      if (scan.patches.length === 0) {
+        if (scan.unmapped > 0) {
+          setToast(
+            `Reply me ${scan.unmapped} code block tha par usme file ka naam nahi mila — isliye kuch save nahi hua.`
+          );
+          window.setTimeout(() => setToast(null), 6000);
+        }
+        return;
+      }
+
+      const result = workspace.applyFilePatches(scan.patches);
+      const parts = [
+        result.updated.length > 0 ? `${result.updated.join(', ')} update hua` : '',
+        result.created.length > 0 ? `${result.created.join(', ')} nayi file bani` : ''
+      ].filter(Boolean);
+      if (parts.length === 0) return;
+
+      setToast(parts.join(' • '));
+      window.setTimeout(() => setToast(null), 4000);
+    };
+
+    try {
+      await streamChat(
+        {
+          provider: byok.activeProvider,
+          model: byok.selectedModel,
+          apiKey: byok.useDevoraKey ? undefined : byok.activeKey,
+          messages: history,
+          systemInstruction: buildSystemInstruction(),
+          signal: controller.signal
+        },
+        {
+          onDelta: (chunk) => {
+            reply += chunk;
+            setMessages((previous) =>
+              previous.map((message) =>
+                message.id === modelMessage.id ? { ...message, content: message.content + chunk } : message
+              )
+            );
+          },
+          onDone: () =>
+            setMessages((previous) =>
+              previous.map((message) =>
+                message.id === modelMessage.id ? { ...message, streaming: false } : message
+              )
+            ),
+          onError: (error) =>
+            setMessages((previous) =>
+              previous.map((message) =>
+                message.id === modelMessage.id
+                  ? {
+                      ...message,
+                      streaming: false,
+                      content: message.content
+                        ? `${message.content}\n\n_${error}_`
+                        : `Request fail ho gayi: ${error}`
+                    }
+                  : message
+              )
+            )
+        }
+      );
+    } finally {
+      applyReplyPatches();
+      setIsGenerating(false);
+      abortRef.current = null;
+    }
   }, [
     input,
     isGenerating,
@@ -237,7 +296,8 @@ export default function App() {
     byok.activeKey,
     byok.activeProvider,
     byok.selectedModel,
-    buildSystemInstruction
+    buildSystemInstruction,
+    workspace
   ]);
 
   const handleStop = useCallback(() => {
@@ -344,7 +404,7 @@ export default function App() {
         <div className="flex items-center gap-3 min-w-0">
           <button
             type="button"
-            onClick={() => setActiveStage('STAGE_2')}
+            onClick={handleBackToHub}
             title="Back to workspace hub"
             className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
           >
@@ -431,7 +491,7 @@ export default function App() {
               <p className="mt-3 text-xs text-neutral-500">Koi file open nahi hai.</p>
               <button
                 type="button"
-                onClick={() => setActiveStage('STAGE_2')}
+                onClick={handleBackToHub}
                 className="mt-3 text-[11px] text-emerald-400 hover:text-emerald-300 cursor-pointer"
               >
                 Folder ya files open karo

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { validateProviderKey } from '../lib/ai';
-import { defaultModelFor, looksLikeKeyFor, type ModelInfo, type ProviderId } from '../lib/providers';
+import { defaultModelFor, detectProviderFromKey, getProviderMeta, looksLikeKeyFor, type ModelInfo, type ProviderId } from '../lib/providers';
 import {
   getActiveProvider,
   getApiKey,
@@ -70,10 +70,27 @@ export function useByok(): UseByokResult {
         return;
       }
 
+      // Pasting a Groq key into the Gemini field (or vice versa) is the most
+      // common mistake, and it otherwise just looks like "nothing happened".
+      const keyBelongsTo = detectProviderFromKey(candidate);
+      if (keyBelongsTo && keyBelongsTo !== provider) {
+        setKeyStatus((previous) => ({
+          ...previous,
+          [provider]: {
+            state: 'error',
+            message: `Ye ${getProviderMeta(keyBelongsTo).label} ki key hai (${candidate.slice(0, 4)}...). Upar ${getProviderMeta(keyBelongsTo).label} select karo, phir key waha paste karo.`
+          }
+        }));
+        return;
+      }
+
       if (!looksLikeKeyFor(provider, candidate)) {
         setKeyStatus((previous) => ({
           ...previous,
-          [provider]: { state: 'error', message: 'Key ka format sahi nahi lag raha. Dobara check karo.' }
+          [provider]: {
+            state: 'error',
+            message: `Ye ${getProviderMeta(provider).label} ki key nahi lag rahi — ${getProviderMeta(provider).keyPrefix} se shuru honi chahiye.`
+          }
         }));
         return;
       }

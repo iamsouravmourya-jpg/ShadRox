@@ -9,7 +9,7 @@ interface Stage2HubProps {
   onOpenFolder: () => void;
   onOpenFiles: () => void;
   onDroppedFiles: (files: FileList) => void;
-  onReopen: (kind: RecentEntry['kind']) => void;
+  onReopen: (entry: RecentEntry) => void;
 }
 
 function formatRelativeTime(timestamp: number): string {
@@ -107,7 +107,7 @@ export function Stage2Hub({
                   <button
                     key={entry.id}
                     type="button"
-                    onClick={() => onReopen(entry.kind)}
+                    onClick={() => onReopen(entry)}
                     className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-neutral-950 transition-colors cursor-pointer"
                   >
                     <span className="flex items-center gap-2 min-w-0">
@@ -124,7 +124,7 @@ export function Stage2Hub({
                 ))}
               </div>
               <p className="mt-2 text-[11px] text-neutral-600">
-                Browser security ki wajah se folder dobara pick karna padta hai — list sirf reference ke liye hai.
+                Click karne par ye seedha khulta hai — files ka local copy browser me hi save rehta hai.
               </p>
             </div>
           )}

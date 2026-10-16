@@ -35,15 +35,35 @@ async function readJson(response: Response): Promise<any> {
 
 /** Validates a BYOK key and returns every chat model that key can actually use. */
 export async function validateProviderKey(provider: ProviderId, apiKey: string): Promise<ValidateKeyResult> {
-  const response = await fetch('/api/byok/validate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ provider, apiKey })
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 20000);
+
+  let response: Response;
+  try {
+    response = await fetch('/api/byok/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({ provider, apiKey })
+    });
+  } catch (error) {
+    throw new Error(
+      error instanceof DOMException && error.name === 'AbortError'
+        ? 'Server ne 20 second tak jawab nahi diya. Network check karke dobara try karo.'
+        : 'Server se connect nahi ho paya — dev server chal raha hai? (npm run dev)'
+    );
+  } finally {
+    window.clearTimeout(timeout);
+  }
 
   const data = await readJson(response);
 
   if (!response.ok || !data?.ok) {
+    if (response.ok && !data?.error) {
+      throw new Error(
+        `Server ne galat jawab diya (HTTP ${response.status}) — /api/byok/validate available nahi lag raha.`
+      );
+    }
     throw new Error(data?.error || `Key validate nahi ho payi (HTTP ${response.status}).`);
   }
 
