@@ -249,3 +249,60 @@ export function extractFilePatches(content: string, files: KnownFile[] = []): Pa
 
   return { patches, unmapped };
 }
+
+/**
+ * The chat view of a reply: file writes are replaced by a one-line note.
+ *
+ * The assistant streams whole files, but those go straight into the editor, so
+ * repeating them in the chat is just noise. Blocks that are not tied to a real
+ * file (examples) are left exactly as the model wrote them.
+ */
+export function maskFileWrites(content: string, files: KnownFile[] = []): string {
+  const lines = content.split('\n');
+  const output: string[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    if (!lines[index].trim().startsWith('```')) {
+      output.push(lines[index]);
+      index += 1;
+      continue;
+    }
+
+    const info = lines[index].trim().slice(3);
+    const bodyLines: string[] = [];
+    let close = index + 1;
+
+    while (close < lines.length && !lines[close].trim().startsWith('```')) {
+      bodyLines.push(lines[close]);
+      close += 1;
+    }
+
+    const terminated = close < lines.length;
+    const body = bodyLines.join('\n').replace(/\s+$/, '');
+
+    let context = '';
+    for (let scan = index - 1; scan >= 0; scan -= 1) {
+      if (lines[scan].trim()) {
+        context = lines[scan].trim();
+        break;
+      }
+    }
+
+    const target = resolveTarget(info, context, body, files);
+
+    if (target) {
+      const known = files.some((file) => file.name === target);
+      output.push(`- ${target} — ${known ? 'update ho gaya' : 'nayi file ban gayi'}, code editor me dekho`);
+    } else {
+      output.push(lines[index], ...bodyLines);
+      if (terminated) output.push(lines[close]);
+    }
+
+    // A half-streamed block cannot be judged any further.
+    if (!terminated) break;
+    index = close + 1;
+  }
+
+  return output.join('\n');
+}

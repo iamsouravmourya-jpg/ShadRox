@@ -12,7 +12,7 @@ import {
   Trash2,
   Wand2
 } from 'lucide-react';
-import { renderMarkdownContent } from '../lib/markdown';
+import { maskFileWrites, renderMarkdownContent } from '../lib/markdown';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 import { getProviderMeta, type ModelInfo, type ModelTier, type ProviderId } from '../lib/providers';
 import type { ChatMessage, WorkspaceFile } from '../lib/types';
@@ -223,7 +223,7 @@ export function ChatPanel({
             ) : (
               <div>
                 {message.content ? (
-                  renderMarkdownContent(message.content)
+                  renderMarkdownContent(maskFileWrites(message.content, workspaceFiles))
                 ) : message.streaming ? (
                   <span className="inline-flex items-center gap-2 text-neutral-500">
                     <Loader2 className="w-3 h-3 animate-spin" />
