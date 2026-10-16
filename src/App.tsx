@@ -383,44 +383,6 @@ Single **HTML** and **Markdown** documents are fully supported with instant live
 `
       }
     ]
-  },
-  {
-    id: 'devora-ai-matrix',
-    name: 'devora-ai-matrix',
-    path: 'src/workspace/local/devora-ai-matrix',
-    files: [
-      {
-        name: 'MatrixView.tsx',
-        language: 'typescript',
-        content: `import React from 'react';
-
-export function MatrixView() {
-  return (
-    <div className="p-6 bg-black text-white font-mono">
-      <h2 className="text-lg font-bold border-b border-neutral-800 pb-2">Devora AI Quantum Matrix</h2>
-      <div className="grid grid-cols-2 gap-4 mt-6">
-        <div className="p-4 border border-neutral-800 bg-neutral-950">Vector Shard A: Synced</div>
-        <div className="p-4 border border-neutral-800 bg-neutral-950">Vector Shard B: Synced</div>
-      </div>
-    </div>
-  );
-}`
-      }
-    ]
-  },
-  {
-    id: 'devora-fullstack-kit',
-    name: 'devora-fullstack-kit',
-    path: 'src/workspace/local/devora-fullstack-kit',
-    files: [
-      {
-        name: 'Dashboard.tsx',
-        language: 'typescript',
-        content: `export default function Dashboard() {
-  return <div className="p-6 bg-black text-white font-sans">Devora Fullstack Dashboard Ready</div>;
-}`
-      }
-    ]
   }
 ];
 
@@ -866,9 +828,9 @@ export default function App() {
           multiple: true,
           types: [
             {
-              description: 'Code & Document Files (.py, .html, .md, .tsx, .js, .json, etc.)',
+              description: 'All Files (*.*)',
               accept: {
-                'text/*': ['.py', '.html', '.htm', '.md', '.markdown', '.txt', '.js', '.jsx', '.ts', '.tsx', '.json', '.css', '.scss', '.yaml', '.yml', '.sql', '.sh']
+                '*/*': []
               }
             }
           ]
@@ -1626,34 +1588,34 @@ export default function App() {
 
           {/* Central Workspace Canvas */}
           <main className="flex-1 flex flex-col items-center justify-center p-6 relative overflow-auto">
-            <div className="w-full max-w-2xl flex flex-col items-center my-auto">
+            <div className="w-full max-w-xl flex flex-col items-center my-auto">
               
               <div className="text-center mb-6">
-                <h2 className="text-lg font-bold tracking-tight text-white mb-1">
+                <h2 className="text-base font-bold tracking-tight text-white mb-1">
                   Workspace & Project Launcher
                 </h2>
                 <p className="text-xs text-neutral-400 font-normal">
-                  Open an existing local project directory or select a pre-configured architecture template below.
+                  Open an existing local project directory or a standalone single file.
                 </p>
               </div>
 
               {/* Dual Clean Dropzones for Directory and Single Files */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full mb-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full">
                 {/* 1. Open Local Directory */}
                 <div 
                   onClick={mountLocalDirectory}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={handleDropFiles}
-                  className="border border-dashed border-neutral-800 hover:border-neutral-500 p-6 flex flex-col items-center justify-center cursor-pointer transition-all bg-neutral-950/40 hover:bg-neutral-900/30 group text-center"
+                  className="border border-dashed border-neutral-800 hover:border-neutral-500 p-5 flex flex-col items-center justify-center cursor-pointer transition-all bg-neutral-950/40 hover:bg-neutral-900/30 group text-center"
                 >
-                  <div className="w-10 h-10 rounded-full border border-neutral-800 bg-black flex items-center justify-center mb-3 group-hover:border-neutral-600 transition-colors">
-                    <FolderOpen className="w-5 h-5 text-neutral-300 group-hover:text-white" />
+                  <div className="w-9 h-9 rounded-full border border-neutral-800 bg-black flex items-center justify-center mb-2.5 group-hover:border-neutral-600 transition-colors">
+                    <FolderOpen className="w-4 h-4 text-neutral-300 group-hover:text-white" />
                   </div>
                   <span className="text-xs tracking-wider text-white uppercase font-bold">
                     OPEN PROJECT DIRECTORY
                   </span>
-                  <span className="text-xs text-neutral-500 mt-1 font-normal">
-                    Mount complete local folder via Web File System API
+                  <span className="text-[11px] text-neutral-500 mt-1 font-normal">
+                    Mount complete local folder
                   </span>
                   <input 
                     id="native-folder-input"
@@ -1669,72 +1631,30 @@ export default function App() {
                   onClick={openSingleFilePicker}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={handleDropFiles}
-                  className="border border-dashed border-neutral-800 hover:border-emerald-600/70 p-6 flex flex-col items-center justify-center cursor-pointer transition-all bg-neutral-950/40 hover:bg-neutral-900/30 group text-center"
+                  className="border border-dashed border-neutral-800 hover:border-emerald-600/70 p-5 flex flex-col items-center justify-center cursor-pointer transition-all bg-neutral-950/40 hover:bg-neutral-900/30 group text-center"
                 >
-                  <div className="w-10 h-10 rounded-full border border-neutral-800 bg-black flex items-center justify-center mb-3 group-hover:border-emerald-500 transition-colors">
-                    <FileCode className="w-5 h-5 text-emerald-400 group-hover:text-emerald-300" />
+                  <div className="w-9 h-9 rounded-full border border-neutral-800 bg-black flex items-center justify-center mb-2.5 group-hover:border-emerald-500 transition-colors">
+                    <FileCode className="w-4 h-4 text-emerald-400 group-hover:text-emerald-300" />
                   </div>
                   <span className="text-xs tracking-wider text-white uppercase font-bold group-hover:text-emerald-400 transition-colors">
-                    OPEN SINGLE FILE (.PY, .HTML, .MD)
+                    OPEN SINGLE FILE
                   </span>
-                  <span className="text-xs text-neutral-500 mt-1 font-normal">
-                    Open standalone Python, HTML, Markdown or script files
+                  <span className="text-[11px] text-neutral-500 mt-1 font-normal">
+                    Open .py, .html, .md or script files
                   </span>
                   <div className="flex items-center gap-1.5 mt-2">
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-neutral-900 border border-neutral-800 text-emerald-400 rounded">.py</span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-neutral-900 border border-neutral-800 text-cyan-400 rounded">.html</span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-neutral-900 border border-neutral-800 text-amber-400 rounded">.md</span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-neutral-900 border border-neutral-800 text-neutral-400 rounded">.tsx</span>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 bg-neutral-900 border border-neutral-800 text-emerald-400 rounded">.py</span>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 bg-neutral-900 border border-neutral-800 text-cyan-400 rounded">.html</span>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 bg-neutral-900 border border-neutral-800 text-amber-400 rounded">.md</span>
                   </div>
                   <input 
                     id="native-single-file-input"
                     type="file" 
                     multiple 
-                    accept=".py,.html,.htm,.md,.markdown,.js,.jsx,.ts,.tsx,.json,.css,.txt,.*"
+                    accept="*/*"
                     className="hidden" 
                     onChange={handleSingleFileInput} 
                   />
-                </div>
-              </div>
-
-              {/* Grid of Clean Workspace Presets */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 w-full mb-6">
-                {workspaces.map(ws => (
-                  <div
-                    key={ws.id}
-                    onClick={() => handleSelectFolder(ws)}
-                    className="border border-neutral-900 hover:border-neutral-700 p-4 transition-all cursor-pointer bg-neutral-950 hover:bg-neutral-900/40 group flex flex-col justify-between h-28"
-                  >
-                    <div>
-                      <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-1 font-mono">Devora Workspace</div>
-                      <h3 className="text-xs font-semibold text-white tracking-wide group-hover:text-emerald-400 transition-colors">
-                        {ws.name}
-                      </h3>
-                    </div>
-                    <div className="flex items-center justify-between text-[11px] text-neutral-500 font-mono">
-                      <span>{ws.files.length} files</span>
-                      <ChevronRight className="w-3.5 h-3.5 text-neutral-600 group-hover:text-white transition-colors" />
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Workspace History Stack Footer */}
-              <div className="w-full">
-                <div className="text-xs text-neutral-400 uppercase tracking-wider mb-2 font-semibold">
-                  RECENT WORKSPACE ENVIRONMENTS
-                </div>
-                <div className="space-y-1.5 border-t border-neutral-900 pt-2">
-                  {workspaces.map((ws, idx) => (
-                    <div 
-                      key={idx}
-                      onClick={() => handleSelectFolder(ws)}
-                      className="text-xs text-neutral-300 hover:text-white py-2 px-3 hover:bg-neutral-900/50 cursor-pointer flex items-center justify-between border border-transparent hover:border-neutral-800 transition-all font-mono"
-                    >
-                      <span className="tracking-wide">📁 {ws.path}</span>
-                      <span className="text-[10px] text-emerald-400 uppercase font-sans font-medium">Ready</span>
-                    </div>
-                  ))}
                 </div>
               </div>
 
