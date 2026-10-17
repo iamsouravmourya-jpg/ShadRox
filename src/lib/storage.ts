@@ -1,10 +1,12 @@
 import type { ProviderId } from './providers';
-import type { RecentEntry } from './types';
+import type { PlanTier, RecentEntry } from './types';
 
 const STORE_KEYS = {
   apiKey: (provider: ProviderId) => `devora.byok.${provider}`,
   selectedModel: (provider: ProviderId) => `devora.model.${provider}`,
   activeProvider: 'devora.provider.active',
+  useSharedKey: 'devora.key.shared',
+  plan: 'devora.plan',
   session: 'devora.session',
   recents: 'devora.recents'
 } as const;
@@ -61,6 +63,25 @@ export function getSelectedModel(provider: ProviderId): string {
 
 export function setSelectedModel(provider: ProviderId, modelId: string): void {
   if (modelId) safeSet(STORE_KEYS.selectedModel(provider), modelId);
+}
+
+/** Whether the user runs on Devora's shared key instead of their own. */
+export function getUseSharedKey(): boolean {
+  return safeGet(STORE_KEYS.useSharedKey) === 'true';
+}
+
+export function setUseSharedKey(value: boolean): void {
+  if (value) safeSet(STORE_KEYS.useSharedKey, 'true');
+  else safeRemove(STORE_KEYS.useSharedKey);
+}
+
+export function getPlan(): PlanTier {
+  const raw = safeGet(STORE_KEYS.plan);
+  return raw === 'pro' || raw === 'adv' || raw === 'enterprise' ? raw : 'free';
+}
+
+export function setPlan(plan: PlanTier): void {
+  safeSet(STORE_KEYS.plan, plan);
 }
 
 export function getSessionToken(): string {

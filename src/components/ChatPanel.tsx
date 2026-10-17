@@ -11,13 +11,14 @@ import {
   Sparkles,
   Square,
   Trash2,
-  Wand2
+  Wand2,
+  Zap
 } from 'lucide-react';
 import { maskFileWrites, renderMarkdownContent } from '../lib/markdown';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 import { getRefineMode, REFINE_MODES } from '../lib/ai';
 import { getProviderMeta, type ModelInfo, type ModelTier, type ProviderId } from '../lib/providers';
-import type { ChatMessage, RefineMode, WorkspaceFile } from '../lib/types';
+import type { ChatMessage, PlanTier, RefineMode, SettingsTab, WorkspaceFile } from '../lib/types';
 import type { CheckpointMeta } from '../lib/history';
 
 interface ChatPanelProps {
@@ -37,7 +38,8 @@ interface ChatPanelProps {
   selectedModel: string;
   onSelectModel: (modelId: string) => void;
   hasKey: boolean;
-  onOpenSettings: () => void;
+  plan: PlanTier;
+  onOpenSettings: (tab?: SettingsTab) => void;
   attachedFileName: string | null;
   onAttachedFileChange: (fileName: string | null) => void;
   workspaceFiles: WorkspaceFile[];
@@ -69,6 +71,7 @@ export function ChatPanel({
   selectedModel,
   onSelectModel,
   hasKey,
+  plan,
   onOpenSettings,
   attachedFileName,
   onAttachedFileChange,
@@ -119,6 +122,17 @@ export function ChatPanel({
         </button>
 
         <div className="flex items-center gap-1">
+          {plan === 'free' && (
+            <button
+              type="button"
+              onClick={() => onOpenSettings('PLAN')}
+              title="Pro plan: Devora ki shared key — koi BYOK setup nahi"
+              className="flex items-center gap-1 px-2 py-1 border border-amber-900/60 text-amber-400 text-[10px] uppercase tracking-wide hover:bg-amber-950/30 transition-colors cursor-pointer"
+            >
+              <Zap className="w-3 h-3" />
+              Upgrade
+            </button>
+          )}
           <button
             type="button"
             onClick={onClearChat}
@@ -129,7 +143,7 @@ export function ChatPanel({
           </button>
           <button
             type="button"
-            onClick={onOpenSettings}
+            onClick={() => onOpenSettings()}
             title="Settings"
             className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
           >
@@ -145,7 +159,7 @@ export function ChatPanel({
               type="button"
               onClick={() => {
                 setIsModelMenuOpen(false);
-                onOpenSettings();
+                onOpenSettings('CHAT');
               }}
               className="w-full px-3 py-4 text-left text-xs text-neutral-400 hover:text-white cursor-pointer"
             >
@@ -188,10 +202,10 @@ export function ChatPanel({
       {!hasKey && (
         <button
           type="button"
-          onClick={onOpenSettings}
+          onClick={() => onOpenSettings('CHAT')}
           className="shrink-0 px-3 py-2 text-left text-[11px] text-amber-400/90 bg-amber-950/20 border-b border-amber-900/40 hover:bg-amber-950/40 transition-colors cursor-pointer"
         >
-          BYOK: apni Groq ya Gemini key add karo, ya Devora key use karo →
+          BYOK: apni Groq ya Gemini key add karo — ya Pro plan se Devora ki shared key use karo →
         </button>
       )}
 

@@ -14,9 +14,10 @@ import { bundleDocument, bundleProject, canBundle, describeBundleError } from '.
 import { extractFilePatches } from './lib/markdown';
 import { PREVIEW_BASE_STYLE, PREVIEW_ERROR_BRIDGE, previewCapabilityMessage, resolvePreviewDocument } from './lib/preview';
 import { renderRetrievedContext, retrieveContext } from './lib/retrieval';
-import { getSessionToken, setSessionToken } from './lib/storage';
+import { getPlan, getSessionToken, setPlan as persistPlan, setSessionToken } from './lib/storage';
 import type {
   ChatMessage,
+  PlanTier,
   RecentEntry,
   RefineMode,
   RefinedPromptMeta,
@@ -54,6 +55,7 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('CHAT');
   const [secrets, setSecrets] = useState<SecretItem[]>([]);
+  const [plan, setPlan] = useState<PlanTier>(() => getPlan());
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -69,6 +71,16 @@ export default function App() {
   const [bundleState, setBundleState] = useState<BundleState>({ status: 'idle' });
 
   const abortRef = useRef<AbortController | null>(null);
+
+  const openSettings = useCallback((tab: SettingsTab = 'CHAT') => {
+    setSettingsTab(tab);
+    setIsSettingsOpen(true);
+  }, []);
+
+  const changePlan = useCallback((next: PlanTier) => {
+    setPlan(next);
+    persistPlan(next);
+  }, []);
 
   // Move into the workspace automatically once a folder/files are mounted.
   useEffect(() => {
@@ -658,7 +670,8 @@ export default function App() {
             selectedModel={byok.selectedModel}
             onSelectModel={byok.selectModel}
             hasKey={hasKey}
-            onOpenSettings={() => setIsSettingsOpen(true)}
+            plan={plan}
+            onOpenSettings={openSettings}
             attachedFileName={attachedFileName}
             onAttachedFileChange={setAttachedFileName}
             workspaceFiles={workspace.files}
@@ -729,6 +742,8 @@ export default function App() {
         onTemperatureChange={byok.setTemperature}
         useDevoraKey={byok.useDevoraKey}
         onUseDevoraKeyChange={byok.setUseDevoraKey}
+        plan={plan}
+        onPlanChange={changePlan}
         secrets={secrets}
         onSecretsChange={setSecrets}
         workspaceFiles={workspace.files}

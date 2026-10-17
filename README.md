@@ -155,7 +155,7 @@ Failure modes are reported explicitly, because a silent "nothing happened" is th
 
 Only keys that **passed validation** are used for chat. Tier classification is a curated list checked against provider docs in **October 2026**; anything unrecognised is treated as `pro` rather than promising a free model that isn't. Non-chat models (speech, TTS, moderation, embeddings, image and video generation) are filtered out of the picker entirely.
 
-The **"Devora ki shared key"** checkbox sends no key from the client, so the request falls back to `DEVORA_GEMINI_API_KEY` on the server.
+The **"Devora ki shared key"** checkbox sends no key from the client, so the request falls back to `DEVORA_GROQ_API_KEY` on the server. Because that key is a paid key, the server only accepts it for **Pro-tier models**.
 
 ### Settings drawer
 
@@ -282,10 +282,14 @@ Open `http://localhost:3000`. The dev server mounts the exact handler files Verc
 
 Users bring their own key, so these are only needed if you want the shared Devora key to work. Copy `.env.example` to `.env` locally, or set them in Vercel → Project → Settings → Environment Variables.
 
+The shared key is **restricted to Pro-tier models**: a request that carries no BYOK key is rejected when it asks for a free-tier model, so the free list stays BYOK-only and the spend stays bounded. Leave every variable empty to run Devora as strictly BYOK.
+
 | Variable | Required | Purpose |
 | :--- | :--- | :--- |
-| `DEVORA_GEMINI_API_KEY` | No | Primary key used when a request carries no BYOK key |
-| `GEMINI_API_KEY` | No | Fallback for the above; either one is enough |
+| `DEVORA_GROQ_API_KEY` | No | Shared key used when a request carries no BYOK key (primary provider) |
+| `GROQ_API_KEY` | No | Fallback for the above; either one is enough |
+| `DEVORA_GEMINI_API_KEY` | No | Shared Gemini key, kept for symmetry |
+| `GEMINI_API_KEY` | No | Fallback for the above |
 | `PORT` | No | Dev server port (default `3000`) |
 
 `.env*` is gitignored; `.env.example` is committed.
@@ -319,7 +323,7 @@ All routes are `POST` and return JSON unless noted.
 | `POST /api/github/validate` | `{ token }` | `{ user, repos[] }` |
 | `POST /api/github/create-repo` | `{ token, name, description?, isPrivate? }` | `{ success, repo }` |
 | `POST /api/github/push` | `{ token, owner, repo, files[], commitMessage? }` | `{ success, results[], repoUrl }` |
-| `GET /api/health` | — | `{ status, hasDevoraKey }` — **dev server only** |
+| `GET /api/health` | — | `{ status, sharedKeys: { groq, gemini } }` — **dev server only** |
 
 Copy is in Hinglish inside the API error messages, matching the app's UI language.
 

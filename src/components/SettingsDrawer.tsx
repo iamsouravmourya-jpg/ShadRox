@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import {
   AlertCircle,
+  Check,
   CheckCircle,
   Eye,
   EyeOff,
@@ -10,13 +11,16 @@ import {
   Lock,
   Plus,
   Trash2,
-  X
+  X,
+  Zap
 } from 'lucide-react';
 import { PROVIDERS, getProviderMeta, type ModelInfo, type ModelTier, type ProviderId } from '../lib/providers';
+import { PLANS, getPlanMeta } from '../lib/plans';
 import type {
   GitHubRepo,
   GitHubUser,
   KeyStatus,
+  PlanTier,
   SecretItem,
   SettingsTab,
   WorkspaceFile
@@ -45,6 +49,9 @@ interface SettingsDrawerProps {
   useDevoraKey: boolean;
   onUseDevoraKeyChange: (value: boolean) => void;
 
+  plan: PlanTier;
+  onPlanChange: (plan: PlanTier) => void;
+
   secrets: SecretItem[];
   onSecretsChange: (secrets: SecretItem[]) => void;
 
@@ -53,6 +60,7 @@ interface SettingsDrawerProps {
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: 'CHAT', label: 'Models & Keys' },
+  { id: 'PLAN', label: 'Plan' },
   { id: 'GITHUB', label: 'GitHub' },
   { id: 'SECRETS', label: 'Secrets' }
 ];
@@ -93,6 +101,8 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     onTemperatureChange,
     useDevoraKey,
     onUseDevoraKeyChange,
+    plan,
+    onPlanChange,
     secrets,
     onSecretsChange,
     workspaceFiles
@@ -304,14 +314,29 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     onChange={(event) => onUseDevoraKeyChange(event.target.checked)}
                     className="mt-0.5 accent-emerald-500"
                   />
-                  <span>
-                    <span className="block text-xs text-neutral-200">Devora ki shared key use karo</span>
-                    <span className="block text-[11px] text-neutral-600 mt-0.5">
-                      Bina BYOK ke chalane ke liye. Isse request hamare serverless proxy se jaati hai — isliye plan ka
-                      hona zaroori hai.
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-2">
+                      <span className="text-xs text-neutral-200">Devora ki shared key use karo</span>
+                      <span className="shrink-0 border border-amber-900/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-400">
+                        Pro
+                      </span>
+                    </span>
+                    <span className="block text-[11px] text-neutral-600 mt-1">
+                      Bina BYOK ke chalane ke liye. Request hamare serverless proxy se jaati hai, isliye ye sirf Pro-tier
+                      models par chalti hai — free models ke liye apni key lagao.
                     </span>
                   </span>
                 </label>
+                {plan === 'free' && (
+                  <button
+                    type="button"
+                    onClick={() => onPlanChange('pro')}
+                    className="mt-3 flex w-full items-center justify-center gap-1.5 border border-amber-900/60 py-2 text-[11px] text-amber-400 hover:bg-amber-950/30 transition-colors cursor-pointer"
+                  >
+                    <Zap className="w-3 h-3" />
+                    Upgrade to Pro
+                  </button>
+                )}
               </section>
 
               <section>
@@ -321,6 +346,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 {models.length === 0 ? (
                   <p className="mt-2 text-[11px] text-neutral-600">
                     Key save karke test karo — jo models us key par chalenge wo free/pro me divide ho kar yahan dikhenge.
+                    Ya Devora ki shared key on karo aur Pro models se shuru karo.
                   </p>
                 ) : (
                   <div className="mt-2 space-y-4">
@@ -369,6 +395,75 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   onChange={(event) => onTemperatureChange(Number(event.target.value))}
                   className="mt-2 w-full accent-emerald-500"
                 />
+              </section>
+            </>
+          )}
+
+          {activeTab === 'PLAN' && (
+            <>
+              <section className="flex items-center justify-between border border-neutral-900 px-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="text-xs text-neutral-500">Current plan</div>
+                  <div className="text-sm text-white">{getPlanMeta(plan).label}</div>
+                </div>
+                <span className="shrink-0 border border-emerald-900/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-400">
+                  active
+                </span>
+              </section>
+
+              <p className="text-[11px] text-neutral-600">
+                Billing abhi wire nahi hui — ye sirf UI preview hai. Free me apni key (BYOK) chalti hai, Pro se Devora ki
+                shared key milti hai.
+              </p>
+
+              <section className="space-y-2">
+                {PLANS.map((entry) => {
+                  const isCurrent = entry.id === plan;
+                  return (
+                    <div
+                      key={entry.id}
+                      className={`border p-3 ${isCurrent ? 'border-white' : 'border-neutral-900'}`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-2 text-xs text-white">
+                          {entry.label}
+                          {isCurrent && (
+                            <span className="border border-emerald-900/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-400">
+                              current
+                            </span>
+                          )}
+                        </span>
+                        <span className="shrink-0 text-[11px] font-mono text-neutral-400">{entry.price}</span>
+                      </div>
+
+                      <p className="mt-1 text-[11px] text-neutral-500">{entry.blurb}</p>
+
+                      <ul className="mt-2 space-y-1">
+                        {entry.perks.map((perk) => (
+                          <li key={perk} className="flex items-start gap-1.5 text-[11px] text-neutral-400">
+                            <Check className="mt-0.5 w-3 h-3 shrink-0 text-emerald-500" />
+                            {perk}
+                          </li>
+                        ))}
+                      </ul>
+
+                      <button
+                        type="button"
+                        onClick={() => onPlanChange(entry.id)}
+                        disabled={isCurrent}
+                        className={`mt-3 w-full py-2 text-[11px] transition-colors ${
+                          isCurrent
+                            ? 'border border-neutral-900 text-neutral-600'
+                            : entry.id === 'free'
+                              ? 'border border-neutral-800 text-neutral-300 hover:bg-neutral-950 cursor-pointer'
+                              : 'bg-white font-semibold text-black hover:bg-neutral-200 cursor-pointer'
+                        }`}
+                      >
+                        {isCurrent ? 'Current plan' : entry.id === 'free' ? 'Switch to Free' : `Upgrade to ${entry.label}`}
+                      </button>
+                    </div>
+                  );
+                })}
               </section>
             </>
           )}

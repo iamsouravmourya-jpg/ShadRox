@@ -1,13 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { validateProviderKey } from '../lib/ai';
-import { defaultModelFor, detectProviderFromKey, getProviderMeta, looksLikeKeyFor, type ModelInfo, type ProviderId } from '../lib/providers';
+import {
+  DEFAULT_SHARED_MODEL,
+  buildSharedModelList,
+  defaultModelFor,
+  detectProviderFromKey,
+  getProviderMeta,
+  looksLikeKeyFor,
+  type ModelInfo,
+  type ProviderId
+} from '../lib/providers';
 import {
   getActiveProvider,
   getApiKey,
   getSelectedModel,
+  getUseSharedKey,
   setActiveProvider as persistActiveProvider,
   setApiKey,
-  setSelectedModel as persistSelectedModel
+  setSelectedModel as persistSelectedModel,
+  setUseSharedKey as persistUseSharedKey
 } from '../lib/storage';
 import type { KeyStatus } from '../lib/types';
 
@@ -55,8 +66,13 @@ export function useByok(): UseByokResult {
     gemini: getSelectedModel('gemini'),
     groq: getSelectedModel('groq')
   }));
-  const [useDevoraKey, setUseDevoraKey] = useState(false);
+  const [useDevoraKey, setUseDevoraKeyState] = useState<boolean>(() => getUseSharedKey());
   const [temperature, setTemperature] = useState(0.7);
+
+  const setUseDevoraKey = useCallback((value: boolean) => {
+    setUseDevoraKeyState(value);
+    persistUseSharedKey(value);
+  }, []);
 
   const validateKey = useCallback(
     async (provider: ProviderId) => {
@@ -133,7 +149,7 @@ export function useByok(): UseByokResult {
         }));
       }
     },
-    [apiKeyDraft, activeProvider]
+    [apiKeyDraft, activeProvider, setUseDevoraKey]
   );
 
   // Re-validate keys that are already saved so the model list is ready on load.
@@ -174,9 +190,21 @@ export function useByok(): UseByokResult {
     [activeProvider]
   );
 
-  const models = modelsByProvider[activeProvider];
-  const selectedModel =
-    selectedByProvider[activeProvider] || defaultModelFor(activeProvider, models);
+  const byokModels = modelsByProvider[activeProvider];
+  const sharedModels = useMemo(() => buildSharedModelList(activeProvider), [activeProvider]);
+
+  // With the shared key there is no user key to enumerate models from, so the
+  // picker falls back to Devora's static Pro catalog.
+  const models = useDevoraKey ? sharedModels : byokModels;
+
+  const selectedModel = useMemo(() => {
+    const list = useDevoraKey ? sharedModels : byokModels;
+    if (list.length === 0) return '';
+    const stored = selectedByProvider[activeProvider];
+    if (stored && list.some((model) => model.id === stored)) return stored;
+    return useDevoraKey ? DEFAULT_SHARED_MODEL[activeProvider] : defaultModelFor(activeProvider, list);
+  }, [useDevoraKey, sharedModels, byokModels, selectedByProvider, activeProvider]);
+
   const activeKey = savedKeys[activeProvider] || '';
 
   return useMemo(
@@ -209,6 +237,7 @@ export function useByok(): UseByokResult {
       selectedModel,
       selectModel,
       useDevoraKey,
+      setUseDevoraKey,
       temperature,
       activeKey
     ]

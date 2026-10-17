@@ -41,7 +41,13 @@ async function startServer() {
   };
 
   mount('get', '/api/health', async (_req, res) => {
-    sendJson(res, 200, { status: 'ok', hasDevoraKey: Boolean(process.env.DEVORA_GEMINI_API_KEY) });
+    sendJson(res, 200, {
+      status: 'ok',
+      sharedKeys: {
+        groq: Boolean(process.env.DEVORA_GROQ_API_KEY || process.env.GROQ_API_KEY),
+        gemini: Boolean(process.env.DEVORA_GEMINI_API_KEY || process.env.GEMINI_API_KEY)
+      }
+    });
   });
 
   mount('post', '/api/byok/validate', byokValidate);

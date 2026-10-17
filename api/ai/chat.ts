@@ -9,6 +9,8 @@ import {
   type ApiRequest,
   type ApiResponse
 } from '../_http.js';
+import { classifyTier } from '../../src/lib/providers.js';
+import { sharedKeyFor } from '../_sharedKey.js';
 
 type ProviderId = 'gemini' | 'groq';
 
@@ -238,7 +240,8 @@ async function streamGroq(options: {
  * Streams normalised SSE events: {type:'delta'|'done'|'error'}.
  *
  * - apiKey present  -> BYOK passthrough, user pays, we never store the key.
- * - apiKey absent   -> falls back to the Devora key from the environment.
+ * - apiKey absent   -> falls back to the Devora key from the environment, which
+ *                      is restricted to Pro-tier models.
  */
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   if (req.method !== 'POST') {
@@ -256,25 +259,39 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     return;
   }
 
-  const byokKey = (body.apiKey || '').trim();
-  const provider: ProviderId = byokKey ? (body.provider === 'groq' ? 'groq' : 'gemini') : 'gemini';
-  const devoraKey = (process.env.DEVORA_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '').trim();
-  const apiKey = byokKey || devoraKey;
-
-  if (!apiKey) {
-    sendError(res, 400, 'Koi API key nahi mili. Settings → BYOK me apni key add karo.');
-    return;
-  }
-
-  if (!byokKey) {
-    // TODO(phase-3): verify Supabase session + apply per-user rate limit before
-    // spending the shared Devora key. See docs in README.
-  }
-
+  const provider: ProviderId = body.provider === 'groq' ? 'groq' : 'gemini';
   const fallbackModel = provider === 'gemini' ? DEFAULT_GEMINI_MODEL : DEFAULT_GROQ_MODEL;
   const model = (body.model || '').trim() || fallbackModel;
   const temperature = typeof body.temperature === 'number' ? body.temperature : 0.7;
   const thinking = body.thinking === 'high' || body.thinking === 'low' ? body.thinking : undefined;
+
+  const byokKey = (body.apiKey || '').trim();
+  const devoraKey = byokKey ? '' : sharedKeyFor(provider);
+  const apiKey = byokKey || devoraKey;
+
+  if (!apiKey) {
+    sendError(
+      res,
+      400,
+      `Is provider (${provider}) ke liye Devora ki shared key set nahi hai. Settings → BYOK me apni key add karo.`
+    );
+    return;
+  }
+
+  if (!byokKey) {
+    // The shared key belongs to Devora's paid plan, so it only serves the Pro
+    // tier. The free list stays BYOK-only, which keeps the spend bounded.
+    if (classifyTier(provider, model) !== 'pro') {
+      sendError(
+        res,
+        400,
+        `Devora ki shared key sirf Pro models par chalti hai, aur "${model}" free tier me hai. Free models ke liye Settings → BYOK me apni key add karo.`
+      );
+      return;
+    }
+    // TODO(phase-3): verify Supabase session + apply per-user rate limit before
+    // spending the shared Devora key. See docs in README.
+  }
 
   const abort = new AbortController();
   req.on('close', () => abort.abort());

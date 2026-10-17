@@ -2,7 +2,13 @@ export type Stage = 'STAGE_1' | 'STAGE_2' | 'STAGE_3';
 
 export type TabType = 'CODE' | 'PREVIEW';
 
-export type SettingsTab = 'CHAT' | 'GITHUB' | 'SECRETS';
+export type SettingsTab = 'CHAT' | 'PLAN' | 'GITHUB' | 'SECRETS';
+
+/**
+ * UI-only plan ladder. Nothing is wired to billing yet — there is no database,
+ * so the upgrade buttons just preview a tier locally.
+ */
+export type PlanTier = 'free' | 'pro' | 'adv' | 'enterprise';
 
 export type ViewportSize = 'desktop' | 'tablet' | 'mobile';
 

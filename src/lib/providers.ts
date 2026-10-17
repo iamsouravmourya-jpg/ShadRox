@@ -68,6 +68,34 @@ const GROQ_FREE_MODELS = [
   'groq/compound-mini'
 ];
 
+/**
+ * Devora's shared key is a paid key, so it is restricted to models Devora marks
+ * as Pro (the same `classifyTier` rule the server enforces). When the shared key
+ * is on there is no BYOK key to list models from, so the picker uses this small
+ * static catalog instead.
+ */
+const SHARED_MODELS: Record<ProviderId, string[]> = {
+  gemini: ['gemini-4-argon'],
+  groq: [
+    'meta-llama/llama-4-scout-17b-16e-instruct',
+    'llama-3.3-70b-versatile',
+    'moonshotai/kimi-k2-instruct',
+    'qwen/qwen3-32b'
+  ]
+};
+
+/** Default shared-key model per provider. Scout is the cheapest fast-tier option,
+ *  which is what the Pro plan's pricing is modelled on. */
+export const DEFAULT_SHARED_MODEL: Record<ProviderId, string> = {
+  gemini: 'gemini-4-argon',
+  groq: 'meta-llama/llama-4-scout-17b-16e-instruct'
+};
+
+/** Pro-tier models Devora's shared key can serve for this provider. */
+export function buildSharedModelList(provider: ProviderId): ModelInfo[] {
+  return buildModelList(provider, SHARED_MODELS[provider]);
+}
+
 /** Non-chat models (speech, moderation) never belong in a code assistant picker. */
 const NON_CHAT_PATTERNS = [
   'whisper', 'tts', 'orpheus', 'prompt-guard', 'safeguard-preview',
