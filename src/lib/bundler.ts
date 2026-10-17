@@ -135,9 +135,37 @@ interface PackageManifest {
   devDependencies?: Record<string, string>;
 }
 
+/**
+ * Finds the project root directory inside a mounted workspace (e.g. for monorepos
+ * or when the user opens the parent folder of a project).
+ */
+export function findProjectRoot(files: WorkspaceFile[]): string {
+  // If we can identify the entry point by React mounter, use its root directly.
+  const mounter = files.find((file) => /from\s+['"]react-dom\/client['"]|from\s+['"]react-dom['"]/.test(file.content));
+  if (mounter) {
+    const mounterDir = dirname(normalize(mounter.name));
+    const parts = mounterDir.split('/');
+    const srcIndex = parts.lastIndexOf('src');
+    const root = srcIndex >= 0 ? parts.slice(0, srcIndex).join('/') : mounterDir;
+    
+    // Verify a package.json actually exists at this inferred root
+    const target = root ? `${root}/package.json` : 'package.json';
+    if (files.some((f) => normalize(f.name).toLowerCase() === target.toLowerCase())) {
+      return root;
+    }
+  }
+
+  // Fallback: shortest package.json path wins
+  const pkgs = files.filter((f) => normalize(f.name).toLowerCase().endsWith('package.json'));
+  if (pkgs.length === 0) return '';
+  pkgs.sort((a, b) => a.name.split('/').length - b.name.split('/').length);
+  return dirname(normalize(pkgs[0].name));
+}
+
 /** Parses a mounted package.json, or null when it is missing or unreadable. */
-function readManifest(files: WorkspaceFile[]): PackageManifest | null {
-  const pkg = files.find((file) => normalize(file.name).toLowerCase() === 'package.json');
+function readManifest(files: WorkspaceFile[], root: string = ''): PackageManifest | null {
+  const target = root ? `${root}/package.json` : 'package.json';
+  const pkg = files.find((file) => normalize(file.name).toLowerCase() === target.toLowerCase());
   if (!pkg) return null;
   try {
     return JSON.parse(pkg.content) as PackageManifest;
@@ -171,9 +199,9 @@ function cdnUrl(name: string, version: string, externals: string[] = []): string
  * instance of shared libraries (React, @codemirror/state...) instead of a
  * duplicate copy per package, which is what breaks hooks/observers at runtime.
  */
-export function buildImportMap(files: WorkspaceFile[]): Record<string, string> {
+export function buildImportMap(files: WorkspaceFile[], root: string = ''): Record<string, string> {
   const imports: Record<string, string> = {};
-  const manifest = readManifest(files) ?? {};
+  const manifest = readManifest(files, root) ?? {};
   const deps = { ...manifest.devDependencies, ...manifest.peerDependencies, ...manifest.dependencies };
   const names = Object.keys(deps).filter((name) => !name.startsWith('@types/'));
   // devDependencies are build tooling, so only runtime deps are dedupe candidates.
@@ -197,6 +225,8 @@ export function buildImportMap(files: WorkspaceFile[]): Record<string, string> {
   Object.entries(DEFAULT_IMPORT_MAP).forEach(([specifier, url]) => {
     if (!imports[specifier]) imports[specifier] = url;
   });
+  if (!imports['esbuild-wasm']) imports['esbuild-wasm'] = `${CDN}/esbuild-wasm@0.28.2`;
+  if (!imports['esbuild-wasm/']) imports['esbuild-wasm/'] = `${CDN}/esbuild-wasm@0.28.2/`;
 
   return imports;
 }
@@ -249,10 +279,14 @@ function parseJsonc(content: string): Record<string, unknown> | null {
  * Reads `@/*` style aliases from a mounted tsconfig/jsconfig, so imports that
  * only resolve through TypeScript path mapping also resolve in the sandbox.
  */
-export function readPathAliases(files: WorkspaceFile[]): PathAlias[] {
+export function readPathAliases(files: WorkspaceFile[], root: string = ''): PathAlias[] {
   const config = files.find((file) => {
     const name = normalize(file.name).toLowerCase();
-    return name === 'tsconfig.json' || name === 'jsconfig.json' || name === 'tsconfig.app.json';
+    return (
+      name === (root ? `${root}/tsconfig.json`.toLowerCase() : 'tsconfig.json') ||
+      name === (root ? `${root}/jsconfig.json`.toLowerCase() : 'jsconfig.json') ||
+      name === (root ? `${root}/tsconfig.app.json`.toLowerCase() : 'tsconfig.app.json')
+    );
   });
   if (!config) return [];
 
@@ -261,7 +295,8 @@ export function readPathAliases(files: WorkspaceFile[]): PathAlias[] {
   const paths = options?.paths;
   if (!paths || typeof paths !== 'object') return [];
 
-  const baseUrl = normalize(String(options?.baseUrl ?? '.'));
+  let base = normalize(String(options?.baseUrl ?? '.'));
+  if (root) base = base === '.' || !base ? root : `${root}/${base}`;
 
   return Object.entries(paths).flatMap(([pattern, targets]) => {
     if (!Array.isArray(targets) || targets.length === 0) return [];
@@ -272,7 +307,7 @@ export function readPathAliases(files: WorkspaceFile[]): PathAlias[] {
         suffix: star === -1 ? '' : pattern.slice(star + 1),
         targets: targets
           .filter((target): target is string => typeof target === 'string')
-          .map((target) => normalize(baseUrl ? `${baseUrl}/${target}` : target))
+          .map((target) => normalize(base ? `${base}/${target}` : target))
       }
     ];
   });
@@ -293,10 +328,11 @@ export function resolveAliasPath(specifier: string, aliases: PathAlias[]): strin
 }
 
 /** Picks the file that boots the app, or null when nothing looks runnable. */
-export function findEntryFile(files: WorkspaceFile[]): string | null {
-  const byName = new Map(files.map((file) => [file.name.toLowerCase(), file.name]));
+export function findEntryFile(files: WorkspaceFile[], root: string = ''): string | null {
+  const byName = new Map(files.map((file) => [normalize(file.name).toLowerCase(), file.name]));
   for (const candidate of ENTRY_CANDIDATES) {
-    const hit = byName.get(candidate);
+    const target = root ? `${root}/${candidate}` : candidate;
+    const hit = byName.get(target.toLowerCase());
     if (hit) return hit;
   }
 
@@ -309,7 +345,8 @@ export function findEntryFile(files: WorkspaceFile[]): string | null {
 
 /** True when this workspace can be bundled and run, not just viewed. */
 export function canBundle(files: WorkspaceFile[]): boolean {
-  return findEntryFile(files) !== null;
+  const root = findProjectRoot(files);
+  return findEntryFile(files, root) !== null;
 }
 
 export async function bundleProject(
@@ -317,13 +354,14 @@ export async function bundleProject(
   secrets: SecretItem[] = [],
   assets: AssetMap = {}
 ): Promise<BundleResult> {
-  const entry = findEntryFile(files);
+  const root = findProjectRoot(files);
+  const entry = findEntryFile(files, root);
   if (!entry) throw new Error('No entry file found (e.g. src/main.tsx, src/index.tsx, or index.html required).');
 
   const esbuild = await loadEsbuild();
   const sources = new Map(files.map((file) => [normalize(file.name), file.content]));
-  const aliases = readPathAliases(files);
-  const importMap = buildImportMap(files);
+  const aliases = readPathAliases(files, root);
+  const importMap = buildImportMap(files, root);
 
   // Generated virtual modules (asset data URLs, CDN URLs) are handed to esbuild
   // through this side table so no large payload travels through plugin metadata.
