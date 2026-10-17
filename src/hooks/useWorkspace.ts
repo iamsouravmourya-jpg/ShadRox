@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { AssetMap } from '../lib/assets';
 import { detectLanguage } from '../lib/languages';
 import type { FilePatch } from '../lib/markdown';
 import { loadHandles, pruneHandles, saveHandles } from '../lib/fileHandles';
@@ -7,6 +8,7 @@ import { getSnapshot, pruneSnapshots, saveSnapshot } from '../lib/snapshots';
 import { getRecentWorkspaces, pushRecentWorkspace } from '../lib/storage';
 import {
   filesFromFileList,
+  hydrateAssets,
   pickDirectory,
   pickFiles,
   supportsDirectoryPicker,
@@ -25,6 +27,8 @@ export interface ApplyPatchesResult {
 interface MountOptions {
   handles?: HandleEntry[];
   directoryHandle?: unknown;
+  /** Binary assets (images, fonts) served to the preview as data URLs. */
+  assets?: AssetMap;
 }
 
 interface UseWorkspaceResult {
@@ -32,6 +36,8 @@ interface UseWorkspaceResult {
   files: WorkspaceFile[];
   activeFile: WorkspaceFile | null;
   activeFileIndex: number;
+  /** Binary assets mounted from disk, keyed by workspace-relative path. */
+  assets: AssetMap;
   recents: RecentEntry[];
   isBusy: boolean;
   statusMessage: string | null;
@@ -73,6 +79,7 @@ export function useWorkspace(): UseWorkspaceResult {
   const [workspace, setWorkspace] = useState<WorkspaceFolder | null>(null);
   // Nothing is selected on mount: the user sees the file list first and picks.
   const [activeFileIndex, setActiveFileIndex] = useState(-1);
+  const [assets, setAssets] = useState<AssetMap>({});
   const [recents, setRecents] = useState<RecentEntry[]>(() => getRecentWorkspaces());
   const [isBusy, setIsBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -116,6 +123,7 @@ export function useWorkspace(): UseWorkspaceResult {
       const handles = options.handles ?? [];
       handlesRef.current = new Map(handles.map((entry) => [entry.path, entry.handle]));
       directoryHandleRef.current = options.directoryHandle ?? null;
+      setAssets(options.assets ?? {});
       const writable = handles.length > 0 || Boolean(options.directoryHandle);
       canWriteRef.current = writable;
       setCanWriteToDisk(writable);
@@ -150,7 +158,8 @@ export function useWorkspace(): UseWorkspaceResult {
       }
       mount(directory.name, directory.name, 'folder', directory.files, {
         handles: directory.handles,
-        directoryHandle: directory.directoryHandle
+        directoryHandle: directory.directoryHandle,
+        assets: directory.assets
       });
     } catch (error) {
       if ((error as { name?: string })?.name === 'AbortError') return;
@@ -213,9 +222,13 @@ export function useWorkspace(): UseWorkspaceResult {
         const snapshot = await getSnapshot(entry.path);
         if (snapshot && snapshot.files.length > 0) {
           // Handles live in their own store, so a reopened workspace can still
-          // write to disk once the browser re-grants permission.
+          // write to disk once the browser re-grants permission — and its
+          // images can be read back into the preview.
           const handles = await loadHandles(entry.path);
-          mount(snapshot.name, snapshot.path, snapshot.kind, snapshot.files, { handles });
+          mount(snapshot.name, snapshot.path, snapshot.kind, snapshot.files, {
+            handles,
+            assets: await hydrateAssets(handles)
+          });
           return;
         }
         // Entries saved before snapshots existed can only be restored by picking again.
@@ -440,6 +453,7 @@ export function useWorkspace(): UseWorkspaceResult {
   const closeWorkspace = useCallback(() => {
     setWorkspace(null);
     setActiveFileIndex(-1);
+    setAssets({});
     setStatusMessage(null);
     setDiskMessage(null);
     setCheckpoints([]);
@@ -522,6 +536,7 @@ export function useWorkspace(): UseWorkspaceResult {
       files,
       activeFile,
       activeFileIndex,
+      assets,
       recents,
       isBusy,
       statusMessage,
@@ -552,6 +567,7 @@ export function useWorkspace(): UseWorkspaceResult {
       files,
       activeFile,
       activeFileIndex,
+      assets,
       recents,
       isBusy,
       statusMessage,

@@ -79,8 +79,18 @@ export function isRenderableInPreview(fileName: string): boolean {
 
 const BINARY_EXTENSIONS = [
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.avif',
-  '.pdf', '.mp4', '.mov', '.mp3', '.wav', '.zip', '.tar', '.gz',
-  '.exe', '.dll', '.bin', '.woff', '.woff2', '.ttf', '.lock'
+  '.pdf', '.mp4', '.mov', '.webm', '.mp3', '.wav', '.zip', '.tar', '.gz',
+  '.exe', '.dll', '.bin', '.woff', '.woff2', '.ttf', '.otf', '.lock'
+];
+
+/**
+ * Binary files the live preview can actually render. Instead of dropping these
+ * during a folder scan they are read as data URLs, so `/public/logo.png` and
+ * `import logo from './logo.png?url'` work inside the sandbox.
+ */
+const PREVIEW_ASSET_EXTENSIONS = [
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.avif',
+  '.woff', '.woff2', '.ttf', '.otf', '.mp4', '.webm', '.mp3', '.wav', '.pdf'
 ];
 
 const IGNORED_DIRECTORIES = [
@@ -88,10 +98,21 @@ const IGNORED_DIRECTORIES = [
   '.cache', '.vercel', '.turbo', 'vendor', '__pycache__'
 ];
 
+export function isBinaryFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return BINARY_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+/** Binary file the preview serves as an inline data URL instead of skipping. */
+export function isPreviewAsset(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return PREVIEW_ASSET_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
 export function shouldSkipFile(fileName: string): boolean {
   const lower = fileName.toLowerCase();
   if (lower.startsWith('.')) return true;
-  return BINARY_EXTENSIONS.some((ext) => lower.endsWith(ext));
+  return isBinaryFile(lower);
 }
 
 export function shouldSkipDirectory(dirName: string): boolean {

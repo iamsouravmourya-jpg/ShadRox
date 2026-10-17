@@ -1,3 +1,6 @@
+import { inlineHtmlAssets, type AssetMap } from './assets';
+import { detectRoutes, hasServerCode } from './backend';
+import { canBundle } from './bundler';
 import type { WorkspaceFile } from './types';
 
 export interface PreviewDocument {
@@ -124,6 +127,11 @@ export const PREVIEW_ERROR_BRIDGE = `
     function post(payload) {
       try { window.parent.postMessage(Object.assign({ source: 'shadrox-preview' }, payload), '*'); } catch (e) {}
     }
+    function stringify(value) {
+      if (typeof value === 'string') return value;
+      if (value instanceof Error) return value.message;
+      try { return JSON.stringify(value); } catch (e) { return String(value); }
+    }
     window.addEventListener('error', function (event) {
       post({ type: 'error', message: event.message, stack: event.error && event.error.stack });
     });
@@ -131,16 +139,14 @@ export const PREVIEW_ERROR_BRIDGE = `
       var reason = event.reason;
       post({ type: 'error', message: (reason && reason.message) || String(reason), stack: reason && reason.stack });
     });
-    var originalLog = console.log;
-    console.log = function () {
-      post({ type: 'console-log', message: Array.prototype.map.call(arguments, function(a) { return typeof a === 'object' ? JSON.stringify(a) : String(a); }).join(' ') });
-      return originalLog.apply(console, arguments);
-    };
-    var originalError = console.error;
-    console.error = function () {
-      post({ type: 'console-error', message: Array.prototype.map.call(arguments, function(a) { return typeof a === 'object' ? JSON.stringify(a) : String(a); }).join(' ') });
-      return originalError.apply(console, arguments);
-    };
+    [['log', 'console-log'], ['error', 'console-error'], ['warn', 'console-warn'], ['info', 'console-info']].forEach(function (pair) {
+      var level = pair[0];
+      var original = console[level] || console.log;
+      console[level] = function () {
+        post({ type: pair[1], message: Array.prototype.map.call(arguments, stringify).join(' ') });
+        return original.apply(console, arguments);
+      };
+    });
   })();
 `;
 
@@ -197,28 +203,43 @@ export function detectWorkspaceStack(files: WorkspaceFile[]): {
   return { type: 'universal', badge: 'Universal SaaS', framework: 'Polyglot Architecture' };
 }
 
-/** Generates a Next-Level Interactive SaaS Sandbox for any stack (backend/API/full-stack) */
-export function generateUniversalSaaSSandbox(files: WorkspaceFile[], activeFile?: WorkspaceFile): string {
+const METHOD_STYLES: Record<string, string> = {
+  GET: 'bg-emerald-950 text-emerald-400 border-emerald-800/60',
+  POST: 'bg-sky-950 text-sky-400 border-sky-800/60',
+  PUT: 'bg-amber-950 text-amber-400 border-amber-800/60',
+  PATCH: 'bg-amber-950 text-amber-400 border-amber-800/60',
+  DELETE: 'bg-red-950 text-red-400 border-red-800/60',
+  ALL: 'bg-neutral-900 text-neutral-300 border-neutral-700'
+};
+
+/**
+ * Structure preview for workspaces that cannot be bundled — a pure backend, a
+ * Python/Go service, a loose folder of files.
+ *
+ * Everything shown here is read from the workspace: the mounted files, the real
+ * languages, and the routes actually declared in the server code. Nothing is
+ * invented, and simulated responses are labelled as simulated.
+ */
+export function generateUniversalSaaSSandbox(
+  files: WorkspaceFile[],
+  activeFile?: WorkspaceFile,
+  assets: AssetMap = {}
+): string {
   const stack = detectWorkspaceStack(files);
+  const routes = detectRoutes(files);
+  const server = hasServerCode(files);
+  const languages = [...new Set(files.map((f) => f.language).filter(Boolean))];
+  const assetCount = Object.keys(assets).length;
   const fileNames = files.map((f) => f.name);
-  const routeMatches: string[] = [];
 
-  // Extract endpoints or routes from files
-  files.forEach((f) => {
-    const lines = f.content.split('\n');
-    lines.forEach((line) => {
-      const match = line.match(/(['"`])(\/(api|v1|auth|users|dashboard|billing|checkout|items|webhook)[a-zA-Z0-9_\-\/]*)\1/);
-      if (match && !routeMatches.includes(match[2])) {
-        routeMatches.push(match[2]);
-      }
-    });
-  });
-
-  const endpoints = routeMatches.length > 0 ? routeMatches.slice(0, 8) : [
-    '/api/v1/auth/session',
-    '/api/v1/workspace/metrics',
-    '/api/v1/billing/subscription',
-    '/api/v1/users/profile'
+  const stats = [
+    { label: 'Files Mounted', value: String(files.length), note: `${languages.length} language${languages.length === 1 ? '' : 's'} detected` },
+    { label: 'Server Routes', value: String(routes.length), note: server ? 'Read from your server code' : 'No server code detected' },
+    {
+      label: 'Static Assets',
+      value: String(assetCount),
+      note: assetCount > 0 ? 'Served as inline data URLs' : 'No binary assets mounted'
+    }
   ];
 
   return `<!doctype html>
@@ -226,7 +247,7 @@ export function generateUniversalSaaSSandbox(files: WorkspaceFile[], activeFile?
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ShadRox SaaS Sandbox</title>
+  <title>ShadRox Structure Preview</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body { background-color: #050505; color: #f3f4f6; font-family: system-ui, sans-serif; }
@@ -241,8 +262,8 @@ export function generateUniversalSaaSSandbox(files: WorkspaceFile[], activeFile?
           SR
         </div>
         <div>
-          <h1 class="text-sm font-semibold text-white tracking-wide">Live SaaS Product Preview</h1>
-          <p class="text-[11px] text-neutral-400">Interactive Runtime Sandbox for ${escapeHtml(stack.framework)}</p>
+          <h1 class="text-sm font-semibold text-white tracking-wide">Workspace Structure Preview</h1>
+          <p class="text-[11px] text-neutral-400">${escapeHtml(stack.framework)}</p>
         </div>
       </div>
       <span class="px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider bg-emerald-950/60 text-emerald-400 border border-emerald-800/60 rounded">
@@ -250,122 +271,132 @@ export function generateUniversalSaaSSandbox(files: WorkspaceFile[], activeFile?
       </span>
     </header>
 
+    ${
+      server
+        ? `<div class="border border-amber-900/60 bg-amber-950/20 p-3 rounded-lg text-[11px] text-amber-300 leading-relaxed">
+      <span class="font-semibold">Backend server detected.</span>
+      Express / FastAPI / Go jaise server process browser sandbox me chal nahi sakte — isliye yahan sirf tumhare code se padha gaya structure aur routes dikhaye ja rahe hain. Koi bhi "Test Call" simulated response deta hai.
+    </div>`
+        : ''
+    }
+
+    ${
+      !server && routes.length === 0 && !canBundle(files)
+        ? `<div class="border border-neutral-800 bg-neutral-950 p-3 rounded-lg text-[11px] text-neutral-400 leading-relaxed">
+      Is workspace me koi runnable entry point (jaise <span class="font-mono text-neutral-300">src/main.tsx</span>) nahi mila, isliye live app render nahi ho sakta. Neeche files ka structure dikhaya gaya hai.
+    </div>`
+        : ''
+    }
+
     <!-- Interactive Navigation Tabs -->
     <nav class="flex items-center gap-2 border-b border-neutral-800 pb-2 text-xs">
       <button onclick="switchTab('dashboard')" id="tab-dashboard" class="tab-btn px-3 py-1.5 rounded bg-white text-black font-medium transition-colors">Overview</button>
-      <button onclick="switchTab('api')" id="tab-api" class="tab-btn px-3 py-1.5 rounded text-neutral-400 hover:text-white transition-colors">API Endpoints (${endpoints.length})</button>
-      <button onclick="switchTab('files')" id="tab-files" class="tab-btn px-3 py-1.5 rounded text-neutral-400 hover:text-white transition-colors">Architecture (${files.length} Files)</button>
+      <button onclick="switchTab('api')" id="tab-api" class="tab-btn px-3 py-1.5 rounded text-neutral-400 hover:text-white transition-colors">Routes (${routes.length})</button>
+      <button onclick="switchTab('files')" id="tab-files" class="tab-btn px-3 py-1.5 rounded text-neutral-400 hover:text-white transition-colors">Files (${files.length})</button>
     </nav>
 
-    <!-- Dashboard View -->
+    <!-- Overview -->
     <div id="view-dashboard" class="space-y-6">
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        ${stats
+          .map(
+            (stat) => `
         <div class="border border-neutral-800 bg-neutral-900/40 p-4 rounded-lg">
-          <div class="text-[11px] text-neutral-500 uppercase tracking-wider">Monthly Recurring Revenue</div>
-          <div class="text-xl font-bold font-mono text-white mt-1">₹42,850</div>
-          <div class="text-[10px] text-emerald-400 mt-1 flex items-center gap-1">↑ 18.4% this month</div>
-        </div>
-        <div class="border border-neutral-800 bg-neutral-900/40 p-4 rounded-lg">
-          <div class="text-[11px] text-neutral-500 uppercase tracking-wider">Active SaaS Users</div>
-          <div class="text-xl font-bold font-mono text-white mt-1">1,248</div>
-          <div class="text-[10px] text-emerald-400 mt-1 flex items-center gap-1">● 99.98% Service Uptime</div>
-        </div>
-        <div class="border border-neutral-800 bg-neutral-900/40 p-4 rounded-lg">
-          <div class="text-[11px] text-neutral-500 uppercase tracking-wider">API Requests / Day</div>
-          <div class="text-xl font-bold font-mono text-white mt-1">184.2k</div>
-          <div class="text-[10px] text-neutral-400 mt-1 flex items-center gap-1">Average Latency: 42ms</div>
-        </div>
+          <div class="text-[11px] text-neutral-500 uppercase tracking-wider">${escapeHtml(stat.label)}</div>
+          <div class="text-xl font-bold font-mono text-white mt-1">${escapeHtml(stat.value)}</div>
+          <div class="text-[10px] text-neutral-400 mt-1">${escapeHtml(stat.note)}</div>
+        </div>`
+          )
+          .join('')}
       </div>
 
-      <!-- Live Interactive Simulator Card -->
       <div class="border border-neutral-800 bg-neutral-950 p-4 rounded-lg space-y-3">
-        <div class="flex items-center justify-between">
-          <h2 class="text-xs font-semibold uppercase tracking-wider text-neutral-300">Live Workspace Status</h2>
-          <span class="text-[10px] text-neutral-500 font-mono">Active File: ${escapeHtml(activeFile?.name || 'Workspace Root')}</span>
-        </div>
-        <p class="text-xs text-neutral-400 leading-relaxed">
-          This preview sandbox dynamically maps your codebase structure into an interactive testing interface. You can test API endpoints, inspect data structures, and simulate client/server payloads in real-time.
-        </p>
-        <div class="flex items-center gap-2 pt-2">
-          <button onclick="pingServer()" class="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded font-medium transition-colors cursor-pointer">
-            Trigger Health Check
-          </button>
-          <span id="ping-result" class="text-xs font-mono text-neutral-400"></span>
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-neutral-300">Detected Stack</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono">
+          <div class="text-neutral-400">Active file: <span class="text-neutral-200">${escapeHtml(activeFile?.name || 'None selected')}</span></div>
+          <div class="text-neutral-400">Languages: <span class="text-neutral-200">${escapeHtml(languages.join(', ') || 'unknown')}</span></div>
         </div>
       </div>
     </div>
 
-    <!-- API Inspector View -->
+    <!-- Routes -->
     <div id="view-api" class="space-y-3 hidden">
-      <div class="text-xs text-neutral-400">Discovered API endpoints from your codebase:</div>
+      ${
+        routes.length === 0
+          ? `<div class="border border-neutral-800 bg-neutral-950 p-4 rounded-lg text-[11px] text-neutral-400">
+        Is workspace me koi HTTP route nahi mila. Routes tab dikhta hai jab code me <span class="font-mono text-neutral-300">app.get('/x')</span>, <span class="font-mono text-neutral-300">@app.post("/x")</span> ya <span class="font-mono text-neutral-300">app/api/x/route.ts</span> jaisa server code ho.
+      </div>`
+          : `<div class="text-xs text-neutral-400">Read from your server code:</div>
       <div class="divide-y divide-neutral-900 border border-neutral-800 rounded-lg overflow-hidden bg-neutral-950">
-        ${endpoints
+        ${routes
           .map(
-            (ep) => `
-          <div class="p-3 flex items-center justify-between hover:bg-neutral-900/60 transition-colors">
-            <div class="flex items-center gap-2">
-              <span class="px-1.5 py-0.5 text-[10px] font-mono font-bold bg-emerald-950 text-emerald-400 border border-emerald-800/60 rounded">GET</span>
-              <span class="font-mono text-xs text-neutral-200">${escapeHtml(ep)}</span>
+            (route) => `
+          <div class="p-3 flex items-center justify-between gap-3 hover:bg-neutral-900/60 transition-colors">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="px-1.5 py-0.5 text-[10px] font-mono font-bold border rounded shrink-0 ${
+                METHOD_STYLES[route.method] ?? METHOD_STYLES.ALL
+              }">${escapeHtml(route.method)}</span>
+              <span class="font-mono text-xs text-neutral-200 truncate">${escapeHtml(route.path)}</span>
             </div>
-            <button onclick="testEndpoint('${escapeHtml(ep)}')" class="px-2 py-1 text-[11px] border border-neutral-700 hover:border-neutral-500 text-neutral-300 rounded cursor-pointer">Test Call</button>
+            <button onclick="testEndpoint('${escapeHtml(route.method)}','${escapeHtml(route.path)}')" class="px-2 py-1 text-[11px] border border-neutral-700 hover:border-neutral-500 text-neutral-300 rounded cursor-pointer shrink-0">Simulate</button>
           </div>
-        `
+          <div class="px-3 pb-2 -mt-1 text-[10px] text-neutral-600 font-mono truncate">${escapeHtml(route.source)}</div>`
           )
           .join('')}
-      </div>
+      </div>`
+      }
       <div id="api-response-box" class="hidden border border-neutral-800 bg-black p-3 rounded text-xs font-mono">
-        <div class="text-neutral-500 mb-1">Response:</div>
+        <div class="text-neutral-500 mb-1">Simulated response (server is not running):</div>
         <pre id="api-response-text" class="text-emerald-400"></pre>
       </div>
     </div>
 
-    <!-- Files Architecture View -->
+    <!-- Files -->
     <div id="view-files" class="space-y-2 hidden">
-      <div class="text-xs text-neutral-400">Workspace files mounted in current session:</div>
+      <div class="text-xs text-neutral-400">Workspace files mounted in this session:</div>
       <div class="border border-neutral-800 rounded-lg p-3 bg-neutral-950 max-h-64 overflow-y-auto font-mono text-xs space-y-1.5">
         ${fileNames
           .map((fn) => `<div class="text-neutral-300 flex items-center gap-2"><span class="text-neutral-600">●</span> ${escapeHtml(fn)}</div>`)
           .join('')}
       </div>
+      ${
+        assetCount > 0
+          ? `<div class="text-[11px] text-neutral-500">${assetCount} binary asset${
+              assetCount === 1 ? '' : 's'
+            } mounted as data URLs: <span class="font-mono">${escapeHtml(Object.keys(assets).slice(0, 6).join(', '))}${
+              assetCount > 6 ? ' …' : ''
+            }</span></div>`
+          : ''
+      }
     </div>
   </div>
 
   <script>${PREVIEW_ERROR_BRIDGE}</script>
   <script>
     function switchTab(name) {
-      ['dashboard', 'api', 'files'].forEach(t => {
+      ['dashboard', 'api', 'files'].forEach(function (t) {
         document.getElementById('view-' + t).classList.toggle('hidden', t !== name);
-        const btn = document.getElementById('tab-' + t);
-        if (t === name) {
-          btn.className = 'tab-btn px-3 py-1.5 rounded bg-white text-black font-medium transition-colors';
-        } else {
-          btn.className = 'tab-btn px-3 py-1.5 rounded text-neutral-400 hover:text-white transition-colors';
-        }
+        var btn = document.getElementById('tab-' + t);
+        btn.className = t === name
+          ? 'tab-btn px-3 py-1.5 rounded bg-white text-black font-medium transition-colors'
+          : 'tab-btn px-3 py-1.5 rounded text-neutral-400 hover:text-white transition-colors';
       });
     }
 
-    function pingServer() {
-      const el = document.getElementById('ping-result');
-      el.textContent = 'Checking status...';
-      setTimeout(() => {
-        el.textContent = '200 OK — Ready in 24ms';
-        console.log('[ShadRox Preview] Health check passed: { status: "ready", uptime: 99.98 }');
-      }, 300);
-    }
-
-    function testEndpoint(ep) {
-      const box = document.getElementById('api-response-box');
-      const text = document.getElementById('api-response-text');
+    function testEndpoint(method, path) {
+      var box = document.getElementById('api-response-box');
+      var text = document.getElementById('api-response-text');
       box.classList.remove('hidden');
-      const mock = {
-        endpoint: ep,
+      var payload = {
+        simulated: true,
+        method: method,
+        path: path,
         status: 200,
-        ok: true,
-        timestamp: new Date().toISOString(),
-        data: { message: "Simulated endpoint response from ShadRox virtual runtime." }
+        note: 'Backend server browser sandbox me nahi chalta — ye response sirf shape dikhane ke liye hai.',
+        data: {}
       };
-      text.textContent = JSON.stringify(mock, null, 2);
-      console.log('[ShadRox API Inspector]', mock);
+      text.textContent = JSON.stringify(payload, null, 2);
+      console.info('[ShadRox] simulated ' + method + ' ' + path);
     }
   </script>
 </body>
@@ -374,18 +405,24 @@ export function generateUniversalSaaSSandbox(files: WorkspaceFile[], activeFile?
 
 /**
  * Builds the document rendered inside the preview iframe.
- * Supports HTML, Markdown, React/TSX bundled projects, and universal SaaS sandbox.
+ * Supports HTML, Markdown, React/TSX bundled projects, and the structure preview
+ * used for workspaces that cannot be bundled (pure backend services etc).
  */
-export function resolvePreviewDocument(files: WorkspaceFile[], activeFile?: WorkspaceFile): PreviewDocument | null {
+export function resolvePreviewDocument(
+  files: WorkspaceFile[],
+  activeFile?: WorkspaceFile,
+  assets: AssetMap = {}
+): PreviewDocument | null {
   if (!activeFile && files.length === 0) return null;
 
   const stack = detectWorkspaceStack(files);
 
+  const withBridge = (content: string): string =>
+    inlineHtmlAssets(content.includes('shadrox-preview') ? content : content.replace('</body>', `<script>${PREVIEW_ERROR_BRIDGE}</script></body>`), assets);
+
   if (activeFile?.language === 'html') {
-    const content = activeFile.content;
-    const hasBridge = content.includes('shadrox-preview');
     return {
-      html: hasBridge ? content : content.replace('</body>', `<script>${PREVIEW_ERROR_BRIDGE}</script></body>`),
+      html: withBridge(activeFile.content),
       label: 'Rendered live from HTML buffer',
       source: activeFile.name,
       stackType: 'HTML5'
@@ -403,20 +440,20 @@ export function resolvePreviewDocument(files: WorkspaceFile[], activeFile?: Work
 
   const entryHtml = files.find((file) => file.name.toLowerCase() === 'index.html');
   if (entryHtml) {
-    const hasBridge = entryHtml.content.includes('shadrox-preview');
     return {
-      html: hasBridge ? entryHtml.content : entryHtml.content.replace('</body>', `<script>${PREVIEW_ERROR_BRIDGE}</script></body>`),
+      html: withBridge(entryHtml.content),
       label: `Rendered from ${entryHtml.name}`,
       source: entryHtml.name,
       stackType: stack.badge
     };
   }
 
-  // Next-Level Universal SaaS Sandbox for any stack
+  // Structure preview for stacks the sandbox cannot execute (backend services,
+  // loose file sets). Everything shown is read from the real workspace.
   return {
-    html: generateUniversalSaaSSandbox(files, activeFile),
-    label: `Interactive ${stack.badge} Preview`,
-    source: activeFile?.name || 'Universal Sandbox',
+    html: generateUniversalSaaSSandbox(files, activeFile, assets),
+    label: `Structure preview — ${stack.badge}`,
+    source: activeFile?.name || 'Workspace structure',
     stackType: stack.badge
   };
 }

@@ -132,6 +132,7 @@ export default function App() {
   );
 
   const files = workspace.files;
+  const assets = workspace.assets;
   const bundlable = useMemo(() => canBundle(files), [files]);
 
   // Next-Level bundle with virtual secrets injection
@@ -146,7 +147,7 @@ export default function App() {
 
     const timer = window.setTimeout(async () => {
       try {
-        const result = await bundleProject(files, secrets);
+        const result = await bundleProject(files, secrets, assets);
         if (cancelled) return;
         setBundleState({
           status: 'ready',
@@ -163,11 +164,11 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [bundlable, files, secrets]);
+  }, [bundlable, files, secrets, assets]);
 
   const staticPreview = useMemo(
-    () => resolvePreviewDocument(workspace.files, workspace.activeFile ?? undefined),
-    [workspace.files, workspace.activeFile]
+    () => resolvePreviewDocument(workspace.files, workspace.activeFile ?? undefined, assets),
+    [workspace.files, workspace.activeFile, assets]
   );
 
   const previewDocument = useMemo(() => {

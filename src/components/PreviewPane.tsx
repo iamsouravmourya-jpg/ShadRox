@@ -56,7 +56,6 @@ export function PreviewPane({
   bundleError = null
 }: PreviewPaneProps) {
   const [reloadKey, setReloadKey] = useState(0);
-  const [addressUrl, setAddressUrl] = useState('http://localhost:3000/');
   const [isConsoleOpen, setIsConsoleOpen] = useState(false);
   const [logs, setLogs] = useState<ConsoleEntry[]>([]);
 
@@ -66,8 +65,10 @@ export function PreviewPane({
       const data = event.data;
       if (!data || data.source !== 'shadrox-preview') return;
       const time = new Date().toLocaleTimeString('en-US', { hour12: false });
-      if (data.type === 'console-log') {
+      if (data.type === 'console-log' || data.type === 'console-info') {
         setLogs((prev) => [...prev.slice(-99), { type: 'log', message: data.message, timestamp: time }]);
+      } else if (data.type === 'console-warn') {
+        setLogs((prev) => [...prev.slice(-99), { type: 'warn', message: data.message, timestamp: time }]);
       } else if (data.type === 'console-error' || data.type === 'error') {
         setLogs((prev) => [...prev.slice(-99), { type: 'error', message: data.message || 'Runtime error', timestamp: time }]);
       }
@@ -98,16 +99,11 @@ export function PreviewPane({
             )}
           </span>
 
-          {/* Interactive URL bar */}
-          <div className="hidden md:flex items-center flex-1 min-w-0 bg-neutral-900/70 border border-neutral-800 rounded px-2 py-0.5 text-[11px] text-neutral-300 font-mono">
-            <span className="text-neutral-500 mr-1 select-none">https://</span>
-            <input
-              type="text"
-              value={addressUrl.replace(/^https?:\/\//, '')}
-              onChange={(e) => setAddressUrl(`https://${e.target.value}`)}
-              placeholder="localhost:3000/"
-              className="bg-transparent border-none outline-none w-full text-neutral-200 placeholder:text-neutral-600"
-            />
+          {/* Sandbox indicator. There is no server to navigate to, so this shows
+              what is currently mounted instead of pretending to be a URL bar. */}
+          <div className="hidden md:flex items-center flex-1 min-w-0 bg-neutral-900/70 border border-neutral-800 rounded px-2 py-0.5 text-[11px] text-neutral-400 font-mono">
+            <span className="text-neutral-600 mr-1 select-none">shadrox://</span>
+            <span className="truncate text-neutral-300">{document?.source || 'no-workspace'}</span>
           </div>
         </div>
 
@@ -263,7 +259,9 @@ export function PreviewPane({
                   className={`px-2 py-0.5 text-[11px] flex items-start gap-2 ${
                     log.type === 'error'
                       ? 'text-red-400 bg-red-950/20'
-                      : 'text-neutral-300 hover:bg-neutral-900/40'
+                      : log.type === 'warn'
+                        ? 'text-amber-400 bg-amber-950/20'
+                        : 'text-neutral-300 hover:bg-neutral-900/40'
                   }`}
                 >
                   <span className="text-neutral-600 text-[10px] shrink-0">{log.timestamp}</span>
