@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  AlertCircle,
   ChevronDown,
   Loader2,
   Mic,
@@ -18,6 +19,9 @@ import { maskFileWrites, renderMarkdownContent } from '../lib/markdown';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 import { getRefineMode, REFINE_MODES } from '../lib/ai';
 import { getProviderMeta, type ModelInfo, type ModelTier, type ProviderId } from '../lib/providers';
+import { getMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
+import { estimateTokens } from '../lib/toolUtils';
+import { getPlanMeta } from '../lib/plans';
 import type { ChatMessage, PlanTier, RefineMode, SettingsTab, WorkspaceFile } from '../lib/types';
 import type { CheckpointMeta } from '../lib/history';
 
@@ -86,6 +90,15 @@ export function ChatPanel({
   const speech = useSpeechRecognition('hi-IN');
   const activeMode = getRefineMode(refineMode);
 
+  const [usage, setUsage] = useState<UsageState>(() => getMonthlyUsage(plan));
+
+  useEffect(() => {
+    setUsage(getMonthlyUsage(plan));
+    return onQuotaChange(() => {
+      setUsage(getMonthlyUsage(plan));
+    });
+  }, [plan]);
+
   useEffect(() => {
     if (speech.transcript) onInputChange(speech.transcript);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -96,7 +109,7 @@ export function ChatPanel({
   }, [messages]);
 
   const activeModel = models.find((model) => model.id === selectedModel) || null;
-  const canSend = input.trim().length > 0 && !isGenerating;
+  const canSend = input.trim().length > 0 && !isGenerating && !usage.isCapReached;
 
   const groupedModels: Record<ModelTier, ModelInfo[]> = {
     free: models.filter((model) => model.tier === 'free'),
@@ -112,7 +125,7 @@ export function ChatPanel({
           disabled={models.length === 0}
           className="flex items-center gap-2 text-xs text-neutral-200 hover:text-white disabled:opacity-50 transition-colors cursor-pointer min-w-0"
         >
-          <span className="truncate max-w-[180px]">{activeModel ? activeModel.label : 'No model — add a key'}</span>
+          <span className="truncate max-w-[150px]">{activeModel ? activeModel.label : 'No model — add a key'}</span>
           {activeModel && (
             <span className={`px-1.5 py-0.5 border text-[10px] uppercase tracking-wide ${TIER_STYLES[activeModel.tier]}`}>
               {activeModel.tier}
@@ -121,15 +134,31 @@ export function ChatPanel({
           <ChevronDown className="w-3 h-3 shrink-0" />
         </button>
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
+          {/* Monthly Quota Indicator Pill */}
+          <button
+            type="button"
+            onClick={() => onOpenSettings('PLAN')}
+            title={`Monthly chat quota: ${usage.count}/${usage.limit} messages used (${usage.remaining} left this month)`}
+            className={`flex items-center gap-1 px-2 py-1 border text-[10px] tracking-wide transition-colors cursor-pointer ${
+              usage.isCapReached
+                ? 'border-rose-900/70 bg-rose-950/40 text-rose-300'
+                : usage.percentage >= 80
+                  ? 'border-amber-900/60 bg-amber-950/30 text-amber-300'
+                  : 'border-neutral-800 text-neutral-400 hover:text-white hover:border-neutral-700'
+            }`}
+          >
+            <Zap className={`w-3 h-3 ${usage.isCapReached ? 'text-rose-400' : 'text-amber-400'}`} />
+            <span className="font-mono">{usage.count}/{usage.limit}</span>
+          </button>
+
           {plan === 'free' && (
             <button
               type="button"
               onClick={() => onOpenSettings('PLAN')}
-              title="Pro plan: Devora ki shared key — koi BYOK setup nahi"
-              className="flex items-center gap-1 px-2 py-1 border border-amber-900/60 text-amber-400 text-[10px] uppercase tracking-wide hover:bg-amber-950/30 transition-colors cursor-pointer"
+              title="Pro plan: ₹499/mo (GST included) — 250 messages & shared key"
+              className="hidden sm:flex items-center gap-1 px-2 py-1 border border-amber-900/60 text-amber-400 text-[10px] uppercase tracking-wide hover:bg-amber-950/30 transition-colors cursor-pointer"
             >
-              <Zap className="w-3 h-3" />
               Upgrade
             </button>
           )}
@@ -291,6 +320,27 @@ export function ChatPanel({
       </div>
 
       <div className="shrink-0 border-t border-neutral-900 p-3">
+        {/* Quick prompt templates chips */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 mb-2 scrollbar-none">
+          {[
+            { label: '⚡ Fix bugs', text: 'Please review current code for bugs or edge cases and fix them.' },
+            { label: '🔍 Explain', text: 'Explain how the active code works step-by-step.' },
+            { label: '🚀 Optimize', text: 'Optimize performance and clean up redundant code.' },
+            { label: '📝 Add types', text: 'Add strict TypeScript types and complete JSDoc annotations.' },
+            { label: '🧪 Add tests', text: 'Write comprehensive tests covering edge cases for this file.' }
+          ].map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              onClick={() => onInputChange(input ? `${input}\n\n${item.text}` : item.text)}
+              className="shrink-0 px-2 py-0.5 border border-neutral-800 bg-neutral-950 text-[10px] text-neutral-400 hover:text-white hover:border-neutral-600 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Refine mode selector */}
         <div className="mb-2 flex items-center gap-1">
           {REFINE_MODES.map((mode) => (
             <button
@@ -309,6 +359,23 @@ export function ChatPanel({
           ))}
           <span className="ml-1 truncate text-[10px] text-neutral-600">{activeMode.hint}</span>
         </div>
+
+        {/* Monthly Cap Warning Banner */}
+        {usage.isCapReached && (
+          <div className="mb-2 p-2 border border-rose-900/70 bg-rose-950/30 text-[11px] text-rose-300 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+              <span className="truncate">Monthly cap reached ({usage.limit}/{usage.limit} msgs)</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => onOpenSettings('PLAN')}
+              className="shrink-0 px-2 py-0.5 bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-semibold cursor-pointer"
+            >
+              Upgrade
+            </button>
+          </div>
+        )}
 
         {isRefining && (
           <div className="mb-2 flex items-center gap-2 text-[11px] text-emerald-400/80">
@@ -341,8 +408,13 @@ export function ChatPanel({
               }
             }}
             rows={3}
-            placeholder="Kuch bhi likho ya bolo..."
-            className="w-full resize-none bg-black text-xs text-neutral-100 px-3 py-2.5 outline-none placeholder:text-neutral-600"
+            placeholder={
+              usage.isCapReached
+                ? 'Monthly quota limit khatam ho chuki hai. Upgrade karein...'
+                : 'Kuch bhi likho ya bolo...'
+            }
+            disabled={usage.isCapReached}
+            className="w-full resize-none bg-black text-xs text-neutral-100 px-3 py-2.5 outline-none placeholder:text-neutral-600 disabled:opacity-50"
           />
 
           <div className="flex items-center justify-between px-2 pb-2">
@@ -400,26 +472,39 @@ export function ChatPanel({
               </button>
             </div>
 
-            {isGenerating ? (
-              <button
-                type="button"
-                onClick={onStop}
-                className="flex items-center gap-1.5 px-3 py-1.5 border border-red-900/60 text-red-400 text-[11px] hover:bg-red-950/40 transition-colors cursor-pointer"
-              >
-                <Square className="w-3 h-3" />
-                Stop
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onSend}
-                disabled={!canSend}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-black text-[11px] font-semibold disabled:opacity-40 hover:bg-neutral-200 transition-colors cursor-pointer"
-              >
-                <Send className="w-3 h-3" />
-                Send
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {input.length > 0 && (
+                <span className="text-[10px] text-neutral-500 font-mono hidden sm:inline">
+                  {input.length}c · ~{estimateTokens(input)} tok
+                </span>
+              )}
+
+              {isGenerating ? (
+                <button
+                  type="button"
+                  onClick={onStop}
+                  className="flex items-center gap-1.5 px-3 py-1.5 border border-red-900/60 text-red-400 text-[11px] hover:bg-red-950/40 transition-colors cursor-pointer"
+                >
+                  <Square className="w-3 h-3" />
+                  Stop
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onSend}
+                  disabled={!canSend}
+                  title={
+                    usage.isCapReached
+                      ? `Monthly cap of ${usage.limit} messages reached. Upgrade plan in Settings.`
+                      : 'Send message (Enter)'
+                  }
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-black text-[11px] font-semibold disabled:opacity-30 hover:bg-neutral-200 transition-colors cursor-pointer"
+                >
+                  <Send className="w-3 h-3" />
+                  Send
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>

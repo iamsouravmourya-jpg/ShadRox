@@ -1,0 +1,183 @@
+================================================================================
+DEVORA - EXECUTION TRACKER & SUPABASE BACKEND ROADMAP
+File: excecute.txt
+Author: Devora Engineering Team
+Status: UI & Quota Layer ACTIVE | Supabase Migration QUEUED
+================================================================================
+
+--------------------------------------------------------------------------------
+PART 1: COMPLETED CHANGES (CURRENT WORK)
+--------------------------------------------------------------------------------
+
+1. BYOK (FREE TIER) MONTHLY MESSAGE CAP:
+   - Cap Limit: 100 messages / calendar month.
+   - Persistence: LocalStorage partitioned by calendar month ('devora.usage.YYYY-MM').
+   - UI Quota Indicator:
+     * Compact pill in ChatPanel header: shows real-time count "X/100" with color coding
+       (Emerald for < 70%, Amber for 70-95%, Rose/Red when quota is exhausted).
+     * Detailed Quota Card in Settings Drawer ("Plan" tab) displaying:
+       - Current usage vs monthly cap (e.g., "14 / 100 messages used")
+       - Visual animated progress bar
+       - Remaining messages counter
+       - Calendar month badge
+       - Quick developer test reset button ("Reset quota (dev test)")
+   - Cap Enforcement:
+     * When 100 messages are reached, a warning banner appears above prompt input.
+     * Textarea and Send button are disabled with an explanatory tooltip.
+     * 1-click "Upgrade" CTA directs straight to the Pro and Adv tiers.
+
+2. PRO PLAN UPDATES:
+   - Pricing: Changed to flat ₹499/month.
+   - Tax Note: "GST included (alag se koi GST nahi lagegi)".
+   - Chat Limit: Set to 250 messages / month.
+   - Badge: Highlighted with "POPULAR" badge.
+   - Includes: Devora shared key, fast-tier models, priority streaming, checkpoints.
+
+3. ADV (ADVANCED) PLAN UPDATES:
+   - Pricing: Changed to flat ₹1,099/month.
+   - Tax Note: "GST included (alag se koi GST nahi lagegi)".
+   - Message Cap: Set to 500 messages / month cap.
+   - Includes: Fast + premium models, extended context, deep semantic retrieval,
+     50 checkpoints restore timeline.
+
+4. TOOL UI & DEVELOPER EXPERIENCE ENHANCEMENTS:
+   - Quick Prompt Chips:
+     * ⚡ Fix bugs
+     * 🔍 Explain code
+     * 🚀 Optimize
+     * 📝 Add types
+     * 🧪 Add tests
+   - Code Formatter Tool (Sparkles icon): Beautifies JSON and cleans whitespace/indentation.
+   - 1-Click Code Copy (Copy/Check icon): Copies file content with visual feedback.
+   - Single File Download (Download icon): Exports the active file directly to browser downloads.
+   - Workspace ZIP Export (Archive icon): Pure TypeScript in-browser ZIP packager (0 dependencies)
+     allowing 1-click export of the entire workspace project.
+   - Advanced IDE Status Bar: Displays line count, character count, token estimation,
+     syntax language, UTF-8, and indentation status.
+   - Live Token Estimator: Real-time character & token calculation (~X tok) below chat input.
+
+--------------------------------------------------------------------------------
+PART 2: SUPABASE IMPLEMENTATION BLUEPRINT (TO EXECUTE WHEN ORDERED)
+--------------------------------------------------------------------------------
+
+When you say "excecute" (or give the signal to connect Supabase), the following
+ready-to-run architecture will be applied:
+
+A. SUPABASE DATABASE SCHEMA (SQL DDL):
+
+```sql
+-- 1. Profiles Table with Plan & Usage Tracking
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  plan_tier TEXT DEFAULT 'free' CHECK (plan_tier IN ('free', 'pro', 'adv', 'enterprise')),
+  monthly_usage INTEGER DEFAULT 0,
+  monthly_cap INTEGER DEFAULT 100,
+  quota_reset_at TIMESTAMPTZ DEFAULT (date_trunc('month', now()) + INTERVAL '1 month'),
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 2. Chat Usage Logs
+CREATE TABLE IF NOT EXISTS public.usage_logs (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+  model_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  tokens_prompt INTEGER DEFAULT 0,
+  tokens_completion INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 3. Subscriptions & Payments Table (GST Inclusive Breakdown)
+CREATE TABLE IF NOT EXISTS public.subscriptions (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+  plan_tier TEXT NOT NULL CHECK (plan_tier IN ('pro', 'adv')),
+  amount_inr NUMERIC(10, 2) NOT NULL, -- 499.00 or 1099.00
+  tax_inclusive BOOLEAN DEFAULT true,
+  base_amount NUMERIC(10, 2) GENERATED ALWAYS AS (ROUND(amount_inr / 1.18, 2)) STORED,
+  gst_18_amount NUMERIC(10, 2) GENERATED ALWAYS AS (amount_inr - ROUND(amount_inr / 1.18, 2)) STORED,
+  payment_provider TEXT DEFAULT 'razorpay',
+  payment_id TEXT UNIQUE,
+  status TEXT DEFAULT 'active' CHECK (status IN ('active', 'past_due', 'canceled')),
+  current_period_start TIMESTAMPTZ NOT NULL,
+  current_period_end TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 4. Row Level Security (RLS)
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.usage_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.subscriptions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can read own profile"
+  ON public.profiles FOR SELECT
+  USING (auth.uid() = id);
+
+CREATE POLICY "Users can view own usage logs"
+  ON public.usage_logs FOR SELECT
+  USING (auth.uid() = id);
+
+CREATE POLICY "Users can view own subscriptions"
+  ON public.subscriptions FOR SELECT
+  USING (auth.uid() = id);
+
+-- 5. Monthly Quota Reset & Atomic Increment Functions
+CREATE OR REPLACE FUNCTION public.check_and_increment_quota(p_user_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_profile RECORD;
+  v_now TIMESTAMPTZ := now();
+BEGIN
+  SELECT * INTO v_profile FROM public.profiles WHERE id = p_user_id FOR UPDATE;
+  
+  -- Reset usage if current date is past reset timestamp
+  IF v_now >= v_profile.quota_reset_at THEN
+    UPDATE public.profiles
+    SET monthly_usage = 0,
+        quota_reset_at = (date_trunc('month', v_now) + INTERVAL '1 month')
+    WHERE id = p_user_id;
+    v_profile.monthly_usage := 0;
+  END IF;
+
+  -- Check cap limit
+  IF v_profile.monthly_usage >= v_profile.monthly_cap THEN
+    RETURN jsonb_build_object(
+      'allowed', false,
+      'current', v_profile.monthly_usage,
+      'cap', v_profile.monthly_cap,
+      'message', 'Monthly message limit reached'
+    );
+  END IF;
+
+  -- Increment usage atomically
+  UPDATE public.profiles
+  SET monthly_usage = monthly_usage + 1,
+      updated_at = v_now
+  WHERE id = p_user_id;
+
+  RETURN jsonb_build_object(
+    'allowed', true,
+    'current', v_profile.monthly_usage + 1,
+    'cap', v_profile.monthly_cap
+  );
+END;
+$$;
+```
+
+B. SERVER & API MIDDLEWARE INTEGRATION (Pending execution):
+   - Path: `/api/ai/chat.ts`
+   - Action: Read Supabase Bearer JWT from headers, verify user session, invoke `check_and_increment_quota`.
+   - If `allowed === false`, return HTTP 429 with JSON `{ error: 'MONTHLY_CAP_REACHED', plan: profile.plan_tier }`.
+
+C. PAYMENT GATEWAY INTEGRATION:
+   - Razorpay Order creation webhook for ₹499 (Pro) & ₹1,099 (Adv).
+   - Generates automated Indian GST invoice (HSN code 998313 - Information Technology Software Services).
+
+--------------------------------------------------------------------------------
+END OF EXECUTE TRACKER
+================================================================================

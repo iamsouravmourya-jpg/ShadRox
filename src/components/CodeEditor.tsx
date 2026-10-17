@@ -8,7 +8,8 @@ import { javascript } from '@codemirror/lang-javascript';
 import { json } from '@codemirror/lang-json';
 import { markdown } from '@codemirror/lang-markdown';
 import { python } from '@codemirror/lang-python';
-import { ArrowLeft, FileCode2, FilePlus, Loader2, Save, Search, X } from 'lucide-react';
+import { ArrowLeft, Archive, Check, Copy, Download, FileCode2, FilePlus, Loader2, Save, Search, Sparkles, X } from 'lucide-react';
+import { copyToClipboard, downloadFile, downloadWorkspaceZip, estimateTokens, formatCode } from '../lib/toolUtils';
 import type { WorkspaceFile } from '../lib/types';
 
 interface CodeEditorProps {
@@ -25,6 +26,7 @@ interface CodeEditorProps {
   onDeleteFile: (index: number) => void;
   onNewFile: () => void;
   onSaveAll: () => void;
+  workspaceName?: string;
 }
 
 /** Syntax support per language, so the code is coloured instead of white-on-black. */
@@ -88,11 +90,14 @@ export function CodeEditor({
   onChangeContent,
   onDeleteFile,
   onNewFile,
-  onSaveAll
+  onSaveAll,
+  workspaceName
 }: CodeEditorProps) {
   const activeFile = files[activeFileIndex] ?? null;
   const editorRef = useRef<ReactCodeMirrorRef>(null);
   const [query, setQuery] = useState('');
+  const [hasCopied, setHasCopied] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const dirty = useMemo(() => new Set(dirtyFiles), [dirtyFiles]);
   const extensions = useMemo(
@@ -121,6 +126,38 @@ export function CodeEditor({
     onSelectFile(index);
   };
 
+  const handleCopy = async () => {
+    if (!activeFile) return;
+    const ok = await copyToClipboard(activeFile.content);
+    if (ok) {
+      setHasCopied(true);
+      setTimeout(() => setHasCopied(false), 2000);
+    }
+  };
+
+  const handleFormat = () => {
+    if (!activeFile) return;
+    const res = formatCode(activeFile.content, activeFile.language);
+    if (res.changed) {
+      onChangeContent(res.content);
+      setToastMsg('Formatted');
+      setTimeout(() => setToastMsg(null), 2000);
+    } else {
+      setToastMsg('Already formatted');
+      setTimeout(() => setToastMsg(null), 1500);
+    }
+  };
+
+  const handleDownloadFile = () => {
+    if (!activeFile) return;
+    downloadFile(activeFile.name, activeFile.content);
+  };
+
+  const handleDownloadZip = () => {
+    if (files.length === 0) return;
+    downloadWorkspaceZip(workspaceName || 'devora-project', files);
+  };
+
   // Nothing selected yet: the file list comes first, the editor only after a click.
   if (!activeFile) {
     return (
@@ -129,14 +166,27 @@ export function CodeEditor({
           <span className="text-[10px] uppercase tracking-wider text-neutral-500">
             Files · {files.length}
           </span>
-          <button
-            type="button"
-            onClick={onNewFile}
-            className="flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-white transition-colors cursor-pointer"
-          >
-            <FilePlus className="w-3.5 h-3.5" />
-            New file
-          </button>
+          <div className="flex items-center gap-2">
+            {files.length > 0 && (
+              <button
+                type="button"
+                onClick={handleDownloadZip}
+                title="Export entire workspace as ZIP"
+                className="flex items-center gap-1.5 text-[11px] text-neutral-400 hover:text-white transition-colors cursor-pointer"
+              >
+                <Archive className="w-3.5 h-3.5 text-neutral-400" />
+                Export ZIP
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onNewFile}
+              className="flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-white transition-colors cursor-pointer"
+            >
+              <FilePlus className="w-3.5 h-3.5" />
+              New file
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto">
@@ -201,10 +251,51 @@ export function CodeEditor({
               }}
               placeholder="Search in file"
               spellCheck={false}
-              className="w-32 sm:w-44 border border-neutral-800 focus:border-neutral-600 bg-black text-[11px] text-neutral-200 pl-6 pr-2 py-1 outline-none placeholder:text-neutral-600"
+              className="w-28 sm:w-40 border border-neutral-800 focus:border-neutral-600 bg-black text-[11px] text-neutral-200 pl-6 pr-2 py-1 outline-none placeholder:text-neutral-600"
             />
           </div>
 
+          {/* Format Tool */}
+          <button
+            type="button"
+            onClick={handleFormat}
+            title="Format & clean active code (JSON/spaces)"
+            className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Copy Tool */}
+          <button
+            type="button"
+            onClick={handleCopy}
+            title={hasCopied ? 'Copied to clipboard!' : 'Copy full file code'}
+            className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+          >
+            {hasCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+          </button>
+
+          {/* Download File Tool */}
+          <button
+            type="button"
+            onClick={handleDownloadFile}
+            title="Download active file"
+            className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Export ZIP Tool */}
+          <button
+            type="button"
+            onClick={handleDownloadZip}
+            title="Export all workspace files as ZIP"
+            className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+          >
+            <Archive className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Save Tool */}
           <button
             type="button"
             onClick={onSaveAll}
@@ -255,12 +346,26 @@ export function CodeEditor({
             highlightActiveLine: true,
             highlightActiveLineGutter: true,
             autocompletion: false,
-            // The toolbar keeps its own single search box, so CodeMirror's panel stays off.
             searchKeymap: false,
             tabSize: 2
           }}
         />
       </div>
+
+      {/* Advanced IDE Status Bar */}
+      <footer className="h-6 shrink-0 bg-neutral-950 border-t border-neutral-900 px-3 flex items-center justify-between text-[10px] text-neutral-500 font-mono select-none">
+        <div className="flex items-center gap-3">
+          <span>Ln {lineCount}</span>
+          <span>{activeFile.content.length} chars</span>
+          <span>~{estimateTokens(activeFile.content)} tokens</span>
+          {toastMsg && <span className="text-emerald-400 font-sans">{toastMsg}</span>}
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="uppercase text-neutral-400">{activeFile.language}</span>
+          <span>UTF-8</span>
+          <span>Spaces: 2</span>
+        </div>
+      </footer>
     </div>
   );
 }

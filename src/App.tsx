@@ -15,6 +15,7 @@ import { extractFilePatches } from './lib/markdown';
 import { PREVIEW_BASE_STYLE, PREVIEW_ERROR_BRIDGE, previewCapabilityMessage, resolvePreviewDocument } from './lib/preview';
 import { renderRetrievedContext, retrieveContext } from './lib/retrieval';
 import { getPlan, getSessionToken, setPlan as persistPlan, setSessionToken } from './lib/storage';
+import { getMonthlyUsage, recordMessageSent } from './lib/quota';
 import type {
   ChatMessage,
   PlanTier,
@@ -266,6 +267,13 @@ export default function App() {
     const text = input.trim();
     if (!text || isGenerating) return;
 
+    const quota = getMonthlyUsage(plan);
+    if (quota.isCapReached) {
+      setToast(`Monthly message limit reached (${quota.limit}/${quota.limit} msgs). Upgrade in Settings.`);
+      openSettings('PLAN');
+      return;
+    }
+
     const mode = getRefineMode(refineMode);
     const timestamp = formatTime();
     const userMessage: ChatMessage = {
@@ -298,6 +306,7 @@ export default function App() {
     setPendingRefine(null);
     setAttachedFileName(null);
     setIsGenerating(true);
+    recordMessageSent();
 
     if (!byok.useDevoraKey && !byok.activeKey) {
       setIsGenerating(false);
@@ -423,7 +432,9 @@ export default function App() {
     byok.activeProvider,
     byok.selectedModel,
     buildSystemInstruction,
-    workspace
+    workspace,
+    plan,
+    openSettings
   ]);
 
   const handleStop = useCallback(() => {
@@ -707,6 +718,7 @@ export default function App() {
               onDeleteFile={workspace.deleteFile}
               onNewFile={handleNewFile}
               onSaveAll={() => void workspace.saveAll()}
+              workspaceName={workspace.workspace?.name}
             />
           ) : (
             <PreviewPane

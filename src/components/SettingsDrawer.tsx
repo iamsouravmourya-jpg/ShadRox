@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -10,12 +10,16 @@ import {
   Loader2,
   Lock,
   Plus,
+  RotateCcw,
+  ShieldCheck,
+  Sparkles,
   Trash2,
   X,
   Zap
 } from 'lucide-react';
 import { PROVIDERS, getProviderMeta, type ModelInfo, type ModelTier, type ProviderId } from '../lib/providers';
 import { PLANS, getPlanMeta } from '../lib/plans';
+import { getMonthlyUsage, resetMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
 import type {
   GitHubRepo,
   GitHubUser,
@@ -119,6 +123,15 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
   const [isPushing, setIsPushing] = useState(false);
   const [newSecretKey, setNewSecretKey] = useState('');
   const [newSecretValue, setNewSecretValue] = useState('');
+
+  const [usage, setUsage] = useState<UsageState>(() => getMonthlyUsage(plan));
+
+  useEffect(() => {
+    setUsage(getMonthlyUsage(plan));
+    return onQuotaChange(() => {
+      setUsage(getMonthlyUsage(plan));
+    });
+  }, [plan]);
 
   if (!isOpen) return null;
 
@@ -401,48 +414,122 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
 
           {activeTab === 'PLAN' && (
             <>
-              <section className="flex items-center justify-between border border-neutral-900 px-3 py-2.5">
-                <div className="min-w-0">
-                  <div className="text-xs text-neutral-500">Current plan</div>
-                  <div className="text-sm text-white">{getPlanMeta(plan).label}</div>
+              {/* Monthly Quota Meter Card */}
+              <section className="border border-neutral-900 bg-neutral-950/70 p-3 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0">
+                    <div className="text-[10px] uppercase tracking-wider text-neutral-500">Monthly Chat Quota</div>
+                    <div className="text-sm font-semibold text-white flex items-center gap-2">
+                      <span>{getPlanMeta(plan).label}</span>
+                      <span className="border border-emerald-900/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-emerald-400">
+                        active
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xs font-mono font-medium text-white">
+                      {usage.count} <span className="text-neutral-500">/ {usage.limit}</span>
+                    </span>
+                    <div className="text-[10px] text-neutral-500">messages used</div>
+                  </div>
                 </div>
-                <span className="shrink-0 border border-emerald-900/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-400">
-                  active
-                </span>
+
+                {/* Progress Bar */}
+                <div className="w-full bg-neutral-900 h-1.5 overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-300 ${
+                      usage.isCapReached
+                        ? 'bg-rose-500'
+                        : usage.percentage > 80
+                          ? 'bg-amber-400'
+                          : 'bg-emerald-400'
+                    }`}
+                    style={{ width: `${Math.min(100, Math.max(3, usage.percentage))}%` }}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between text-[10px] text-neutral-400">
+                  <span>{usage.remaining} messages remaining this month</span>
+                  <span>{usage.monthLabel}</span>
+                </div>
+
+                {usage.isCapReached && (
+                  <div className="border border-rose-900/70 bg-rose-950/30 p-2 text-[11px] text-rose-300 flex items-start gap-2">
+                    <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-medium">Monthly message limit reached ({usage.limit}/{usage.limit})</p>
+                      <p className="mt-0.5 text-[10px] text-rose-400/90">
+                        Naye prompts bhejne ke liye plan upgrade karein ya agle mahine ka wait karein.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="pt-1 flex items-center justify-between border-t border-neutral-900 text-[10px]">
+                  <span className="text-neutral-500">Supabase sync: UI preview mode</span>
+                  <button
+                    type="button"
+                    onClick={() => resetMonthlyUsage()}
+                    title="Testing ke liye monthly usage 0 par reset karo"
+                    className="flex items-center gap-1 text-neutral-500 hover:text-neutral-300 transition-colors cursor-pointer"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5" />
+                    Reset quota (dev test)
+                  </button>
+                </div>
               </section>
 
               <p className="text-[11px] text-neutral-600">
-                Billing abhi wire nahi hui — ye sirf UI preview hai. Free me apni key (BYOK) chalti hai, Pro se Devora ki
-                shared key milti hai.
+                BYOK plan par 100 messages/month cap hai. Pro me 250 messages aur Adv me 500 messages cap milti hai with GST included.
               </p>
 
-              <section className="space-y-2">
+              <section className="space-y-2.5">
                 {PLANS.map((entry) => {
                   const isCurrent = entry.id === plan;
                   return (
                     <div
                       key={entry.id}
-                      className={`border p-3 ${isCurrent ? 'border-white' : 'border-neutral-900'}`}
+                      className={`border p-3 transition-colors ${
+                        isCurrent
+                          ? 'border-white bg-neutral-950/40'
+                          : entry.popular
+                            ? 'border-amber-900/60 bg-neutral-950/20'
+                            : 'border-neutral-900'
+                      }`}
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="flex items-center gap-2 text-xs text-white">
-                          {entry.label}
-                          {isCurrent && (
-                            <span className="border border-emerald-900/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-400">
-                              current
-                            </span>
-                          )}
-                        </span>
-                        <span className="shrink-0 text-[11px] font-mono text-neutral-400">{entry.price}</span>
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-white">{entry.label}</span>
+                            {isCurrent && (
+                              <span className="border border-emerald-900/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-emerald-400">
+                                current
+                              </span>
+                            )}
+                            {entry.popular && !isCurrent && (
+                              <span className="border border-amber-900/60 bg-amber-950/30 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-amber-400">
+                                popular
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-emerald-400 font-mono mt-0.5">
+                            {entry.monthlyCap} messages / month
+                          </div>
+                        </div>
+
+                        <div className="text-right shrink-0">
+                          <div className="text-xs font-mono font-bold text-white">{entry.price}</div>
+                          <div className="text-[9px] text-neutral-500">{entry.gstNote}</div>
+                        </div>
                       </div>
 
-                      <p className="mt-1 text-[11px] text-neutral-500">{entry.blurb}</p>
+                      <p className="mt-1.5 text-[11px] text-neutral-400">{entry.blurb}</p>
 
-                      <ul className="mt-2 space-y-1">
+                      <ul className="mt-2.5 space-y-1">
                         {entry.perks.map((perk) => (
-                          <li key={perk} className="flex items-start gap-1.5 text-[11px] text-neutral-400">
+                          <li key={perk} className="flex items-start gap-1.5 text-[11px] text-neutral-300">
                             <Check className="mt-0.5 w-3 h-3 shrink-0 text-emerald-500" />
-                            {perk}
+                            <span>{perk}</span>
                           </li>
                         ))}
                       </ul>
@@ -451,15 +538,15 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                         type="button"
                         onClick={() => onPlanChange(entry.id)}
                         disabled={isCurrent}
-                        className={`mt-3 w-full py-2 text-[11px] transition-colors ${
+                        className={`mt-3 w-full py-2 text-[11px] font-medium transition-colors ${
                           isCurrent
-                            ? 'border border-neutral-900 text-neutral-600'
+                            ? 'border border-neutral-900 text-neutral-600 bg-black cursor-default'
                             : entry.id === 'free'
-                              ? 'border border-neutral-800 text-neutral-300 hover:bg-neutral-950 cursor-pointer'
-                              : 'bg-white font-semibold text-black hover:bg-neutral-200 cursor-pointer'
+                              ? 'border border-neutral-800 text-neutral-300 hover:bg-neutral-900 cursor-pointer'
+                              : 'bg-white text-black hover:bg-neutral-200 cursor-pointer'
                         }`}
                       >
-                        {isCurrent ? 'Current plan' : entry.id === 'free' ? 'Switch to Free' : `Upgrade to ${entry.label}`}
+                        {isCurrent ? 'Current plan active' : entry.id === 'free' ? 'Switch to Free (BYOK)' : `Upgrade to ${entry.label}`}
                       </button>
                     </div>
                   );
