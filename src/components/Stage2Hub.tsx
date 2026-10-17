@@ -1,5 +1,5 @@
 import { Clock, FileCode, FolderOpen } from 'lucide-react';
-import { DevoraLogo } from './Logo';
+import { ShadRoxLogo } from './Logo';
 import type { RecentEntry } from '../lib/types';
 
 interface Stage2HubProps {
@@ -15,10 +15,10 @@ interface Stage2HubProps {
 function formatRelativeTime(timestamp: number): string {
   const minutes = Math.floor((Date.now() - timestamp) / 60000);
   if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hr ago`;
-  return `${Math.floor(hours / 24)} d ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function Stage2Hub({
@@ -34,27 +34,27 @@ export function Stage2Hub({
     <div className="w-full h-full flex flex-col bg-black text-white">
       <header className="h-14 shrink-0 border-b border-neutral-900 flex items-center justify-between px-6">
         <div className="flex items-center gap-3">
-          <DevoraLogo className="w-5 h-5 text-white" />
-          <span className="text-sm font-bold tracking-wide">Devora</span>
+          <ShadRoxLogo className="w-5 h-5 text-white" />
+          <span className="text-sm font-bold tracking-wide">ShadRox</span>
           <span className="text-neutral-700 text-xs">/</span>
-          <span className="text-xs text-neutral-400">Workspace hub</span>
+          <span className="text-xs text-neutral-400">Workspace Hub</span>
         </div>
         <div className="flex items-center gap-2 text-xs text-neutral-500">
-          <span className="hidden sm:inline">Local engine</span>
+          <span className="hidden sm:inline">Local Engine</span>
           <div className="w-7 h-7 rounded-full border border-neutral-800 bg-neutral-900 flex items-center justify-center text-[11px] font-semibold text-white">
-            D
+            S
           </div>
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-6 py-10 flex justify-center">
-        <div className="w-full max-w-2xl">
-          <h2 className="text-base font-semibold text-white">Open a project</h2>
-          <p className="text-xs text-neutral-500 mt-1">
-            Files tumhare computer par hi rehti hain. Kuch bhi hamare server par upload nahi hota.
+      <main className="flex-1 overflow-y-auto px-6 py-12 flex items-center justify-center">
+        <div className="w-full max-w-lg mx-auto flex flex-col items-center text-center">
+          <h2 className="text-lg font-semibold text-white">Open Project</h2>
+          <p className="text-xs text-neutral-400 mt-1 max-w-sm">
+            Files remain strictly on your local computer. Zero server uploads.
           </p>
 
-          <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="mt-8 grid grid-cols-2 gap-4 w-full">
             <button
               type="button"
               onClick={onOpenFolder}
@@ -64,11 +64,11 @@ export function Stage2Hub({
               }}
               onDragOver={(event) => event.preventDefault()}
               disabled={isBusy}
-              className="group border border-neutral-800 hover:border-neutral-500 disabled:opacity-50 p-6 text-left transition-colors cursor-pointer"
+              className="group border border-neutral-800 hover:border-neutral-500 bg-neutral-950/60 hover:bg-neutral-900/60 disabled:opacity-50 p-6 flex flex-col items-center justify-center text-center transition-all cursor-pointer rounded-none"
             >
-              <FolderOpen className="w-5 h-5 text-neutral-300 group-hover:text-white" />
-              <div className="mt-3 text-xs font-semibold uppercase tracking-wider text-white">Open folder</div>
-              <div className="mt-1 text-[11px] text-neutral-500">Poora project folder mount karo</div>
+              <FolderOpen className="w-6 h-6 text-neutral-300 group-hover:text-white transition-colors" />
+              <div className="mt-3 text-xs font-semibold uppercase tracking-wider text-white">Open Folder</div>
+              <div className="mt-1 text-[11px] text-neutral-500">Mount workspace folder</div>
             </button>
 
             <button
@@ -80,35 +80,35 @@ export function Stage2Hub({
               }}
               onDragOver={(event) => event.preventDefault()}
               disabled={isBusy}
-              className="group border border-neutral-800 hover:border-emerald-600/70 disabled:opacity-50 p-6 text-left transition-colors cursor-pointer"
+              className="group border border-neutral-800 hover:border-emerald-600/70 bg-neutral-950/60 hover:bg-neutral-900/60 disabled:opacity-50 p-6 flex flex-col items-center justify-center text-center transition-all cursor-pointer rounded-none"
             >
-              <FileCode className="w-5 h-5 text-emerald-400" />
-              <div className="mt-3 text-xs font-semibold uppercase tracking-wider text-white group-hover:text-emerald-400">
-                Open files
+              <FileCode className="w-6 h-6 text-emerald-400" />
+              <div className="mt-3 text-xs font-semibold uppercase tracking-wider text-white group-hover:text-emerald-400 transition-colors">
+                Open Files
               </div>
-              <div className="mt-1 text-[11px] text-neutral-500">Ek ya zyada files — .tsx, .py, .html, .md</div>
+              <div className="mt-1 text-[11px] text-neutral-500">Select any file formats</div>
             </button>
           </div>
 
           {statusMessage && (
-            <div className="mt-4 border border-neutral-800 bg-neutral-950 px-4 py-3 text-xs text-neutral-300">
+            <div className="mt-4 w-full border border-neutral-800 bg-neutral-950 px-4 py-3 text-xs text-neutral-300 text-left">
               {statusMessage}
             </div>
           )}
 
           {recents.length > 0 && (
-            <div className="mt-8">
+            <div className="mt-10 w-full text-left">
               <div className="text-[11px] uppercase tracking-wider text-neutral-500 flex items-center gap-2">
                 <Clock className="w-3 h-3" />
-                Recently opened
+                Recently Opened
               </div>
-              <div className="mt-2 divide-y divide-neutral-900 border border-neutral-900">
+              <div className="mt-2 divide-y divide-neutral-900 border border-neutral-900 bg-neutral-950/50">
                 {recents.map((entry) => (
                   <button
                     key={entry.id}
                     type="button"
                     onClick={() => onReopen(entry)}
-                    className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-neutral-950 transition-colors cursor-pointer"
+                    className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-neutral-900 transition-colors cursor-pointer"
                   >
                     <span className="flex items-center gap-2 min-w-0">
                       {entry.kind === 'folder' ? (
@@ -123,9 +123,6 @@ export function Stage2Hub({
                   </button>
                 ))}
               </div>
-              <p className="mt-2 text-[11px] text-neutral-600">
-                Click karne par ye seedha khulta hai — files ka local copy browser me hi save rehta hai.
-              </p>
             </div>
           )}
         </div>

@@ -3,10 +3,12 @@ import {
   AlertCircle,
   Check,
   CheckCircle,
+  ExternalLink,
   Eye,
   EyeOff,
-  ExternalLink,
   Github,
+  Key,
+  Layers,
   Loader2,
   Lock,
   Plus,
@@ -64,9 +66,9 @@ interface SettingsDrawerProps {
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: 'CHAT', label: 'Models & Keys' },
-  { id: 'PLAN', label: 'Plan' },
-  { id: 'GITHUB', label: 'GitHub' },
-  { id: 'SECRETS', label: 'Secrets' }
+  { id: 'PLAN', label: 'Subscription Plan' },
+  { id: 'GITHUB', label: 'GitHub Sync' },
+  { id: 'SECRETS', label: 'Secrets Vault' }
 ];
 
 const TIER_BADGE: Record<ModelTier, string> = {
@@ -112,15 +114,15 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     workspaceFiles
   } = props;
 
-  // GitHub state lives inside the drawer because nothing outside needs it.
   const [githubToken, setGithubToken] = useState('');
   const [githubUser, setGithubUser] = useState<GitHubUser | null>(null);
   const [githubRepos, setGithubRepos] = useState<GitHubRepo[]>([]);
-  const [isCheckingGithub, setIsCheckingGithub] = useState(false);
-  const [githubMessage, setGithubMessage] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
   const [targetRepo, setTargetRepo] = useState('');
-  const [commitMessage, setCommitMessage] = useState('Update from Devora');
+  const [commitMessage, setCommitMessage] = useState('Update from ShadRox IDE');
+  const [isCheckingGithub, setIsCheckingGithub] = useState(false);
   const [isPushing, setIsPushing] = useState(false);
+  const [githubMessage, setGithubMessage] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
+
   const [newSecretKey, setNewSecretKey] = useState('');
   const [newSecretValue, setNewSecretValue] = useState('');
 
@@ -136,83 +138,85 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
   if (!isOpen) return null;
 
   const currentMeta = getProviderMeta(activeProvider);
+  const currentDraft = apiKeyDraft[activeProvider] ?? '';
   const currentStatus = keyStatus[activeProvider];
-  const currentDraft = apiKeyDraft[activeProvider] || '';
-  const currentSavedKey = currentDraft.length > 0;
+  const currentSavedKey = currentStatus && currentStatus.state === 'ok';
+  const currentPlan = getPlanMeta(plan);
 
   const handleGithubConnect = async () => {
+    if (!githubToken.trim()) return;
     setIsCheckingGithub(true);
     setGithubMessage(null);
     try {
-      const data = await postJson('/api/github/validate', { token: githubToken });
-      setGithubUser(data.user as GitHubUser);
-      setGithubRepos((data.repos || []) as GitHubRepo[]);
-      if (!targetRepo && data.repos?.[0]?.name) setTargetRepo(data.repos[0].name);
-      setGithubMessage({ type: 'ok', text: `Connected as ${data.user.login}` });
+      const data = await postJson('/api/github/check', { token: githubToken });
+      setGithubUser(data.user);
+      setGithubRepos(data.repos || []);
+      setGithubMessage({ type: 'ok', text: `Connected as @${data.user.login}` });
     } catch (error) {
-      setGithubUser(null);
-      setGithubRepos([]);
-      setGithubMessage({ type: 'error', text: error instanceof Error ? error.message : 'GitHub connect failed.' });
+      setGithubMessage({
+        type: 'error',
+        text: error instanceof Error ? error.message : 'GitHub authentication failed.'
+      });
     } finally {
       setIsCheckingGithub(false);
     }
   };
 
   const handleGithubPush = async () => {
-    if (!githubUser || !targetRepo || workspaceFiles.length === 0) return;
+    if (!targetRepo || workspaceFiles.length === 0) return;
     setIsPushing(true);
     setGithubMessage(null);
     try {
       const data = await postJson('/api/github/push', {
         token: githubToken,
-        owner: githubUser.login,
         repo: targetRepo,
-        files: workspaceFiles.map((file) => ({ name: file.name, content: file.content })),
-        commitMessage
+        message: commitMessage || 'Update from ShadRox IDE',
+        files: workspaceFiles
       });
-      const failed = (data.results || []).filter((result: { status: string }) => result.status === 'failed');
       setGithubMessage({
-        type: failed.length === 0 ? 'ok' : 'error',
-        text:
-          failed.length === 0
-            ? `Pushed ${data.results.length} files → ${data.repoUrl}`
-            : `${data.results.length - failed.length} pushed, ${failed.length} failed.`
+        type: 'ok',
+        text: `Committed ${workspaceFiles.length} file(s) to ${targetRepo} (${data.commitSha ? data.commitSha.slice(0, 7) : 'latest'}).`
       });
     } catch (error) {
-      setGithubMessage({ type: 'error', text: error instanceof Error ? error.message : 'Push failed.' });
+      setGithubMessage({
+        type: 'error',
+        text: error instanceof Error ? error.message : 'Failed to push files to repository.'
+      });
     } finally {
       setIsPushing(false);
     }
   };
 
-  const freeModels = models.filter((model) => model.tier === 'free');
-  const proModels = models.filter((model) => model.tier === 'pro');
-
   return (
-    <div className="fixed inset-0 z-40 flex justify-end">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-
-      <aside className="relative w-full sm:w-2/5 sm:min-w-[400px] h-full bg-black border-l border-neutral-900 flex flex-col">
-        <header className="h-14 shrink-0 flex items-center justify-between px-4 border-b border-neutral-900">
-          <h2 className="text-sm font-semibold text-white">Settings</h2>
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/70 backdrop-blur-sm">
+      <aside className="w-full max-w-xl h-full bg-black border-l border-neutral-900 flex flex-col text-white shadow-2xl">
+        {/* Header */}
+        <header className="h-12 shrink-0 flex items-center justify-between px-4 border-b border-neutral-900">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wider text-neutral-300">
+              ShadRox Settings
+            </span>
+          </div>
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
-            aria-label="Close settings"
+            className="p-1 text-neutral-500 hover:text-white transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </header>
 
+        {/* Tabs */}
         <nav className="shrink-0 flex border-b border-neutral-900">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               type="button"
               onClick={() => onTabChange(tab.id)}
-              className={`flex-1 py-2.5 text-[11px] uppercase tracking-wider transition-colors cursor-pointer ${
-                activeTab === tab.id ? 'text-white border-b-2 border-white' : 'text-neutral-500 hover:text-neutral-300'
+              className={`flex-1 py-2.5 text-xs text-center border-b-2 transition-colors cursor-pointer ${
+                activeTab === tab.id
+                  ? 'border-white text-white font-medium'
+                  : 'border-transparent text-neutral-500 hover:text-neutral-300'
               }`}
             >
               {tab.label}
@@ -220,11 +224,13 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
           ))}
         </nav>
 
+        {/* Body */}
         <div className="flex-1 overflow-y-auto px-4 py-5 space-y-6">
           {activeTab === 'CHAT' && (
             <>
+              {/* Provider Selection */}
               <section>
-                <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">Provider</h3>
+                <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">AI Provider</h3>
                 <div className="mt-2 grid grid-cols-2 gap-2">
                   {PROVIDERS.map((provider) => (
                     <button
@@ -233,7 +239,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                       onClick={() => onProviderChange(provider.id)}
                       className={`border px-3 py-2 text-left text-xs transition-colors cursor-pointer ${
                         provider.id === activeProvider
-                          ? 'border-white text-white'
+                          ? 'border-white text-white bg-neutral-950'
                           : 'border-neutral-800 text-neutral-400 hover:border-neutral-600'
                       }`}
                     >
@@ -243,12 +249,13 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 </div>
               </section>
 
+              {/* API Key Input */}
               <section>
                 <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">
-                  {currentMeta.label} API key (BYOK)
+                  {currentMeta.label} API Key (BYOK)
                 </h3>
-                <p className="mt-1 text-[11px] text-neutral-600">
-                  {currentMeta.keyHint}. Key sirf tumhare browser me save hoti hai.
+                <p className="mt-1 text-[11px] text-neutral-400">
+                  {currentMeta.keyHint}. Keys are securely stored in your local browser storage.
                 </p>
                 <div className="mt-2 flex gap-2">
                   <input
@@ -265,14 +272,13 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     disabled={currentStatus?.state === 'checking'}
                     className="px-3 py-2 border border-neutral-700 text-xs text-white hover:bg-neutral-900 disabled:opacity-40 transition-colors cursor-pointer whitespace-nowrap"
                   >
-                    {currentStatus?.state === 'checking' ? 'Testing...' : 'Save & test'}
+                    {currentStatus?.state === 'checking' ? 'Testing...' : 'Save & Test'}
                   </button>
                 </div>
 
                 {currentStatus && currentStatus.state !== 'idle' && (
                   <div
                     role="status"
-                    aria-live="polite"
                     className={`mt-2 flex items-start gap-2 px-3 py-2 text-[11px] leading-relaxed border ${
                       currentStatus.state === 'ok'
                         ? 'border-emerald-900/60 bg-emerald-950/20 text-emerald-400'
@@ -290,10 +296,10 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     )}
                     <span>
                       {currentStatus.state === 'ok'
-                        ? `${currentMeta.label} key valid — ${currentStatus.modelCount} models mile (${currentStatus.latencyMs}ms).`
+                        ? `${currentMeta.label} key verified — ${currentStatus.modelCount} model(s) available (${currentStatus.latencyMs}ms).`
                         : currentStatus.state === 'error'
-                          ? `Error: ${currentStatus.message}`
-                          : 'Key test ho rahi hai...'}
+                          ? `Verification error: ${currentStatus.message}`
+                          : 'Validating key connectivity...'}
                     </span>
                   </div>
                 )}
@@ -305,7 +311,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     rel="noreferrer"
                     className="inline-flex items-center gap-1 text-[11px] text-neutral-500 hover:text-white"
                   >
-                    Key kaha se le <ExternalLink className="w-3 h-3" />
+                    Get API key <ExternalLink className="w-3 h-3" />
                   </a>
                   {currentSavedKey && (
                     <button
@@ -319,7 +325,8 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 </div>
               </section>
 
-              <section className="border border-neutral-900 p-3">
+              {/* Shared Key Option */}
+              <section className="border border-neutral-900 p-3 bg-neutral-950/40">
                 <label className="flex items-start gap-2 cursor-pointer">
                   <input
                     type="checkbox"
@@ -329,14 +336,13 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   />
                   <span className="min-w-0">
                     <span className="flex items-center gap-2">
-                      <span className="text-xs text-neutral-200">Devora ki shared key use karo</span>
+                      <span className="text-xs text-neutral-200 font-medium">Use ShadRox Shared Key</span>
                       <span className="shrink-0 border border-amber-900/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-400">
                         Pro
                       </span>
                     </span>
-                    <span className="block text-[11px] text-neutral-600 mt-1">
-                      Bina BYOK ke chalane ke liye. Request hamare serverless proxy se jaati hai, isliye ye sirf Pro-tier
-                      models par chalti hai — free models ke liye apni key lagao.
+                    <span className="block text-[11px] text-neutral-400 mt-1">
+                      Run directly without bringing your own API key. Requests flow through our secure proxy for Pro-tier models.
                     </span>
                   </span>
                 </label>
@@ -344,70 +350,63 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   <button
                     type="button"
                     onClick={() => onPlanChange('pro')}
-                    className="mt-3 flex w-full items-center justify-center gap-1.5 border border-amber-900/60 py-2 text-[11px] text-amber-400 hover:bg-amber-950/30 transition-colors cursor-pointer"
+                    className="mt-3 flex w-full items-center justify-center gap-1.5 border border-amber-900/60 py-2 text-[11px] text-amber-400 hover:bg-amber-950/30 transition-colors cursor-pointer font-medium"
                   >
                     <Zap className="w-3 h-3" />
-                    Upgrade to Pro
+                    Upgrade to Pro (₹499/mo GST Included)
                   </button>
                 )}
               </section>
 
+              {/* Available Models */}
               <section>
                 <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">
-                  Available models {models.length > 0 && `(${models.length})`}
+                  Available Models {models.length > 0 && `(${models.length})`}
                 </h3>
                 {models.length === 0 ? (
-                  <p className="mt-2 text-[11px] text-neutral-600">
-                    Key save karke test karo — jo models us key par chalenge wo free/pro me divide ho kar yahan dikhenge.
-                    Ya Devora ki shared key on karo aur Pro models se shuru karo.
+                  <p className="mt-2 text-[11px] text-neutral-500">
+                    No models loaded. Validate your API key above to fetch compatible models.
                   </p>
                 ) : (
-                  <div className="mt-2 space-y-4">
-                    {([
-                      ['free', 'Free models', freeModels],
-                      ['pro', 'Pro models', proModels]
-                    ] as Array<[ModelTier, string, ModelInfo[]]>).map(([tier, label, list]) =>
-                      list.length === 0 ? null : (
-                        <div key={tier}>
-                          <div className="text-[10px] uppercase tracking-wider text-neutral-600 mb-1">{label}</div>
-                          <div className="border border-neutral-900 divide-y divide-neutral-900">
-                            {list.map((model) => (
-                              <button
-                                key={model.id}
-                                type="button"
-                                onClick={() => onSelectModel(model.id)}
-                                className={`w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-neutral-950 transition-colors cursor-pointer ${
-                                  model.id === selectedModel ? 'text-white' : 'text-neutral-400'
-                                }`}
-                              >
-                                <span className="truncate">{model.label}</span>
-                                <span className={`ml-2 shrink-0 border px-1.5 py-0.5 text-[10px] uppercase ${TIER_BADGE[tier]}`}>
-                                  {tier}
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    )}
+                  <div className="mt-2 border border-neutral-900 divide-y divide-neutral-900 max-h-48 overflow-y-auto">
+                    {models.map((model) => (
+                      <button
+                        key={model.id}
+                        type="button"
+                        onClick={() => onSelectModel(model.id)}
+                        className={`w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-neutral-900 cursor-pointer ${
+                          model.id === selectedModel ? 'bg-neutral-900 text-white font-medium' : 'text-neutral-400'
+                        }`}
+                      >
+                        <span className="truncate">{model.label}</span>
+                        <span className={`px-1.5 py-0.5 border text-[9px] uppercase tracking-wider ${TIER_BADGE[model.tier]}`}>
+                          {model.tier}
+                        </span>
+                      </button>
+                    ))}
                   </div>
                 )}
               </section>
 
+              {/* Temperature Slider */}
               <section>
                 <div className="flex items-center justify-between">
                   <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">Temperature</h3>
-                  <span className="text-xs text-neutral-300 font-mono">{temperature.toFixed(1)}</span>
+                  <span className="text-xs font-mono text-neutral-300">{temperature.toFixed(2)}</span>
                 </div>
                 <input
                   type="range"
-                  min={0}
-                  max={1}
-                  step={0.1}
+                  min="0"
+                  max="1"
+                  step="0.05"
                   value={temperature}
-                  onChange={(event) => onTemperatureChange(Number(event.target.value))}
-                  className="mt-2 w-full accent-emerald-500"
+                  onChange={(event) => onTemperatureChange(parseFloat(event.target.value))}
+                  className="mt-2 w-full accent-emerald-500 cursor-pointer"
                 />
+                <div className="mt-1 flex justify-between text-[10px] text-neutral-600">
+                  <span>Deterministic (0.0)</span>
+                  <span>Creative (1.0)</span>
+                </div>
               </section>
             </>
           )}
@@ -415,120 +414,116 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
           {activeTab === 'PLAN' && (
             <>
               {/* Monthly Quota Meter Card */}
-              <section className="border border-neutral-900 bg-neutral-950/70 p-3 space-y-2.5">
+              <section className="border border-neutral-900 bg-neutral-950/70 p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <div className="min-w-0">
-                    <div className="text-[10px] uppercase tracking-wider text-neutral-500">Monthly Chat Quota</div>
-                    <div className="text-sm font-semibold text-white flex items-center gap-2">
-                      <span>{getPlanMeta(plan).label}</span>
-                      <span className="border border-emerald-900/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-emerald-400">
-                        active
+                  <div>
+                    <div className="text-[10px] uppercase font-bold tracking-wider text-neutral-500">
+                      Monthly Quota Status
+                    </div>
+                    <div className="text-sm font-semibold text-white mt-0.5 flex items-center gap-2">
+                      <span>{currentPlan.label}</span>
+                      <span className="border border-emerald-900/60 bg-emerald-950/40 text-emerald-400 text-[10px] uppercase px-1.5 py-0.5 font-normal">
+                        Active
                       </span>
                     </div>
                   </div>
                   <div className="text-right">
-                    <span className="text-xs font-mono font-medium text-white">
-                      {usage.count} <span className="text-neutral-500">/ {usage.limit}</span>
+                    <span className="text-xs font-mono text-neutral-400">{usage.monthLabel}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 pt-1">
+                  <div className="flex items-center justify-between text-xs font-mono">
+                    <span className="text-neutral-400">
+                      Messages Used: <strong className="text-white">{usage.count}</strong> / {usage.limit}
                     </span>
-                    <div className="text-[10px] text-neutral-500">messages used</div>
+                    <span className={usage.isCapReached ? 'text-rose-400 font-bold' : 'text-emerald-400'}>
+                      {usage.remaining} remaining
+                    </span>
+                  </div>
+
+                  <div className="h-2 w-full bg-neutral-900 overflow-hidden border border-neutral-800">
+                    <div
+                      className={`h-full transition-all duration-300 ${
+                        usage.isCapReached
+                          ? 'bg-rose-500'
+                          : usage.percentage >= 70
+                            ? 'bg-amber-400'
+                            : 'bg-emerald-400'
+                      }`}
+                      style={{ width: `${usage.percentage}%` }}
+                    />
                   </div>
                 </div>
 
-                {/* Progress Bar */}
-                <div className="w-full bg-neutral-900 h-1.5 overflow-hidden">
-                  <div
-                    className={`h-full transition-all duration-300 ${
-                      usage.isCapReached
-                        ? 'bg-rose-500'
-                        : usage.percentage >= 70
-                          ? 'bg-amber-400'
-                          : 'bg-emerald-400'
-                    }`}
-                    style={{ width: `${Math.min(100, Math.max(3, usage.percentage))}%` }}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between text-[10px] text-neutral-400">
-                  <span>{usage.remaining} messages remaining this month</span>
-                  <span>{usage.monthLabel}</span>
-                </div>
-
-                {usage.isCapReached && (
-                  <div className="border border-rose-900/70 bg-rose-950/30 p-2 text-[11px] text-rose-300 flex items-start gap-2">
-                    <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="font-medium">Monthly message limit reached ({usage.limit}/{usage.limit})</p>
-                      <p className="mt-0.5 text-[10px] text-rose-400/90">
-                        Naye prompts bhejne ke liye plan upgrade karein ya agle mahine ka wait karein.
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="pt-1 flex items-center justify-between border-t border-neutral-900 text-[10px]">
-                  <span className="text-neutral-500">Supabase sync: UI preview mode</span>
+                <div className="pt-2 flex items-center justify-between text-[11px] text-neutral-500 border-t border-neutral-900/70">
+                  <span className="flex items-center gap-1">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    Quota tracked per calendar month
+                  </span>
                   <button
                     type="button"
                     onClick={() => resetMonthlyUsage()}
-                    title="Testing ke liye monthly usage 0 par reset karo"
-                    className="flex items-center gap-1 text-neutral-500 hover:text-neutral-300 transition-colors cursor-pointer"
+                    title="Reset message counter for testing"
+                    className="flex items-center gap-1 text-[10px] text-neutral-500 hover:text-white transition-colors cursor-pointer"
                   >
-                    <RotateCcw className="w-2.5 h-2.5" />
-                    Reset quota (dev test)
+                    <RotateCcw className="w-3 h-3" />
+                    Reset Quota (Test)
                   </button>
                 </div>
               </section>
 
-              <p className="text-[11px] text-neutral-600">
-                BYOK plan par 100 messages/month cap hai. Pro me 250 messages aur Adv me 500 messages cap milti hai with GST included.
+              <p className="text-[11px] text-neutral-400 leading-relaxed">
+                Free plan includes 100 messages/month. Pro plan offers 250 messages and Advanced offers 500 messages with all GST included.
               </p>
 
-              <section className="space-y-2.5">
+              {/* Plans Tier Cards */}
+              <section className="space-y-3">
                 {PLANS.map((entry) => {
                   const isCurrent = entry.id === plan;
                   return (
                     <div
                       key={entry.id}
-                      className={`border p-3 transition-colors ${
+                      className={`border p-4 transition-colors ${
                         isCurrent
-                          ? 'border-white bg-neutral-950/40'
+                          ? 'border-white bg-neutral-950/60'
                           : entry.popular
-                            ? 'border-amber-900/60 bg-neutral-950/20'
-                            : 'border-neutral-900'
+                            ? 'border-amber-900/60 bg-neutral-950/30'
+                            : 'border-neutral-900 bg-neutral-950/20'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div>
                           <div className="flex items-center gap-2">
-                            <span className="text-xs font-semibold text-white">{entry.label}</span>
+                            <span className="text-sm font-semibold text-white">{entry.label}</span>
                             {isCurrent && (
                               <span className="border border-emerald-900/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-emerald-400">
-                                current
+                                Current
                               </span>
                             )}
                             {entry.popular && !isCurrent && (
-                              <span className="border border-amber-900/60 bg-amber-950/30 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-amber-400">
-                                popular
+                              <span className="border border-amber-900/60 bg-amber-950/30 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-amber-400 font-semibold">
+                                Popular
                               </span>
                             )}
                           </div>
-                          <div className="text-[10px] text-emerald-400 font-mono mt-0.5">
+                          <div className="text-[11px] text-emerald-400 font-mono mt-0.5">
                             {entry.monthlyCap} messages / month
                           </div>
                         </div>
 
                         <div className="text-right shrink-0">
-                          <div className="text-xs font-mono font-bold text-white">{entry.price}</div>
-                          <div className="text-[9px] text-neutral-500">{entry.gstNote}</div>
+                          <div className="text-sm font-mono font-bold text-white">{entry.price}</div>
+                          <div className="text-[9px] text-neutral-400">{entry.gstNote}</div>
                         </div>
                       </div>
 
-                      <p className="mt-1.5 text-[11px] text-neutral-400">{entry.blurb}</p>
+                      <p className="mt-2 text-xs text-neutral-400 leading-relaxed">{entry.blurb}</p>
 
-                      <ul className="mt-2.5 space-y-1">
+                      <ul className="mt-3 space-y-1.5">
                         {entry.perks.map((perk) => (
-                          <li key={perk} className="flex items-start gap-1.5 text-[11px] text-neutral-300">
-                            <Check className="mt-0.5 w-3 h-3 shrink-0 text-emerald-500" />
+                          <li key={perk} className="flex items-start gap-1.5 text-xs text-neutral-300">
+                            <Check className="mt-0.5 w-3.5 h-3.5 shrink-0 text-emerald-500" />
                             <span>{perk}</span>
                           </li>
                         ))}
@@ -538,7 +533,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                         type="button"
                         onClick={() => onPlanChange(entry.id)}
                         disabled={isCurrent}
-                        className={`mt-3 w-full py-2 text-[11px] font-medium transition-colors ${
+                        className={`mt-4 w-full py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
                           isCurrent
                             ? 'border border-neutral-900 text-neutral-600 bg-black cursor-default'
                             : entry.id === 'free'
@@ -546,7 +541,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                               : 'bg-white text-black hover:bg-neutral-200 cursor-pointer'
                         }`}
                       >
-                        {isCurrent ? 'Current plan active' : entry.id === 'free' ? 'Switch to Free (BYOK)' : `Upgrade to ${entry.label}`}
+                        {isCurrent ? 'Current Plan Active' : entry.id === 'free' ? 'Switch to Free (BYOK)' : `Upgrade to ${entry.label}`}
                       </button>
                     </div>
                   );
@@ -558,9 +553,9 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
           {activeTab === 'GITHUB' && (
             <>
               <section>
-                <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">Personal access token</h3>
-                <p className="mt-1 text-[11px] text-neutral-600">
-                  `repo` scope wala token chahiye. Token sirf is session me memory me rehta hai, save nahi hota.
+                <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">Personal Access Token</h3>
+                <p className="mt-1 text-[11px] text-neutral-400 leading-relaxed">
+                  Provide a GitHub token with `repo` scope. The token is held in active browser memory only and never stored on a server.
                 </p>
                 <div className="mt-2 flex gap-2">
                   <input
@@ -577,7 +572,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     disabled={!githubToken.trim() || isCheckingGithub}
                     className="px-3 py-2 border border-neutral-700 text-xs text-white hover:bg-neutral-900 disabled:opacity-40 transition-colors cursor-pointer whitespace-nowrap"
                   >
-                    {isCheckingGithub ? 'Checking...' : 'Connect'}
+                    {isCheckingGithub ? 'Connecting...' : 'Connect'}
                   </button>
                 </div>
                 {githubMessage && (
@@ -595,16 +590,16 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
 
               {githubUser && (
                 <>
-                  <section className="flex items-center gap-3 border border-neutral-900 p-3">
+                  <section className="flex items-center gap-3 border border-neutral-900 p-3 bg-neutral-950">
                     <img src={githubUser.avatar_url} alt={githubUser.login} className="w-9 h-9 rounded-full" />
                     <div className="min-w-0">
-                      <div className="text-xs text-white truncate">{githubUser.name}</div>
+                      <div className="text-xs text-white font-medium truncate">{githubUser.name}</div>
                       <div className="text-[11px] text-neutral-500">@{githubUser.login}</div>
                     </div>
                   </section>
 
                   <section>
-                    <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">Push workspace</h3>
+                    <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">Push Workspace</h3>
                     <div className="mt-2 space-y-2">
                       <select
                         value={targetRepo}
@@ -630,7 +625,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                         disabled={!targetRepo || workspaceFiles.length === 0 || isPushing}
                         className="w-full py-2 bg-white text-black text-xs font-semibold hover:bg-neutral-200 disabled:opacity-40 transition-colors cursor-pointer"
                       >
-                        {isPushing ? 'Pushing...' : `Push ${workspaceFiles.length} files`}
+                        {isPushing ? 'Pushing...' : `Push ${workspaceFiles.length} file(s) to GitHub`}
                       </button>
                     </div>
                   </section>
@@ -641,28 +636,35 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
 
           {activeTab === 'SECRETS' && (
             <>
+              {/* Direct Secret Linking Notice — No .env file */}
+              <section className="border border-emerald-900/60 bg-emerald-950/20 p-3 space-y-1.5">
+                <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  ShadRox Secure Secrets Vault (Zero Disk Footprint)
+                </div>
+                <p className="text-[11px] text-neutral-300 leading-relaxed">
+                  No <code className="text-emerald-300 font-mono">.env</code> file is written to your disk or workspace. All secrets are linked directly into your active runtime and bundler (<code className="text-emerald-300 font-mono">process.env</code> and <code className="text-emerald-300 font-mono">import.meta.env</code>) and encrypted inside your browser session.
+                </p>
+              </section>
+
+              {/* Add Secret Form */}
               <section>
                 <h3 className="text-[11px] uppercase tracking-wider text-neutral-500 flex items-center gap-1.5">
                   <Lock className="w-3 h-3" />
-                  Local secrets
+                  Add Environment Secret
                 </h3>
-                <p className="mt-1 text-[11px] text-neutral-600">
-                  Ye sirf tumhare browser me rehti hain aur AI ke context me bheji ja sakti hain. Server par kuch save nahi
-                  hota.
-                </p>
-
-                <div className="mt-3 flex gap-2">
+                <div className="mt-2 flex gap-2">
                   <input
                     value={newSecretKey}
-                    onChange={(event) => setNewSecretKey(event.target.value)}
-                    placeholder="KEY"
-                    className="w-1/3 bg-black border border-neutral-800 px-2 py-2 text-xs font-mono text-neutral-100 outline-none placeholder:text-neutral-700"
+                    onChange={(event) => setNewSecretKey(event.target.value.toUpperCase())}
+                    placeholder="VARIABLE_NAME"
+                    className="w-2/5 bg-black border border-neutral-800 px-3 py-2 text-xs font-mono text-neutral-100 outline-none placeholder:text-neutral-700"
                   />
                   <input
                     value={newSecretValue}
                     onChange={(event) => setNewSecretValue(event.target.value)}
-                    placeholder="value"
-                    className="flex-1 min-w-0 bg-black border border-neutral-800 px-2 py-2 text-xs font-mono text-neutral-100 outline-none placeholder:text-neutral-700"
+                    placeholder="Secret value"
+                    className="flex-1 min-w-0 bg-black border border-neutral-800 px-3 py-2 text-xs font-mono text-neutral-100 outline-none placeholder:text-neutral-700"
                   />
                   <button
                     type="button"
@@ -675,21 +677,38 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                       setNewSecretKey('');
                       setNewSecretValue('');
                     }}
-                    className="px-3 py-2 border border-neutral-700 text-xs text-white hover:bg-neutral-900 transition-colors cursor-pointer"
+                    className="px-3 py-2 bg-white text-black hover:bg-neutral-200 text-xs font-semibold transition-colors cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
                   </button>
                 </div>
 
-                <div className="mt-3 border border-neutral-900 divide-y divide-neutral-900">
+                {/* Common Presets */}
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {['DATABASE_URL', 'STRIPE_SECRET_KEY', 'VITE_SUPABASE_URL', 'NEXT_PUBLIC_API_URL'].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setNewSecretKey(preset)}
+                      className="px-2 py-0.5 border border-neutral-800 hover:border-neutral-700 text-[10px] font-mono text-neutral-400 hover:text-neutral-200 transition-colors cursor-pointer"
+                    >
+                      + {preset}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Secret Items List */}
+                <div className="mt-4 border border-neutral-900 divide-y divide-neutral-900 bg-neutral-950">
                   {secrets.length === 0 ? (
-                    <div className="px-3 py-3 text-[11px] text-neutral-600">Koi secret nahi.</div>
+                    <div className="px-3 py-3 text-[11px] text-neutral-600 italic">No secrets configured in vault.</div>
                   ) : (
                     secrets.map((secret) => (
                       <div key={secret.id} className="flex items-center gap-2 px-3 py-2">
-                        <span className="w-1/3 shrink-0 text-[11px] font-mono text-neutral-300 truncate">{secret.key}</span>
-                        <span className="flex-1 min-w-0 text-[11px] font-mono text-neutral-500 truncate">
-                          {secret.visible ? secret.value : '••••••••'}
+                        <span className="w-2/5 shrink-0 text-[11px] font-mono text-emerald-400 truncate">
+                          {secret.key}
+                        </span>
+                        <span className="flex-1 min-w-0 text-[11px] font-mono text-neutral-400 truncate">
+                          {secret.visible ? secret.value : '••••••••••••'}
                         </span>
                         <button
                           type="button"
@@ -700,14 +719,16 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                               )
                             )
                           }
-                          className="text-neutral-600 hover:text-white cursor-pointer"
+                          title={secret.visible ? 'Hide secret' : 'Show secret'}
+                          className="p-1 text-neutral-500 hover:text-white cursor-pointer"
                         >
                           {secret.visible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                         </button>
                         <button
                           type="button"
                           onClick={() => onSecretsChange(secrets.filter((item) => item.id !== secret.id))}
-                          className="text-neutral-600 hover:text-red-400 cursor-pointer"
+                          title="Delete secret"
+                          className="p-1 text-neutral-500 hover:text-red-400 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -715,11 +736,6 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     ))
                   )}
                 </div>
-              </section>
-
-              <section className="flex items-center gap-2 text-[11px] text-neutral-600">
-                <Github className="w-3.5 h-3.5" />
-                <span>GitHub aur secrets tab alag rakhe gaye hain taaki cheezein clear rahein.</span>
               </section>
             </>
           )}

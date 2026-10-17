@@ -2,6 +2,16 @@ import type { ProviderId } from './providers';
 import type { PlanTier, RecentEntry } from './types';
 
 const STORE_KEYS = {
+  apiKey: (provider: ProviderId) => `shadrox.byok.${provider}`,
+  selectedModel: (provider: ProviderId) => `shadrox.model.${provider}`,
+  activeProvider: 'shadrox.provider.active',
+  useSharedKey: 'shadrox.key.shared',
+  plan: 'shadrox.plan',
+  session: 'shadrox.session',
+  recents: 'shadrox.recents'
+} as const;
+
+const LEGACY_KEYS = {
   apiKey: (provider: ProviderId) => `devora.byok.${provider}`,
   selectedModel: (provider: ProviderId) => `devora.model.${provider}`,
   activeProvider: 'devora.provider.active',
@@ -13,9 +23,12 @@ const STORE_KEYS = {
 
 const MAX_RECENTS = 8;
 
-function safeGet(key: string): string | null {
+function safeGet(key: string, legacyKey?: string): string | null {
   try {
-    return localStorage.getItem(key);
+    const val = localStorage.getItem(key);
+    if (val !== null) return val;
+    if (legacyKey) return localStorage.getItem(legacyKey);
+    return null;
   } catch {
     return null;
   }
@@ -25,32 +38,34 @@ function safeSet(key: string, value: string): void {
   try {
     localStorage.setItem(key, value);
   } catch (err) {
-    console.warn(`[devora] could not persist ${key}`, err);
+    console.warn(`[shadrox] could not persist ${key}`, err);
   }
 }
 
-function safeRemove(key: string): void {
+function safeRemove(key: string, legacyKey?: string): void {
   try {
     localStorage.removeItem(key);
+    if (legacyKey) localStorage.removeItem(legacyKey);
   } catch {
     /* ignore */
   }
 }
 
 export function getApiKey(provider: ProviderId): string {
-  return safeGet(STORE_KEYS.apiKey(provider)) || '';
+  return safeGet(STORE_KEYS.apiKey(provider), LEGACY_KEYS.apiKey(provider)) || '';
 }
 
 export function setApiKey(provider: ProviderId, apiKey: string): void {
   if (apiKey.trim()) {
     safeSet(STORE_KEYS.apiKey(provider), apiKey.trim());
   } else {
-    safeRemove(STORE_KEYS.apiKey(provider));
+    safeRemove(STORE_KEYS.apiKey(provider), LEGACY_KEYS.apiKey(provider));
   }
 }
 
 export function getActiveProvider(): ProviderId {
-  return safeGet(STORE_KEYS.activeProvider) === 'groq' ? 'groq' : 'gemini';
+  const val = safeGet(STORE_KEYS.activeProvider, LEGACY_KEYS.activeProvider);
+  return val === 'groq' ? 'groq' : 'gemini';
 }
 
 export function setActiveProvider(provider: ProviderId): void {
@@ -58,25 +73,25 @@ export function setActiveProvider(provider: ProviderId): void {
 }
 
 export function getSelectedModel(provider: ProviderId): string {
-  return safeGet(STORE_KEYS.selectedModel(provider)) || '';
+  return safeGet(STORE_KEYS.selectedModel(provider), LEGACY_KEYS.selectedModel(provider)) || '';
 }
 
 export function setSelectedModel(provider: ProviderId, modelId: string): void {
   if (modelId) safeSet(STORE_KEYS.selectedModel(provider), modelId);
 }
 
-/** Whether the user runs on Devora's shared key instead of their own. */
+/** Whether the user runs on ShadRox's shared key instead of their own. */
 export function getUseSharedKey(): boolean {
-  return safeGet(STORE_KEYS.useSharedKey) === 'true';
+  return safeGet(STORE_KEYS.useSharedKey, LEGACY_KEYS.useSharedKey) === 'true';
 }
 
 export function setUseSharedKey(value: boolean): void {
   if (value) safeSet(STORE_KEYS.useSharedKey, 'true');
-  else safeRemove(STORE_KEYS.useSharedKey);
+  else safeRemove(STORE_KEYS.useSharedKey, LEGACY_KEYS.useSharedKey);
 }
 
 export function getPlan(): PlanTier {
-  const raw = safeGet(STORE_KEYS.plan);
+  const raw = safeGet(STORE_KEYS.plan, LEGACY_KEYS.plan);
   return raw === 'pro' || raw === 'adv' || raw === 'enterprise' ? raw : 'free';
 }
 
@@ -85,7 +100,7 @@ export function setPlan(plan: PlanTier): void {
 }
 
 export function getSessionToken(): string {
-  return safeGet(STORE_KEYS.session) || '';
+  return safeGet(STORE_KEYS.session, LEGACY_KEYS.session) || '';
 }
 
 export function setSessionToken(token: string): void {
@@ -93,11 +108,11 @@ export function setSessionToken(token: string): void {
 }
 
 export function clearSessionToken(): void {
-  safeRemove(STORE_KEYS.session);
+  safeRemove(STORE_KEYS.session, LEGACY_KEYS.session);
 }
 
 export function getRecentWorkspaces(): RecentEntry[] {
-  const raw = safeGet(STORE_KEYS.recents);
+  const raw = safeGet(STORE_KEYS.recents, LEGACY_KEYS.recents);
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
@@ -107,13 +122,20 @@ export function getRecentWorkspaces(): RecentEntry[] {
   }
 }
 
-/** Remembers an opened folder/file so Stage 2 can show a real "recently opened" list. */
-export function pushRecentWorkspace(entry: Omit<RecentEntry, 'id' | 'openedAt'>): RecentEntry[] {
-  const next: RecentEntry[] = [
-    { ...entry, id: `${entry.kind}-${entry.path}-${Date.now()}`, openedAt: Date.now() },
-    ...getRecentWorkspaces().filter((item) => item.path !== entry.path)
-  ].slice(0, MAX_RECENTS);
+export interface PushRecentInput {
+  id?: string;
+  name: string;
+  path: string;
+  fileCount: number;
+  kind: 'folder' | 'file';
+}
 
+export function pushRecentWorkspace(input: PushRecentInput): RecentEntry[] {
+  const id = input.id || `${input.kind}-${input.path}`;
+  const current = getRecentWorkspaces().filter((item) => item.path !== input.path);
+  const next: RecentEntry[] = [{ ...input, id, openedAt: Date.now() }, ...current].slice(0, MAX_RECENTS);
   safeSet(STORE_KEYS.recents, JSON.stringify(next));
   return next;
 }
+
+export const recordRecentWorkspace = pushRecentWorkspace;

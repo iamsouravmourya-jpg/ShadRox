@@ -1,26 +1,41 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import CodeMirror, { type ReactCodeMirrorRef, oneDark } from '@uiw/react-codemirror';
-import { findNext, search, SearchQuery, setSearchQuery } from '@codemirror/search';
-import { EditorView } from '@codemirror/view';
-import { css } from '@codemirror/lang-css';
-import { html } from '@codemirror/lang-html';
-import { javascript } from '@codemirror/lang-javascript';
-import { json } from '@codemirror/lang-json';
-import { markdown } from '@codemirror/lang-markdown';
-import { python } from '@codemirror/lang-python';
-import { ArrowLeft, Archive, Check, Copy, Download, FileCode2, FilePlus, Loader2, Save, Search, SlidersHorizontal, Sparkles, Trash2, WrapText, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import CodeMirror, { type ReactCodeMirrorRef } from '@uiw/react-codemirror';
+import {
+  closeSearchPanel,
+  findNext,
+  openSearchPanel,
+  search,
+  SearchQuery,
+  setSearchQuery
+} from '@codemirror/search';
+import {
+  Archive,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Download,
+  FileCode2,
+  FilePlus,
+  FolderTree,
+  Loader2,
+  Save,
+  Search,
+  Sparkles,
+  Trash2,
+  X
+} from 'lucide-react';
 import { copyToClipboard, downloadFile, downloadWorkspaceZip, estimateTokens, formatCode } from '../lib/toolUtils';
+import { getLanguageExtension } from '../lib/languages';
 import type { WorkspaceFile } from '../lib/types';
 
 interface CodeEditorProps {
   files: WorkspaceFile[];
   activeFileIndex: number;
-  /** Workspace-relative names whose editor content differs from disk. */
   dirtyFiles: string[];
   canWriteToDisk: boolean;
   isSaving: boolean;
   onSelectFile: (index: number) => void;
-  /** Returns to the file list without closing the workspace. */
   onCloseFile: () => void;
   onChangeContent: (content: string) => void;
   onDeleteFile: (index: number) => void;
@@ -28,56 +43,6 @@ interface CodeEditorProps {
   onSaveAll: () => void;
   workspaceName?: string;
 }
-
-/** Syntax support per language, so the code is coloured instead of white-on-black. */
-function extensionsFor(language: string) {
-  switch (language) {
-    case 'typescript':
-      return [javascript({ typescript: true, jsx: true })];
-    case 'javascript':
-      return [javascript({ jsx: true })];
-    case 'html':
-    case 'xml':
-      return [html()];
-    case 'css':
-      return [css()];
-    case 'json':
-      return [json()];
-    case 'markdown':
-      return [markdown()];
-    case 'python':
-      return [python()];
-    default:
-      return [];
-  }
-}
-
-/**
- * Keeps the app's black shell but only overrides the surfaces and the search
- * panel — token colours still come from oneDark, which is what makes the code
- * readable instead of a wall of white text.
- */
-const DEVORA_THEME = EditorView.theme(
-  {
-    '&': { backgroundColor: '#000000', color: '#e5e5e5', fontSize: '12px', height: '100%' },
-    '.cm-scroller': { fontFamily: "'JetBrains Mono', ui-monospace, monospace", lineHeight: '1.6' },
-    '.cm-content': { caretColor: '#ffffff', paddingTop: '10px', paddingBottom: '32px' },
-    '.cm-gutters': { backgroundColor: '#000000', color: '#404040', border: 'none', borderRight: '1px solid #171717' },
-    '.cm-activeLineGutter': { backgroundColor: '#0f0f0f', color: '#a3a3a3' },
-    '.cm-activeLine': { backgroundColor: '#0d0d0d' },
-    '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#ffffff' },
-    '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': { backgroundColor: '#1d4ed866' },
-    '.cm-selectionMatch': { backgroundColor: '#facc1522' },
-    '.cm-searchMatch': { backgroundColor: '#facc1540', outline: '1px solid #facc1580' },
-    '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: '#facc1599' },
-    '.cm-panels': { backgroundColor: '#0a0a0a', color: '#d4d4d4' },
-    '.cm-tooltip': { backgroundColor: '#0a0a0a', border: '1px solid #262626', color: '#d4d4d4' },
-    '.cm-tooltip-autocomplete ul li[aria-selected]': { backgroundColor: '#171717', color: '#ffffff' }
-  },
-  { dark: true }
-);
-
-const THEME = [oneDark, DEVORA_THEME];
 
 export function CodeEditor({
   files,
@@ -93,80 +58,41 @@ export function CodeEditor({
   onSaveAll,
   workspaceName
 }: CodeEditorProps) {
-  const activeFile = files[activeFileIndex] ?? null;
+  const activeFile = files[activeFileIndex] ?? files[0] ?? null;
   const editorRef = useRef<ReactCodeMirrorRef>(null);
-  const [query, setQuery] = useState('');
+  const [fileFilter, setFileFilter] = useState('');
+  const [findQuery, setFindQuery] = useState('');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [hasCopied, setHasCopied] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const [wrap, setWrap] = useState(false);
-  const [cursor, setCursor] = useState({ line: 1, col: 1 });
-  const [isToolsOpen, setIsToolsOpen] = useState(false);
-  const [fileFilter, setFileFilter] = useState('');
-  const toolsRef = useRef<HTMLDivElement>(null);
 
   const dirty = useMemo(() => new Set(dirtyFiles), [dirtyFiles]);
 
-  // Reports the real caret position, so the status bar stops showing the file's
-  // total line count under a "Ln" label.
-  const cursorListener = useMemo(
-    () =>
-      EditorView.updateListener.of((update) => {
-        if (!update.selectionSet && !update.docChanged) return;
-        const head = update.state.selection.main.head;
-        const line = update.state.doc.lineAt(head);
-        setCursor({ line: line.number, col: head - line.from + 1 });
-      }),
-    []
-  );
+  const extensions = useMemo(() => {
+    const list = [search({ top: true })];
+    if (activeFile) {
+      const ext = getLanguageExtension(activeFile.name, activeFile.language);
+      if (ext) list.push(ext);
+    }
+    return list;
+  }, [activeFile?.name, activeFile?.language]);
 
-  const extensions = useMemo(
-    () => [
-      ...extensionsFor(activeFile?.language ?? ''),
-      search({ top: true }),
-      cursorListener,
-      ...(wrap ? [EditorView.lineWrapping] : [])
-    ],
-    [activeFile?.language, cursorListener, wrap]
-  );
-
-  const runSearch = useCallback((value: string) => {
+  const runSearch = (term: string) => {
     const view = editorRef.current?.view;
     if (!view) return;
-    if (!value) {
-      view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: '' })) });
+    if (!term) {
+      closeSearchPanel(view);
       return;
     }
-    view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: value, caseSensitive: false })) });
-    findNext(view);
-  }, []);
-
-  // Switching files (list, AI patch, checkpoint restore) has to clear the old
-  // search term too, otherwise its highlights follow the user into the next file.
-  useEffect(() => {
-    setQuery('');
-    setCursor({ line: 1, col: 1 });
-    const view = editorRef.current?.view;
-    if (view) view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: '' })) });
-  }, [activeFile?.name]);
-
-  // The tools dropdown closes on any click outside it.
-  useEffect(() => {
-    if (!isToolsOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (!toolsRef.current?.contains(event.target as Node)) setIsToolsOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    return () => document.removeEventListener('mousedown', onPointerDown);
-  }, [isToolsOpen]);
-
-  const handleSearchChange = (value: string) => {
-    setQuery(value);
-    runSearch(value);
+    openSearchPanel(view);
+    view.dispatch({
+      effects: setSearchQuery.of(new SearchQuery({ search: term, caseSensitive: false }))
+    });
   };
 
-  const handleOpen = (index: number) => {
-    setQuery('');
-    onSelectFile(index);
+  const handleSearchChange = (value: string) => {
+    setFindQuery(value);
+    runSearch(value);
   };
 
   const handleCopy = async () => {
@@ -198,297 +124,308 @@ export function CodeEditor({
 
   const handleDownloadZip = () => {
     if (files.length === 0) return;
-    downloadWorkspaceZip(workspaceName || 'devora-project', files);
+    downloadWorkspaceZip(workspaceName || 'shadrox-project', files);
   };
 
-  /** Deleting is irreversible in the editor, so non-empty files ask first. */
-  const handleDeleteFile = () => {
-    if (!activeFile) return;
-    if (activeFile.content.trim() && !window.confirm(`"${activeFile.name}" delete karein? Ye workspace se hat jayegi.`)) {
+  const handleDeleteFile = (index: number) => {
+    const target = files[index];
+    if (!target) return;
+    if (target.content.trim() && !window.confirm(`Delete "${target.name}" from workspace?`)) {
       return;
     }
-    onDeleteFile(activeFileIndex);
+    onDeleteFile(index);
   };
 
-  // Nothing selected yet: the file list comes first, the editor only after a click.
-  if (!activeFile) {
-    const filter = fileFilter.trim().toLowerCase();
-    const visibleFiles = files
+  // Filter files in vertical sidebar
+  const filterLower = fileFilter.trim().toLowerCase();
+  const visibleFiles = useMemo(() => {
+    return files
       .map((file, index) => ({ file, index }))
-      .filter((entry) => !filter || entry.file.name.toLowerCase().includes(filter));
+      .filter((entry) => !filterLower || entry.file.name.toLowerCase().includes(filterLower));
+  }, [files, filterLower]);
 
-    return (
-      <div className="flex-1 min-h-0 flex flex-col bg-black">
-        <div className="h-9 shrink-0 flex items-center justify-between gap-2 px-3 border-b border-neutral-900">
-          <span className="text-[10px] uppercase tracking-wider text-neutral-500 shrink-0">
-            Files · {filter ? `${visibleFiles.length}/${files.length}` : files.length}
+  const lineCount = activeFile ? activeFile.content.split('\n').length : 0;
+  const charCount = activeFile ? activeFile.content.length : 0;
+  const tokenEst = activeFile ? estimateTokens(activeFile.content) : 0;
+  const isDirty = activeFile ? dirty.has(activeFile.name) : false;
+
+  return (
+    <div className="flex-1 min-h-0 flex bg-black overflow-hidden relative">
+      {/* Toast Notification */}
+      {toastMsg && (
+        <div className="absolute top-12 right-6 z-30 px-3 py-1 bg-emerald-950/90 border border-emerald-800 text-emerald-300 text-xs font-mono shadow-lg transition-opacity">
+          {toastMsg}
+        </div>
+      )}
+
+      {/* Left Column: Vertical Files Explorer Sidebar */}
+      <div
+        className={`${
+          isSidebarOpen ? 'w-60 sm:w-64' : 'w-0'
+        } shrink-0 border-r border-neutral-900 bg-neutral-950 flex flex-col transition-all duration-200 overflow-hidden select-none`}
+      >
+        {/* Explorer Header */}
+        <div className="h-9 shrink-0 flex items-center justify-between px-3 border-b border-neutral-900">
+          <span className="text-[10px] uppercase font-bold tracking-wider text-neutral-400 flex items-center gap-1.5">
+            <FolderTree className="w-3.5 h-3.5 text-neutral-500" />
+            Explorer
+            <span className="text-neutral-600 font-normal">({files.length})</span>
           </span>
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="relative">
-              <Search className="w-3 h-3 text-neutral-600 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                value={fileFilter}
-                onChange={(event) => setFileFilter(event.target.value)}
-                placeholder="Filter files"
-                spellCheck={false}
-                className="w-28 sm:w-44 border border-neutral-800 focus:border-neutral-600 bg-black text-[11px] text-neutral-200 pl-6 pr-6 py-1 outline-none placeholder:text-neutral-600"
-              />
-              {fileFilter && (
-                <button
-                  type="button"
-                  onClick={() => setFileFilter('')}
-                  title="Filter hatao"
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-neutral-600 hover:text-white cursor-pointer"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              )}
-            </div>
-            {files.length > 0 && (
-              <button
-                type="button"
-                onClick={handleDownloadZip}
-                title="Export entire workspace as ZIP"
-                className="hidden sm:flex items-center gap-1.5 text-[11px] text-neutral-400 hover:text-white transition-colors cursor-pointer"
-              >
-                <Archive className="w-3.5 h-3.5 text-neutral-400" />
-                Export ZIP
-              </button>
-            )}
+          <div className="flex items-center gap-1">
             <button
               type="button"
               onClick={onNewFile}
-              title="New file"
-              className="flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-white transition-colors cursor-pointer shrink-0"
+              title="Create new file"
+              className="p-1 text-neutral-400 hover:text-white transition-colors cursor-pointer"
             >
               <FilePlus className="w-3.5 h-3.5" />
-              New file
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadZip}
+              title="Export workspace as ZIP"
+              className="p-1 text-neutral-400 hover:text-white transition-colors cursor-pointer"
+            >
+              <Archive className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          {visibleFiles.length === 0 ? (
-            <p className="px-3 py-4 text-[11px] text-neutral-600">
-              "{fileFilter.trim()}" se koi file match nahi hui.
-            </p>
-          ) : (
-            visibleFiles.map(({ file, index }) => (
-              <button
-                key={`${file.name}-${index}`}
-                type="button"
-                onClick={() => handleOpen(index)}
-                className="group w-full flex items-center justify-between gap-3 px-3 py-2 border-b border-neutral-900/60 text-left hover:bg-neutral-950 transition-colors cursor-pointer"
-              >
-                <span className="flex items-center gap-2 min-w-0">
-                  <FileCode2 className="w-3.5 h-3.5 text-neutral-600 group-hover:text-emerald-400 shrink-0" />
-                  <span className="font-mono text-[11px] text-neutral-200 truncate">{file.name}</span>
-                  {dirty.has(file.name) && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Disk par save nahi hua" />
-                  )}
-                </span>
-                <span className="text-[10px] text-neutral-600 shrink-0">
-                  {file.language} · {file.content.split('\n').length} lines
-                </span>
-              </button>
-            ))
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  const lineCount = activeFile.content.split('\n').length;
-  const isDirty = dirty.has(activeFile.name);
-
-  return (
-    <div className="flex-1 min-h-0 flex flex-col bg-black">
-      <div className="h-9 shrink-0 flex items-center justify-between gap-2 px-2 border-b border-neutral-900">
-        <div className="flex items-center gap-2 min-w-0">
-          <button
-            type="button"
-            onClick={onCloseFile}
-            title="File list par wapas jao"
-            className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer shrink-0"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-          </button>
-          <span className="font-mono text-[11px] text-neutral-200 truncate">{activeFile.name}</span>
-          {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Disk par save nahi hua" />}
-          <span className="hidden lg:inline text-[10px] text-neutral-600 shrink-0">
-            {lineCount} lines · {activeFile.language}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-1 shrink-0">
+        {/* Quick Filter Input */}
+        <div className="p-2 border-b border-neutral-900/70">
           <div className="relative">
             <Search className="w-3 h-3 text-neutral-600 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
-              value={query}
-              onChange={(event) => handleSearchChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  const view = editorRef.current?.view;
-                  if (view) findNext(view);
-                }
-              }}
-              placeholder="Search in file"
+              value={fileFilter}
+              onChange={(e) => setFileFilter(e.target.value)}
+              placeholder="Search files..."
               spellCheck={false}
-              className="w-28 sm:w-40 border border-neutral-800 focus:border-neutral-600 bg-black text-[11px] text-neutral-200 pl-6 pr-2 py-1 outline-none placeholder:text-neutral-600"
+              className="w-full border border-neutral-800 focus:border-neutral-700 bg-black text-[11px] text-neutral-200 pl-6 pr-5 py-1 outline-none placeholder:text-neutral-600"
             />
+            {fileFilter && (
+              <button
+                type="button"
+                onClick={() => setFileFilter('')}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-neutral-600 hover:text-white cursor-pointer"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
           </div>
+        </div>
 
-          <button
-            type="button"
-            onClick={onNewFile}
-            title="New file"
-            className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
-          >
-            <FilePlus className="w-3.5 h-3.5" />
-          </button>
-
-          {/* Save Tool */}
-          <button
-            type="button"
-            onClick={onSaveAll}
-            disabled={!canWriteToDisk || dirty.size === 0 || isSaving}
-            title={
-              canWriteToDisk
-                ? 'Disk par save karo'
-                : 'Ye workspace read-only hai (drag-drop ki files disk par save nahi hoti)'
-            }
-            className="flex items-center gap-1 px-1.5 py-1 text-neutral-500 hover:text-white disabled:opacity-30 transition-colors cursor-pointer"
-          >
-            {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-            {dirty.size > 0 && <span className="text-[10px] text-amber-400">{dirty.size}</span>}
-          </button>
-
-          {/* Secondary tools live in one dropdown instead of a row of icons. */}
-          <div className="relative" ref={toolsRef}>
-            <button
-              type="button"
-              onClick={() => setIsToolsOpen((open) => !open)}
-              title="Aur tools — format, copy, wrap, download, export"
-              className={`p-1.5 transition-colors cursor-pointer ${
-                isToolsOpen ? 'text-white' : 'text-neutral-500 hover:text-white'
-              }`}
-            >
-              <SlidersHorizontal className="w-3.5 h-3.5" />
-            </button>
-
-            {isToolsOpen && (
-              <div className="absolute right-0 top-8 z-20 w-56 border border-neutral-800 bg-neutral-950 py-1 shadow-lg shadow-black/60">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsToolsOpen(false);
-                    handleFormat();
-                  }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-300 hover:bg-neutral-900 hover:text-white transition-colors cursor-pointer"
+        {/* Vertical Files List */}
+        <div className="flex-1 overflow-y-auto divide-y divide-neutral-900/40">
+          {visibleFiles.length === 0 ? (
+            <div className="p-4 text-center text-[11px] text-neutral-600 italic">
+              {fileFilter ? 'No matching files' : 'No files in workspace'}
+            </div>
+          ) : (
+            visibleFiles.map(({ file, index }) => {
+              const isActive = index === activeFileIndex;
+              const hasUnsaved = dirty.has(file.name);
+              return (
+                <div
+                  key={`${file.name}-${index}`}
+                  onClick={() => onSelectFile(index)}
+                  className={`group flex items-center justify-between px-3 py-2 text-left cursor-pointer transition-colors ${
+                    isActive
+                      ? 'bg-neutral-900/90 border-l-2 border-emerald-500 text-white'
+                      : 'hover:bg-neutral-900/50 text-neutral-400 border-l-2 border-transparent'
+                  }`}
                 >
-                  <Sparkles className="w-3.5 h-3.5 text-neutral-500" />
-                  Format & clean
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsToolsOpen(false);
-                    void handleCopy();
-                  }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-300 hover:bg-neutral-900 hover:text-white transition-colors cursor-pointer"
-                >
-                  {hasCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-neutral-500" />}
-                  {hasCopied ? 'Copied' : 'Copy full file'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setWrap((value) => !value)}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-300 hover:bg-neutral-900 hover:text-white transition-colors cursor-pointer"
-                >
-                  <WrapText className={`w-3.5 h-3.5 ${wrap ? 'text-emerald-400' : 'text-neutral-500'}`} />
-                  <span className="flex-1">Line wrap</span>
-                  <span className={wrap ? 'text-emerald-400' : 'text-neutral-600'}>{wrap ? 'on' : 'off'}</span>
-                </button>
+                  <div className="flex items-center gap-2 min-w-0 flex-1 mr-2">
+                    <FileCode2
+                      className={`w-3.5 h-3.5 shrink-0 ${
+                        isActive ? 'text-emerald-400' : 'text-neutral-500 group-hover:text-neutral-300'
+                      }`}
+                    />
+                    <span className="font-mono text-xs truncate">{file.name}</span>
+                    {hasUnsaved && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved changes" />
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteFile(index);
+                      }}
+                      title="Delete file"
+                      className="opacity-0 group-hover:opacity-100 p-0.5 text-neutral-600 hover:text-red-400 transition-opacity cursor-pointer"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
 
-                <div className="my-1 border-t border-neutral-900" />
+      {/* Sidebar Toggle Tab */}
+      <button
+        type="button"
+        onClick={() => setIsSidebarOpen((open) => !open)}
+        title={isSidebarOpen ? 'Collapse file tree' : 'Expand file tree'}
+        className="w-3.5 hover:w-4 bg-neutral-950 border-r border-neutral-900 flex items-center justify-center text-neutral-600 hover:text-white transition-all cursor-pointer z-10"
+      >
+        {isSidebarOpen ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+      </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsToolsOpen(false);
-                    handleDownloadFile();
-                  }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-300 hover:bg-neutral-900 hover:text-white transition-colors cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5 text-neutral-500" />
-                  Download this file
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsToolsOpen(false);
-                    handleDownloadZip();
-                  }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-300 hover:bg-neutral-900 hover:text-white transition-colors cursor-pointer"
-                >
-                  <Archive className="w-3.5 h-3.5 text-neutral-500" />
-                  Export workspace ZIP
-                </button>
-              </div>
+      {/* Right Column: Code Editor Beside File List */}
+      <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-black">
+        {/* Editor Top Navigation & Action Toolbar */}
+        <div className="h-9 shrink-0 flex items-center justify-between gap-2 px-3 border-b border-neutral-900 bg-neutral-950/70">
+          {/* Active file metadata */}
+          <div className="flex items-center gap-2 min-w-0">
+            {activeFile ? (
+              <>
+                <FileCode2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span className="font-mono text-xs text-neutral-100 truncate font-medium">
+                  {activeFile.name}
+                </span>
+                {isDirty && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved changes" />
+                )}
+                <span className="hidden md:inline text-[10px] text-neutral-500 uppercase font-mono">
+                  {activeFile.language}
+                </span>
+              </>
+            ) : (
+              <span className="text-xs text-neutral-500">No file selected</span>
             )}
           </div>
 
-          <div className="w-px h-4 bg-neutral-900 mx-0.5" />
+          {/* Action buttons toolbar */}
+          {activeFile && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              {/* Search in active file */}
+              <div className="relative hidden sm:block">
+                <Search className="w-3 h-3 text-neutral-600 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  value={findQuery}
+                  onChange={(e) => handleSearchChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const view = editorRef.current?.view;
+                      if (view) findNext(view);
+                    }
+                  }}
+                  placeholder="Find in file..."
+                  spellCheck={false}
+                  className="w-28 sm:w-36 border border-neutral-800 focus:border-neutral-600 bg-black text-[11px] text-neutral-200 pl-6 pr-2 py-0.5 outline-none placeholder:text-neutral-600"
+                />
+              </div>
 
-          <button
-            type="button"
-            onClick={handleDeleteFile}
-            disabled={files.length <= 1}
-            title={files.length <= 1 ? 'Last file delete nahi ho sakti' : 'Delete file (workspace se hatao)'}
-            className="p-1.5 text-neutral-600 hover:text-red-400 disabled:opacity-30 disabled:hover:text-neutral-600 transition-colors cursor-pointer"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
+              {/* Format code */}
+              <button
+                type="button"
+                onClick={handleFormat}
+                title="Format Code"
+                className="flex items-center gap-1 px-2 py-1 text-[11px] text-neutral-400 hover:text-white border border-neutral-800 hover:border-neutral-700 transition-colors cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="hidden lg:inline">Format</span>
+              </button>
+
+              {/* Copy file content */}
+              <button
+                type="button"
+                onClick={handleCopy}
+                title="Copy Code"
+                className="flex items-center gap-1 px-2 py-1 text-[11px] text-neutral-400 hover:text-white border border-neutral-800 hover:border-neutral-700 transition-colors cursor-pointer"
+              >
+                {hasCopied ? (
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5 text-neutral-400" />
+                )}
+                <span className="hidden lg:inline">{hasCopied ? 'Copied' : 'Copy'}</span>
+              </button>
+
+              {/* Download single file */}
+              <button
+                type="button"
+                onClick={handleDownloadFile}
+                title="Download this file"
+                className="p-1 text-neutral-400 hover:text-white transition-colors cursor-pointer border border-neutral-800 hover:border-neutral-700"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Save file */}
+              {canWriteToDisk && (
+                <button
+                  type="button"
+                  onClick={onSaveAll}
+                  disabled={!isDirty || isSaving}
+                  title="Save changes to disk (Ctrl+S)"
+                  className="flex items-center gap-1 px-2 py-1 text-[11px] bg-white text-black hover:bg-neutral-200 disabled:opacity-30 font-medium transition-colors cursor-pointer"
+                >
+                  {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                  Save
+                </button>
+              )}
+            </div>
+          )}
         </div>
+
+        {/* CodeMirror Editor Area */}
+        <div className="flex-1 min-h-0 overflow-hidden">
+          {activeFile ? (
+            <CodeMirror
+              ref={editorRef}
+              value={activeFile.content}
+              height="100%"
+              theme="dark"
+              extensions={extensions}
+              onChange={(value) => onChangeContent(value)}
+              basicSetup={{
+                lineNumbers: true,
+                highlightActiveLineGutter: true,
+                highlightActiveLine: true,
+                foldGutter: true,
+                dropCursor: true,
+                allowMultipleSelections: true,
+                indentOnInput: true,
+                bracketMatching: true,
+                closeBrackets: true,
+                autocompletion: true,
+                rectangularSelection: true,
+                crosshairCursor: false,
+                highlightSelectionMatches: true,
+                tabSize: 2
+              }}
+              className="h-full text-[12px] font-mono leading-relaxed [&_.cm-editor]:h-full [&_.cm-scroller]:h-full"
+            />
+          ) : (
+            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-neutral-600">
+              <FileCode2 className="w-8 h-8 text-neutral-700 mb-2" />
+              <p className="text-xs text-neutral-400">Select a file from the explorer on the left to edit</p>
+            </div>
+          )}
+        </div>
+
+        {/* Professional IDE Status Bar */}
+        {activeFile && (
+          <div className="h-6 shrink-0 border-t border-neutral-900 bg-neutral-950 px-3 flex items-center justify-between text-[10px] font-mono text-neutral-500 select-none">
+            <div className="flex items-center gap-3">
+              <span>{lineCount} lines</span>
+              <span>{charCount} chars</span>
+              <span>~{tokenEst} tokens</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="uppercase text-neutral-400">{activeFile.language}</span>
+              <span>UTF-8</span>
+              <span>Spaces: 2</span>
+            </div>
+          </div>
+        )}
       </div>
-
-      <div className="flex-1 min-h-0 overflow-hidden">
-        <CodeMirror
-          ref={editorRef}
-          value={activeFile.content}
-          height="100%"
-          theme={THEME}
-          extensions={extensions}
-          onChange={onChangeContent}
-          onCreateEditor={(view) => view.focus()}
-          basicSetup={{
-            lineNumbers: true,
-            foldGutter: true,
-            highlightActiveLine: true,
-            highlightActiveLineGutter: true,
-            autocompletion: false,
-            searchKeymap: false,
-            tabSize: 2
-          }}
-        />
-      </div>
-
-      {/* Advanced IDE Status Bar */}
-      <footer className="h-6 shrink-0 bg-neutral-950 border-t border-neutral-900 px-3 flex items-center justify-between text-[10px] text-neutral-500 font-mono select-none">
-        <div className="flex items-center gap-3">
-          <span title="Cursor position">{`Ln ${cursor.line}, Col ${cursor.col}`}</span>
-          <span>{lineCount} lines</span>
-          <span>{activeFile.content.length} chars</span>
-          <span>~{estimateTokens(activeFile.content)} tokens</span>
-          {toastMsg && <span className="text-emerald-400 font-sans">{toastMsg}</span>}
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="uppercase text-neutral-400">{activeFile.language}</span>
-          <span>UTF-8</span>
-          <span title="Editor ka indent size">Spaces: 2</span>
-        </div>
-      </footer>
     </div>
   );
 }

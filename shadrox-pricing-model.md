@@ -1,4 +1,4 @@
-# Devora — Pricing & Unit-Economics Model
+# ShadRox — Pricing & Unit-Economics Model
 
 **Version:** 2.0
 **Date:** 17 Oct 2026

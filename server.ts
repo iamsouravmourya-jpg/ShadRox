@@ -43,9 +43,10 @@ async function startServer() {
   mount('get', '/api/health', async (_req, res) => {
     sendJson(res, 200, {
       status: 'ok',
+      brand: 'ShadRox',
       sharedKeys: {
-        groq: Boolean(process.env.DEVORA_GROQ_API_KEY || process.env.GROQ_API_KEY),
-        gemini: Boolean(process.env.DEVORA_GEMINI_API_KEY || process.env.GEMINI_API_KEY)
+        groq: Boolean(process.env.SHADROX_GROQ_API_KEY || process.env.DEVORA_GROQ_API_KEY || process.env.GROQ_API_KEY),
+        gemini: Boolean(process.env.SHADROX_GEMINI_API_KEY || process.env.DEVORA_GEMINI_API_KEY || process.env.GEMINI_API_KEY)
       }
     });
   });

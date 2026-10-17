@@ -28,25 +28,25 @@ export interface RefineModeMeta {
 export const REFINE_MODES: RefineModeMeta[] = [
   {
     id: 'code',
-    label: 'Code + low thinking',
+    label: 'Code (Direct File Edits)',
     short: 'Code',
-    hint: 'Seedha code likhwao — fast, kam reasoning, sasta.',
+    hint: 'Direct code implementation — fast, concise, writes and patches files.',
     thinking: 'low',
     writesFiles: true
   },
   {
     id: 'plan',
-    label: 'Plan only',
+    label: 'Plan (Read-only Architecture)',
     short: 'Plan',
-    hint: 'Sirf architecture aur planning. AI koi file nahi likhega.',
+    hint: 'System architecture and review only. AI will not modify files.',
     thinking: 'high',
     writesFiles: false
   },
   {
     id: 'complex',
-    label: 'Complex code + high thinking',
+    label: 'Complex (Deep Reasoning)',
     short: 'Complex',
-    hint: 'Bade refactor ya tricky logic ke liye gehri reasoning.',
+    hint: 'Deep reasoning and multi-file architecture for complex logic.',
     thinking: 'high',
     writesFiles: true
   }
@@ -96,8 +96,8 @@ export async function validateProviderKey(provider: ProviderId, apiKey: string):
   } catch (error) {
     throw new Error(
       error instanceof DOMException && error.name === 'AbortError'
-        ? 'Server ne 20 second tak jawab nahi diya. Network check karke dobara try karo.'
-        : 'Server se connect nahi ho paya — dev server chal raha hai? (npm run dev)'
+        ? 'Request timed out after 20 seconds. Please check your network and try again.'
+        : 'Could not connect to API server. Ensure the server is running.'
     );
   } finally {
     window.clearTimeout(timeout);
@@ -108,10 +108,10 @@ export async function validateProviderKey(provider: ProviderId, apiKey: string):
   if (!response.ok || !data?.ok) {
     if (response.ok && !data?.error) {
       throw new Error(
-        `Server ne galat jawab diya (HTTP ${response.status}) — /api/byok/validate available nahi lag raha.`
+        `Unexpected server response (HTTP ${response.status}) from /api/byok/validate.`
       );
     }
-    throw new Error(data?.error || `Key validate nahi ho payi (HTTP ${response.status}).`);
+    throw new Error(data?.error || `Failed to validate key (HTTP ${response.status}).`);
   }
 
   const rawModels: Array<{ id: string; contextWindow?: number }> = data.models || [];
@@ -127,7 +127,7 @@ export async function validateProviderKey(provider: ProviderId, apiKey: string):
   );
 
   if (models.length === 0) {
-    throw new Error('Key valid hai par koi chat model available nahi mila.');
+    throw new Error('Key is valid, but no compatible chat models were returned.');
   }
 
   return { latencyMs: data.latencyMs ?? 0, models };

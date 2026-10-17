@@ -45,7 +45,7 @@ interface UseWorkspaceResult {
   closeFile: () => void;
   updateActiveContent: (content: string) => void;
   applyFilePatches: (patches: FilePatch[]) => ApplyPatchesResult;
-  createFile: (name: string) => void;
+  createFile: (name: string, content?: string) => void;
   deleteFile: (index: number) => void;
   closeWorkspace: () => void;
 
@@ -122,15 +122,12 @@ export function useWorkspace(): UseWorkspaceResult {
 
       // Everything just came off disk, so nothing is dirty yet.
       setDiskBaseline(Object.fromEntries(nextFiles.map((file) => [file.name, file.content])));
-      setDiskMessage(writable ? null : 'Ye files drop hui hain — browser inhe read-only deta hai, disk par save nahi hoga.');
+      setDiskMessage(writable ? null : 'Dropped files loaded as read-only. File System handles not provided by browser.');
 
       setWorkspace({ id: `${kind}-${path}`, name, path, files: nextFiles });
-      // Stay on the file list instead of jumping straight into a file.
       setActiveFileIndex(-1);
       setStatusMessage(null);
       setRecents(pushRecentWorkspace({ name, path, fileCount: nextFiles.length, kind }));
-      // Capture the picked content right away so leaving before the debounced
-      // save fires still leaves a snapshot behind.
       void saveSnapshot({ path, name, kind, files: nextFiles });
       if (handles.length > 0) void saveHandles(path, handles);
       void refreshCheckpoints(path);
@@ -140,7 +137,7 @@ export function useWorkspace(): UseWorkspaceResult {
 
   const openFolder = useCallback(async () => {
     if (!supportsDirectoryPicker()) {
-      setStatusMessage('Is browser me folder picker support nahi hai. Chrome ya Edge use karo, ya folder drag karke daalo.');
+      setStatusMessage('Folder picker is not supported in this browser. Please use Chrome, Edge, or Brave.');
       return;
     }
     setIsBusy(true);
@@ -413,13 +410,13 @@ export function useWorkspace(): UseWorkspaceResult {
     [workspace]
   );
 
-  const createFile = useCallback((name: string) => {
+  const createFile = useCallback((name: string, content = '') => {
     const cleanName = name.trim();
     if (!cleanName) return;
     setWorkspace((previous) => {
       const nextFiles = previous?.files ?? [];
       if (nextFiles.some((file) => file.name === cleanName)) return previous;
-      const created: WorkspaceFile = { name: cleanName, content: '', language: detectLanguage(cleanName) };
+      const created: WorkspaceFile = { name: cleanName, content, language: detectLanguage(cleanName) };
       setActiveFileIndex(nextFiles.length);
       return {
         id: previous?.id ?? `file-${cleanName}`,

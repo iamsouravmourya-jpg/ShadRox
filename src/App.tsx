@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Bug, Code2, Eye, FolderOpen, Loader2, Save, Settings } from 'lucide-react';
-import { DevoraLogo } from './components/Logo';
+import { ShadRoxLogo } from './components/Logo';
 import { Stage1Auth } from './components/Stage1Auth';
 import { Stage2Hub } from './components/Stage2Hub';
 import { CodeEditor } from './components/CodeEditor';
@@ -92,7 +92,7 @@ export default function App() {
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       const data = event.data as { source?: string; type?: string; message?: string } | null;
-      if (!data || data.source !== 'devora-preview') return;
+      if (!data || data.source !== 'shadrox-preview') return;
       if (data.type === 'error' || data.type === 'console-error') {
         setRuntimeError(data.message || 'Runtime error');
       }
@@ -121,11 +121,6 @@ export default function App() {
     [workspace]
   );
 
-  /**
-   * Back leaves the editor. The workspace has to be closed too, otherwise the
-   * auto-forward effect below (workspace mounted + STAGE_2) pushes the user
-   * straight back into the editor and back never appears to work.
-   */
   const handleBackToHub = useCallback(() => {
     workspace.closeWorkspace();
     setActiveStage('STAGE_2');
@@ -139,8 +134,7 @@ export default function App() {
   const files = workspace.files;
   const bundlable = useMemo(() => canBundle(files), [files]);
 
-  // Bundle the project in the browser so React/TSX files actually run, and keep
-  // the last good frame on screen while the next one compiles.
+  // Next-Level bundle with virtual secrets injection
   useEffect(() => {
     if (!bundlable) {
       setBundleState({ status: 'idle' });
@@ -152,34 +146,33 @@ export default function App() {
 
     const timer = window.setTimeout(async () => {
       try {
-        const result = await bundleProject(files);
+        const result = await bundleProject(files, secrets);
         if (cancelled) return;
         setBundleState({
           status: 'ready',
-          html: bundleDocument(result, PREVIEW_ERROR_BRIDGE, PREVIEW_BASE_STYLE),
+          html: bundleDocument(result, PREVIEW_ERROR_BRIDGE, PREVIEW_BASE_STYLE, secrets),
           label: `Running ${result.entry} — live project bundle`
         });
       } catch (error) {
         if (cancelled) return;
         setBundleState({ status: 'error', message: describeBundleError(error) });
       }
-    }, 700);
+    }, 600);
 
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [bundlable, files]);
+  }, [bundlable, files, secrets]);
 
   const staticPreview = useMemo(
     () => resolvePreviewDocument(workspace.files, workspace.activeFile ?? undefined),
     [workspace.files, workspace.activeFile]
   );
 
-  /** A runnable bundle beats the static HTML/Markdown rendering. */
   const previewDocument = useMemo(() => {
     if (bundleState.status === 'ready') {
-      return { html: bundleState.html, label: bundleState.label, source: 'bundle' };
+      return { html: bundleState.html, label: bundleState.label, source: 'bundle', stackType: 'Live React Bundle' };
     }
     return staticPreview;
   }, [bundleState, staticPreview]);
@@ -187,8 +180,8 @@ export default function App() {
   const buildSystemInstruction = useCallback(
     (query: string, mode: RefineModeMeta): string => {
       const lines = [
-        'You are Devora, an expert AI coding assistant embedded in a browser-based IDE.',
-        'Answer in the same language the user writes in. Be concise, practical and code-first.',
+        'You are ShadRox, an expert AI software engineer embedded in a browser-based IDE.',
+        'Answer concisely, practically, and code-first. Respond in English.',
         ''
       ];
 
@@ -200,35 +193,30 @@ export default function App() {
           '```tsx path=src/App.tsx',
           '// full file contents, nothing omitted',
           '```',
-          '- Always write the file name in the fence line exactly as shown above. This is how the change reaches the editor.',
-          '- One block per file, with the exact file name from the list below.',
-          '- Never write partial snippets, diffs, or "// rest unchanged" placeholders inside a path= block. Those blocks are written to disk verbatim.',
-          '- A code block without a file name is treated as an example only, so use one when you mean "look at this, do not save it".',
-          '- Only edit a file when the user actually asked for that change. If the request is just a question, reply in prose with no path= block.',
-          '- Briefly explain what you changed before the code blocks.'
+          '- Always write the file name in the fence line exactly as shown above. This is how changes reach the editor.',
+          '- One block per file, with the exact file name from the workspace.',
+          '- Never write partial snippets or placeholders inside a path= block.',
+          '- Briefly explain changes before outputting code blocks.'
         );
       } else {
         lines.push(
           'PLAN MODE:',
-          '- The user asked for planning and architecture only. Do NOT rewrite a file and do NOT output a path= code block.',
-          '- Explain the approach, which files would change, the trade-offs and the order of work.',
-          '- Short illustrative snippets are fine, but never present them as file rewrites.'
+          '- The user requested architecture planning and review only. Do NOT rewrite files and do NOT output a path= block.',
+          '- Explain the architecture, changes required, trade-offs, and order of work.'
         );
       }
 
       if (workspace.files.length > 0) {
-        // The budget comes from the selected model, so a small model is not
-        // handed more code than it can actually read.
         const contextWindow = activeModel?.contextWindow || 32000;
         const budgetChars = Math.max(8000, Math.min(160000, Math.round(contextWindow * 2)));
         const retrieval = retrieveContext(workspace.files, query, budgetChars);
 
-        lines.push(`Workspace: ${workspace.workspace?.name ?? 'untitled'} — ${workspace.files.length} file(s).`);
-        lines.push(`REPO MAP (every file in this workspace):\n${retrieval.repoMap}`);
+        lines.push(`Workspace: ${workspace.workspace?.name ?? 'ShadRox'} — ${workspace.files.length} file(s).`);
+        lines.push(`REPO MAP (all files in workspace):\n${retrieval.repoMap}`);
 
         const relevant = renderRetrievedContext(retrieval);
         if (relevant) {
-          lines.push(`MOST RELEVANT CODE for this request (auto-selected):\n${relevant}`);
+          lines.push(`RELEVANT CONTEXT (auto-retrieved):\n${relevant}`);
         }
       }
 
@@ -244,10 +232,10 @@ export default function App() {
         }
       }
       if (secrets.length > 0) {
-        lines.push(`Available local secrets (names only): ${secrets.map((secret) => secret.key).join(', ')}`);
+        lines.push(`Active runtime secrets: ${secrets.map((secret) => secret.key).join(', ')}`);
       }
       if (workspace.dirtyFiles.length > 0) {
-        lines.push(`Edited in the browser but not saved to disk yet: ${workspace.dirtyFiles.join(', ')}`);
+        lines.push(`Unsaved modified files: ${workspace.dirtyFiles.join(', ')}`);
       }
 
       return lines.join('\n\n');
@@ -269,7 +257,7 @@ export default function App() {
 
     const quota = getMonthlyUsage(plan);
     if (quota.isCapReached) {
-      setToast(`Monthly message limit reached (${quota.limit}/${quota.limit} msgs). Upgrade in Settings.`);
+      setToast(`Monthly message cap reached (${quota.limit}/${quota.limit} msgs). Upgrade in Settings.`);
       openSettings('PLAN');
       return;
     }
@@ -316,7 +304,7 @@ export default function App() {
                 ...message,
                 streaming: false,
                 content:
-                  'Koi API key nahi mili. **Settings → Models & Keys** me apni Groq ya Gemini key daalo, ya "Devora ki shared key" on karo.'
+                  'No API key found. Add your Google Gemini or Groq key in **Settings → Models & Keys**, or enable "ShadRox Shared Key".'
               }
             : message
         )
@@ -326,8 +314,6 @@ export default function App() {
       return;
     }
 
-    // Counted only once the request can actually go out — a missing key is not
-    // a message the user should lose quota for.
     recordMessageSent();
 
     const controller = new AbortController();
@@ -336,15 +322,13 @@ export default function App() {
     let reply = '';
     let applied = false;
 
-    /** Writes the files the assistant asked for, once the reply is complete. */
     const applyReplyPatches = () => {
       if (applied) return;
       applied = true;
 
-      // Plan mode must never touch the workspace — that is the whole point.
       if (!mode.writesFiles) {
         if (extractFilePatches(reply, workspace.files).patches.length > 0) {
-          setToast('Plan mode on tha — reply me file changes the, par apply nahi kiye.');
+          setToast('Plan mode active — file modifications were not applied.');
           window.setTimeout(() => setToast(null), 5000);
         }
         return;
@@ -354,9 +338,7 @@ export default function App() {
 
       if (scan.patches.length === 0) {
         if (scan.unmapped > 0) {
-          setToast(
-            `Reply me ${scan.unmapped} code block tha par usme file ka naam nahi mila — isliye kuch save nahi hua.`
-          );
+          setToast('Response contained code blocks without explicit file paths — changes were not applied.');
           window.setTimeout(() => setToast(null), 6000);
         }
         return;
@@ -364,8 +346,8 @@ export default function App() {
 
       const result = workspace.applyFilePatches(scan.patches);
       const parts = [
-        result.updated.length > 0 ? `${result.updated.join(', ')} update hua` : '',
-        result.created.length > 0 ? `${result.created.join(', ')} nayi file bani` : ''
+        result.updated.length > 0 ? `${result.updated.join(', ')} updated` : '',
+        result.created.length > 0 ? `${result.created.join(', ')} created` : ''
       ].filter(Boolean);
       if (parts.length === 0) return;
 
@@ -373,7 +355,6 @@ export default function App() {
       window.setTimeout(() => setToast(null), 4000);
     };
 
-    // Snapshot the pre-change files so this reply can be undone from the chat.
     void workspace.markCheckpoint(modelMessage.id, text);
 
     try {
@@ -409,65 +390,71 @@ export default function App() {
                   ? {
                       ...message,
                       streaming: false,
-                      content: message.content
-                        ? `${message.content}\n\n_${error}_`
-                        : `Request fail ho gayi: ${error}`
+                      content: `**Generation Error:** ${error}\n\nCheck your key or model selection in Settings.`
                     }
                   : message
               )
             )
         }
       );
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setMessages((previous) =>
+        previous.map((message) =>
+          message.id === modelMessage.id
+            ? {
+                ...message,
+                streaming: false,
+                content: `**Request Failed:** ${error instanceof Error ? error.message : 'Unknown error'}`
+              }
+            : message
+        )
+      );
     } finally {
-      applyReplyPatches();
       setIsGenerating(false);
       abortRef.current = null;
+      applyReplyPatches();
     }
   }, [
     input,
     isGenerating,
+    plan,
+    openSettings,
+    refineMode,
     pendingRefine,
     attachedFileName,
-    refineMode,
     messages,
     byok.useDevoraKey,
     byok.activeKey,
     byok.activeProvider,
     byok.selectedModel,
-    buildSystemInstruction,
     workspace,
-    plan,
-    openSettings
+    buildSystemInstruction
   ]);
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
     setIsGenerating(false);
-    setMessages((previous) => previous.map((message) => (message.streaming ? { ...message, streaming: false } : message)));
   }, []);
-
-  const handleClearChat = useCallback(() => {
-    handleStop();
-    setMessages([]);
-  }, [handleStop]);
 
   const handleRefinePrompt = useCallback(async () => {
     const raw = input.trim();
     if (!raw || isRefining || isGenerating) return;
 
     setIsRefining(true);
-    setRefineStep('Language detect ho rahi hai...');
+    setRefineStep('Analyzing prompt structure...');
 
     try {
       const refined = await refinePrompt({
         rawPrompt: raw,
+        geminiKey: byok.apiKeyDraft.gemini,
+        groqKey: byok.apiKeyDraft.groq,
         provider: byok.activeProvider,
-        geminiKey: byok.apiKeyDraft.gemini || undefined,
-        groqKey: byok.apiKeyDraft.groq || undefined,
-        mode: refineMode,
-        contextInfo: workspace.workspace ? `${workspace.workspace.name} (${workspace.files.length} files)` : 'New empty workspace'
+        contextInfo: `Workspace has ${workspace.files.length} file(s). Active file: ${workspace.activeFile?.name || 'none'}.`,
+        mode: refineMode
       });
+
       setInput(refined.refinedPrompt);
       setPendingRefine({
         original: raw,
@@ -477,74 +464,49 @@ export default function App() {
         refinedPrompt: refined.refinedPrompt,
         mode: refineMode
       });
-      setToast('Prompt refine ho gaya');
+      setToast('Prompt refined with engineering context');
+      window.setTimeout(() => setToast(null), 3000);
     } catch (error) {
-      setToast(error instanceof Error ? error.message : 'Prompt refine fail hua');
+      setToast(error instanceof Error ? error.message : 'Prompt refinement failed');
+      window.setTimeout(() => setToast(null), 4000);
     } finally {
       setIsRefining(false);
       setRefineStep('');
-      window.setTimeout(() => setToast(null), 2600);
     }
-  }, [
-    input,
-    isRefining,
-    isGenerating,
-    refineMode,
-    byok.activeProvider,
-    byok.apiKeyDraft,
-    workspace.workspace,
-    workspace.files
-  ]);
+  }, [input, isRefining, isGenerating, byok.apiKeyDraft, byok.activeProvider, workspace.files.length, workspace.activeFile, refineMode]);
 
   const handleRestoreCheckpoint = useCallback(
-    async (id: string) => {
-      setRestoringCheckpointId(id);
-      try {
-        const restored = await workspace.restoreCheckpoint(id);
-        setToast(restored ? 'Purana code wapas aa gaya — disk par save karna ho to Save dabao.' : 'Restore nahi ho paya.');
-      } finally {
-        setRestoringCheckpointId(null);
-        window.setTimeout(() => setToast(null), 4000);
+    async (checkpointId: string) => {
+      setRestoringCheckpointId(checkpointId);
+      const ok = await workspace.restoreCheckpoint(checkpointId);
+      setRestoringCheckpointId(null);
+      if (ok) {
+        setToast('Workspace restored to checkpoint state');
+        window.setTimeout(() => setToast(null), 3000);
       }
     },
     [workspace]
   );
 
-  // Ctrl/Cmd+S writes the dirty files back to the user's disk.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's') return;
-      event.preventDefault();
-      void workspace.saveAll();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [workspace]);
-
   const handleNewFile = useCallback(() => {
-    const name = window.prompt('Nayi file ka naam (jaise utils.ts)');
-    if (name) workspace.createFile(name);
+    const name = window.prompt('Enter file name (e.g. src/utils/helper.ts):');
+    if (!name || !name.trim()) return;
+    workspace.createFile(name.trim(), '// New file created in ShadRox\n');
   }, [workspace]);
 
-  const handleBugReport = useCallback(async () => {
-    const diagnostics = [
-      `Devora diagnostics — ${new Date().toISOString()}`,
-      `Workspace: ${workspace.workspace?.name ?? 'none'} (${workspace.files.length} files)`,
-      `Active file: ${workspace.activeFile?.name ?? 'none'}`,
-      `Provider: ${byok.activeProvider}`,
-      `Model: ${byok.selectedModel || 'none'}`,
-      `Last preview error: ${runtimeError ?? 'none'}`,
-      `User agent: ${navigator.userAgent}`
-    ].join('\n');
-
-    try {
-      await navigator.clipboard.writeText(diagnostics);
-      setToast('Diagnostics clipboard me copy ho gaye');
-    } catch {
-      setToast('Copy nahi ho paya');
-    }
-    window.setTimeout(() => setToast(null), 2600);
-  }, [workspace.workspace, workspace.files, workspace.activeFile, byok.activeProvider, byok.selectedModel, runtimeError]);
+  const handleBugReport = useCallback(() => {
+    const report = {
+      timestamp: new Date().toISOString(),
+      provider: byok.activeProvider,
+      model: byok.selectedModel,
+      filesCount: workspace.files.length,
+      dirtyCount: workspace.dirtyFiles.length,
+      platform: navigator.userAgent
+    };
+    navigator.clipboard?.writeText(JSON.stringify(report, null, 2));
+    setToast('Diagnostics copied to clipboard');
+    window.setTimeout(() => setToast(null), 2500);
+  }, [byok.activeProvider, byok.selectedModel, workspace.files.length, workspace.dirtyFiles.length]);
 
   if (activeStage === 'STAGE_1') {
     return <Stage1Auth onSignIn={handleSignIn} isSigningIn={isSigningIn} />;
@@ -568,23 +530,26 @@ export default function App() {
 
   return (
     <div className="w-full h-screen flex flex-col bg-black text-white overflow-hidden">
-      <header className="h-12 shrink-0 flex items-center justify-between px-3 border-b border-neutral-900">
+      {/* Top Header */}
+      <header className="h-12 shrink-0 flex items-center justify-between px-3 border-b border-neutral-900 bg-neutral-950">
         <div className="flex items-center gap-3 min-w-0">
           <button
             type="button"
             onClick={handleBackToHub}
-            title="Back to workspace hub"
+            title="Back to Workspace Hub"
             className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
-          <DevoraLogo className="w-4 h-4" />
+          <ShadRoxLogo className="w-4 h-4 text-emerald-400" />
           <span className="text-xs font-semibold text-white truncate">
-            {workspace.workspace?.name ?? 'Devora'}
+            {workspace.workspace?.name ?? 'ShadRox'}
           </span>
-          <span className="hidden sm:inline text-[11px] text-neutral-600">{workspace.files.length} files</span>
+          <span className="hidden sm:inline text-[11px] text-neutral-600 font-mono">
+            {workspace.files.length} files
+          </span>
           {workspace.dirtyFiles.length > 0 && (
-            <span className="hidden sm:inline text-[10px] text-amber-400" title="Disk par abhi save nahi hua">
+            <span className="hidden sm:inline text-[10px] text-amber-400 font-mono" title="Unsaved changes">
               {workspace.dirtyFiles.length} unsaved
             </span>
           )}
@@ -598,7 +563,7 @@ export default function App() {
                 type="button"
                 onClick={() => void workspace.saveAll()}
                 disabled={workspace.dirtyFiles.length === 0 || workspace.isSaving}
-                title="Dirty files disk par save karo (Ctrl/Cmd+S)"
+                title="Save modified files to disk (Ctrl/Cmd+S)"
                 className="flex items-center gap-1.5 px-2 py-1 text-[11px] text-neutral-400 hover:text-white disabled:opacity-30 transition-colors cursor-pointer"
               >
                 {workspace.isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
@@ -607,7 +572,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => workspace.setAutoSave(!workspace.autoSave)}
-                title="Auto-save: edit hote hi disk par likh do (browser permission milne par)"
+                title="Auto-save to disk on edit"
                 className={`px-2 py-1 border text-[10px] uppercase tracking-wide transition-colors cursor-pointer ${
                   workspace.autoSave
                     ? 'border-emerald-900/60 bg-emerald-950/30 text-emerald-400'
@@ -618,12 +583,14 @@ export default function App() {
               </button>
             </>
           )}
+
+          {/* Code vs Preview Tab Switcher */}
           <div className="flex items-center border border-neutral-800 mr-1">
             <button
               type="button"
               onClick={() => setActiveTab('CODE')}
               className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${
-                activeTab === 'CODE' ? 'bg-white text-black' : 'text-neutral-500 hover:text-white'
+                activeTab === 'CODE' ? 'bg-white text-black font-semibold' : 'text-neutral-500 hover:text-white'
               }`}
             >
               <Code2 className="w-3 h-3" />
@@ -633,17 +600,18 @@ export default function App() {
               type="button"
               onClick={() => setActiveTab('PREVIEW')}
               className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${
-                activeTab === 'PREVIEW' ? 'bg-white text-black' : 'text-neutral-500 hover:text-white'
+                activeTab === 'PREVIEW' ? 'bg-white text-black font-semibold' : 'text-neutral-500 hover:text-white'
               }`}
             >
               <Eye className="w-3 h-3" />
               Preview
             </button>
           </div>
+
           <button
             type="button"
             onClick={handleBugReport}
-            title="Copy diagnostics for a bug report"
+            title="Copy system diagnostics"
             className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
           >
             <Bug className="w-4 h-4" />
@@ -665,6 +633,7 @@ export default function App() {
         </div>
       )}
 
+      {/* Main Split Layout: Left ChatPanel, Right CodeEditor / PreviewPane */}
       <div className="flex-1 min-h-0 flex flex-col md:flex-row">
         <div className="w-full md:w-[35%] md:min-w-[320px] h-1/2 md:h-full min-h-0">
           <ChatPanel
@@ -673,7 +642,6 @@ export default function App() {
             onInputChange={setInput}
             onSend={handleSend}
             onStop={handleStop}
-            onClearChat={handleClearChat}
             isGenerating={isGenerating}
             isRefining={isRefining}
             refineStep={refineStep}
@@ -699,13 +667,13 @@ export default function App() {
           {workspace.files.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
               <FolderOpen className="w-6 h-6 text-neutral-700" />
-              <p className="mt-3 text-xs text-neutral-500">Koi file open nahi hai.</p>
+              <p className="mt-3 text-xs text-neutral-400">No files open in workspace.</p>
               <button
                 type="button"
                 onClick={handleBackToHub}
                 className="mt-3 text-[11px] text-emerald-400 hover:text-emerald-300 cursor-pointer"
               >
-                Folder ya files open karo
+                Open folder or files
               </button>
             </div>
           ) : activeTab === 'CODE' ? (
@@ -765,7 +733,7 @@ export default function App() {
       />
 
       {toast && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 border border-neutral-800 bg-neutral-950 px-4 py-2 text-xs text-neutral-200">
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 border border-neutral-800 bg-neutral-950 px-4 py-2 text-xs text-neutral-200 shadow-xl">
           {toast}
         </div>
       )}

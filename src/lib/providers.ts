@@ -26,18 +26,18 @@ export const PROVIDERS: ProviderMeta[] = [
     label: 'Google Gemini',
     keyPlaceholder: 'AIzaSy...',
     keyPrefix: 'AIza',
-    keyHint: 'Google AI Studio se key le (free tier available)',
+    keyHint: 'Get your key from Google AI Studio (Free tier available)',
     docsUrl: 'https://aistudio.google.com/apikey',
-    freeTierNote: 'Flash aur Flash-Lite models free tier me chalte hain'
+    freeTierNote: 'Flash and Flash-Lite models supported on free tier'
   },
   {
     id: 'groq',
     label: 'Groq',
     keyPlaceholder: 'gsk_...',
     keyPrefix: 'gsk_',
-    keyHint: 'Groq console se key le (free tier available)',
+    keyHint: 'Get your key from Groq Console (Free tier available)',
     docsUrl: 'https://console.groq.com/keys',
-    freeTierNote: 'gpt-oss aur qwen models free tier me chalte hain'
+    freeTierNote: 'High-speed OSS and Qwen models supported on free tier'
   }
 ];
 

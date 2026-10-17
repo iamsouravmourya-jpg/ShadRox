@@ -1,0 +1,120 @@
+================================================================================
+SHADROX - COMPLETE EXECUTION LOG & ARCHITECTURAL SPECIFICATION
+File: execute.txt (also mirrored in excecute.txt)
+Brand: ShadRox (formerly Devora)
+Status: ALL USER DIRECTIVES COMPLETED & VERIFIED
+================================================================================
+
+--------------------------------------------------------------------------------
+PART 1: COMPLETED EXECUTION RECORD
+--------------------------------------------------------------------------------
+
+1. TOTAL BRAND RE-ENGINEERING (DEVORA -> SHADROX):
+   - Eliminated all occurrences of "Devora" across metadata.json, index.html,
+     src/components, src/lib, storage keys, system instructions, and docs.
+   - Renamed and re-designed branding glyph to ShadRoxLogo (modern geometric shield
+     with illuminated green engineering glyph).
+   - Replaced all local storage keys to `shadrox.*` namespace with backward-compatible
+     read fallbacks so existing user keys are seamlessly migrated.
+   - Updated VFS namespaces and bundler references to `shadrox-vfs` and `shadrox-out`.
+
+2. NEXT-LEVEL UNIVERSAL SAAS PREVIEW ENGINE:
+   - Polyglot Stack Auto-Detector: Automatically inspects workspace files and
+     classifies stacks into React SPA, Next.js SaaS, Vue, Svelte, Python/FastAPI,
+     Go microservices, Rust backends, or static HTML5/Tailwind web apps.
+   - Interactive Live SaaS Product Sandbox:
+     * For backend, full-stack, and API codebases: Automatically generates an
+       interactive, live SaaS dashboard with live KPI cards (MRR, active users,
+       system uptime), interactive health checks, and responsive layouts.
+     * API Endpoint Inspector & Test Runner: Dynamically scans code for API routes
+       (/api/v1/..., /auth, /billing, /users) and provides an interactive tester
+       where users can trigger simulated requests and inspect JSON responses.
+     * Discovered Architecture File Viewer.
+   - Interactive Live URL Bar: Real address bar (`https://localhost:3000/...`)
+     allowing route simulation directly inside the preview pane.
+   - Dockable Developer Console Drawer: Built-in terminal log inspector capturing
+     `console.log`, `console.info`, and `console.error` events from the sandboxed
+     iframe via real-time postMessage event bridge.
+   - Responsive Viewport Controls: 1-click toggling between Desktop (100%),
+     Tablet (768px), and Mobile (390px), plus Fullscreen / External Window pop-out
+     and preview reload.
+   - Tailwind CSS CDN Injection: Injected into bundled documents so arbitrary
+     Tailwind classes across modern React/JSX SaaS code render with full fidelity.
+
+3. VERTICAL FILE EXPLORER BESIDE CODE EDITOR:
+   - Converted CodeEditor into a full two-column professional desktop IDE layout:
+     * Left Column (Vertical Explorer, w-60/w-64):
+       - Explorer header with live file counter, "+ New File", and "Export ZIP".
+       - Instant file search/filter input.
+       - Vertical file listing showing language icons, file names, unsaved dirty
+         amber badges, active file highlight border, and hover delete actions.
+       - Collapsible toggle tab to maximize editor screen real estate.
+     * Right Column (Code Editor Pane):
+       - Sits directly beside the vertical file explorer.
+       - Active file metadata header, syntax search inside file, Format Code tool,
+         Copy Code tool, Download File tool, and Save button.
+       - CodeMirror editor with VS Code Dark theme and syntax highlighting.
+       - Bottom Status Bar: line count, char count, token estimate, syntax language,
+         UTF-8, and 2-space indentation indicator.
+
+4. WORK MODES CONSOLIDATION (CODE, PLAN, COMPLEX):
+   - Removed cluttered horizontal mode buttons and irrelevant prompt templates.
+   - Created a unified "Work Mode" dropdown menu directly beside the prompt box:
+     * Code: Direct code implementation — fast, concise, writes and patches files.
+     * Plan: System architecture and review only — AI will not modify files.
+     * Complex: Deep reasoning and multi-file architecture for complex logic.
+   - Active mode is prominently indicated on the dropdown button with custom icons
+     (Code2, FileText, Brain) and color accents (Emerald, Amber, Purple).
+
+5. PURE ENGLISH COPY ACROSS ENTIRE APPLICATION:
+   - Eliminated all Hinglish phrases from UI, toasts, placeholders, error alerts,
+     tooltips, and system instructions.
+   - Updated speech recognition hook from 'hi-IN' to 'en-US'.
+   - System prompts updated to strictly instruct the model to respond concisely
+     in professional English.
+
+6. REMOVAL OF "CLEAR CHAT" OPTION:
+   - Completely removed the "Clear Chat" (trash icon) action from the chat panel
+     header to prevent accidental message history loss.
+
+7. ZERO-CONFIG DIRECT SECRET LINKING (NO .ENV FILES GENERATED):
+   - Enforced strict architectural rule: Never create or write `.env` files to disk.
+   - Built the ShadRox Secure Secrets Vault inside Settings Drawer.
+   - Virtual Runtime Injection: Secrets configured in the vault are injected directly
+     into the in-browser bundler's virtual environment (`process.env.*` and
+     `import.meta.env.*`), keeping workspace files pristine and secrets secure.
+   - Added quick 1-click presets for common SaaS variables (DATABASE_URL,
+     STRIPE_SECRET_KEY, VITE_SUPABASE_URL, NEXT_PUBLIC_API_URL).
+
+8. REVISED PLANS & MONTHLY QUOTA ENFORCEMENT:
+   - Free (BYOK): ₹0 — 100 messages/month cap.
+   - Pro: ₹499/month (GST Included) — 250 messages/month cap, ShadRox Shared Key.
+   - Adv: ₹1,099/month (GST Included) — 500 messages/month cap, extended context.
+   - Enterprise: Custom pricing & contracts — 5,000 messages/month cap.
+   - Quota tracking persists per calendar month (`shadrox.usage.YYYY-MM`) with
+     real-time status indicator pill in chat header and quota progress bar card
+     in Settings Drawer.
+
+--------------------------------------------------------------------------------
+PART 2: SUPABASE BACKEND ROADMAP (QUEUED FOR EXECUTION SIGNAL)
+--------------------------------------------------------------------------------
+
+When you give the instruction to connect Supabase, the following architecture
+is fully mapped and ready to deploy:
+
+A. Database Schema:
+   - `public.profiles`: Stores user UUID, email, plan_tier, monthly_usage, monthly_cap,
+     and quota_reset_at.
+   - `public.usage_logs`: Stores token metrics, prompt tokens, completion tokens, model ID.
+   - `public.subscriptions`: Handles ₹499 and ₹1,099 subscription states, GST breakdown
+     (base amount + 18% GST), and payment provider IDs.
+   - Atomic RPC function `check_and_increment_quota(p_user_id)` for server-side
+     quota verification with Row Level Security (RLS).
+
+B. Payment Gateway Webhook:
+   - Razorpay / Stripe webhook handler for ₹499 and ₹1,099 tiers generating Indian
+     GST compliant invoice logs (HSN Code 998313).
+
+================================================================================
+END OF EXECUTE.TXT
+================================================================================

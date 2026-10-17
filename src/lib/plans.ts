@@ -24,13 +24,13 @@ export const PLANS: PlanMeta[] = [
     label: 'Free (BYOK)',
     price: '₹0',
     monthlyCap: 100,
-    gstNote: 'Hamesha free — apni key ke saath',
-    blurb: 'Apni key laao (BYOK) — 100 messages/month cap.',
+    gstNote: 'Always free — with your own key',
+    blurb: 'Bring your own API key (BYOK) — 100 messages/month cap.',
     perks: [
       '100 messages / month cap (BYOK)',
       'Gemini + Groq free models support',
       'Unlimited local workspaces & files',
-      'Disk write-back + live project preview'
+      'Direct disk write-back + live project preview'
     ]
   },
   {
@@ -38,14 +38,14 @@ export const PLANS: PlanMeta[] = [
     label: 'Pro',
     price: '₹499/mo',
     monthlyCap: 250,
-    gstNote: 'GST included (alag se koi GST nahi)',
-    blurb: 'Devora shared key — 250 messages/month, fast models.',
+    gstNote: 'GST included (no additional taxes)',
+    blurb: 'ShadRox shared key — 250 messages/month, fast models.',
     popular: true,
     perks: [
       '250 messages / month included',
       '₹499 flat — GST included (no extra tax)',
-      'Devora shared key — fast tier models',
-      'Priority streaming & AST automated file updates',
+      'ShadRox shared key — fast tier models',
+      'Priority streaming & automated file patching',
       'Full workspace checkpoints & instant restore'
     ]
   },
@@ -54,13 +54,13 @@ export const PLANS: PlanMeta[] = [
     label: 'Adv',
     price: '₹1,099/mo',
     monthlyCap: 500,
-    gstNote: 'GST included (alag se koi GST nahi)',
-    blurb: 'Bade codebase aur lambe chat workflows ke liye — 500 messages cap.',
+    gstNote: 'GST included (no additional taxes)',
+    blurb: 'For large codebases & continuous workflows — 500 messages cap.',
     perks: [
-      '500 messages / month message cap',
+      '500 messages / month cap',
       '₹1,099 flat — GST included (no extra tax)',
       'Fast tier + premium advanced models',
-      'Extended context window & deep semantic retrieval',
+      'Extended context window & semantic retrieval',
       '50 checkpoints restore timeline'
     ]
   },
@@ -70,7 +70,7 @@ export const PLANS: PlanMeta[] = [
     price: 'Custom',
     monthlyCap: 5000,
     gstNote: 'Custom contracts & invoicing',
-    blurb: 'Teams, custom message caps aur enterprise compliance.',
+    blurb: 'For teams, custom quotas, and enterprise security compliance.',
     perks: [
       'Custom / high-volume message quotas',
       'SSO + shared secrets vault',

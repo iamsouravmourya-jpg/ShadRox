@@ -1,3 +1,11 @@
+import { javascript } from '@codemirror/lang-javascript';
+import { html } from '@codemirror/lang-html';
+import { css } from '@codemirror/lang-css';
+import { json } from '@codemirror/lang-json';
+import { markdown } from '@codemirror/lang-markdown';
+import { python } from '@codemirror/lang-python';
+import type { Extension } from '@codemirror/state';
+
 export function detectLanguage(fileName: string): string {
   const ext = fileName.toLowerCase().split('.').pop() || '';
   switch (ext) {
@@ -36,6 +44,30 @@ export function detectLanguage(fileName: string): string {
       return 'xml';
     default:
       return 'plaintext';
+  }
+}
+
+/** Returns the CodeMirror syntax extension matching the file */
+export function getLanguageExtension(fileName: string, language?: string): Extension | null {
+  const lang = (language || detectLanguage(fileName)).toLowerCase();
+  switch (lang) {
+    case 'typescript':
+      return javascript({ typescript: true, jsx: fileName.endsWith('.tsx') });
+    case 'javascript':
+      return javascript({ jsx: fileName.endsWith('.jsx') });
+    case 'html':
+    case 'xml':
+      return html();
+    case 'css':
+      return css();
+    case 'json':
+      return json();
+    case 'markdown':
+      return markdown();
+    case 'python':
+      return python();
+    default:
+      return null;
   }
 }
 

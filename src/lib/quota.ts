@@ -11,9 +11,16 @@ export interface UsageState {
   monthLabel: string;
 }
 
-const QUOTA_EVENT = 'devora:quota-updated';
+const QUOTA_EVENT = 'shadrox:quota-updated';
 
 function getMonthKey(): string {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  return `shadrox.usage.${year}-${month}`;
+}
+
+function getLegacyMonthKey(): string {
   const d = new Date();
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -22,13 +29,13 @@ function getMonthKey(): string {
 
 function getMonthLabel(): string {
   const d = new Date();
-  return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 }
 
 export function getUsageCount(): number {
   try {
     const key = getMonthKey();
-    const val = localStorage.getItem(key);
+    const val = localStorage.getItem(key) ?? localStorage.getItem(getLegacyMonthKey());
     return val ? Math.max(0, parseInt(val, 10) || 0) : 0;
   } catch {
     return 0;
