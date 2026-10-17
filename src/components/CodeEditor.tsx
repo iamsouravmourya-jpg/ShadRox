@@ -8,7 +8,7 @@ import { javascript } from '@codemirror/lang-javascript';
 import { json } from '@codemirror/lang-json';
 import { markdown } from '@codemirror/lang-markdown';
 import { python } from '@codemirror/lang-python';
-import { ArrowLeft, Archive, Check, Copy, Download, FileCode2, FilePlus, Loader2, Save, Search, Sparkles, Trash2, WrapText } from 'lucide-react';
+import { ArrowLeft, Archive, Check, Copy, Download, FileCode2, FilePlus, Loader2, Save, Search, SlidersHorizontal, Sparkles, Trash2, WrapText, X } from 'lucide-react';
 import { copyToClipboard, downloadFile, downloadWorkspaceZip, estimateTokens, formatCode } from '../lib/toolUtils';
 import type { WorkspaceFile } from '../lib/types';
 
@@ -100,6 +100,9 @@ export function CodeEditor({
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [wrap, setWrap] = useState(false);
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
+  const [isToolsOpen, setIsToolsOpen] = useState(false);
+  const [fileFilter, setFileFilter] = useState('');
+  const toolsRef = useRef<HTMLDivElement>(null);
 
   const dirty = useMemo(() => new Set(dirtyFiles), [dirtyFiles]);
 
@@ -145,6 +148,16 @@ export function CodeEditor({
     const view = editorRef.current?.view;
     if (view) view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: '' })) });
   }, [activeFile?.name]);
+
+  // The tools dropdown closes on any click outside it.
+  useEffect(() => {
+    if (!isToolsOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!toolsRef.current?.contains(event.target as Node)) setIsToolsOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [isToolsOpen]);
 
   const handleSearchChange = (value: string) => {
     setQuery(value);
@@ -199,19 +212,44 @@ export function CodeEditor({
 
   // Nothing selected yet: the file list comes first, the editor only after a click.
   if (!activeFile) {
+    const filter = fileFilter.trim().toLowerCase();
+    const visibleFiles = files
+      .map((file, index) => ({ file, index }))
+      .filter((entry) => !filter || entry.file.name.toLowerCase().includes(filter));
+
     return (
       <div className="flex-1 min-h-0 flex flex-col bg-black">
-        <div className="h-9 shrink-0 flex items-center justify-between px-3 border-b border-neutral-900">
-          <span className="text-[10px] uppercase tracking-wider text-neutral-500">
-            Files · {files.length}
+        <div className="h-9 shrink-0 flex items-center justify-between gap-2 px-3 border-b border-neutral-900">
+          <span className="text-[10px] uppercase tracking-wider text-neutral-500 shrink-0">
+            Files · {filter ? `${visibleFiles.length}/${files.length}` : files.length}
           </span>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="relative">
+              <Search className="w-3 h-3 text-neutral-600 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                value={fileFilter}
+                onChange={(event) => setFileFilter(event.target.value)}
+                placeholder="Filter files"
+                spellCheck={false}
+                className="w-28 sm:w-44 border border-neutral-800 focus:border-neutral-600 bg-black text-[11px] text-neutral-200 pl-6 pr-6 py-1 outline-none placeholder:text-neutral-600"
+              />
+              {fileFilter && (
+                <button
+                  type="button"
+                  onClick={() => setFileFilter('')}
+                  title="Filter hatao"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-neutral-600 hover:text-white cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
             {files.length > 0 && (
               <button
                 type="button"
                 onClick={handleDownloadZip}
                 title="Export entire workspace as ZIP"
-                className="flex items-center gap-1.5 text-[11px] text-neutral-400 hover:text-white transition-colors cursor-pointer"
+                className="hidden sm:flex items-center gap-1.5 text-[11px] text-neutral-400 hover:text-white transition-colors cursor-pointer"
               >
                 <Archive className="w-3.5 h-3.5 text-neutral-400" />
                 Export ZIP
@@ -220,7 +258,8 @@ export function CodeEditor({
             <button
               type="button"
               onClick={onNewFile}
-              className="flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-white transition-colors cursor-pointer"
+              title="New file"
+              className="flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-white transition-colors cursor-pointer shrink-0"
             >
               <FilePlus className="w-3.5 h-3.5" />
               New file
@@ -229,25 +268,31 @@ export function CodeEditor({
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto">
-          {files.map((file, index) => (
-            <button
-              key={`${file.name}-${index}`}
-              type="button"
-              onClick={() => handleOpen(index)}
-              className="group w-full flex items-center justify-between gap-3 px-3 py-2 border-b border-neutral-900/60 text-left hover:bg-neutral-950 transition-colors cursor-pointer"
-            >
-              <span className="flex items-center gap-2 min-w-0">
-                <FileCode2 className="w-3.5 h-3.5 text-neutral-600 group-hover:text-emerald-400 shrink-0" />
-                <span className="font-mono text-[11px] text-neutral-200 truncate">{file.name}</span>
-                {dirty.has(file.name) && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Disk par save nahi hua" />
-                )}
-              </span>
-              <span className="text-[10px] text-neutral-600 shrink-0">
-                {file.language} · {file.content.split('\n').length} lines
-              </span>
-            </button>
-          ))}
+          {visibleFiles.length === 0 ? (
+            <p className="px-3 py-4 text-[11px] text-neutral-600">
+              "{fileFilter.trim()}" se koi file match nahi hui.
+            </p>
+          ) : (
+            visibleFiles.map(({ file, index }) => (
+              <button
+                key={`${file.name}-${index}`}
+                type="button"
+                onClick={() => handleOpen(index)}
+                className="group w-full flex items-center justify-between gap-3 px-3 py-2 border-b border-neutral-900/60 text-left hover:bg-neutral-950 transition-colors cursor-pointer"
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  <FileCode2 className="w-3.5 h-3.5 text-neutral-600 group-hover:text-emerald-400 shrink-0" />
+                  <span className="font-mono text-[11px] text-neutral-200 truncate">{file.name}</span>
+                  {dirty.has(file.name) && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Disk par save nahi hua" />
+                  )}
+                </span>
+                <span className="text-[10px] text-neutral-600 shrink-0">
+                  {file.language} · {file.content.split('\n').length} lines
+                </span>
+              </button>
+            ))
+          )}
         </div>
       </div>
     );
@@ -294,56 +339,13 @@ export function CodeEditor({
             />
           </div>
 
-          {/* Line wrap toggle */}
           <button
             type="button"
-            onClick={() => setWrap((value) => !value)}
-            title={wrap ? 'Line wrap off karo' : 'Line wrap on karo (lambi lines ke liye)'}
-            className={`p-1.5 transition-colors cursor-pointer ${
-              wrap ? 'text-emerald-400' : 'text-neutral-500 hover:text-white'
-            }`}
-          >
-            <WrapText className="w-3.5 h-3.5" />
-          </button>
-
-          {/* Format Tool */}
-          <button
-            type="button"
-            onClick={handleFormat}
-            title="Format & clean active code (JSON/spaces)"
+            onClick={onNewFile}
+            title="New file"
             className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
           >
-            <Sparkles className="w-3.5 h-3.5" />
-          </button>
-
-          {/* Copy Tool */}
-          <button
-            type="button"
-            onClick={handleCopy}
-            title={hasCopied ? 'Copied to clipboard!' : 'Copy full file code'}
-            className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
-          >
-            {hasCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-          </button>
-
-          {/* Download File Tool */}
-          <button
-            type="button"
-            onClick={handleDownloadFile}
-            title="Download active file"
-            className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5" />
-          </button>
-
-          {/* Export ZIP Tool */}
-          <button
-            type="button"
-            onClick={handleDownloadZip}
-            title="Export all workspace files as ZIP"
-            className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
-          >
-            <Archive className="w-3.5 h-3.5" />
+            <FilePlus className="w-3.5 h-3.5" />
           </button>
 
           {/* Save Tool */}
@@ -362,14 +364,82 @@ export function CodeEditor({
             {dirty.size > 0 && <span className="text-[10px] text-amber-400">{dirty.size}</span>}
           </button>
 
-          <button
-            type="button"
-            onClick={onNewFile}
-            title="New file"
-            className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
-          >
-            <FilePlus className="w-3.5 h-3.5" />
-          </button>
+          {/* Secondary tools live in one dropdown instead of a row of icons. */}
+          <div className="relative" ref={toolsRef}>
+            <button
+              type="button"
+              onClick={() => setIsToolsOpen((open) => !open)}
+              title="Aur tools — format, copy, wrap, download, export"
+              className={`p-1.5 transition-colors cursor-pointer ${
+                isToolsOpen ? 'text-white' : 'text-neutral-500 hover:text-white'
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+            </button>
+
+            {isToolsOpen && (
+              <div className="absolute right-0 top-8 z-20 w-56 border border-neutral-800 bg-neutral-950 py-1 shadow-lg shadow-black/60">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsToolsOpen(false);
+                    handleFormat();
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-300 hover:bg-neutral-900 hover:text-white transition-colors cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-neutral-500" />
+                  Format & clean
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsToolsOpen(false);
+                    void handleCopy();
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-300 hover:bg-neutral-900 hover:text-white transition-colors cursor-pointer"
+                >
+                  {hasCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-neutral-500" />}
+                  {hasCopied ? 'Copied' : 'Copy full file'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWrap((value) => !value)}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-300 hover:bg-neutral-900 hover:text-white transition-colors cursor-pointer"
+                >
+                  <WrapText className={`w-3.5 h-3.5 ${wrap ? 'text-emerald-400' : 'text-neutral-500'}`} />
+                  <span className="flex-1">Line wrap</span>
+                  <span className={wrap ? 'text-emerald-400' : 'text-neutral-600'}>{wrap ? 'on' : 'off'}</span>
+                </button>
+
+                <div className="my-1 border-t border-neutral-900" />
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsToolsOpen(false);
+                    handleDownloadFile();
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-300 hover:bg-neutral-900 hover:text-white transition-colors cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 text-neutral-500" />
+                  Download this file
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsToolsOpen(false);
+                    handleDownloadZip();
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-300 hover:bg-neutral-900 hover:text-white transition-colors cursor-pointer"
+                >
+                  <Archive className="w-3.5 h-3.5 text-neutral-500" />
+                  Export workspace ZIP
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="w-px h-4 bg-neutral-900 mx-0.5" />
 
           <button
             type="button"

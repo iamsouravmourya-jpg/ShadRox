@@ -58,6 +58,14 @@ const TIER_STYLES: Record<ModelTier, string> = {
   pro: 'text-amber-400 border-amber-900/60 bg-amber-950/30'
 };
 
+const QUICK_PROMPTS: Array<{ label: string; text: string }> = [
+  { label: '⚡ Fix bugs', text: 'Please review current code for bugs or edge cases and fix them.' },
+  { label: '🔍 Explain', text: 'Explain how the active code works step-by-step.' },
+  { label: '🚀 Optimize', text: 'Optimize performance and clean up redundant code.' },
+  { label: '📝 Add types', text: 'Add strict TypeScript types and complete JSDoc annotations.' },
+  { label: '🧪 Add tests', text: 'Write comprehensive tests covering edge cases for this file.' }
+];
+
 export function ChatPanel({
   messages,
   input,
@@ -87,6 +95,7 @@ export function ChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
+  const [isTemplateMenuOpen, setIsTemplateMenuOpen] = useState(false);
   const speech = useSpeechRecognition('hi-IN');
   const activeMode = getRefineMode(refineMode);
 
@@ -333,26 +342,6 @@ export function ChatPanel({
       </div>
 
       <div className="shrink-0 border-t border-neutral-900 p-3">
-        {/* Quick prompt templates chips */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 mb-2 scrollbar-none">
-          {[
-            { label: '⚡ Fix bugs', text: 'Please review current code for bugs or edge cases and fix them.' },
-            { label: '🔍 Explain', text: 'Explain how the active code works step-by-step.' },
-            { label: '🚀 Optimize', text: 'Optimize performance and clean up redundant code.' },
-            { label: '📝 Add types', text: 'Add strict TypeScript types and complete JSDoc annotations.' },
-            { label: '🧪 Add tests', text: 'Write comprehensive tests covering edge cases for this file.' }
-          ].map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              onClick={() => onInputChange(input ? `${input}\n\n${item.text}` : item.text)}
-              className="shrink-0 px-2 py-0.5 border border-neutral-800 bg-neutral-950 text-[10px] text-neutral-400 hover:text-white hover:border-neutral-600 transition-colors cursor-pointer whitespace-nowrap"
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-
         {/* Refine mode selector */}
         <div className="mb-2 flex items-center gap-1">
           {REFINE_MODES.map((mode) => (
@@ -432,6 +421,40 @@ export function ChatPanel({
 
           <div className="flex items-center justify-between px-2 pb-2">
             <div className="flex items-center gap-1">
+              {/* Quick prompt templates — kept in a menu so they stop eating a row. */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsTemplateMenuOpen((open) => !open)}
+                  title="Quick prompt templates"
+                  className={`flex items-center gap-1 px-1.5 py-1 text-[10px] transition-colors cursor-pointer ${
+                    isTemplateMenuOpen ? 'text-white' : 'text-neutral-500 hover:text-white'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Templates
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+                {isTemplateMenuOpen && (
+                  <div className="absolute bottom-8 left-0 z-10 w-56 border border-neutral-800 bg-neutral-950 py-1">
+                    {QUICK_PROMPTS.map((item) => (
+                      <button
+                        key={item.label}
+                        type="button"
+                        onClick={() => {
+                          onInputChange(input ? `${input}\n\n${item.text}` : item.text);
+                          setIsTemplateMenuOpen(false);
+                        }}
+                        title={item.text}
+                        className="block w-full truncate px-3 py-1.5 text-left text-[11px] text-neutral-400 hover:bg-neutral-900 hover:text-white cursor-pointer"
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {speech.isSupported && (
                 <button
                   type="button"
