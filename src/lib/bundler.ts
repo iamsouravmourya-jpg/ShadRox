@@ -225,8 +225,24 @@ export function buildImportMap(files: WorkspaceFile[], root: string = ''): Recor
   Object.entries(DEFAULT_IMPORT_MAP).forEach(([specifier, url]) => {
     if (!imports[specifier]) imports[specifier] = url;
   });
+
+  // Force esbuild-wasm to resolve to a CDN asset even if not in package.json.
+  // This is required for ShadRox to bundle itself (nested bundling).
   if (!imports['esbuild-wasm']) imports['esbuild-wasm'] = `${CDN}/esbuild-wasm@0.28.2`;
   if (!imports['esbuild-wasm/']) imports['esbuild-wasm/'] = `${CDN}/esbuild-wasm@0.28.2/`;
+
+  // Force React and ReactDOM to be singletons via the import map.
+  // This prevents "Cannot read properties of null (reading 'useState')" errors
+  // caused by multiple React instances being loaded from different CDN paths.
+  const reactUrl = imports['react'] || DEFAULT_IMPORT_MAP['react'];
+  const reactDomUrl = imports['react-dom'] || DEFAULT_IMPORT_MAP['react-dom'];
+
+  imports['react'] = reactUrl;
+  imports['react-dom'] = reactDomUrl;
+  
+  // Ensure subpaths also point to the same version
+  if (!imports['react/']) imports['react/'] = `${reactUrl}/`;
+  if (!imports['react-dom/']) imports['react-dom/'] = `${reactDomUrl}/`;
 
   return imports;
 }
@@ -422,18 +438,19 @@ export async function bundleProject(
           if (query === 'url') {
             const dataUrl = resolveAsset(specifier, importer);
             if (dataUrl) return asModule(dataUrl);
+            
+            // `esbuild-wasm/esbuild.wasm?url` — a package file requested as a URL
+            // is a real CDN asset, which is what makes a nested bundler work.
+            const mapped = resolveImportMapUrl(specifier, importMap);
+            if (mapped) return asModule(mapped);
           }
+
           const resolved = resolveModule(specifier, importer);
           if (resolved) {
             const content = sources.get(resolved) ?? '';
             return asModule(query === 'raw' ? content : textDataUrl(resolved, content));
           }
-          // `esbuild-wasm/esbuild.wasm?url` — a package file requested as a URL
-          // is a real CDN asset, which is what makes a nested bundler work.
-          if (query === 'url') {
-            const mapped = resolveImportMapUrl(specifier, importMap);
-            if (mapped) return asModule(mapped);
-          }
+
           return { errors: [{ text: `Asset not found: ${args.path}` }] };
         }
 
