@@ -296,7 +296,7 @@ export default function App() {
     setAttachedFileName(null);
     setIsGenerating(true);
 
-    if (!byok.useDevoraKey && !byok.activeKey) {
+    if (!byok.useShadRoxKey && !byok.activeKey) {
       setIsGenerating(false);
       setMessages((previous) =>
         previous.map((message) =>
@@ -363,7 +363,7 @@ export default function App() {
         {
           provider: byok.activeProvider,
           model: byok.selectedModel,
-          apiKey: byok.useDevoraKey ? undefined : byok.activeKey,
+          apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
           messages: history,
           systemInstruction: buildSystemInstruction(text, mode),
           thinking: mode.thinking,
@@ -425,7 +425,7 @@ export default function App() {
     pendingRefine,
     attachedFileName,
     messages,
-    byok.useDevoraKey,
+    byok.useShadRoxKey,
     byok.activeKey,
     byok.activeProvider,
     byok.selectedModel,
@@ -527,7 +527,7 @@ export default function App() {
     );
   }
 
-  const hasKey = Boolean(byok.activeKey) || byok.useDevoraKey;
+  const hasKey = Boolean(byok.activeKey) || byok.useShadRoxKey;
 
   return (
     <div className="w-full h-screen flex flex-col bg-black text-white overflow-hidden">
@@ -724,8 +724,8 @@ export default function App() {
         onSelectModel={byok.selectModel}
         temperature={byok.temperature}
         onTemperatureChange={byok.setTemperature}
-        useDevoraKey={byok.useDevoraKey}
-        onUseDevoraKeyChange={byok.setUseDevoraKey}
+        useShadRoxKey={byok.useShadRoxKey}
+        onUseShadRoxKeyChange={byok.setUseShadRoxKey}
         plan={plan}
         onPlanChange={changePlan}
         secrets={secrets}

@@ -11,24 +11,11 @@ const STORE_KEYS = {
   recents: 'shadrox.recents'
 } as const;
 
-const LEGACY_KEYS = {
-  apiKey: (provider: ProviderId) => `devora.byok.${provider}`,
-  selectedModel: (provider: ProviderId) => `devora.model.${provider}`,
-  activeProvider: 'devora.provider.active',
-  useSharedKey: 'devora.key.shared',
-  plan: 'devora.plan',
-  session: 'devora.session',
-  recents: 'devora.recents'
-} as const;
-
 const MAX_RECENTS = 8;
 
-function safeGet(key: string, legacyKey?: string): string | null {
+function safeGet(key: string): string | null {
   try {
-    const val = localStorage.getItem(key);
-    if (val !== null) return val;
-    if (legacyKey) return localStorage.getItem(legacyKey);
-    return null;
+    return localStorage.getItem(key);
   } catch {
     return null;
   }
@@ -42,29 +29,28 @@ function safeSet(key: string, value: string): void {
   }
 }
 
-function safeRemove(key: string, legacyKey?: string): void {
+function safeRemove(key: string): void {
   try {
     localStorage.removeItem(key);
-    if (legacyKey) localStorage.removeItem(legacyKey);
   } catch {
     /* ignore */
   }
 }
 
 export function getApiKey(provider: ProviderId): string {
-  return safeGet(STORE_KEYS.apiKey(provider), LEGACY_KEYS.apiKey(provider)) || '';
+  return safeGet(STORE_KEYS.apiKey(provider)) || '';
 }
 
 export function setApiKey(provider: ProviderId, apiKey: string): void {
   if (apiKey.trim()) {
     safeSet(STORE_KEYS.apiKey(provider), apiKey.trim());
   } else {
-    safeRemove(STORE_KEYS.apiKey(provider), LEGACY_KEYS.apiKey(provider));
+    safeRemove(STORE_KEYS.apiKey(provider));
   }
 }
 
 export function getActiveProvider(): ProviderId {
-  const val = safeGet(STORE_KEYS.activeProvider, LEGACY_KEYS.activeProvider);
+  const val = safeGet(STORE_KEYS.activeProvider);
   return val === 'groq' ? 'groq' : 'gemini';
 }
 
@@ -73,7 +59,7 @@ export function setActiveProvider(provider: ProviderId): void {
 }
 
 export function getSelectedModel(provider: ProviderId): string {
-  return safeGet(STORE_KEYS.selectedModel(provider), LEGACY_KEYS.selectedModel(provider)) || '';
+  return safeGet(STORE_KEYS.selectedModel(provider)) || '';
 }
 
 export function setSelectedModel(provider: ProviderId, modelId: string): void {
@@ -82,16 +68,16 @@ export function setSelectedModel(provider: ProviderId, modelId: string): void {
 
 /** Whether the user runs on ShadRox's shared key instead of their own. */
 export function getUseSharedKey(): boolean {
-  return safeGet(STORE_KEYS.useSharedKey, LEGACY_KEYS.useSharedKey) === 'true';
+  return safeGet(STORE_KEYS.useSharedKey) === 'true';
 }
 
 export function setUseSharedKey(value: boolean): void {
   if (value) safeSet(STORE_KEYS.useSharedKey, 'true');
-  else safeRemove(STORE_KEYS.useSharedKey, LEGACY_KEYS.useSharedKey);
+  else safeRemove(STORE_KEYS.useSharedKey);
 }
 
 export function getPlan(): PlanTier {
-  const raw = safeGet(STORE_KEYS.plan, LEGACY_KEYS.plan);
+  const raw = safeGet(STORE_KEYS.plan);
   return raw === 'pro' || raw === 'adv' || raw === 'enterprise' ? raw : 'free';
 }
 
@@ -100,7 +86,7 @@ export function setPlan(plan: PlanTier): void {
 }
 
 export function getSessionToken(): string {
-  return safeGet(STORE_KEYS.session, LEGACY_KEYS.session) || '';
+  return safeGet(STORE_KEYS.session) || '';
 }
 
 export function setSessionToken(token: string): void {
@@ -108,11 +94,11 @@ export function setSessionToken(token: string): void {
 }
 
 export function clearSessionToken(): void {
-  safeRemove(STORE_KEYS.session, LEGACY_KEYS.session);
+  safeRemove(STORE_KEYS.session);
 }
 
 export function getRecentWorkspaces(): RecentEntry[] {
-  const raw = safeGet(STORE_KEYS.recents, LEGACY_KEYS.recents);
+  const raw = safeGet(STORE_KEYS.recents);
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);

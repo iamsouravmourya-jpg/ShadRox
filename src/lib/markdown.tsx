@@ -293,7 +293,7 @@ export function maskFileWrites(content: string, files: KnownFile[] = []): string
 
     if (target) {
       const known = files.some((file) => file.name === target);
-      output.push(`- ${target} — ${known ? 'update ho gaya' : 'nayi file ban gayi'}, code editor me dekho`);
+      output.push(`- ${target} — ${known ? 'updated' : 'created'}, open in code editor`);
     } else {
       output.push(lines[index], ...bodyLines);
       if (terminated) output.push(lines[close]);

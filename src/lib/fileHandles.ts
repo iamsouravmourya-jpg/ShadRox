@@ -7,7 +7,7 @@ import type { HandleEntry } from './workspace';
  * once after a refresh — but without it there would be no way back to the file
  * at all, because handles cannot be reconstructed from a path.
  */
-const DB_NAME = 'devora-handles';
+const DB_NAME = 'shadrox-handles';
 const DB_VERSION = 1;
 const STORE = 'handles';
 

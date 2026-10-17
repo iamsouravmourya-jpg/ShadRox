@@ -65,7 +65,7 @@ async function readDirectoryRecursive(
             bucket.handles.push({ path, handle: entry });
           }
         } catch (error) {
-          console.warn(`[devora] could not read asset ${entry.name}`, error);
+          console.warn(`[shadrox] could not read asset ${entry.name}`, error);
         }
         continue;
       }
@@ -77,7 +77,7 @@ async function readDirectoryRecursive(
         bucket.files.push({ name: path, content, language: detectLanguage(entry.name) });
         bucket.handles.push({ path, handle: entry });
       } catch (error) {
-        console.warn(`[devora] could not read ${entry.name}`, error);
+        console.warn(`[shadrox] could not read ${entry.name}`, error);
       }
     } else if (entry.kind === 'directory' && !shouldSkipDirectory(entry.name)) {
       await readDirectoryRecursive(entry, prefix ? `${prefix}/${entry.name}` : entry.name, bucket);
@@ -148,7 +148,7 @@ export async function pickFiles(): Promise<PickedFiles | null> {
 
 /**
  * Files that came in through drag-and-drop expose no handle at all, so they
- * stay read-only in the editor — a browser rule, not a Devora limitation.
+ * stay read-only in the editor — a browser rule, not a ShadRox limitation.
  */
 export async function filesFromFileList(list: FileList | null): Promise<WorkspaceFile[]> {
   if (!list || list.length === 0) return [];

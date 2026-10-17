@@ -27,7 +27,7 @@ export interface CheckpointMeta {
   fileCount: number;
 }
 
-const DB_NAME = 'devora-history';
+const DB_NAME = 'shadrox-history';
 const DB_VERSION = 1;
 const CHECKPOINTS = 'checkpoints';
 const BLOBS = 'blobs';

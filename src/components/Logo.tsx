@@ -22,6 +22,3 @@ export function ShadRoxLogo({ className = 'w-6 h-6' }: { className?: string }) {
     </svg>
   );
 }
-
-/** Legacy alias for backwards compatibility */
-export const DevoraLogo = ShadRoxLogo;

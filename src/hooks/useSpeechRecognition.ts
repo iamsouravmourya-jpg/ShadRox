@@ -42,7 +42,7 @@ export function useSpeechRecognition(lang = 'hi-IN'): UseSpeechRecognitionResult
     };
 
     recognition.onerror = (event: any) => {
-      console.warn('[devora] speech error', event.error);
+      console.warn('[shadrox] speech error', event.error);
       setIsListening(false);
     };
 
@@ -67,7 +67,7 @@ export function useSpeechRecognition(lang = 'hi-IN'): UseSpeechRecognitionResult
       recognitionRef.current.start();
       setIsListening(true);
     } catch (error) {
-      console.warn('[devora] could not start speech recognition', error);
+      console.warn('[shadrox] could not start speech recognition', error);
     }
   };
 

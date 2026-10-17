@@ -9,7 +9,7 @@ export interface WorkspaceSnapshot {
   savedAt: number;
 }
 
-const DB_NAME = 'devora-workspace';
+const DB_NAME = 'shadrox-workspace';
 const DB_VERSION = 1;
 const STORE = 'snapshots';
 

@@ -53,7 +53,7 @@ Every number in this document is derived from the constants below. **If you want
 
 ### 1.3 Per-turn token profile (the single most important assumption)
 
-Devora's cost per turn is high because the request shape is heavy:
+ShadRox's cost per turn is high because the request shape is heavy:
 
 - **Input:** repo map (~6,000 chars, `REPO_MAP_MAX_CHARS`) + BM25-retrieved chunks (budget = `contextWindow × 2` chars) + **the entire chat history, re-sent every turn**
 - **Output:** because of the fence-based file edit protocol (```` ```tsx path=src/App.tsx ````), the model rewrites **the whole file**, not a diff
@@ -132,15 +132,15 @@ Full ladder:
 |---|---|
 | Net revenue | ₹0 |
 | AI token cost | ₹0 (user's own key) |
-| Devora's cost | Only Vercel function seconds |
+| ShadRox's cost | Only Vercel function seconds |
 | Gross profit | ₹0 — **deliberate** |
 | Cap | 100 messages / calendar month |
 
-**Important framing:** the 100-message cap does **not** save Devora money — BYOK means the user pays for tokens, so Devora's marginal cost is ₹0 at 100 messages and at 100,000 messages alike. The cap exists purely as an **upgrade lever**: it makes the free tier feel finite so a share of users convert to Pro.
+**Important framing:** the 100-message cap does **not** save ShadRox money — BYOK means the user pays for tokens, so ShadRox's marginal cost is ₹0 at 100 messages and at 100,000 messages alike. The cap exists purely as an **upgrade lever**: it makes the free tier feel finite so a share of users convert to Pro.
 
 That makes the cap a *marketing* decision, not a cost decision, and it should be judged on conversion rate alone. Its only real cost is funnel friction.
 
-A second consequence: because the counter lives in `localStorage`, the cap delivers the friction but **not the enforcement**. A user who clears site data — or calls the API directly — gets unlimited free usage. So today Devora pays the conversion cost of a cap without gaining the protection of one. Either enforce it server-side or remove it.
+A second consequence: because the counter lives in `localStorage`, the cap delivers the friction but **not the enforcement**. A user who clears site data — or calls the API directly — gets unlimited free usage. So today ShadRox pays the conversion cost of a cap without gaining the protection of one. Either enforce it server-side or remove it.
 
 ### Pro — ₹499, cap 250 messages
 
@@ -210,7 +210,7 @@ The most speculative number in the model — it depends entirely on real deal te
 
 Break-even = ₹1,863 ÷ ₹354.14 = **5.26 → 6 Pro users.**
 
-After 6 users every additional Pro user is nearly pure profit, because the architecture is serverless + BYOK — **infrastructure cost does not scale with users**. This is the single biggest reason Devora can price below the market.
+After 6 users every additional Pro user is nearly pure profit, because the architecture is serverless + BYOK — **infrastructure cost does not scale with users**. This is the single biggest reason ShadRox can price below the market.
 
 > When the usage meter ships, Supabase goes to ~₹2,225/mo → fixed ₹4,088 → break-even rises to **12 Pro users**. Still trivial, but plan for it.
 
@@ -329,7 +329,7 @@ Combined potential of #2 + #3 + #4: roughly **−50% to −60% of total token co
 | Risk | Severity | Why | Mitigation |
 |---|---|---|---|
 | **Caps are not enforceable** | 🔴 Critical | The counter lives in `localStorage` and is checked in the client. Clearing site data, calling the API directly, or using the in-app "Reset quota (dev test)" button removes it. Anyone can extract unlimited paid-tier usage. | Ship the server-side meter (Supabase + `check_and_increment_quota`) **before** enabling the shared key in production. |
-| **Free cap delivers friction without enforcement** | 🟠 High | Devora pays the conversion cost of a 100-message cap while getting none of the protection, because the cap is bypassable. | Enforce it, or drop it and make Free genuinely unlimited (cost is ₹0 either way). |
+| **Free cap delivers friction without enforcement** | 🟠 High | ShadRox pays the conversion cost of a 100-message cap while getting none of the protection, because the cap is bypassable. | Enforce it, or drop it and make Free genuinely unlimited (cost is ₹0 either way). |
 | Premium models leaked to Pro | 🟠 High | 250 heavy turns on 70B = ₹600 cost vs ₹411 revenue. | Keep the shared-key catalog gated by `classifyTier` (already enforced server-side). |
 | **Adv value-per-rupee is worse than Pro** | 🟡 Medium | Adv net price per message (₹1.81) exceeds Pro's (₹1.64), so the ladder can read as a price increase. | Widen Adv's message allowance or make premium models an explicit, named Adv feature. |
 | Token-profile assumption is wrong | 🟠 High | The entire model rests on an *estimated* per-turn profile, not measured data. | Instrument real traffic for one week; replace §1.3 with measured p50/p95. |
@@ -349,7 +349,7 @@ Be explicit with anyone reviewing this — part of the model describes a *future
 | Free plan (BYOK) | ✅ Working |
 | 100 / 250 / 500 message caps (counting + UI gating) | ✅ Working in the client |
 | Caps enforced against the API | ❌ **No** — server checks nothing; no 429 path exists |
-| Shared Devora key (BYOK-less) | ⚠️ Server-side routing exists; no usage control |
+| Shared ShadRox key (BYOK-less) | ⚠️ Server-side routing exists; no usage control |
 | Plan tiers, prices, upgrade UI | 🟡 **UI only** — no checkout, no database, plan stored in `localStorage` |
 | Usage meter / `usage_logs` | ❌ Does not exist |
 | Enterprise features (SSO, audit log, secrets vault) | ❌ Do not exist |

@@ -208,7 +208,7 @@ export function buildRepoMap(files: WorkspaceFile[], maxChars = REPO_MAP_MAX_CHA
     const lineCount = file.content.split('\n').length;
     const entry = `${file.name} · ${lineCount} lines${symbols.length ? ` · ${symbols.join(', ')}` : ''}`;
     if (used + entry.length > maxChars) {
-      lines.push(`… ${files.length - lines.length} more files (naam ke liye poocho)`);
+      lines.push(`… ${files.length - lines.length} more files (truncated)`);
       break;
     }
     used += entry.length + 1;

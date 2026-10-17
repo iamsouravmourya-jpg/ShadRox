@@ -20,13 +20,6 @@ function getMonthKey(): string {
   return `shadrox.usage.${year}-${month}`;
 }
 
-function getLegacyMonthKey(): string {
-  const d = new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  return `devora.usage.${year}-${month}`;
-}
-
 function getMonthLabel(): string {
   const d = new Date();
   return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
@@ -35,7 +28,7 @@ function getMonthLabel(): string {
 export function getUsageCount(): number {
   try {
     const key = getMonthKey();
-    const val = localStorage.getItem(key) ?? localStorage.getItem(getLegacyMonthKey());
+    const val = localStorage.getItem(key);
     return val ? Math.max(0, parseInt(val, 10) || 0) : 0;
   } catch {
     return 0;

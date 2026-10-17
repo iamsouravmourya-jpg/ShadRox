@@ -33,8 +33,8 @@ interface UseByokResult {
   models: ModelInfo[];
   selectedModel: string;
   selectModel: (modelId: string) => void;
-  useDevoraKey: boolean;
-  setUseDevoraKey: (value: boolean) => void;
+  useShadRoxKey: boolean;
+  setUseShadRoxKey: (value: boolean) => void;
   temperature: number;
   setTemperature: (value: number) => void;
   /** Current key for the active provider, or '' when the user has none. */
@@ -66,11 +66,11 @@ export function useByok(): UseByokResult {
     gemini: getSelectedModel('gemini'),
     groq: getSelectedModel('groq')
   }));
-  const [useDevoraKey, setUseDevoraKeyState] = useState<boolean>(() => getUseSharedKey());
+  const [useShadRoxKey, setUseShadRoxKeyState] = useState<boolean>(() => getUseSharedKey());
   const [temperature, setTemperature] = useState(0.7);
 
-  const setUseDevoraKey = useCallback((value: boolean) => {
-    setUseDevoraKeyState(value);
+  const setUseShadRoxKey = useCallback((value: boolean) => {
+    setUseShadRoxKeyState(value);
     persistUseSharedKey(value);
   }, []);
 
@@ -81,7 +81,7 @@ export function useByok(): UseByokResult {
       if (!candidate) {
         setKeyStatus((previous) => ({
           ...previous,
-          [provider]: { state: 'error', message: 'Pehle API key paste karo.' }
+          [provider]: { state: 'error', message: 'Please enter an API key first.' }
         }));
         return;
       }
@@ -94,7 +94,7 @@ export function useByok(): UseByokResult {
           ...previous,
           [provider]: {
             state: 'error',
-            message: `Ye ${getProviderMeta(keyBelongsTo).label} ki key hai (${candidate.slice(0, 4)}...). Upar ${getProviderMeta(keyBelongsTo).label} select karo, phir key waha paste karo.`
+            message: `This appears to be a ${getProviderMeta(keyBelongsTo).label} key (${candidate.slice(0, 4)}...). Select ${getProviderMeta(keyBelongsTo).label} above, then paste the key there.`
           }
         }));
         return;
@@ -105,7 +105,7 @@ export function useByok(): UseByokResult {
           ...previous,
           [provider]: {
             state: 'error',
-            message: `Ye ${getProviderMeta(provider).label} ki key nahi lag rahi — ${getProviderMeta(provider).keyPrefix} se shuru honi chahiye.`
+            message: `Invalid key format for ${getProviderMeta(provider).label} — expected prefix ${getProviderMeta(provider).keyPrefix}.`
           }
         }));
         return;
@@ -128,7 +128,7 @@ export function useByok(): UseByokResult {
           return { ...previous, [provider]: chosen };
         });
 
-        if (provider === activeProvider) setUseDevoraKey(false);
+        if (provider === activeProvider) setUseShadRoxKey(false);
 
         setKeyStatus((previous) => ({
           ...previous,
@@ -144,12 +144,12 @@ export function useByok(): UseByokResult {
           ...previous,
           [provider]: {
             state: 'error',
-            message: error instanceof Error ? error.message : 'Key validate nahi ho payi.'
+            message: error instanceof Error ? error.message : 'Unable to validate API key. Please check credentials and network.'
           }
         }));
       }
     },
-    [apiKeyDraft, activeProvider, setUseDevoraKey]
+    [apiKeyDraft, activeProvider, setUseShadRoxKey]
   );
 
   // Re-validate keys that are already saved so the model list is ready on load.
@@ -194,16 +194,16 @@ export function useByok(): UseByokResult {
   const sharedModels = useMemo(() => buildSharedModelList(activeProvider), [activeProvider]);
 
   // With the shared key there is no user key to enumerate models from, so the
-  // picker falls back to Devora's static Pro catalog.
-  const models = useDevoraKey ? sharedModels : byokModels;
+  // picker falls back to ShadRox's static Pro catalog.
+  const models = useShadRoxKey ? sharedModels : byokModels;
 
   const selectedModel = useMemo(() => {
-    const list = useDevoraKey ? sharedModels : byokModels;
+    const list = useShadRoxKey ? sharedModels : byokModels;
     if (list.length === 0) return '';
     const stored = selectedByProvider[activeProvider];
     if (stored && list.some((model) => model.id === stored)) return stored;
-    return useDevoraKey ? DEFAULT_SHARED_MODEL[activeProvider] : defaultModelFor(activeProvider, list);
-  }, [useDevoraKey, sharedModels, byokModels, selectedByProvider, activeProvider]);
+    return useShadRoxKey ? DEFAULT_SHARED_MODEL[activeProvider] : defaultModelFor(activeProvider, list);
+  }, [useShadRoxKey, sharedModels, byokModels, selectedByProvider, activeProvider]);
 
   const activeKey = savedKeys[activeProvider] || '';
 
@@ -219,8 +219,8 @@ export function useByok(): UseByokResult {
       models,
       selectedModel,
       selectModel,
-      useDevoraKey,
-      setUseDevoraKey,
+      useShadRoxKey,
+      setUseShadRoxKey,
       temperature,
       setTemperature,
       activeKey
@@ -236,8 +236,8 @@ export function useByok(): UseByokResult {
       models,
       selectedModel,
       selectModel,
-      useDevoraKey,
-      setUseDevoraKey,
+      useShadRoxKey,
+      setUseShadRoxKey,
       temperature,
       activeKey
     ]

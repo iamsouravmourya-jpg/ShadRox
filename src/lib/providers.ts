@@ -69,7 +69,7 @@ const GROQ_FREE_MODELS = [
 ];
 
 /**
- * Devora's shared key is a paid key, so it is restricted to models Devora marks
+ * ShadRox's shared key is a paid key, so it is restricted to models ShadRox marks
  * as Pro (the same `classifyTier` rule the server enforces). When the shared key
  * is on there is no BYOK key to list models from, so the picker uses this small
  * static catalog instead.
@@ -91,7 +91,7 @@ export const DEFAULT_SHARED_MODEL: Record<ProviderId, string> = {
   groq: 'meta-llama/llama-4-scout-17b-16e-instruct'
 };
 
-/** Pro-tier models Devora's shared key can serve for this provider. */
+/** Pro-tier models ShadRox's shared key can serve for this provider. */
 export function buildSharedModelList(provider: ProviderId): ModelInfo[] {
   return buildModelList(provider, SHARED_MODELS[provider]);
 }

@@ -161,7 +161,7 @@ export function apiMockBridge(routes: DetectedRoute[]): string {
     function simulate(method, pathname) {
       if (!announced[method + ' ' + pathname]) {
         announced[method + ' ' + pathname] = true;
-        console.info('[ShadRox] ' + method + ' ' + pathname + ' intercepted — server browser sandbox me nahi chalta, simulated JSON bheja gaya.');
+        console.info('[ShadRox] ' + method + ' ' + pathname + ' intercepted — backend server is simulated in browser preview.');
       }
       return JSON.stringify({
         ok: true,

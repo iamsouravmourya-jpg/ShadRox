@@ -11,11 +11,10 @@ PART 1: COMPLETED EXECUTION RECORD
 
 1. TOTAL BRAND RE-ENGINEERING (DEVORA -> SHADROX):
    - Eliminated all occurrences of "Devora" across metadata.json, index.html,
-     src/components, src/lib, storage keys, system instructions, and docs.
+     src/components, src/lib, storage keys, IndexedDB database names (`shadrox-history`, `shadrox-workspace`, `shadrox-handles`), quota keys (`shadrox.usage.*`), system instructions, and docs.
    - Renamed and re-designed branding glyph to ShadRoxLogo (modern geometric shield
      with illuminated green engineering glyph).
-   - Replaced all local storage keys to `shadrox.*` namespace with backward-compatible
-     read fallbacks so existing user keys are seamlessly migrated.
+   - Replaced all local storage keys to `shadrox.*` namespace.
    - Updated VFS namespaces and bundler references to `shadrox-vfs` and `shadrox-out`.
 
 2. NEXT-LEVEL UNIVERSAL SAAS PREVIEW ENGINE:
@@ -48,73 +47,34 @@ PART 1: COMPLETED EXECUTION RECORD
        - Instant file search/filter input.
        - Vertical file listing showing language icons, file names, unsaved dirty
          amber badges, active file highlight border, and hover delete actions.
-       - Collapsible toggle tab to maximize editor screen real estate.
-     * Right Column (Code Editor Pane):
-       - Sits directly beside the vertical file explorer.
-       - Active file metadata header, syntax search inside file, Format Code tool,
-         Copy Code tool, Download File tool, and Save button.
-       - CodeMirror editor with VS Code Dark theme and syntax highlighting.
-       - Bottom Status Bar: line count, char count, token estimate, syntax language,
-         UTF-8, and 2-space indentation indicator.
+     * Right Column (Active Code Editor):
+       - Positioned directly beside the vertical file explorer (VS Code / Cursor style).
+       - CodeMirror 6 with VS Code Dark theme, auto-completion, line numbers,
+         find/replace search panel, search toggle, format code, and copy code buttons.
+       - Bottom editor status bar showing active file language, cursor coordinates,
+         and unsaved changes count.
 
-4. WORK MODES CONSOLIDATION (CODE, PLAN, COMPLEX):
-   - Removed cluttered horizontal mode buttons and irrelevant prompt templates.
-   - Created a unified "Work Mode" dropdown menu directly beside the prompt box:
-     * Code: Direct code implementation — fast, concise, writes and patches files.
-     * Plan: System architecture and review only — AI will not modify files.
-     * Complex: Deep reasoning and multi-file architecture for complex logic.
-   - Active mode is prominently indicated on the dropdown button with custom icons
-     (Code2, FileText, Brain) and color accents (Emerald, Amber, Purple).
+4. UNIFIED ENGINEERING MODES DROPDOWN (CHAT PANEL):
+   - Replaced the old "Templates" dropdown with a streamlined **"Mode"** dropdown.
+   - Removed irrelevant/cluttered templates.
+   - Populated the Mode selector with exactly 3 engineering modes:
+     * **Code** (Direct file edits & fast code generation)
+     * **Plan** (Architecture review only — strict file modification ban)
+     * **Complex** (Deep reasoning & multi-file architecture)
+   - Selected mode updates the trigger button label and displays a checkmark in the dropdown.
+   - **Removed "Clear Chat" option** entirely from the chat panel as requested.
 
-5. PURE ENGLISH COPY ACROSS ENTIRE APPLICATION:
-   - Eliminated all Hinglish phrases from UI, toasts, placeholders, error alerts,
-     tooltips, and system instructions.
-   - Updated speech recognition hook from 'hi-IN' to 'en-US'.
-   - System prompts updated to strictly instruct the model to respond concisely
-     in professional English.
+5. 100% PURE ENGLISH LOCALIZATION:
+   - Purged all Hinglish phrases, comments, log messages, and error notifications
+     across the entire codebase.
+   - Replaced with professional, concise, idiomatic English.
+   - Speech recognition language explicitly locked to `en-US`.
 
-6. REMOVAL OF "CLEAR CHAT" OPTION:
-   - Completely removed the "Clear Chat" (trash icon) action from the chat panel
-     header to prevent accidental message history loss.
+6. ZERO-CONFIG SECURE SECRETS VAULT (NO `.env` FILES):
+   - **No `.env` files are ever created on disk.**
+   - Secrets managed in **Settings → Secrets Vault** are stored securely in browser storage
+     and injected virtually at runtime into `process.env.*` and `import.meta.env.*` during
+     `esbuild-wasm` bundling and iframe execution.
 
-7. ZERO-CONFIG DIRECT SECRET LINKING (NO .ENV FILES GENERATED):
-   - Enforced strict architectural rule: Never create or write `.env` files to disk.
-   - Built the ShadRox Secure Secrets Vault inside Settings Drawer.
-   - Virtual Runtime Injection: Secrets configured in the vault are injected directly
-     into the in-browser bundler's virtual environment (`process.env.*` and
-     `import.meta.env.*`), keeping workspace files pristine and secrets secure.
-   - Added quick 1-click presets for common SaaS variables (DATABASE_URL,
-     STRIPE_SECRET_KEY, VITE_SUPABASE_URL, NEXT_PUBLIC_API_URL).
-
-8. REVISED PLANS & MONTHLY QUOTA ENFORCEMENT:
-   - Free (BYOK): ₹0 — 100 messages/month cap.
-   - Pro: ₹499/month (GST Included) — 250 messages/month cap, ShadRox Shared Key.
-   - Adv: ₹1,099/month (GST Included) — 500 messages/month cap, extended context.
-   - Enterprise: Custom pricing & contracts — 5,000 messages/month cap.
-   - Quota tracking persists per calendar month (`shadrox.usage.YYYY-MM`) with
-     real-time status indicator pill in chat header and quota progress bar card
-     in Settings Drawer.
-
---------------------------------------------------------------------------------
-PART 2: SUPABASE BACKEND ROADMAP (QUEUED FOR EXECUTION SIGNAL)
---------------------------------------------------------------------------------
-
-When you give the instruction to connect Supabase, the following architecture
-is fully mapped and ready to deploy:
-
-A. Database Schema:
-   - `public.profiles`: Stores user UUID, email, plan_tier, monthly_usage, monthly_cap,
-     and quota_reset_at.
-   - `public.usage_logs`: Stores token metrics, prompt tokens, completion tokens, model ID.
-   - `public.subscriptions`: Handles ₹499 and ₹1,099 subscription states, GST breakdown
-     (base amount + 18% GST), and payment provider IDs.
-   - Atomic RPC function `check_and_increment_quota(p_user_id)` for server-side
-     quota verification with Row Level Security (RLS).
-
-B. Payment Gateway Webhook:
-   - Razorpay / Stripe webhook handler for ₹499 and ₹1,099 tiers generating Indian
-     GST compliant invoice logs (HSN Code 998313).
-
-================================================================================
-END OF EXCEUTE.TXT
-================================================================================
+7. DOCUMENTATION UPDATES:
+   - Fully updated `README.md` and `execute.txt` / `excecute.txt`.

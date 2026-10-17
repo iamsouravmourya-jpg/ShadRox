@@ -153,7 +153,7 @@ export function useWorkspace(): UseWorkspaceResult {
       const directory = await pickDirectory();
       if (!directory) return;
       if (directory.files.length === 0) {
-        setStatusMessage('Us folder me koi readable code file nahi mili.');
+        setStatusMessage('No readable code files found in selected folder.');
         return;
       }
       mount(directory.name, directory.name, 'folder', directory.files, {
@@ -163,7 +163,7 @@ export function useWorkspace(): UseWorkspaceResult {
       });
     } catch (error) {
       if ((error as { name?: string })?.name === 'AbortError') return;
-      setStatusMessage('Folder open nahi ho paya. Dobara try karo.');
+      setStatusMessage('Could not open folder. Please try again.');
     } finally {
       setIsBusy(false);
     }
@@ -171,7 +171,7 @@ export function useWorkspace(): UseWorkspaceResult {
 
   const openFiles = useCallback(async () => {
     if (!supportsFilePicker()) {
-      setStatusMessage('File picker support nahi hai. Files ko drag karke daalo.');
+      setStatusMessage('File picker is not supported in this browser. Please drag and drop files.');
       return;
     }
     setIsBusy(true);
@@ -187,7 +187,7 @@ export function useWorkspace(): UseWorkspaceResult {
       );
     } catch (error) {
       if ((error as { name?: string })?.name === 'AbortError') return;
-      setStatusMessage('Files open nahi ho payin. Dobara try karo.');
+      setStatusMessage('Could not open files. Please try again.');
     } finally {
       setIsBusy(false);
     }
@@ -199,7 +199,7 @@ export function useWorkspace(): UseWorkspaceResult {
       try {
         const dropped = await filesFromFileList(list);
         if (dropped.length === 0) {
-          setStatusMessage('In files me se koi readable file nahi mili.');
+          setStatusMessage('No readable code files detected in dropped items.');
           return;
         }
         mount(
@@ -233,7 +233,7 @@ export function useWorkspace(): UseWorkspaceResult {
         }
         // Entries saved before snapshots existed can only be restored by picking again.
         setStatusMessage(
-          `${entry.name} ka local copy save nahi tha — ek baar dobara pick karo, uske baad ye seedha khulega.`
+          `No local snapshot cached for ${entry.name}. Please select the folder once to re-grant access.`
         );
         if (entry.kind === 'folder') await openFolder();
         else await openFiles();
@@ -281,7 +281,7 @@ export function useWorkspace(): UseWorkspaceResult {
       handlesRef.current.set(path, handle);
       return handle;
     } catch (error) {
-      console.warn('[devora] could not resolve a disk handle for', path, error);
+      console.warn('[shadrox] could not resolve a disk handle for', path, error);
       return null;
     }
   }, []);
@@ -300,7 +300,7 @@ export function useWorkspace(): UseWorkspaceResult {
         return true;
       }
     } catch (error) {
-      console.warn('[devora] write permission check failed', error);
+      console.warn('[shadrox] write permission check failed', error);
     }
     return false;
   }, []);
@@ -311,7 +311,7 @@ export function useWorkspace(): UseWorkspaceResult {
       if (!handle) return false;
 
       if (!(await ensureWritePermission(handle))) {
-        setDiskMessage('Browser ne write permission nahi di. Ek baar "Save to disk" dabao — permission sirf click par milti hai.');
+        setDiskMessage('Write permission denied by browser. Click "Save to disk" to grant write access.');
         return false;
       }
 
@@ -342,10 +342,10 @@ export function useWorkspace(): UseWorkspaceResult {
           if (await writeOne(file)) written += 1;
           else failed = true;
         }
-        if (written > 0) setDiskMessage(`${written} file${written > 1 ? 's' : ''} disk par save ho gayi.`);
-        else if (failed) setDiskMessage('Save nahi ho paya — permission ya handle missing hai.');
+        if (written > 0) setDiskMessage(`${written} file${written > 1 ? 's' : ''} saved to disk.`);
+        else if (failed) setDiskMessage('Save failed — missing file handle or permission.');
       } catch (error) {
-        setDiskMessage(error instanceof Error ? `Save fail hua: ${error.message}` : 'Save fail hua.');
+        setDiskMessage(error instanceof Error ? `Save failed: ${error.message}` : 'Save failed.');
       } finally {
         setIsSaving(false);
       }
@@ -491,7 +491,7 @@ export function useWorkspace(): UseWorkspaceResult {
       );
       const nextIndex = restored.findIndex((file) => file.name === activeName);
       setActiveFileIndex(nextIndex);
-      setDiskMessage('Purana version restore ho gaya. Disk par write karne ke liye Save dabao.');
+      setDiskMessage('Previous version restored. Click "Save to disk" to persist changes to disk.');
       return true;
     },
     [activeFileIndex]

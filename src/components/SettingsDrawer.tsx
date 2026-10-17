@@ -52,8 +52,8 @@ interface SettingsDrawerProps {
 
   temperature: number;
   onTemperatureChange: (value: number) => void;
-  useDevoraKey: boolean;
-  onUseDevoraKeyChange: (value: boolean) => void;
+  useShadRoxKey: boolean;
+  onUseShadRoxKeyChange: (value: boolean) => void;
 
   plan: PlanTier;
   onPlanChange: (plan: PlanTier) => void;
@@ -105,8 +105,8 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     onSelectModel,
     temperature,
     onTemperatureChange,
-    useDevoraKey,
-    onUseDevoraKeyChange,
+    useShadRoxKey,
+    onUseShadRoxKeyChange,
     plan,
     onPlanChange,
     secrets,
@@ -330,8 +330,8 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 <label className="flex items-start gap-2 cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={useDevoraKey}
-                    onChange={(event) => onUseDevoraKeyChange(event.target.checked)}
+                    checked={useShadRoxKey}
+                    onChange={(event) => onUseShadRoxKeyChange(event.target.checked)}
                     className="mt-0.5 accent-emerald-500"
                   />
                   <span className="min-w-0">
