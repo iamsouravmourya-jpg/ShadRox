@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror, { type ReactCodeMirrorRef, oneDark } from '@uiw/react-codemirror';
 import { findNext, search, SearchQuery, setSearchQuery } from '@codemirror/search';
 import { EditorView } from '@codemirror/view';
@@ -8,7 +8,7 @@ import { javascript } from '@codemirror/lang-javascript';
 import { json } from '@codemirror/lang-json';
 import { markdown } from '@codemirror/lang-markdown';
 import { python } from '@codemirror/lang-python';
-import { ArrowLeft, Archive, Check, Copy, Download, FileCode2, FilePlus, Loader2, Save, Search, Sparkles, X } from 'lucide-react';
+import { ArrowLeft, Archive, Check, Copy, Download, FileCode2, FilePlus, Loader2, Save, Search, Sparkles, Trash2, WrapText } from 'lucide-react';
 import { copyToClipboard, downloadFile, downloadWorkspaceZip, estimateTokens, formatCode } from '../lib/toolUtils';
 import type { WorkspaceFile } from '../lib/types';
 
@@ -98,11 +98,32 @@ export function CodeEditor({
   const [query, setQuery] = useState('');
   const [hasCopied, setHasCopied] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [wrap, setWrap] = useState(false);
+  const [cursor, setCursor] = useState({ line: 1, col: 1 });
 
   const dirty = useMemo(() => new Set(dirtyFiles), [dirtyFiles]);
+
+  // Reports the real caret position, so the status bar stops showing the file's
+  // total line count under a "Ln" label.
+  const cursorListener = useMemo(
+    () =>
+      EditorView.updateListener.of((update) => {
+        if (!update.selectionSet && !update.docChanged) return;
+        const head = update.state.selection.main.head;
+        const line = update.state.doc.lineAt(head);
+        setCursor({ line: line.number, col: head - line.from + 1 });
+      }),
+    []
+  );
+
   const extensions = useMemo(
-    () => [...extensionsFor(activeFile?.language ?? ''), search({ top: true })],
-    [activeFile?.language]
+    () => [
+      ...extensionsFor(activeFile?.language ?? ''),
+      search({ top: true }),
+      cursorListener,
+      ...(wrap ? [EditorView.lineWrapping] : [])
+    ],
+    [activeFile?.language, cursorListener, wrap]
   );
 
   const runSearch = useCallback((value: string) => {
@@ -115,6 +136,15 @@ export function CodeEditor({
     view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: value, caseSensitive: false })) });
     findNext(view);
   }, []);
+
+  // Switching files (list, AI patch, checkpoint restore) has to clear the old
+  // search term too, otherwise its highlights follow the user into the next file.
+  useEffect(() => {
+    setQuery('');
+    setCursor({ line: 1, col: 1 });
+    const view = editorRef.current?.view;
+    if (view) view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: '' })) });
+  }, [activeFile?.name]);
 
   const handleSearchChange = (value: string) => {
     setQuery(value);
@@ -156,6 +186,15 @@ export function CodeEditor({
   const handleDownloadZip = () => {
     if (files.length === 0) return;
     downloadWorkspaceZip(workspaceName || 'devora-project', files);
+  };
+
+  /** Deleting is irreversible in the editor, so non-empty files ask first. */
+  const handleDeleteFile = () => {
+    if (!activeFile) return;
+    if (activeFile.content.trim() && !window.confirm(`"${activeFile.name}" delete karein? Ye workspace se hat jayegi.`)) {
+      return;
+    }
+    onDeleteFile(activeFileIndex);
   };
 
   // Nothing selected yet: the file list comes first, the editor only after a click.
@@ -255,6 +294,18 @@ export function CodeEditor({
             />
           </div>
 
+          {/* Line wrap toggle */}
+          <button
+            type="button"
+            onClick={() => setWrap((value) => !value)}
+            title={wrap ? 'Line wrap off karo' : 'Line wrap on karo (lambi lines ke liye)'}
+            className={`p-1.5 transition-colors cursor-pointer ${
+              wrap ? 'text-emerald-400' : 'text-neutral-500 hover:text-white'
+            }`}
+          >
+            <WrapText className="w-3.5 h-3.5" />
+          </button>
+
           {/* Format Tool */}
           <button
             type="button"
@@ -322,11 +373,12 @@ export function CodeEditor({
 
           <button
             type="button"
-            onClick={() => onDeleteFile(activeFileIndex)}
-            title="File ko workspace view se hatao"
-            className="p-1.5 text-neutral-600 hover:text-red-400 transition-colors cursor-pointer"
+            onClick={handleDeleteFile}
+            disabled={files.length <= 1}
+            title={files.length <= 1 ? 'Last file delete nahi ho sakti' : 'Delete file (workspace se hatao)'}
+            className="p-1.5 text-neutral-600 hover:text-red-400 disabled:opacity-30 disabled:hover:text-neutral-600 transition-colors cursor-pointer"
           >
-            <X className="w-3.5 h-3.5" />
+            <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
@@ -355,7 +407,8 @@ export function CodeEditor({
       {/* Advanced IDE Status Bar */}
       <footer className="h-6 shrink-0 bg-neutral-950 border-t border-neutral-900 px-3 flex items-center justify-between text-[10px] text-neutral-500 font-mono select-none">
         <div className="flex items-center gap-3">
-          <span>Ln {lineCount}</span>
+          <span title="Cursor position">{`Ln ${cursor.line}, Col ${cursor.col}`}</span>
+          <span>{lineCount} lines</span>
           <span>{activeFile.content.length} chars</span>
           <span>~{estimateTokens(activeFile.content)} tokens</span>
           {toastMsg && <span className="text-emerald-400 font-sans">{toastMsg}</span>}
@@ -363,7 +416,7 @@ export function CodeEditor({
         <div className="flex items-center gap-3">
           <span className="uppercase text-neutral-400">{activeFile.language}</span>
           <span>UTF-8</span>
-          <span>Spaces: 2</span>
+          <span title="Editor ka indent size">Spaces: 2</span>
         </div>
       </footer>
     </div>

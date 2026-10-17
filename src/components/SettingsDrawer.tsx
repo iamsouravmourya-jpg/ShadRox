@@ -440,7 +440,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     className={`h-full transition-all duration-300 ${
                       usage.isCapReached
                         ? 'bg-rose-500'
-                        : usage.percentage > 80
+                        : usage.percentage >= 70
                           ? 'bg-amber-400'
                           : 'bg-emerald-400'
                     }`}

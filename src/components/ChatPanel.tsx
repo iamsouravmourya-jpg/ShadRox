@@ -111,6 +111,25 @@ export function ChatPanel({
   const activeModel = models.find((model) => model.id === selectedModel) || null;
   const canSend = input.trim().length > 0 && !isGenerating && !usage.isCapReached;
 
+  // Low usage reads as healthy (emerald), then warns before the cap (amber) and
+  // finally blocks (rose) — matches the quota card in Settings.
+  const quotaTone = usage.isCapReached
+    ? {
+        pill: 'border-rose-900/70 bg-rose-950/40 text-rose-300',
+        icon: 'text-rose-400'
+      }
+    : usage.percentage >= 70
+      ? {
+          pill: 'border-amber-900/60 bg-amber-950/30 text-amber-300',
+          icon: 'text-amber-400'
+        }
+      : {
+          pill: 'border-emerald-900/60 bg-emerald-950/20 text-emerald-400 hover:border-emerald-800/70',
+          icon: 'text-emerald-400'
+        };
+
+  const proPlan = getPlanMeta('pro');
+
   const groupedModels: Record<ModelTier, ModelInfo[]> = {
     free: models.filter((model) => model.tier === 'free'),
     pro: models.filter((model) => model.tier === 'pro')
@@ -140,15 +159,9 @@ export function ChatPanel({
             type="button"
             onClick={() => onOpenSettings('PLAN')}
             title={`Monthly chat quota: ${usage.count}/${usage.limit} messages used (${usage.remaining} left this month)`}
-            className={`flex items-center gap-1 px-2 py-1 border text-[10px] tracking-wide transition-colors cursor-pointer ${
-              usage.isCapReached
-                ? 'border-rose-900/70 bg-rose-950/40 text-rose-300'
-                : usage.percentage >= 80
-                  ? 'border-amber-900/60 bg-amber-950/30 text-amber-300'
-                  : 'border-neutral-800 text-neutral-400 hover:text-white hover:border-neutral-700'
-            }`}
+            className={`flex items-center gap-1 px-2 py-1 border text-[10px] tracking-wide transition-colors cursor-pointer ${quotaTone.pill}`}
           >
-            <Zap className={`w-3 h-3 ${usage.isCapReached ? 'text-rose-400' : 'text-amber-400'}`} />
+            <Zap className={`w-3 h-3 ${quotaTone.icon}`} />
             <span className="font-mono">{usage.count}/{usage.limit}</span>
           </button>
 
@@ -156,7 +169,7 @@ export function ChatPanel({
             <button
               type="button"
               onClick={() => onOpenSettings('PLAN')}
-              title="Pro plan: ₹499/mo (GST included) — 250 messages & shared key"
+              title={`Pro plan: ${proPlan.price} (GST included) — ${proPlan.monthlyCap} messages & shared key`}
               className="hidden sm:flex items-center gap-1 px-2 py-1 border border-amber-900/60 text-amber-400 text-[10px] uppercase tracking-wide hover:bg-amber-950/30 transition-colors cursor-pointer"
             >
               Upgrade

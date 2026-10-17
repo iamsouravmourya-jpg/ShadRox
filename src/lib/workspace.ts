@@ -35,11 +35,6 @@ export function supportsFilePicker(): boolean {
   return typeof window !== 'undefined' && 'showOpenFilePicker' in (window as any);
 }
 
-/** True when this browser can write edits back to the user's real files. */
-export function supportsDiskWrite(): boolean {
-  return supportsDirectoryPicker() || supportsFilePicker();
-}
-
 interface DirectoryScan {
   files: WorkspaceFile[];
   handles: HandleEntry[];

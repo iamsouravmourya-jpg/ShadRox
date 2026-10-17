@@ -306,7 +306,6 @@ export default function App() {
     setPendingRefine(null);
     setAttachedFileName(null);
     setIsGenerating(true);
-    recordMessageSent();
 
     if (!byok.useDevoraKey && !byok.activeKey) {
       setIsGenerating(false);
@@ -326,6 +325,10 @@ export default function App() {
       setSettingsTab('CHAT');
       return;
     }
+
+    // Counted only once the request can actually go out — a missing key is not
+    // a message the user should lose quota for.
+    recordMessageSent();
 
     const controller = new AbortController();
     abortRef.current = controller;

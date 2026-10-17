@@ -10,7 +10,6 @@ import {
   pickDirectory,
   pickFiles,
   supportsDirectoryPicker,
-  supportsDiskWrite,
   supportsFilePicker,
   type HandleEntry
 } from '../lib/workspace';
@@ -51,8 +50,6 @@ interface UseWorkspaceResult {
   closeWorkspace: () => void;
 
   // --- disk write-back -----------------------------------------------------
-  /** True when this browser exposes the File System Access API at all. */
-  diskWriteSupported: boolean;
   /** True when the open workspace actually carries handles we can write through. */
   canWriteToDisk: boolean;
   /** Workspace-relative names whose editor content differs from disk. */
@@ -61,7 +58,6 @@ interface UseWorkspaceResult {
   diskMessage: string | null;
   autoSave: boolean;
   setAutoSave: (value: boolean) => void;
-  saveActiveFile: () => Promise<void>;
   saveAll: () => Promise<void>;
 
   // --- restore timeline ----------------------------------------------------
@@ -354,11 +350,6 @@ export function useWorkspace(): UseWorkspaceResult {
     );
   }, [saveFilesToDisk]);
 
-  const saveActiveFile = useCallback(async () => {
-    const file = filesRef.current[activeFileIndex];
-    if (file) await saveFilesToDisk([file.name]);
-  }, [activeFileIndex, saveFilesToDisk]);
-
   // --- assistant edits -------------------------------------------------------
 
   /**
@@ -548,14 +539,12 @@ export function useWorkspace(): UseWorkspaceResult {
       createFile,
       deleteFile,
       closeWorkspace,
-      diskWriteSupported: supportsDiskWrite(),
       canWriteToDisk,
       dirtyFiles,
       isSaving,
       diskMessage,
       autoSave,
       setAutoSave,
-      saveActiveFile,
       saveAll,
       checkpoints,
       markCheckpoint,
@@ -585,7 +574,6 @@ export function useWorkspace(): UseWorkspaceResult {
       isSaving,
       diskMessage,
       autoSave,
-      saveActiveFile,
       saveAll,
       checkpoints,
       markCheckpoint,
