@@ -52,31 +52,48 @@ export function findAsset(specifier: string, importer: string, assets: AssetMap)
     candidates.push(`public/${relative}`, relative);
   } else if (clean.startsWith('.')) {
     const base = importer.includes('/') ? `${importer.slice(0, importer.lastIndexOf('/'))}/${clean}` : clean;
-    candidates.push(normalizePath(base));
+    const normalized = normalizePath(base);
+    candidates.push(normalized, `public/${normalized}`);
   } else {
     const relative = normalizePath(clean);
     candidates.push(relative, `public/${relative}`);
   }
 
   for (const candidate of candidates) {
-    const hit = assets[candidate];
-    if (hit) return hit;
+    if (assets[candidate]) return assets[candidate];
   }
 
-  // Windows-cased mounts (`Logo.PNG`) should still match a `/logo.png` reference.
+  // Windows-cased mounts (`Logo.PNG`) should still match a `/logo.png` reference,
+  // and handle subfolder/monorepo prefixes (e.g. `client/public/logo.png`).
   const wanted = candidates.map((candidate) => candidate.toLowerCase());
-  const key = Object.keys(assets).find((assetPath) => wanted.includes(assetPath.toLowerCase()));
-  return key ? assets[key] : null;
+  for (const [key, value] of Object.entries(assets)) {
+    const lowerKey = key.toLowerCase();
+    if (wanted.some((w) => lowerKey === w || lowerKey.endsWith(`/${w}`))) {
+      return value;
+    }
+  }
+
+  return null;
 }
 
-/** Rewrites root-relative `src`/`href` references in an HTML document to data URLs. */
+/** Rewrites relative and root-relative `src`/`href` and CSS `url(...)` references to data URLs. */
 export function inlineHtmlAssets(html: string, assets: AssetMap): string {
   if (Object.keys(assets).length === 0) return html;
-  return html.replace(
-    /(\bsrc|\bhref)(\s*=\s*)(["'])(\/[^"']+)\3/gi,
+  let inlined = html.replace(
+    /(\bsrc|\bhref)(\s*=\s*)(["'])(?!(?:https?:|\/\/|data:|#|javascript:|mailto:))([^"']+)\3/gi,
     (match, attribute: string, assign: string, quote: string, url: string) => {
       const dataUrl = findAsset(url, '', assets);
       return dataUrl ? `${attribute}${assign}${quote}${dataUrl}${quote}` : match;
     }
   );
+
+  inlined = inlined.replace(
+    /url\(\s*(["']?)(?!(?:https?:|\/\/|data:|#|javascript:))([^'")]+)\1\s*\)/gi,
+    (match, quote: string, url: string) => {
+      const dataUrl = findAsset(url, '', assets);
+      return dataUrl ? `url(${quote}${dataUrl}${quote})` : match;
+    }
+  );
+
+  return inlined;
 }

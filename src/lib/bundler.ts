@@ -74,8 +74,26 @@ const DEFAULT_IMPORT_MAP: Record<string, string> = {
   'react-dom/': `${CDN}/react-dom@19/`,
   'lucide-react': `${CDN}/lucide-react@0.546.0`,
   clsx: `${CDN}/clsx@2.1.1`,
-  'tailwind-merge': `${CDN}/tailwind-merge@2.5.4`
+  'tailwind-merge': `${CDN}/tailwind-merge@2.5.4`,
+  path: `${CDN}/path-browserify@1.0.1`,
+  'node:path': `${CDN}/path-browserify@1.0.1`
 };
+
+/** Node.js built-ins that have no browser sandbox equivalent */
+const NODE_BUILTINS_UNSUPPORTED = new Set([
+  'fs',
+  'node:fs',
+  'child_process',
+  'node:child_process',
+  'net',
+  'node:net',
+  'tls',
+  'node:tls',
+  'dgram',
+  'node:dgram',
+  'cluster',
+  'node:cluster'
+]);
 
 export interface BundleResult {
   code: string;
@@ -92,11 +110,21 @@ let esbuildPromise: Promise<Esbuild> | null = null;
 async function loadEsbuild(): Promise<Esbuild> {
   if (!esbuildPromise) {
     esbuildPromise = (async () => {
-      const [esbuild, wasm] = await Promise.all([
-        import('esbuild-wasm'),
-        import('esbuild-wasm/esbuild.wasm?url')
-      ]);
-      await esbuild.initialize({ wasmURL: wasm.default });
+      const esbuild = await import('esbuild-wasm');
+      if (typeof window === 'undefined') {
+        // Node / test environment: initialize native wasm runner
+        await esbuild.initialize({});
+        return esbuild;
+      }
+      try {
+        const wasm = await import('esbuild-wasm/esbuild.wasm?url');
+        await esbuild.initialize({ wasmURL: wasm.default });
+      } catch (err: unknown) {
+        if (!String((err as { message?: string })?.message).includes('already been called')) {
+          // Fallback to CDN URL if local asset URL fails
+          await esbuild.initialize({ wasmURL: `${CDN}/esbuild-wasm@0.28.2/esbuild.wasm` });
+        }
+      }
       return esbuild;
     })().catch((error) => {
       esbuildPromise = null;
@@ -293,55 +321,63 @@ function parseJsonc(content: string): Record<string, unknown> | null {
 }
 
 /**
- * Reads `@/*` style aliases from a mounted tsconfig/jsconfig, so imports that
+ * Reads `@/*` style aliases from mounted tsconfig/jsconfig files, so imports that
  * only resolve through TypeScript path mapping also resolve in the sandbox.
+ * Inspects solution-style tsconfigs (tsconfig.app.json, tsconfig.json, jsconfig.json).
  */
 export function readPathAliases(files: WorkspaceFile[], root: string = ''): PathAlias[] {
-  const config = files.find((file) => {
-    const name = normalize(file.name).toLowerCase();
-    return (
-      name === (root ? `${root}/tsconfig.json`.toLowerCase() : 'tsconfig.json') ||
-      name === (root ? `${root}/jsconfig.json`.toLowerCase() : 'jsconfig.json') ||
-      name === (root ? `${root}/tsconfig.app.json`.toLowerCase() : 'tsconfig.app.json')
-    );
-  });
-  if (!config) return [];
+  const candidateNames = [
+    root ? `${root}/tsconfig.app.json`.toLowerCase() : 'tsconfig.app.json',
+    root ? `${root}/tsconfig.json`.toLowerCase() : 'tsconfig.json',
+    root ? `${root}/jsconfig.json`.toLowerCase() : 'jsconfig.json',
+    root ? `${root}/tsconfig.base.json`.toLowerCase() : 'tsconfig.base.json'
+  ];
 
-  const parsed = parseJsonc(config.content);
-  const options = parsed?.compilerOptions as { baseUrl?: string; paths?: Record<string, string[]> } | undefined;
-  const paths = options?.paths;
-  if (!paths || typeof paths !== 'object') return [];
+  const configs = files.filter((file) => candidateNames.includes(normalize(file.name).toLowerCase()));
+  if (configs.length === 0) return [];
 
-  let base = normalize(String(options?.baseUrl ?? '.'));
-  if (root) base = base === '.' || !base ? root : `${root}/${base}`;
+  const allAliases: PathAlias[] = [];
+  const seenPrefixes = new Set<string>();
 
-  return Object.entries(paths).flatMap(([pattern, targets]) => {
-    if (!Array.isArray(targets) || targets.length === 0) return [];
-    const star = pattern.indexOf('*');
-    return [
-      {
+  for (const config of configs) {
+    const parsed = parseJsonc(config.content);
+    const options = parsed?.compilerOptions as { baseUrl?: string; paths?: Record<string, string[]> } | undefined;
+    const paths = options?.paths;
+    if (!paths || typeof paths !== 'object') continue;
+
+    let base = normalize(String(options?.baseUrl ?? '.'));
+    if (root) base = base === '.' || !base ? root : `${root}/${base}`;
+
+    for (const [pattern, targets] of Object.entries(paths)) {
+      if (!Array.isArray(targets) || targets.length === 0 || seenPrefixes.has(pattern)) continue;
+      seenPrefixes.add(pattern);
+      const star = pattern.indexOf('*');
+      allAliases.push({
         prefix: star === -1 ? pattern : pattern.slice(0, star),
         suffix: star === -1 ? '' : pattern.slice(star + 1),
         targets: targets
           .filter((target): target is string => typeof target === 'string')
           .map((target) => normalize(base ? `${base}/${target}` : target))
-      }
-    ];
-  });
+      });
+    }
+  }
+
+  return allAliases;
 }
 
-/** Returns the workspace path an aliased import points at, or null. */
-export function resolveAliasPath(specifier: string, aliases: PathAlias[]): string | null {
+/** Returns all workspace path candidates an aliased import points at. */
+export function resolveAliasPath(specifier: string, aliases: PathAlias[]): string[] {
+  const matches: string[] = [];
   for (const alias of aliases) {
     if (specifier.length < alias.prefix.length + alias.suffix.length) continue;
     if (!specifier.startsWith(alias.prefix) || !specifier.endsWith(alias.suffix)) continue;
     const captured = specifier.slice(alias.prefix.length, specifier.length - alias.suffix.length);
     for (const target of alias.targets) {
-      if (target.includes('*')) return target.replace('*', captured);
-      if (!captured) return target;
+      if (target.includes('*')) matches.push(target.replace('*', captured));
+      else if (!captured) matches.push(target);
     }
   }
-  return null;
+  return matches;
 }
 
 /** Picks the file that boots the app, or null when nothing looks runnable. */
@@ -360,10 +396,31 @@ export function findEntryFile(files: WorkspaceFile[], root: string = ''): string
   return null;
 }
 
-/** True when this workspace can be bundled and run, not just viewed. */
+/** True when this workspace can be bundled and run with the React/Vite bundler. */
 export function canBundle(files: WorkspaceFile[]): boolean {
   const root = findProjectRoot(files);
-  return findEntryFile(files, root) !== null;
+  const entry = findEntryFile(files, root);
+  if (!entry) return false;
+
+  // If there is an index.html, check whether this is truly a bundlable React/JSX project
+  // or a pure static HTML/CSS/JS site.
+  const hasIndexHtml = files.some(
+    (f) => normalize(f.name).toLowerCase() === (root ? `${root}/index.html`.toLowerCase() : 'index.html')
+  );
+  if (hasIndexHtml) {
+    const hasReactOrJsx = files.some((f) => {
+      const ext = (f.name.split('.').pop() || '').toLowerCase();
+      if (ext === 'tsx' || ext === 'jsx') return true;
+      return /from\s+['"]react['"]|from\s+['"]react-dom['"]|createRoot\(|ReactDOM\.render/.test(f.content);
+    });
+    const hasPackageJson = files.some((f) => normalize(f.name).toLowerCase().endsWith('package.json'));
+    if (!hasReactOrJsx && !hasPackageJson) {
+      // Pure static HTML/CSS/JS website — render via HTML preview so index.html structure is not replaced
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export async function bundleProject(
@@ -397,11 +454,18 @@ export async function bundleProject(
     const clean = specifier.replace(/[?#].*$/, '');
     const base = clean.startsWith('/') ? clean : `${dirname(importer)}/${clean}`;
     const target = normalize(base);
-    for (const extension of RESOLVE_EXTENSIONS) {
-      if (sources.has(target + extension)) return target + extension;
+    const candidates = [target];
+    if (root && !target.startsWith(root)) {
+      candidates.push(normalize(`${root}/${target}`));
     }
-    for (const extension of RESOLVE_EXTENSIONS.slice(1)) {
-      if (sources.has(`${target}/index${extension}`)) return `${target}/index${extension}`;
+
+    for (const cand of candidates) {
+      for (const extension of RESOLVE_EXTENSIONS) {
+        if (sources.has(cand + extension)) return cand + extension;
+      }
+      for (const extension of RESOLVE_EXTENSIONS.slice(1)) {
+        if (sources.has(`${cand}/index${extension}`)) return `${cand}/index${extension}`;
+      }
     }
     return null;
   };
@@ -410,8 +474,12 @@ export async function bundleProject(
   const resolveAsset = (specifier: string, importer: string): string | null => {
     const direct = findAsset(specifier, importer, assets);
     if (direct) return direct;
-    const aliasTarget = resolveAliasPath(specifier, aliases);
-    return aliasTarget ? findAsset(`/${aliasTarget}`, '', assets) : null;
+    const aliasTargets = resolveAliasPath(specifier, aliases);
+    for (const target of aliasTargets) {
+      const hit = findAsset(`/${target}`, '', assets);
+      if (hit) return hit;
+    }
+    return null;
   };
 
   const virtualFs = {
@@ -424,14 +492,29 @@ export async function bundleProject(
         const importer = args.importer || '';
         const isRelative = specifier.startsWith('.') || specifier.startsWith('/');
 
-        // Vite asset suffixes: `?url` yields a URL, `?raw` yields the file text.
+        // 1. CSS url(...) tokens: must return an external URL or data URL (not a JS module!)
+        if (args.kind === 'url-token') {
+          if (/^(?:https?:)?\/\//i.test(specifier) || specifier.startsWith('data:')) {
+            return { path: specifier, external: true };
+          }
+          const asset = resolveAsset(specifier, importer);
+          if (asset) return { path: asset, external: true };
+
+          const resolved = resolveModule(specifier, importer);
+          if (resolved) {
+            const content = sources.get(resolved) ?? '';
+            return { path: textDataUrl(resolved, content), external: true };
+          }
+          return { errors: [{ text: `Asset not found in CSS: ${args.path}` }] };
+        }
+
+        // 2. Vite asset query suffixes: `?url` yields a data/asset URL, `?raw` yields the file text.
         if (query === 'url' || query === 'raw') {
           if (query === 'url') {
             const dataUrl = resolveAsset(specifier, importer);
             if (dataUrl) return asModule(dataUrl);
-            
-            // `esbuild-wasm/esbuild.wasm?url` — a package file requested as a URL
-            // is a real CDN asset, which is what makes a nested bundler work.
+
+            // Package file requested as a URL (e.g. esbuild-wasm/esbuild.wasm?url)
             const mapped = resolveImportMapUrl(specifier, importMap);
             if (mapped) return asModule(mapped);
           }
@@ -445,38 +528,81 @@ export async function bundleProject(
           return { errors: [{ text: `Asset not found: ${args.path}` }] };
         }
 
-        // `import logo from './logo.png'` — binary files never reach `sources`.
-        if (isRelative) {
+        // 3. Relative imports or CSS @import rules
+        if (isRelative || args.kind === 'import-rule') {
           const asset = resolveAsset(specifier, importer);
           if (asset) return asModule(asset);
+
           const resolved = resolveModule(specifier, importer);
-          if (resolved) return { path: resolved, namespace: 'shadrox' };
+          if (resolved) {
+            // If importing a text asset (SVG, etc.) in JS, return data URL so <img src={logo} /> renders
+            const ext = (resolved.split('.').pop() || '').toLowerCase();
+            if (TEXT_ASSET_MIME[ext] && !importer.endsWith('.css')) {
+              const content = sources.get(resolved) ?? '';
+              return asModule(textDataUrl(resolved, content));
+            }
+            return { path: resolved, namespace: 'shadrox' };
+          }
           return { errors: [{ text: `Module not found: ${args.path}` }] };
         }
 
-        // tsconfig path mapping (@/components/Button) is a workspace file, not a package.
-        const aliasTarget = resolveAliasPath(specifier, aliases);
-        if (aliasTarget) {
-          const asset = findAsset(`/${aliasTarget}`, '', assets);
-          if (asset) return asModule(asset);
-          const resolved = resolveModule(`/${aliasTarget}`, '');
-          if (resolved) return { path: resolved, namespace: 'shadrox' };
-          return { errors: [{ text: `Workspace alias "${specifier}" points to a missing file (${aliasTarget}).` }] };
+        // 4. TypeScript path mapping (@/components/Button)
+        const aliasTargets = resolveAliasPath(specifier, aliases);
+        if (aliasTargets.length > 0) {
+          for (const target of aliasTargets) {
+            const asset = findAsset(`/${target}`, '', assets);
+            if (asset) return asModule(asset);
+
+            const resolved = resolveModule(`/${target}`, '');
+            if (resolved) {
+              const ext = (resolved.split('.').pop() || '').toLowerCase();
+              if (TEXT_ASSET_MIME[ext] && !importer.endsWith('.css')) {
+                const content = sources.get(resolved) ?? '';
+                return asModule(textDataUrl(resolved, content));
+              }
+              return { path: resolved, namespace: 'shadrox' };
+            }
+          }
+          // Only error if not also resolvable through package import map
+          if (!resolveImportMapUrl(args.path, importMap)) {
+            return {
+              errors: [
+                {
+                  text: `Workspace alias "${specifier}" points to a missing file (${aliasTargets.join(', ')}).`
+                }
+              ]
+            };
+          }
         }
 
-        // Bare dependencies are resolved by the iframe import map. Fail during
-        // compilation when no mapping exists instead of leaving a broken import
-        // that only fails after the preview document has loaded.
+        // 5. Bare dependencies resolved by the iframe import map.
         if (resolveImportMapUrl(args.path, importMap)) {
           return { path: args.path, external: true };
         }
 
-        // Explicit URL imports are already browser-resolvable.
+        // 6. Explicit URL imports (CDN/HTTP)
         if (/^(?:https?:)?\/\//i.test(args.path)) {
           return { path: args.path, external: true };
         }
 
-        return { errors: [{ text: `Dependency "${args.path}" is not in the project's package.json.` }] };
+        // 7. Unsupported Node.js modules in browser preview
+        if (NODE_BUILTINS_UNSUPPORTED.has(args.path)) {
+          return {
+            errors: [
+              {
+                text: `Node.js built-in module "${args.path}" cannot run in the browser preview. Replace with browser APIs or mock data.`
+              }
+            ]
+          };
+        }
+
+        return {
+          errors: [
+            {
+              text: `Dependency "${args.path}" is not in the project's package.json. Add it to dependencies to run in preview.`
+            }
+          ]
+        };
       });
 
       build.onLoad({ filter: /.*/, namespace: 'shadrox' }, (args: { path: string }) => {
@@ -579,7 +705,8 @@ export function bundleDocument(
   result: BundleResult,
   errorBridge: string,
   baseStyle: string,
-  secrets: SecretItem[] = []
+  secrets: SecretItem[] = [],
+  templateHtml?: string
 ): string {
   const importMap = { imports: result.importMap };
 
@@ -590,11 +717,7 @@ export function bundleDocument(
 
   const apiBridge = result.routes.length > 0 ? `<script>${apiMockBridge(result.routes)}</script>` : '';
 
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+  const headInjections = `
 <script src="https://cdn.tailwindcss.com"></script>
 <style>${baseStyle}</style>
 <style>${result.css}</style>
@@ -602,16 +725,53 @@ export function bundleDocument(
 <script>
   window.process = { env: ${JSON.stringify(virtualEnvObj)} };
   window.global = window.global || window;
-</script>
-</head>
-<body>
-<div id="root"></div>
-<div id="app"></div>
+</script>`;
+
+  let bodyInjections = `
 <script>${errorBridge}</script>
 ${apiBridge}
 <script type="module">
 ${result.code}
-</script>
+</script>`;
+
+  if (templateHtml && templateHtml.includes('<html')) {
+    let html = templateHtml;
+    // Strip original script tags pointing to main.tsx/jsx/ts/js so they don't execute twice or 404
+    html = html.replace(/<script\b[^>]*\bsrc=["'][^"']*\b(main|index)\.(?:tsx|jsx|ts|js)[^"']*["'][^>]*><\/script>/gi, '');
+
+    // Inject head items
+    if (/<\/head>/i.test(html)) {
+      html = html.replace(/<\/head>/i, `${headInjections}\n</head>`);
+    } else {
+      html = `${headInjections}\n${html}`;
+    }
+
+    // Ensure #root or #app mount container exists if neither is present
+    if (!html.includes('id="root"') && !html.includes("id='root'") && !html.includes('id="app"') && !html.includes("id='app'")) {
+      bodyInjections = `<div id="root"></div>\n${bodyInjections}`;
+    }
+
+    // Inject body items
+    if (/<\/body>/i.test(html)) {
+      html = html.replace(/<\/body>/i, `${bodyInjections}\n</body>`);
+    } else {
+      html = `${html}\n${bodyInjections}`;
+    }
+
+    return html;
+  }
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+${headInjections}
+</head>
+<body>
+<div id="root"></div>
+<div id="app"></div>
+${bodyInjections}
 </body>
 </html>`;
 }

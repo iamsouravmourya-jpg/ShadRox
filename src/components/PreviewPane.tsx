@@ -161,7 +161,10 @@ export function PreviewPane({
 
           <button
             type="button"
-            onClick={() => setReloadKey((key) => key + 1)}
+            onClick={() => {
+              setReloadKey((key) => key + 1);
+              onDismissError();
+            }}
             title="Reload Preview"
             className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer border border-neutral-800"
           >

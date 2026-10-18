@@ -24,6 +24,7 @@ const ASSET_MIME_TYPES = {
   '.ico': 'image/x-icon',
   '.bmp': 'image/bmp',
   '.avif': 'image/avif',
+  '.svg': 'image/svg+xml',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
@@ -69,7 +70,9 @@ function isPreviewAsset(fileName) {
 }
 
 function isIgnoredFile(fileName) {
-  return fileName.startsWith('.') || BINARY_EXTENSIONS.has(path.extname(fileName).toLowerCase());
+  if (fileName.startsWith('.')) return true;
+  const ext = path.extname(fileName).toLowerCase();
+  return BINARY_EXTENSIONS.has(ext) && !isPreviewAsset(fileName);
 }
 
 function ensureInsideRoot(root, target) {
@@ -115,14 +118,21 @@ async function scanDirectory(root, directory, prefix, result, fileMap) {
       }
       continue;
     }
-    if (!entry.isFile() || isIgnoredFile(entry.name)) continue;
+    if (!entry.isFile()) continue;
+
+    if (isPreviewAsset(entry.name)) {
+      try {
+        await readAssetFile(absolutePath, relativePath, result.assets);
+      } catch (error) {
+        result.warnings.push(`Could not read asset ${relativePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+      continue;
+    }
+
+    if (isIgnoredFile(entry.name)) continue;
 
     try {
-      if (isPreviewAsset(entry.name)) {
-        await readAssetFile(absolutePath, relativePath, result.assets);
-      } else {
-        await readTextFile(absolutePath, relativePath, result.files, fileMap);
-      }
+      await readTextFile(absolutePath, relativePath, result.files, fileMap);
     } catch (error) {
       result.warnings.push(`Could not read ${relativePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }

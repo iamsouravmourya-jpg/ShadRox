@@ -275,7 +275,7 @@ export function generateUniversalSaaSSandbox(
       server
         ? `<div class="border border-amber-900/60 bg-amber-950/20 p-3 rounded-lg text-[11px] text-amber-300 leading-relaxed">
       <span class="font-semibold">Backend server detected.</span>
-      Express / FastAPI / Go jaise server process browser sandbox me chal nahi sakte — isliye yahan sirf tumhare code se padha gaya structure aur routes dikhaye ja rahe hain. Koi bhi "Test Call" simulated response deta hai.
+      Server processes like Express, FastAPI, or Go cannot execute directly inside the browser preview sandbox. Discovered routes and architecture are visualized here; test calls return simulated responses.
     </div>`
         : ''
     }
@@ -283,7 +283,7 @@ export function generateUniversalSaaSSandbox(
     ${
       !server && routes.length === 0 && !canBundle(files)
         ? `<div class="border border-neutral-800 bg-neutral-950 p-3 rounded-lg text-[11px] text-neutral-400 leading-relaxed">
-      Is workspace me koi runnable entry point (jaise <span class="font-mono text-neutral-300">src/main.tsx</span>) nahi mila, isliye live app render nahi ho sakta. Neeche files ka structure dikhaya gaya hai.
+      No runnable entry point (e.g. <span class="font-mono text-neutral-300">src/main.tsx</span>) was found in this workspace. The workspace structure is displayed below.
     </div>`
         : ''
     }
@@ -324,7 +324,7 @@ export function generateUniversalSaaSSandbox(
       ${
         routes.length === 0
           ? `<div class="border border-neutral-800 bg-neutral-950 p-4 rounded-lg text-[11px] text-neutral-400">
-        Is workspace me koi HTTP route nahi mila. Routes tab dikhta hai jab code me <span class="font-mono text-neutral-300">app.get('/x')</span>, <span class="font-mono text-neutral-300">@app.post("/x")</span> ya <span class="font-mono text-neutral-300">app/api/x/route.ts</span> jaisa server code ho.
+        No HTTP routes found in this workspace. Routes are detected when server code like <span class="font-mono text-neutral-300">app.get('/x')</span>, <span class="font-mono text-neutral-300">@app.post("/x")</span>, or <span class="font-mono text-neutral-300">app/api/x/route.ts</span> is present.
       </div>`
           : `<div class="text-xs text-neutral-400">Read from your server code:</div>
       <div class="divide-y divide-neutral-900 border border-neutral-800 rounded-lg overflow-hidden bg-neutral-950">
@@ -392,7 +392,7 @@ export function generateUniversalSaaSSandbox(
         method: method,
         path: path,
         status: 200,
-        note: 'Backend server browser sandbox me nahi chalta — ye response sirf shape dikhane ke liye hai.',
+        note: 'Backend servers do not run inside the browser sandbox — this response demonstrates expected shape.',
         data: {}
       };
       text.textContent = JSON.stringify(payload, null, 2);
@@ -401,6 +401,67 @@ export function generateUniversalSaaSSandbox(
   </script>
 </body>
 </html>`;
+}
+
+/**
+ * Inlines local workspace CSS and JavaScript files referenced in static HTML documents,
+ * and rewrites relative asset paths to data URLs so static HTML/CSS/JS works in sandboxed iframes.
+ */
+export function inlineWorkspaceHtml(
+  html: string,
+  files: WorkspaceFile[],
+  assets: AssetMap = {},
+  htmlPath: string = ''
+): string {
+  const htmlDir = htmlPath.includes('/') ? htmlPath.slice(0, htmlPath.lastIndexOf('/')) : '';
+
+  // 1. Inline local CSS files: <link rel="stylesheet" href="...">
+  let processed = html.replace(
+    /<link\b([^>]*\bhref=(["'])(?!(?:https?:|\/\/|data:|#))([^"']+)\2[^>]*)>/gi,
+    (match, _attrs: string, _quote: string, href: string) => {
+      if (!/rel=(["'])stylesheet\1/i.test(match)) return match;
+      const clean = href.replace(/[?#].*$/, '');
+      const candidates = [
+        clean.startsWith('/') ? clean.slice(1) : (htmlDir ? `${htmlDir}/${clean}` : clean),
+        clean.replace(/^\.\//, ''),
+        clean
+      ];
+      for (const cand of candidates) {
+        const found = files.find((f) => f.name.toLowerCase() === cand.toLowerCase());
+        if (found) {
+          return `<style data-source="${found.name}">\n/* ${found.name} */\n${found.content}\n</style>`;
+        }
+      }
+      return match;
+    }
+  );
+
+  // 2. Inline local JavaScript files: <script src="..."></script>
+  processed = processed.replace(
+    /<script\b([^>]*\bsrc=(["'])(?!(?:https?:|\/\/|data:|#))([^"']+)\2[^>]*)>([\s\S]*?)<\/script>/gi,
+    (match, attrs: string, _quote: string, src: string) => {
+      const clean = src.replace(/[?#].*$/, '');
+      const candidates = [
+        clean.startsWith('/') ? clean.slice(1) : (htmlDir ? `${htmlDir}/${clean}` : clean),
+        clean.replace(/^\.\//, ''),
+        clean
+      ];
+      for (const cand of candidates) {
+        const found = files.find((f) => f.name.toLowerCase() === cand.toLowerCase());
+        if (found) {
+          const typeAttr = /type=(["'])(.*?)\1/i.exec(attrs);
+          const type = typeAttr ? ` type="${typeAttr[2]}"` : '';
+          return `<script${type} data-source="${found.name}">\n/* ${found.name} */\n${found.content}\n</script>`;
+        }
+      }
+      return match;
+    }
+  );
+
+  // 3. Inline binary assets (images, fonts, videos)
+  processed = inlineHtmlAssets(processed, assets);
+
+  return processed;
 }
 
 /**
@@ -417,19 +478,19 @@ export function resolvePreviewDocument(
 
   const stack = detectWorkspaceStack(files);
 
-  const withBridge = (content: string): string => {
-    let html = content;
+  const withBridge = (content: string, filePath: string = ''): string => {
+    let html = inlineWorkspaceHtml(content, files, assets, filePath);
     if (!html.toLowerCase().includes('shadrox-preview')) {
       const bridge = `<script>${PREVIEW_ERROR_BRIDGE}</script>`;
       const closingTag = /(<\/body\s*>|<\/html\s*>)/i;
       html = closingTag.test(html) ? html.replace(closingTag, `${bridge}$1`) : `${html}\n${bridge}`;
     }
-    return inlineHtmlAssets(html, assets);
+    return html;
   };
 
   if (activeFile?.language === 'html') {
     return {
-      html: withBridge(activeFile.content),
+      html: withBridge(activeFile.content, activeFile.name),
       label: 'Rendered live from HTML buffer',
       source: activeFile.name,
       stackType: 'HTML5'
@@ -448,7 +509,7 @@ export function resolvePreviewDocument(
   const entryHtml = files.find((file) => file.name.toLowerCase() === 'index.html');
   if (entryHtml) {
     return {
-      html: withBridge(entryHtml.content),
+      html: withBridge(entryHtml.content, entryHtml.name),
       label: `Rendered from ${entryHtml.name}`,
       source: entryHtml.name,
       stackType: stack.badge
