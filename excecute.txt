@@ -1,6 +1,6 @@
 ================================================================================
 SHADROX - COMPLETE EXECUTION LOG & ARCHITECTURAL SPECIFICATION
-File: excecute.txt (mirrored from execute.txt)
+File: execute.txt (also mirrored in excecute.txt)
 Brand: ShadRox (formerly Devora)
 Status: ALL USER DIRECTIVES COMPLETED & VERIFIED
 ================================================================================
@@ -66,7 +66,8 @@ PART 1: COMPLETED EXECUTION RECORD
 
 5. 100% PURE ENGLISH LOCALIZATION:
    - Purged all Hinglish phrases, comments, log messages, and error notifications
-     across the entire codebase.
+     across the entire codebase (e.g. `Us folder me koi...`, `Pehle API key paste karo`,
+     `update ho gaya`, `server browser sandbox me nahi chalta`).
    - Replaced with professional, concise, idiomatic English.
    - Speech recognition language explicitly locked to `en-US`.
 
@@ -75,6 +76,22 @@ PART 1: COMPLETED EXECUTION RECORD
    - Secrets managed in **Settings → Secrets Vault** are stored securely in browser storage
      and injected virtually at runtime into `process.env.*` and `import.meta.env.*` during
      `esbuild-wasm` bundling and iframe execution.
+   - Added helpful helper actions to add common secrets (API keys, DB URLs, JWT secrets)
+     with specific format hints.
 
 7. DOCUMENTATION UPDATES:
-   - Fully updated `README.md` and `execute.txt` / `excecute.txt`.
+   - Fully updated `README.md` and `execute.txt` with complete architectural details
+     and branding across all files.
+
+--------------------------------------------------------------------------------
+PART 2: ARCHITECTURAL SPECIFICATION & FILE MAP
+--------------------------------------------------------------------------------
+- `/src/App.tsx`: Main IDE shell, chat streaming, checkpoint restoration, quota monitoring.
+- `/src/components/ChatPanel.tsx`: Chat interface, Mode dropdown (Code, Plan, Complex), speech input.
+- `/src/components/CodeEditor.tsx`: Two-column layout with vertical file explorer on left and CodeMirror on right.
+- `/src/components/PreviewPane.tsx`: Universal SaaS preview, stack detector, interactive URL bar, console devtools, viewports.
+- `/src/components/SettingsDrawer.tsx`: Secrets Vault (zero .env generation), BYOK & ShadRox Shared Key configuration, subscription plans.
+- `/src/lib/bundler.ts`: In-browser esbuild-wasm bundler with virtual filesystem (`shadrox-vfs`), CDN import map, and virtual env injection.
+- `/src/lib/preview.ts`: Polyglot stack auto-detection, universal SaaS sandbox, markdown renderer, and error bridge.
+- `/src/lib/ai.ts`: Model integration (Gemini / Groq) with streaming and system instructions.
+- `/src/lib/storage.ts` & `/src/lib/quota.ts`: Local persistence with `shadrox.*` namespace.
