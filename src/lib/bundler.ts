@@ -13,7 +13,7 @@ import type { SecretItem, WorkspaceFile } from './types';
  */
 type Esbuild = typeof import('esbuild-wasm');
 
-type Loader = 'tsx' | 'ts' | 'jsx' | 'js' | 'json' | 'css' | 'text';
+type Loader = 'tsx' | 'ts' | 'jsx' | 'js' | 'json' | 'css' | 'local-css' | 'text';
 
 const LOADERS: Record<string, Loader> = {
   ts: 'ts',
@@ -125,6 +125,7 @@ function normalize(path: string): string {
 }
 
 function loaderFor(path: string): Loader {
+  if (/\.module\.css$/i.test(path)) return 'local-css';
   const extension = (path.split('.').pop() || '').toLowerCase();
   return LOADERS[extension] ?? 'text';
 }
@@ -423,16 +424,6 @@ export async function bundleProject(
         const importer = args.importer || '';
         const isRelative = specifier.startsWith('.') || specifier.startsWith('/');
 
-        // The entry point is always a workspace file, but esbuild hands it to us
-        // both as `src/main.tsx` and as `./src/main.tsx`. Returning it as external
-        // is a hard error ("entry point cannot be marked as external"), so the
-        // entry is resolved against the virtual file system first.
-        if (args.kind === 'entry-point') {
-          const resolved = resolveModule(specifier, importer);
-          if (resolved) return { path: resolved, namespace: 'shadrox' };
-          return { errors: [{ text: `Entry file not found: ${args.path}` }] };
-        }
-
         // Vite asset suffixes: `?url` yields a URL, `?raw` yields the file text.
         if (query === 'url' || query === 'raw') {
           if (query === 'url') {
@@ -470,10 +461,22 @@ export async function bundleProject(
           if (asset) return asModule(asset);
           const resolved = resolveModule(`/${aliasTarget}`, '');
           if (resolved) return { path: resolved, namespace: 'shadrox' };
+          return { errors: [{ text: `Workspace alias "${specifier}" points to a missing file (${aliasTarget}).` }] };
         }
 
-        // Bare specifier -> leave it to the import map in the iframe.
-        return { path: args.path, external: true };
+        // Bare dependencies are resolved by the iframe import map. Fail during
+        // compilation when no mapping exists instead of leaving a broken import
+        // that only fails after the preview document has loaded.
+        if (resolveImportMapUrl(args.path, importMap)) {
+          return { path: args.path, external: true };
+        }
+
+        // Explicit URL imports are already browser-resolvable.
+        if (/^(?:https?:)?\/\//i.test(args.path)) {
+          return { path: args.path, external: true };
+        }
+
+        return { errors: [{ text: `Dependency "${args.path}" is not in the project's package.json.` }] };
       });
 
       build.onLoad({ filter: /.*/, namespace: 'shadrox' }, (args: { path: string }) => {
@@ -512,8 +515,16 @@ export async function bundleProject(
   });
   define['import.meta.env'] = JSON.stringify(viteEnv);
 
+  // Use a virtual stdin entry that imports the workspace entry. This ensures
+  // the entry goes through the same VFS resolver as every other local module;
+  // esbuild can otherwise bypass plugin resolution for bare relative entries.
   const result = await esbuild.build({
-    entryPoints: [normalize(entry)],
+    stdin: {
+      contents: `import ${JSON.stringify(`./${normalize(entry)}`)};`,
+      resolveDir: '/',
+      sourcefile: 'shadrox-preview-entry.js',
+      loader: 'js'
+    },
     bundle: true,
     write: false,
     format: 'esm',

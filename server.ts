@@ -2,7 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
+import type { ViteDevServer } from 'vite';
 
 import byokValidate from './api/byok/validate';
 import aiChat from './api/ai/chat';
@@ -23,7 +23,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * Every /api route below is the exact same handler file Vercel deploys as a
  * serverless function, so local behaviour matches production.
  */
-async function startServer() {
+export async function startServer(options: {
+  mode?: 'development' | 'production';
+  host?: string;
+  port?: number;
+  staticDirectory?: string;
+} = {}) {
   const app = express();
   app.use(express.json({ limit: '20mb' }));
 
@@ -59,17 +64,55 @@ async function startServer() {
   mount('post', '/api/github/create-repo', githubCreateRepo);
   mount('post', '/api/github/push', githubPush);
 
-  const vite = await createViteServer({
-    server: { middlewareMode: true },
-    appType: 'spa'
+  const mode = options.mode ?? 'development';
+  let vite: ViteDevServer | null = null;
+
+  if (mode === 'development') {
+    const { createServer: createViteServer } = await import('vite');
+    vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa'
+    });
+    app.use(vite.middlewares);
+  } else {
+    const staticDirectory = options.staticDirectory ?? path.join(__dirname, 'dist');
+    app.use(express.static(staticDirectory));
+    app.get('*', (_req, res) => res.sendFile(path.join(staticDirectory, 'index.html')));
+  }
+
+  const host = options.host ?? (mode === 'development' ? '0.0.0.0' : '127.0.0.1');
+  const port = options.port ?? Number(process.env.PORT || 3000);
+  const server = await new Promise<ReturnType<typeof app.listen>>((resolve, reject) => {
+    const listener = app.listen(port, host, () => resolve(listener));
+    listener.once('error', reject);
   });
 
-  app.use(vite.middlewares);
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+    await vite?.close();
+    throw new Error('Local backend did not bind to a TCP port.');
+  }
 
-  const port = Number(process.env.PORT || 3000);
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`Devora dev server running on http://localhost:${port}`);
-  });
+  const origin = `http://${host === '0.0.0.0' ? 'localhost' : host}:${address.port}`;
+  console.log(`ShadRox ${mode} server running at ${origin}`);
+
+  return {
+    origin,
+    close: async () => {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+      await vite?.close();
+    }
+  };
 }
 
-startServer();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  void startServer().catch((error) => {
+    console.error('[server] failed to start', error);
+    process.exitCode = 1;
+  });
+}

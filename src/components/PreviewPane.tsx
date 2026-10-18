@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ChevronRight,
@@ -23,6 +23,7 @@ interface PreviewPaneProps {
   onViewportChange: (viewport: ViewportSize) => void;
   runtimeError: string | null;
   onDismissError: () => void;
+  onRuntimeError: (message: string) => void;
   isBundling?: boolean;
   bundleError?: string | null;
 }
@@ -52,30 +53,41 @@ export function PreviewPane({
   onViewportChange,
   runtimeError,
   onDismissError,
+  onRuntimeError,
   isBundling = false,
   bundleError = null
 }: PreviewPaneProps) {
   const [reloadKey, setReloadKey] = useState(0);
   const [isConsoleOpen, setIsConsoleOpen] = useState(false);
   const [logs, setLogs] = useState<ConsoleEntry[]>([]);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   // Listen to iframe error and console bridge
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       const data = event.data;
-      if (!data || data.source !== 'shadrox-preview') return;
+      if (
+        event.source !== iframeRef.current?.contentWindow ||
+        !data ||
+        data.source !== 'shadrox-preview' ||
+        typeof data.type !== 'string'
+      ) return;
       const time = new Date().toLocaleTimeString('en-US', { hour12: false });
       if (data.type === 'console-log' || data.type === 'console-info') {
-        setLogs((prev) => [...prev.slice(-99), { type: 'log', message: data.message, timestamp: time }]);
+        const message = typeof data.message === 'string' ? data.message : String(data.message ?? '');
+        setLogs((prev) => [...prev.slice(-99), { type: 'log', message, timestamp: time }]);
       } else if (data.type === 'console-warn') {
-        setLogs((prev) => [...prev.slice(-99), { type: 'warn', message: data.message, timestamp: time }]);
+        const message = typeof data.message === 'string' ? data.message : String(data.message ?? '');
+        setLogs((prev) => [...prev.slice(-99), { type: 'warn', message, timestamp: time }]);
       } else if (data.type === 'console-error' || data.type === 'error') {
-        setLogs((prev) => [...prev.slice(-99), { type: 'error', message: data.message || 'Runtime error', timestamp: time }]);
+        const message = typeof data.message === 'string' ? data.message : 'Runtime error';
+        setLogs((prev) => [...prev.slice(-99), { type: 'error', message, timestamp: time }]);
+        onRuntimeError(message);
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, []);
+  }, [onRuntimeError]);
 
   const handleOpenNewWindow = () => {
     if (!document) return;
@@ -196,7 +208,7 @@ export function PreviewPane({
               {bundleError}
             </pre>
             <p className="mt-3 text-[11px] text-neutral-500">
-              Resolve the syntax error in the code editor or paste it in chat for automated fixing.
+              Fix the reported build issue in the code editor, then retry the preview.
             </p>
           </div>
         ) : document ? (
@@ -204,7 +216,8 @@ export function PreviewPane({
             key={reloadKey}
             title="ShadRox Live Preview"
             srcDoc={document.html}
-            sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
+            ref={iframeRef}
+            sandbox="allow-scripts allow-forms allow-modals allow-popups"
             className="h-full border-0 bg-black transition-all duration-200 shadow-2xl"
             style={{ width: VIEWPORT_WIDTHS[viewport] }}
           />
