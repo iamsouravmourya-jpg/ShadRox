@@ -88,19 +88,6 @@ export default function App() {
     if (workspace.workspace && activeStage === 'STAGE_2') setActiveStage('STAGE_3');
   }, [workspace.workspace, activeStage]);
 
-  // Runtime errors reported by the sandboxed preview iframe.
-  useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      const data = event.data as { source?: string; type?: string; message?: string } | null;
-      if (!data || data.source !== 'shadrox-preview') return;
-      if (data.type === 'error' || data.type === 'console-error') {
-        setRuntimeError(data.message || 'Runtime error');
-      }
-    };
-    window.addEventListener('message', onMessage);
-    return () => window.removeEventListener('message', onMessage);
-  }, []);
-
   useEffect(() => {
     return () => abortRef.current?.abort();
   }, []);
@@ -175,8 +162,9 @@ export default function App() {
     if (bundleState.status === 'ready') {
       return { html: bundleState.html, label: bundleState.label, source: 'bundle', stackType: 'Live React Bundle' };
     }
+    if (bundlable) return null;
     return staticPreview;
-  }, [bundleState, staticPreview]);
+  }, [bundleState, bundlable, staticPreview]);
 
   const buildSystemInstruction = useCallback(
     (query: string, mode: RefineModeMeta): string => {
@@ -700,6 +688,7 @@ export default function App() {
               onViewportChange={setViewport}
               runtimeError={runtimeError}
               onDismissError={() => setRuntimeError(null)}
+              onRuntimeError={setRuntimeError}
               isBundling={bundleState.status === 'loading'}
               bundleError={bundleState.status === 'error' ? bundleState.message : null}
             />

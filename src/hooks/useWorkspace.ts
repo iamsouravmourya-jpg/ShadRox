@@ -6,6 +6,7 @@ import { loadHandles, pruneHandles, saveHandles } from '../lib/fileHandles';
 import { listCheckpoints, loadCheckpointFiles, saveCheckpoint, type CheckpointMeta } from '../lib/history';
 import { getSnapshot, pruneSnapshots, saveSnapshot } from '../lib/snapshots';
 import { getRecentWorkspaces, pushRecentWorkspace } from '../lib/storage';
+import { getDesktopBridge } from '../lib/desktop';
 import {
   filesFromFileList,
   hydrateAssets,
@@ -27,6 +28,7 @@ export interface ApplyPatchesResult {
 interface MountOptions {
   handles?: HandleEntry[];
   directoryHandle?: unknown;
+  nativeWorkspaceId?: string;
   /** Binary assets (images, fonts) served to the preview as data URLs. */
   assets?: AssetMap;
 }
@@ -99,6 +101,8 @@ export function useWorkspace(): UseWorkspaceResult {
   const handlesRef = useRef<Map<string, any>>(new Map());
   const directoryHandleRef = useRef<any>(null);
   const canWriteRef = useRef(false);
+  const desktopWorkspaceIdRef = useRef<string | null>(null);
+  const desktopWorkspaceIdsRef = useRef(new Map<string, string>());
 
   useEffect(() => {
     filesRef.current = files;
@@ -123,8 +127,10 @@ export function useWorkspace(): UseWorkspaceResult {
       const handles = options.handles ?? [];
       handlesRef.current = new Map(handles.map((entry) => [entry.path, entry.handle]));
       directoryHandleRef.current = options.directoryHandle ?? null;
+      desktopWorkspaceIdRef.current = options.nativeWorkspaceId ?? null;
+      if (options.nativeWorkspaceId) desktopWorkspaceIdsRef.current.set(path, options.nativeWorkspaceId);
       setAssets(options.assets ?? {});
-      const writable = handles.length > 0 || Boolean(options.directoryHandle);
+      const writable = handles.length > 0 || Boolean(options.directoryHandle) || Boolean(options.nativeWorkspaceId);
       canWriteRef.current = writable;
       setCanWriteToDisk(writable);
 
@@ -144,6 +150,32 @@ export function useWorkspace(): UseWorkspaceResult {
   );
 
   const openFolder = useCallback(async () => {
+    const desktop = getDesktopBridge();
+    if (desktop) {
+      setIsBusy(true);
+      try {
+        const opened = await desktop.openFolder();
+        if (!opened) return;
+        if (opened.files.length === 0) {
+          setStatusMessage('No readable code files found in the selected folder.');
+          return;
+        }
+        mount(opened.name, opened.workspaceId, 'folder', opened.files.map((file) => ({
+          ...file,
+          language: detectLanguage(file.name)
+        })), {
+          assets: opened.assets,
+          nativeWorkspaceId: opened.workspaceId
+        });
+        if (opened.warnings.length > 0) setStatusMessage(opened.warnings.join(' '));
+      } catch (error) {
+        setStatusMessage(error instanceof Error ? `Could not open folder: ${error.message}` : 'Could not open folder.');
+      } finally {
+        setIsBusy(false);
+      }
+      return;
+    }
+
     if (!supportsDirectoryPicker()) {
       setStatusMessage('Folder picker is not supported in this browser. Please use Chrome, Edge, or Brave.');
       return;
@@ -170,6 +202,32 @@ export function useWorkspace(): UseWorkspaceResult {
   }, [mount]);
 
   const openFiles = useCallback(async () => {
+    const desktop = getDesktopBridge();
+    if (desktop) {
+      setIsBusy(true);
+      try {
+        const opened = await desktop.openFiles();
+        if (!opened) return;
+        if (opened.files.length === 0) {
+          setStatusMessage('No readable code files were selected.');
+          return;
+        }
+        mount(opened.name, opened.workspaceId, 'file', opened.files.map((file) => ({
+          ...file,
+          language: detectLanguage(file.name)
+        })), {
+          assets: opened.assets,
+          nativeWorkspaceId: opened.workspaceId
+        });
+        if (opened.warnings.length > 0) setStatusMessage(opened.warnings.join(' '));
+      } catch (error) {
+        setStatusMessage(error instanceof Error ? `Could not open files: ${error.message}` : 'Could not open files.');
+      } finally {
+        setIsBusy(false);
+      }
+      return;
+    }
+
     if (!supportsFilePicker()) {
       setStatusMessage('File picker is not supported in this browser. Please drag and drop files.');
       return;
@@ -221,13 +279,19 @@ export function useWorkspace(): UseWorkspaceResult {
       try {
         const snapshot = await getSnapshot(entry.path);
         if (snapshot && snapshot.files.length > 0) {
+          const nativeWorkspaceId = desktopWorkspaceIdsRef.current.get(entry.path);
+          if (getDesktopBridge() && !nativeWorkspaceId) {
+            setStatusMessage(`Reopen ${entry.name} from its folder to restore native disk access.`);
+            return;
+          }
           // Handles live in their own store, so a reopened workspace can still
           // write to disk once the browser re-grants permission — and its
           // images can be read back into the preview.
           const handles = await loadHandles(entry.path);
           mount(snapshot.name, snapshot.path, snapshot.kind, snapshot.files, {
             handles,
-            assets: await hydrateAssets(handles)
+            assets: await hydrateAssets(handles),
+            nativeWorkspaceId
           });
           return;
         }
@@ -336,6 +400,34 @@ export function useWorkspace(): UseWorkspaceResult {
 
       try {
         const snapshot = filesRef.current;
+        const desktop = getDesktopBridge();
+        const nativeWorkspaceId = desktopWorkspaceIdRef.current;
+        if (desktop && nativeWorkspaceId) {
+          const requested = snapshot.filter((file) => names.includes(file.name));
+          const result = await desktop.saveFiles(nativeWorkspaceId, requested);
+          const savedFiles = new Set(result.saved);
+          written = result.saved.length;
+          failed = result.errors.length > 0;
+          if (savedFiles.size > 0) {
+            setDiskBaseline((previous) => ({
+              ...previous,
+              ...Object.fromEntries(
+                snapshot.filter((file) => savedFiles.has(file.name)).map((file) => [file.name, file.content])
+              )
+            }));
+          }
+          if (result.errors.length > 0) {
+            setDiskMessage(
+              `${written} file${written === 1 ? '' : 's'} saved. ${result.errors
+                .map((error) => `${error.name || 'File'}: ${error.message}`)
+                .join(' ')}`
+            );
+          } else if (written > 0) {
+            setDiskMessage(`${written} file${written > 1 ? 's' : ''} saved to disk.`);
+          }
+          return;
+        }
+
         for (const name of names) {
           const file = snapshot.find((candidate) => candidate.name === name);
           if (!file) continue;
@@ -459,6 +551,7 @@ export function useWorkspace(): UseWorkspaceResult {
     setCheckpoints([]);
     handlesRef.current = new Map();
     directoryHandleRef.current = null;
+    desktopWorkspaceIdRef.current = null;
     canWriteRef.current = false;
     setCanWriteToDisk(false);
   }, []);

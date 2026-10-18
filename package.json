@@ -2,19 +2,30 @@
   "name": "shadrox",
   "private": true,
   "version": "0.2.0",
-  "description": "Browser-native AI engineering workspace with BYOK and live multi-stack SaaS preview.",
+  "description": "Native desktop AI engineering workspace with BYOK and live project preview.",
   "author": "Sourav Maurya",
   "license": "UNLICENSED",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "tsx server.ts",
+    "dev:desktop": "concurrently -k \"npm:dev\" \"wait-on http://localhost:3000 && electron .\"",
     "build": "vite build",
+    "build:desktop": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:mac": "npm run build && electron-builder --mac dmg",
     "start": "tsx server.ts",
     "preview": "vite preview",
+    "test": "node --test electron/workspace.test.cjs",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "tsx": "^4.21.0"
+  },
+  "devDependencies": {
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-html": "^6.4.12",
     "@codemirror/lang-javascript": "^6.2.5",
@@ -25,21 +36,49 @@
     "@tailwindcss/vite": "^4.3.3",
     "@uiw/react-codemirror": "^4.25.12",
     "@vitejs/plugin-react": "^6.1.1",
-    "dotenv": "^17.2.3",
-    "esbuild-wasm": "^0.28.2",
-    "express": "^4.21.2",
-    "lucide-react": "^0.546.0",
-    "react": "^19.0.1",
-    "react-dom": "^19.0.1",
-    "vite": "^8.3.0"
-  },
-  "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "concurrently": "^9.2.1",
+    "electron": "^44.9.0",
+    "electron-builder": "^26.15.3",
+    "esbuild-wasm": "^0.28.2",
+    "lucide-react": "^0.546.0",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
     "tailwindcss": "^4.3.3",
-    "tsx": "^4.21.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "wait-on": "^8.0.4"
+  },
+  "build": {
+    "appId": "com.shadrox.desktop",
+    "productName": "ShadRox",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/@esbuild/**/*"
+    ],
+    "directories": {
+      "output": "dist_desktop"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "api/**/*",
+      "src/lib/providers.ts",
+      "server.ts",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    }
   }
 }

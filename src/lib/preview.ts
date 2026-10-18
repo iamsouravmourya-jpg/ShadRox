@@ -417,8 +417,15 @@ export function resolvePreviewDocument(
 
   const stack = detectWorkspaceStack(files);
 
-  const withBridge = (content: string): string =>
-    inlineHtmlAssets(content.includes('shadrox-preview') ? content : content.replace('</body>', `<script>${PREVIEW_ERROR_BRIDGE}</script></body>`), assets);
+  const withBridge = (content: string): string => {
+    let html = content;
+    if (!html.toLowerCase().includes('shadrox-preview')) {
+      const bridge = `<script>${PREVIEW_ERROR_BRIDGE}</script>`;
+      const closingTag = /(<\/body\s*>|<\/html\s*>)/i;
+      html = closingTag.test(html) ? html.replace(closingTag, `${bridge}$1`) : `${html}\n${bridge}`;
+    }
+    return inlineHtmlAssets(html, assets);
+  };
 
   if (activeFile?.language === 'html') {
     return {
