@@ -136,9 +136,10 @@ export default function App() {
       try {
         const result = await bundleProject(files, secrets, assets);
         if (cancelled) return;
+        const templateHtml = files.find((f) => f.name.toLowerCase().endsWith('index.html'))?.content;
         setBundleState({
           status: 'ready',
-          html: bundleDocument(result, PREVIEW_ERROR_BRIDGE, PREVIEW_BASE_STYLE, secrets),
+          html: bundleDocument(result, PREVIEW_ERROR_BRIDGE, PREVIEW_BASE_STYLE, secrets, templateHtml),
           label: `Running ${result.entry} — live project bundle`
         });
       } catch (error) {

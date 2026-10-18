@@ -68,15 +68,20 @@ The packaged app starts the existing API handlers on a random loopback port and 
 
 ### 2. Universal SaaS Preview Engine
 
-Located in `src/components/PreviewPane.tsx` and `src/lib/preview.ts`:
-- **React / TSX Bundling:** Powered by `esbuild-wasm` running in a virtual filesystem (`shadrox-vfs`). A virtual bootstrap resolves the selected entry through the same workspace resolver as local imports.
-- **Dependency Resolution:** Workspace files, TypeScript path aliases, mounted assets, and CSS Modules are resolved at build time. Dependencies declared in `package.json` (plus the built-in React, React DOM, and Lucide fallbacks) are loaded through `esm.sh`; unmapped packages fail with a build error instead of a broken blank preview.
-- **Tailwind CSS Injection:** Automatically includes Tailwind CDN in bundled and sandboxed HTML previews, ensuring full visual fidelity.
-- **Interactive Sandbox & API Inspector:** When a full-stack SaaS project, Python backend, or API microservice is mounted, ShadRox renders an interactive SaaS sandbox complete with KPI cards, health checks, route exploration, and mock API execution.
-- **Isolated Preview Frame:** Project scripts run in an opaque-origin sandboxed iframe without same-origin access to the editor page. Console output and runtime errors are accepted only from that preview frame.
-- **Console Event Bridge:** Streams `console.log`, `console.info`, `console.warn`, and `console.error` into the collapsible DevTools drawer.
+Located in `src/components/PreviewPane.tsx`, `src/lib/bundler.ts`, `src/lib/preview.ts`, and `src/lib/assets.ts`:
+- **React / TSX / JSX Bundling:** In-browser compilation using `esbuild-wasm` across a virtual filesystem (`shadrox-vfs`). Resolves TSX, JSX, TS, JS, and JSON modules without requiring local `node_modules` builds.
+- **Static HTML/CSS/JS Inlining:** Automatically inlines local `<link rel="stylesheet">` stylesheets, `<script>` files, and relative asset paths (`<img src="./logo.png">`) so static websites render with full styling and interactivity without 404 network failures.
+- **CSS Modules & Assets:** Supports `.module.css` with local scoped class names and exports, and resolves CSS `url(...)` tokens directly to asset data URLs without bundler conflicts.
+- **TypeScript Path Aliases:** Discovers `@/*` aliases across `tsconfig.app.json`, `tsconfig.json`, and `jsconfig.json`, including multi-target path lists.
+- **Desktop Asset Mounting:** In Electron desktop mode, `scanDirectory` loads `.png`, `.jpg`, `.svg`, `.webp`, `.ico`, and font assets into memory as base64 data URLs for immediate preview resolution.
+- **Dependency Resolution:** Dependencies declared in `package.json` are loaded through `esm.sh` with single-instance React and ReactDOM deduplication. Missing dependencies and unsupported Node-only built-in modules (`fs`, `child_process`) produce clear, actionable build error messages rather than a blank screen.
+- **Interactive Sandbox & API Inspector:** When backend services (Express, FastAPI, Go, Rust) are detected, ShadRox visualizes the code structure and routes, allowing simulated endpoint testing.
+- **Isolated Preview Frame:** Project scripts execute in an opaque-origin sandboxed iframe (`sandbox="allow-scripts allow-forms allow-modals allow-popups"` without `allow-same-origin`), completely isolating renderer data and Electron APIs from preview code.
+- **Console Event Bridge:** Captures `console.log`, `console.info`, `console.warn`, and `console.error` and forwards runtime exceptions into the dockable DevTools drawer and error banner.
 
-The preview executes browser-side frontend code only. Backend services are represented by the interactive mock sandbox and simulated API responses; they are not started by the browser runtime. CDN-loaded packages and Tailwind styling require a network connection.
+*Platform & Runtime Limitations:*
+- The preview executes browser-side code only; Node.js backend servers, Python daemons, and system binaries do not run live processes in the preview frame (routes are mocked).
+- Packages resolved via `esm.sh` and the Tailwind CDN require internet access; offline previews are supported for static HTML/CSS/JS and bundled code that does not require unpinned external CDN assets.
 
 ### 3. File Edit Protocol
 
