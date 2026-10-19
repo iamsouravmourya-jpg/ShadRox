@@ -153,7 +153,7 @@ export function Header({ title }: { title: string }) {
   assert.match(result.importMap['react-dom/client'], /\/client\?external=react$/);
 });
 
-test('3. CSS imports, CSS Modules (local-css), CSS url-tokens, and actionable missing dependency errors', async () => {
+test('3. CSS imports, CSS Modules, CSS assets, CDN fallback, and unsupported Node modules', async () => {
   const files = [
     {
       name: 'package.json',
@@ -216,13 +216,11 @@ export default function Button() {
     }
   ];
 
-  await assert.rejects(
-    async () => bundleProject(missingDepFiles),
-    (err) => {
-      const msg = String(err);
-      return msg.includes('uninstalled-super-lib') && msg.includes('package.json');
-    },
-    'Should throw actionable error when dependency is missing from package.json'
+  const missingDependencyBundle = await bundleProject(missingDepFiles);
+  assert.equal(
+    missingDependencyBundle.importMap['uninstalled-super-lib'],
+    'https://esm.sh/uninstalled-super-lib?external=react,react-dom',
+    'Undeclared packages should be resolved automatically from the browser CDN'
   );
 
   // Verify actionable error for unsupported Node built-in
@@ -271,6 +269,41 @@ test('Tailwind package stylesheet import uses the preview CDN instead of requiri
   const result = await bundleProject(files);
   assert.ok(result.css.includes('color: white'), 'Workspace CSS should still be bundled');
   assert.ok(!result.css.includes('@import "tailwindcss"'), 'The browser CDN replaces the build-time package stylesheet');
+});
+
+test('undeclared npm packages are mapped to the CDN without requiring local installation', async () => {
+  const files = [
+    {
+      name: 'src/main.ts',
+      language: 'typescript',
+      content: `import { format } from 'date-fns';
+import { useFloating } from '@floating-ui/react';
+import formatDate from 'date-fns/format';
+console.log(format, useFloating, formatDate);`
+    }
+  ];
+
+  const result = await bundleProject(files);
+  assert.equal(result.importMap['date-fns'], 'https://esm.sh/date-fns?external=react,react-dom');
+  assert.equal(result.importMap['date-fns/'], 'https://esm.sh/date-fns/');
+  assert.equal(result.importMap['date-fns/format'], 'https://esm.sh/date-fns/format?external=react,react-dom');
+  assert.equal(result.importMap['@floating-ui/react'], 'https://esm.sh/@floating-ui/react?external=react,react-dom');
+  assert.equal(result.importMap['@floating-ui/react/'], 'https://esm.sh/@floating-ui/react/');
+});
+
+test('nested Node.js built-ins remain unsupported instead of being fetched from the CDN', async () => {
+  const files = [
+    {
+      name: 'src/main.ts',
+      language: 'typescript',
+      content: `import { readFile } from 'node:fs/promises'; console.log(readFile);`
+    }
+  ];
+
+  await assert.rejects(
+    async () => bundleProject(files),
+    (error) => String(error).includes('Node.js built-in module "node:fs/promises"')
+  );
 });
 
 test('4. Workspace assets (images, SVGs, fonts) and desktop folder scanning', async (context) => {
@@ -350,6 +383,10 @@ test('5. Preview document assembly, index.html template preservation, and error 
   assert.ok(
     bundledDoc.includes("new RegExp('^' + route.pattern + '$')"),
     'API bridge source must remain intact when inserted into the document'
+  );
+  assert.ok(
+    bundledDoc.includes('Browser dependencies are being resolved automatically'),
+    'Preview should explain that dependency resolution needs no terminal'
   );
 });
 

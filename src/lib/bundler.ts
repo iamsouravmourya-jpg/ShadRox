@@ -81,8 +81,43 @@ const DEFAULT_IMPORT_MAP: Record<string, string> = {
 
 /** Node.js built-ins that have no browser sandbox equivalent */
 const NODE_BUILTINS_UNSUPPORTED = new Set([
+  'assert',
+  'async_hooks',
+  'buffer',
+  'console',
+  'constants',
+  'crypto',
+  'diagnostics_channel',
+  'dns',
+  'domain',
+  'events',
   'fs',
   'node:fs',
+  'http',
+  'https',
+  'http2',
+  'inspector',
+  'module',
+  'os',
+  'perf_hooks',
+  'process',
+  'punycode',
+  'querystring',
+  'readline',
+  'repl',
+  'stream',
+  'string_decoder',
+  'sys',
+  'test',
+  'trace_events',
+  'tty',
+  'url',
+  'util',
+  'v8',
+  'vm',
+  'wasi',
+  'worker_threads',
+  'zlib',
   'child_process',
   'node:child_process',
   'net',
@@ -94,6 +129,21 @@ const NODE_BUILTINS_UNSUPPORTED = new Set([
   'cluster',
   'node:cluster'
 ]);
+
+function packageNameFromSpecifier(specifier: string): string | null {
+  if (!specifier || specifier.startsWith('#') || specifier.startsWith('node:')) return null;
+  const segments = specifier.split('/');
+  const packageName = specifier.startsWith('@') ? segments.slice(0, 2).join('/') : segments[0];
+  return /^(?:@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z0-9._-]+)$/i.test(packageName) ? packageName : null;
+}
+
+function isUnsupportedNodeBuiltin(specifier: string): boolean {
+  const unprefixed = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
+  const builtin = unprefixed.split('/')[0];
+  return NODE_BUILTINS_UNSUPPORTED.has(specifier) ||
+    NODE_BUILTINS_UNSUPPORTED.has(unprefixed) ||
+    NODE_BUILTINS_UNSUPPORTED.has(builtin);
+}
 
 export interface BundleResult {
   code: string;
@@ -590,6 +640,12 @@ export async function bundleProject(
 
         // 5. Bare dependencies resolved by the iframe import map.
         if (resolveImportMapUrl(args.path, importMap)) {
+          const packageName = packageNameFromSpecifier(args.path);
+          const prefix = packageName ? importMap[`${packageName}/`] : undefined;
+          if (packageName && prefix && args.path !== packageName && !importMap[args.path]) {
+            const externals = ['react', 'react-dom'].filter((name) => name !== packageName);
+            importMap[args.path] = `${prefix}${args.path.slice(packageName.length + 1)}?external=${externals.join(',')}`;
+          }
           return { path: args.path, external: true };
         }
 
@@ -599,7 +655,7 @@ export async function bundleProject(
         }
 
         // 7. Unsupported Node.js modules in browser preview
-        if (NODE_BUILTINS_UNSUPPORTED.has(args.path)) {
+        if (isUnsupportedNodeBuiltin(args.path)) {
           return {
             errors: [
               {
@@ -609,10 +665,24 @@ export async function bundleProject(
           };
         }
 
+        // Resolve undeclared npm packages through the browser CDN rather than
+        // modifying the workspace or running package install scripts.
+        const packageName = packageNameFromSpecifier(args.path);
+        if (packageName) {
+          const externals = ['react', 'react-dom'].filter((name) => name !== packageName);
+          const cdnBase = cdnUrl(packageName, '', externals);
+          if (!importMap[packageName]) importMap[packageName] = cdnBase;
+          if (!importMap[`${packageName}/`]) importMap[`${packageName}/`] = `${CDN}/${packageName}/`;
+          if (args.path !== packageName) {
+            importMap[args.path] = `${CDN}/${args.path}?external=${externals.join(',')}`;
+          }
+          return { path: args.path, external: true };
+        }
+
         return {
           errors: [
             {
-              text: `Dependency "${args.path}" is not in the project's package.json. Add it to dependencies to run in preview.`
+              text: `Could not resolve module "${args.path}". Check the import path and package name.`
             }
           ]
         };
@@ -747,7 +817,8 @@ export function bundleDocument(
 
   let bodyInjections = `
 <script>${errorBridge}</script>
-${apiBridge}
+  <script>console.info('[ShadRox] Browser dependencies are being resolved automatically; no terminal or project install is required.');</script>
+  ${apiBridge}
 <script type="module">
 ${result.code}
 </script>`;

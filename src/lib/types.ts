@@ -28,6 +28,8 @@ export interface WorkspaceFolder {
   id: string;
   name: string;
   path: string;
+  kind: 'folder' | 'file';
+  nativeWorkspaceId?: string;
   files: WorkspaceFile[];
 }
 

@@ -16,7 +16,7 @@
     "dist:mac": "npm run build && electron-builder --mac dmg",
     "start": "tsx server.ts",
     "preview": "vite preview",
-    "test": "node --import tsx --test electron/workspace.test.cjs electron/preview.test.mjs",
+    "test": "node --import tsx --test electron/workspace.test.cjs electron/preview.test.mjs electron/preview-runtime.test.cjs",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
