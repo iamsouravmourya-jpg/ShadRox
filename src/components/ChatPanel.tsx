@@ -12,6 +12,7 @@ import {
   Paperclip,
   RotateCcw,
   Send,
+  ShieldAlert,
   Settings,
   Sparkles,
   Square,
@@ -27,6 +28,7 @@ import { estimateTokens } from '../lib/toolUtils';
 import { getPlanMeta } from '../lib/plans';
 import type { ChatMessage, PlanTier, RefineMode, SettingsTab, WorkspaceFile } from '../lib/types';
 import type { CheckpointMeta } from '../lib/history';
+import type { DesktopPreviewState, PreviewApprovalRequest } from '../lib/desktop';
 
 interface ChatPanelProps {
   messages: ChatMessage[];
@@ -53,6 +55,13 @@ interface ChatPanelProps {
   checkpoints: CheckpointMeta[];
   onRestoreCheckpoint: (id: string) => void;
   restoringCheckpointId: string | null;
+  previewApproval: PreviewApprovalRequest | null;
+  onApprovePreview: () => void;
+  onCancelPreviewApproval: () => void;
+  onRunPreview: () => void;
+  onStopPreview: () => void;
+  previewState: DesktopPreviewState;
+  hasPreviewDiagnostics: boolean;
 }
 
 const TIER_STYLES: Record<ModelTier, string> = {
@@ -89,7 +98,14 @@ export function ChatPanel({
   workspaceFiles,
   checkpoints,
   onRestoreCheckpoint,
-  restoringCheckpointId
+  restoringCheckpointId,
+  previewApproval,
+  onApprovePreview,
+  onCancelPreviewApproval,
+  onRunPreview,
+  onStopPreview,
+  previewState,
+  hasPreviewDiagnostics
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
@@ -114,7 +130,7 @@ export function ChatPanel({
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, previewApproval]);
 
   const activeModel = models.find((model) => model.id === selectedModel) || null;
   const canSend = input.trim().length > 0 && !isGenerating && !usage.isCapReached;
@@ -322,10 +338,83 @@ export function ChatPanel({
             )}
           </div>
         ))}
+        {previewApproval && (
+          <div className="border border-amber-800/60 bg-amber-950/20 p-3 text-[11px]">
+            <div className="flex items-center gap-2 text-amber-300 font-semibold">
+              <ShieldAlert className="w-4 h-4 shrink-0" />
+              Approve project setup
+            </div>
+            <p className="mt-2 text-neutral-300">
+              ShadRox found <span className="font-mono text-white">{previewApproval.projectPath}</span> and wants to run:
+            </p>
+            <code className="mt-1 block break-all border border-neutral-800 bg-black/60 p-2 text-emerald-300">
+              {previewApproval.packageManager} run {previewApproval.scriptName}
+              <span className="block mt-1 text-neutral-400">{previewApproval.scriptCommand}</span>
+            </code>
+            {previewApproval.missingDependencies.length > 0 ? (
+              <p className="mt-2 text-neutral-300 break-words">
+                Install {previewApproval.missingDependencies.length} missing package(s) first:{' '}
+                <span className="font-mono text-neutral-100">
+                  {previewApproval.missingDependencies.slice(0, 10).join(', ')}
+                  {previewApproval.missingDependencies.length > 10 ? ', ...' : ''}
+                </span>
+              </p>
+            ) : (
+              <p className="mt-2 text-neutral-400">Use the dependencies already installed in this project.</p>
+            )}
+            <p className="mt-2 text-amber-200/80">
+              Install hooks and project scripts can access files and the network with your account permissions. Approve only if you trust this project.
+            </p>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                onClick={onApprovePreview}
+                className="border border-emerald-800 bg-emerald-950/40 px-3 py-1.5 text-emerald-300 hover:bg-emerald-900/50 cursor-pointer"
+              >
+                Approve once &amp; run
+              </button>
+              <button
+                type="button"
+                onClick={onCancelPreviewApproval}
+                className="border border-neutral-700 px-3 py-1.5 text-neutral-300 hover:bg-neutral-900 cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Input Area & Prompt Box */}
       <div className="shrink-0 border-t border-neutral-900 p-3 bg-black">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-[10px] text-neutral-500">
+            {hasPreviewDiagnostics
+              ? 'Recent preview + Console logs are included with your next chat message.'
+              : 'Preview and Console are ready to inspect once a project runs.'}
+          </div>
+          <div className="flex shrink-0 gap-1">
+            {previewState.status === 'ready' ? (
+              <button
+                type="button"
+                onClick={onStopPreview}
+                className="border border-neutral-800 px-2 py-1 text-[10px] text-neutral-300 hover:border-red-800 hover:text-red-300 cursor-pointer"
+              >
+                Stop preview
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onRunPreview}
+                disabled={previewState.status === 'starting' || Boolean(previewApproval)}
+                className="border border-emerald-900/70 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-950/40 disabled:opacity-40 cursor-pointer"
+              >
+                {previewState.status === 'starting' ? 'Checking project…' : 'Run preview'}
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* Monthly Cap Warning Banner */}
         {usage.isCapReached && (
           <div className="mb-2 p-2 border border-rose-900/70 bg-rose-950/30 text-[11px] text-rose-300 flex items-center justify-between gap-2">

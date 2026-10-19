@@ -138,7 +138,14 @@ export function useWorkspace(): UseWorkspaceResult {
       setDiskBaseline(Object.fromEntries(nextFiles.map((file) => [file.name, file.content])));
       setDiskMessage(writable ? null : 'Dropped files loaded as read-only. File System handles not provided by browser.');
 
-      setWorkspace({ id: `${kind}-${path}`, name, path, files: nextFiles });
+      setWorkspace({
+        id: `${kind}-${path}`,
+        name,
+        path,
+        kind,
+        nativeWorkspaceId: options.nativeWorkspaceId,
+        files: nextFiles
+      });
       setActiveFileIndex(-1);
       setStatusMessage(null);
       setRecents(pushRecentWorkspace({ name, path, fileCount: nextFiles.length, kind }));
@@ -527,6 +534,8 @@ export function useWorkspace(): UseWorkspaceResult {
         id: previous?.id ?? `file-${cleanName}`,
         name: previous?.name ?? cleanName,
         path: previous?.path ?? `file:${cleanName}`,
+        kind: previous?.kind ?? 'file',
+        nativeWorkspaceId: previous?.nativeWorkspaceId,
         files: [...nextFiles, created]
       };
     });

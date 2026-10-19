@@ -1,91 +1,208 @@
 # ShadRox
 
-**Native Desktop AI Software Engineering Workspace**
+**Native desktop AI engineering workspace for local codebases.**
 
-ShadRox combines a React + TypeScript workspace with an Electron desktop shell. Open local project folders through native dialogs, chat with AI models (Google Gemini & Groq), preview browser-side projects, and write edits back to disk through a narrow, context-isolated IPC bridge.
+ShadRox pairs a React + TypeScript IDE with an Electron shell. Open a local folder through a native dialog, edit files with direct disk write-back, chat with Gemini or Groq models using your own API keys (BYOK) or the optional ShadRox shared key, run approved terminal commands, and preview static sites or local JavaScript/TypeScript web projects inside the app.
 
-ShadRox brings a **Bring-Your-Own-Key (BYOK)** architecture: validate your own Gemini or Groq API keys locally with zero server persistence, or leverage the optional **ShadRox Shared Key** for instant access to Pro-tier models.
-
----
-
-## Key Highlights
-
-- **Native Disk Mount & Write-Back:** Electron's main process reads and writes the selected workspace with Node.js filesystem APIs. The renderer receives file contents through a narrow preload bridge; Node APIs are not exposed to page code.
-- **Windows & macOS Packaging:** Build Windows NSIS installers (`.exe`) and macOS disk images (`.dmg`) with Electron Builder.
-- **Confirmed Terminal Commands:** The desktop bridge can run a command in the opened folder only after a native confirmation dialog displays the exact command and working directory.
-- **Universal Next-Gen SaaS Preview Engine:**
-  - Auto-detects project stack: React SPA, Next.js SaaS, Vue, Svelte, Python/FastAPI, Go, Rust, or HTML5/Tailwind.
-  - Interactive Live SaaS Product Sandbox: Automatically generates a functional SaaS dashboard with real-time KPI metrics, interactive health checks, and route navigation.
-  - API Endpoint Inspector & Test Runner: Discovers API endpoints (`/api/v1/...`, `/auth`, `/billing`) with a live interactive tester for simulated HTTP requests and responses.
-  - Interactive URL Bar (`https://localhost:3000/...`) for direct route testing.
-  - Dockable DevTools Console: Real-time event bridge capturing `console.log`, `console.info`, and `console.error` logs.
-  - Multi-Device Viewports: 1-click toggling between Desktop (100%), Tablet (768px), and Mobile (390px).
-- **Two-Column Desktop IDE Layout:**
-  - **Vertical File Explorer:** Left-hand sidebar with instant file filtering, new file creation, zero-dependency ZIP export, dirty status indicators, and active file highlights.
-  - **Code Editor Pane:** Sits directly beside the file explorer with CodeMirror 6 syntax highlighting, in-file search, code formatter tool, 1-click clipboard copy, and full IDE status bar.
-- **Streamlined Work Modes:**
-  - **Code:** Fast, concise, directly writes and patches workspace files.
-  - **Plan:** System architecture and review only — AI is strictly restricted from editing files.
-  - **Complex:** Deep reasoning and multi-file architecture for complex logic.
-- **Monthly Quota & Transparent Pricing:**
-  - **Free (BYOK):** ₹0 — 100 messages / month cap.
-  - **Pro Tier:** ₹499/month (GST Included) — 250 messages / month, ShadRox Shared Key.
-  - **Adv Tier:** ₹1,099/month (GST Included) — 500 messages / month, extended context.
-  - **Enterprise:** Custom — 5,000 messages / month cap.
-  - Real-time visual quota tracking with calendar-month persistence and test reset controls.
-- **Zero-Config Secure Secrets Vault:**
-  - **No `.env` files are ever created on disk.**
-  - Secrets are stored in encrypted browser storage and injected virtually into `process.env.*` and `import.meta.env.*` during bundling and runtime.
-- **100% Pure English Copy:** All interface copy, system prompts, error handlers, and speech recognition (`en-US`) are strictly formatted in professional English.
+> **Preview scope:** ShadRox previews static websites and Node-based web projects that expose a `dev` or `start` package script. It is not a universal runtime for every framework, backend, or project layout. See the [preview support matrix](#preview-support-matrix).
 
 ---
 
-## Architecture Overview
+## Highlights
+
+- **Desktop-native workspace:** Native folder and file dialogs, scoped filesystem access, direct write-back, workspace snapshots, and ZIP export.
+- **Focused code editor:** CodeMirror 6 with syntax highlighting for common languages, in-file search, formatting, clipboard copy, dirty-state indicators, and a vertical file explorer.
+- **AI chat with engineering modes:** **Code** for direct patches, **Plan** for read-only architecture, and **Complex** for multi-file reasoning, with streaming responses and one-click checkpoint restore. Speech input is fixed to `en-US`.
+- **Local preview built into the IDE:** Static sites stream through an internal protocol; runnable npm projects start their own dev server after approval. Both render inside a resizable preview pane with a console drawer, desktop/tablet/mobile widths, reload, and stop controls.
+- **Bring Your Own Key:** Validate and use Gemini or Groq keys without ShadRox persisting them server-side. The optional shared key powers Pro-tier models.
+- **Security-first desktop bridge:** `contextIsolation`, renderer sandboxing, no Node integration, allow-listed IPC, path containment checks, and confirmed shell commands.
+- **Windows and macOS packaging:** Electron Builder produces an NSIS installer on Windows and a DMG on macOS.
+
+---
+
+## Local Preview
+
+Preview has three paths, selected automatically by the workspace contents:
+
+| Path | How it works | When it is used |
+| :--- | :--- | :--- |
+| **Static protocol** | Files are streamed through `shadrox-preview://<workspace-uuid>/...` by the Electron main process. No HTTP server is started. | A folder has no runnable `dev`/`start` package script, or the project is a static site. |
+| **Local project server** | ShadRox starts the project's own `dev` or `start` command, waits for it to print a localhost URL, and loads that URL in the preview iframe. | A `package.json` provides a runnable `dev` or `start` script and the user approves the run. |
+| **In-browser bundle** | `esbuild-wasm` compiles open files into a virtual document rendered with `srcDoc`. Used mainly outside the desktop folder flow. | Browser mode or open-file previews without a folder workspace. |
+
+### Static protocol
+
+Static preview is implemented in `electron/main.cjs` and is intentionally independent of any local web server:
+
+- The protocol URL uses the workspace's random UUID as its host, for example `shadrox-preview://8d43d1db-d17a-4034-ad4b-dfc528f513a9/index.html`. The workspace ID is generated when a folder is opened.
+- Files are resolved against the opened folder and streamed with `fs.createReadStream`; large assets are not buffered into memory.
+- Resolution order: exact file, directory `index.html`, then the same path inside `dist`, `build`, `out`, and `public`, then a SPA `index.html` fallback for requests that accept HTML. A missing `favicon.ico` returns `204`.
+- Directory requests without a trailing slash receive a `308` redirect to the slash-terminated URL.
+- Responses include `Content-Type`, `Content-Length`, `Accept-Ranges: bytes`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`.
+- `GET`, `HEAD`, and `OPTIONS` are supported. `HEAD` returns headers without a body; single byte ranges return `206`, unsatisfiable ranges return `416`, and other methods return `405`.
+- Path safety: percent-decoding is validated, NUL/backslash/Windows-colon characters and dot segments are rejected, resolved paths must stay inside the workspace root after `realpath`, and only regular files are served.
+
+**Windows GPU note:** On Windows, ShadRox disables hardware acceleration and uses software rendering for the preview surface to avoid AMD driver crashes (`0x80070057`). This is deliberate; enabling GPU compositing may reintroduce driver instability on affected systems.
+
+### Runnable projects
+
+For JavaScript/TypeScript web projects, ShadRox manages the project's own development server:
+
+1. The workspace root and up to three nested folders are scanned for a `package.json` with a `dev` or `start` script. Generated folders such as `node_modules`, `dist`, `build`, `.next`, and `coverage` are skipped.
+2. The package manager is selected from the `packageManager` field or the `pnpm`/Yarn/Bun lockfiles, defaulting to npm.
+3. If declared dependencies are missing, ShadRox asks for approval before installing them.
+4. The approval card shows the project path, package manager, script name, exact command, and missing packages. The `package.json` hash is revalidated before execution.
+5. The project is spawned with a sanitized environment; common dev servers are bound to `127.0.0.1` where supported.
+6. ShadRox watches stdout/stderr for a `localhost`, `127.0.0.1`, `0.0.0.0`, or IPv6 loopback URL and loads the last URL that appears within 60 seconds.
+7. Closing the preview, opening another workspace, or quitting the app stops the managed process (including its child process tree on Windows).
+
+Server output, install logs, readiness messages, and preview console messages appear in the in-app Console.
+
+### Preview support matrix
+
+| Project type | Status | Notes |
+| :--- | :--- | :--- |
+| Static HTML/CSS/JS with an `index.html` | Supported | Entry can be at the workspace root, `public/`, `dist/`, `build/`, `out/`, or `src/`; assets resolve through the protocol. |
+| Built single-page app with deployed assets | Supported | Client-side routes fall back to `index.html` only for HTML-accepting navigations. |
+| npm project with a working `dev` or `start` script | Supported | Requires Node.js and the project's package manager. Vite, Next.js, Angular, and similar servers that print a loopback URL are the primary targets. |
+| Projects that only expose `serve`, `preview`, or custom scripts | Limited | Automatic detection requires `dev` or `start`; open the specific project folder or add a supported script. |
+| Python, Go, PHP, Java, .NET, or other non-Node backends | Not supported | These need dedicated runtime adapters. Built front-end output can still use static preview. |
+| Servers that never print a localhost URL | Not supported | ShadRox times out after 60 seconds. |
+| Workspaces containing multiple runnable apps | Limited | ShadRox asks you to open the intended project folder directly instead of guessing. |
+| Servers with `X-Frame-Options`/`frame-ancestors` restrictions or self-signed HTTPS | Not guaranteed | The iframe may stay blank; there is no automatic framing diagnostic yet. |
+| Downloads, fullscreen, clipboard, camera, or other privileged browser APIs | Restricted | The preview iframe is sandboxed and host permission requests are denied unless explicitly allowed by the app. |
+
+Only one preview is shown at a time in the desktop UI. The main process can address multiple opened workspaces by UUID, but the current pane displays the active workspace's preview.
+
+### Preview security boundaries
+
+- The preview host is an unguessable per-open UUID. The older fixed `workspace` host alias is not accepted.
+- A `session.webRequest` guard rejects preview-protocol requests that do not originate from the preview document itself or the trusted ShadRox renderer.
+- Protocol responses are marked `no-referrer` so the workspace URL cannot leak through outbound `Referer` headers.
+- The preview iframe runs with a sandbox that allows scripts, forms, modals, popups, and same-origin behavior while blocking top-level navigation.
+- The local runtime server is not exposed by ShadRox; it is whatever loopback server the project starts. Approved project scripts are arbitrary code and run with the user's permissions.
+
+---
+
+## Architecture
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│ React renderer                                             │
-│ Chat · Editor · Preview · Workspace state                  │
-└───────────────────┬────────────────────────────────────────┘
-                    │ typed, allow-listed preload IPC
-┌───────────────────▼────────────────────────────────────────┐
-│ Electron main process                                       │
-│ Native file dialogs · scoped filesystem writes · confirmed  │
-│ terminal execution · loopback API proxy                     │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ React renderer                                               │
+│ Chat · Editor · Preview pane · Workspace and quota state     │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ contextBridge allow-list
+┌───────────────────────────▼──────────────────────────────────┐
+│ Electron main process                                        │
+│ Native dialogs · workspace/file I/O · preview protocol       │
+│ project runtime · confirmed terminal commands · window       │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ loopback HTTP
+┌───────────────────────────▼──────────────────────────────────┐
+│ Vite/Express backend (development)                           │
+│ Bundled Express server on an ephemeral loopback port (prod)  │
+│ AI chat · BYOK validation · prompt tools · GitHub endpoints  │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-### 1. Workspace & Local Disk Access
+### Process responsibilities
 
-In Electron, `electron/main.cjs` owns native dialogs and `fs`/`path` access. `electron/preload.cjs` exposes only open-folder, open-files, save-files, and confirmed-command operations; the renderer does not receive Node integration.
-- Reads preserve workspace-relative names such as `src/components/Button.tsx`.
-- Folder scans skip common generated directories, symlinks, and binary files; preview assets and text reads have size limits.
-- Saves are restricted to the folder selected in the native dialog. New paths are normalized and checked against the workspace root; selected-file-only workspaces cannot create arbitrary files.
-- Browser mode remains available and uses the File System Access API where supported.
-- Workspace snapshots remain in IndexedDB for session restoration. After a full desktop restart, reopen the folder to re-establish the main-process write grant.
+- **Renderer (`src/`)**: React UI, chat streaming, file editing, workspace state, preview controls, and the in-browser bundler fallback. It has no Node.js access.
+- **Preload (`electron/preload.cjs`)**: Exposes a frozen, allow-listed `window.shadroxDesktop` API for opening folders/files, saving files, running confirmed commands, and starting/stopping previews.
+- **Main (`electron/main.cjs`)**: Owns native dialogs, filesystem access, the `shadrox-preview` protocol, the project runtime, IPC validation, and the packaged backend lifecycle.
+- **Workspace (`electron/workspace.cjs`)**: Scans folders, builds file maps, enforces write boundaries, and rejects symlink escapes.
+- **Preview runtime (`electron/preview-runtime.cjs`)**: Detects projects, installs missing dependencies after approval, spawns/stops servers, parses localhost URLs, and maps preview URLs back to workspace IDs.
+- **Backend (`server.ts`, `api/`)**: Express API used both in development and by the packaged app on loopback. The same handlers are deployable as Vercel serverless functions.
 
-The packaged app starts the existing API handlers on a random loopback port and serves the built renderer from the same origin. Development continues to use the Vite/Express server.
+### Key files
 
-### 2. Universal SaaS Preview Engine
+```text
+electron/
+  main.cjs                 Electron main process, preview protocol, IPC
+  preload.cjs              Renderer bridge (allow-listed operations)
+  workspace.cjs            Folder scanning and scoped file I/O
+  preview-runtime.cjs      npm project detection and process lifecycle
+  workspace.test.cjs       Filesystem boundary tests
+  preview.test.mjs         Static preview and bundling tests
+  preview-runtime.test.cjs Project runtime tests
+src/
+  App.tsx                  IDE shell, chat, preview state, checkpoints
+  components/PreviewPane.tsx  Preview iframe, ResizeObserver, console, viewports
+  components/ChatPanel.tsx    Chat UI, modes, approval cards
+  components/CodeEditor.tsx   File explorer and CodeMirror editor
+  components/SettingsDrawer.tsx BYOK, shared key, secrets, plans
+  lib/desktop.ts           Typed desktop bridge contracts
+  lib/bundler.ts           esbuild-wasm in-browser bundler
+  lib/preview.ts           Document assembly and preview helpers
+  lib/plans.ts             Plan metadata and monthly caps
+  lib/quota.ts             Local monthly usage tracking
+api/                       Serverless-compatible API handlers
+server.ts                  Development and packaged Express server
+```
 
-Located in `src/components/PreviewPane.tsx`, `src/lib/bundler.ts`, `src/lib/preview.ts`, and `src/lib/assets.ts`:
-- **React / TSX / JSX Bundling:** In-browser compilation using `esbuild-wasm` across a virtual filesystem (`shadrox-vfs`). Resolves TSX, JSX, TS, JS, and JSON modules without requiring local `node_modules` builds.
-- **Static HTML/CSS/JS Inlining:** Automatically inlines local `<link rel="stylesheet">` stylesheets, `<script>` files, and relative asset paths (`<img src="./logo.png">`) so static websites render with full styling and interactivity without 404 network failures.
-- **CSS Modules & Assets:** Supports `.module.css` with local scoped class names and exports, and resolves CSS `url(...)` tokens directly to asset data URLs without bundler conflicts.
-- **TypeScript Path Aliases:** Discovers `@/*` aliases across `tsconfig.app.json`, `tsconfig.json`, and `jsconfig.json`, including multi-target path lists.
-- **Desktop Asset Mounting:** In Electron desktop mode, `scanDirectory` loads `.png`, `.jpg`, `.svg`, `.webp`, `.ico`, and font assets into memory as base64 data URLs for immediate preview resolution.
-- **Dependency Resolution:** Dependencies declared in `package.json` are loaded through `esm.sh` with single-instance React and ReactDOM deduplication. Missing dependencies and unsupported Node-only built-in modules (`fs`, `child_process`) produce clear, actionable build error messages rather than a blank screen.
-- **Interactive Sandbox & API Inspector:** When backend services (Express, FastAPI, Go, Rust) are detected, ShadRox visualizes the code structure and routes, allowing simulated endpoint testing.
-- **Isolated Preview Frame:** Project scripts execute in an opaque-origin sandboxed iframe (`sandbox="allow-scripts allow-forms allow-modals allow-popups"` without `allow-same-origin`), completely isolating renderer data and Electron APIs from preview code.
-- **Console Event Bridge:** Captures `console.log`, `console.info`, `console.warn`, and `console.error` and forwards runtime exceptions into the dockable DevTools drawer and error banner.
+---
 
-*Platform & Runtime Limitations:*
-- The preview executes browser-side code only; Node.js backend servers, Python daemons, and system binaries do not run live processes in the preview frame (routes are mocked).
-- Packages resolved via `esm.sh` and the Tailwind CDN require internet access; offline previews are supported for static HTML/CSS/JS and bundled code that does not require unpinned external CDN assets.
+## Getting Started
 
-### 3. File Edit Protocol
+### Prerequisites
 
-When the assistant proposes code changes, it outputs fenced code blocks containing the workspace-relative path:
+- **Node.js 22.12+** and npm for development and packaging.
+- **Windows or macOS** for native installers. Build each platform's artifact on that platform.
+- For project previews, the project's package manager (npm, pnpm, Yarn, or Bun) and its Node.js runtime must be installed on the machine.
+
+### Install and run
+
+```bash
+npm install
+
+# Optional: configure shared keys for the ShadRox backend
+cp .env.example .env
+
+# Browser development server
+npm run dev
+
+# Desktop shell plus the development server
+npm run dev:desktop
+```
+
+The development server listens on `http://localhost:3000` by default (`PORT` overrides it). The packaged desktop app binds its backend to an ephemeral loopback port instead.
+
+### Environment variables
+
+All variables are optional. BYOK users do not need any server-side keys.
+
+| Variable | Purpose |
+| :--- | :--- |
+| `SHADROX_GROQ_API_KEY` | Shared Groq key used when a request does not carry a BYOK key. |
+| `GROQ_API_KEY` | Fallback for the shared Groq key. |
+| `SHADROX_GEMINI_API_KEY` | Shared Gemini key used when a request does not carry a BYOK key. |
+| `GEMINI_API_KEY` | Fallback for the shared Gemini key. |
+| `PORT` | Development server port (default `3000`). |
+
+### Commands
+
+| Command | Description |
+| :--- | :--- |
+| `npm run dev` | Start the Vite/Express development server. |
+| `npm run dev:desktop` | Run the development server and launch Electron against it. |
+| `npm run build` | Build the renderer into `dist/`. |
+| `npm run build:desktop` | Build the renderer and package the app for the current platform. |
+| `npm run dist:win` | Build a Windows NSIS installer under `dist_desktop/`. |
+| `npm run dist:mac` | Build a macOS DMG under `dist_desktop/` (run on macOS). |
+| `npm start` | Start the production Express server serving `dist/`. |
+| `npm run preview` | Preview the built renderer with Vite. |
+| `npm test` | Run workspace, preview, and preview-runtime tests. |
+| `npm run typecheck` | Type-check the project with `tsc --noEmit`. |
+
+### Packaging
+
+Electron Builder packages the renderer, Electron modules, API handlers, and server entry point; esbuild binaries are unpacked from the ASAR archive. In the packaged app, the backend starts on a random loopback port and serves the built renderer from the same origin. For browser-only deployment, `vercel.json` builds the Vite app and exposes the `api/` handlers as serverless functions.
+
+---
+
+## File Edit Protocol
+
+The assistant proposes changes in fenced code blocks whose info string contains the workspace-relative path:
 
 ````tsx
 ```tsx path=src/components/Navbar.tsx
@@ -95,89 +212,58 @@ export function Navbar() {
 ```
 ````
 
-`extractFilePatches()` in `src/lib/markdown.ts` extracts the code block, validates the file path against the real workspace files, and atomically patches the workspace buffer. Before applying any assistant reply, ShadRox marks a snapshot checkpoint allowing 1-click rollbacks via the **Restore workspace before this reply** button.
+`extractFilePatches()` in `src/lib/markdown.tsx` extracts the block, validates the path against the real workspace, and patches the in-memory workspace. Before applying a reply, ShadRox creates a snapshot checkpoint so the workspace can be restored with one click.
 
-### 4. Direct Secret Linking (No Disk `.env`)
-
-Users can define environment variables in **Settings → Secrets Vault**. Rather than writing unencrypted `.env` files to the user's hard drive:
-1. Secrets are persisted in browser `localStorage` under `shadrox.secrets`.
-2. Passed into `bundleProject(files, secrets)` as `process.env.KEY` and `import.meta.env.KEY` defines.
-3. Injected into the iframe preview header inside `window.process = { env: ... }`.
+- **Code mode** writes and patches files.
+- **Plan mode** is read-only and cannot apply file changes.
+- **Complex mode** is intended for deeper multi-file reasoning.
 
 ---
 
-## Subscription Plans & Limits
+## Plans and Quotas
 
-| Plan Tier | Price (INR) | Tax Note | Monthly Message Cap | Features |
-| :--- | :--- | :--- | :--- | :--- |
-| **Free (BYOK)** | ₹0 | Always Free | 100 messages | BYOK Gemini + Groq, disk write-back, live preview |
-| **Pro** | ₹499/mo | GST Included | 250 messages | ShadRox Shared Key, fast-tier models, priority streaming |
-| **Adv** | ₹1,099/mo | GST Included | 500 messages | Premium models, extended context, deep retrieval, 50 restore checkpoints |
-| **Enterprise**| Custom | Invoiced | 5,000 messages | Custom message quotas, SSO, audit logs, SLA |
+| Plan | Price | Monthly cap | Included |
+| :--- | :--- | :--- | :--- |
+| **Free (BYOK)** | ₹0 | 100 messages | Gemini and Groq with your own key, local workspaces, disk write-back, preview |
+| **Pro** | ₹499/month | 250 messages | ShadRox shared key, fast-tier models, priority streaming, checkpoints |
+| **Adv** | ₹1,099/month | 500 messages | Premium models, extended context, semantic retrieval, 50 restore checkpoints |
+| **Enterprise** | Custom | 5,000 messages | Custom quotas, SSO, audit logs, SLA (per plan metadata) |
 
----
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js 22.12+ for development and packaging (required by the current Vite toolchain)
-- Windows or macOS for native installers. Build macOS `.dmg` artifacts on macOS; Windows NSIS `.exe` artifacts on Windows.
-
-### Local Development
-
-1. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-
-2. **Configure environment (optional for shared key):**
-   ```bash
-   cp .env.example .env
-   # Add GEMINI_API_KEY or GROQ_API_KEY if testing server-side shared keys
-   ```
-
-3. **Start the development server:**
-   ```bash
-   npm run dev
-   ```
-
-4. **Run the desktop shell with the development server:**
-   ```bash
-   npm run dev:desktop
-   ```
-
-5. **Build the renderer:**
-   ```bash
-   npm run build
-   ```
-
-6. **Run the filesystem boundary tests:**
-   ```bash
-   npm test
-   ```
-
-7. **Package the native app:**
-   ```bash
-   npm run dist:win
-   npm run dist:mac
-   ```
-   Artifacts are written to `dist_desktop/`. `npm run build:desktop` packages for the current host.
+Prices include GST as displayed in the app. Plan metadata lives in `src/lib/plans.ts`. Monthly usage is tracked locally in `localStorage` (`shadrox.usage.*`); payment processing and server-side entitlement enforcement are not part of this repository yet.
 
 ---
 
-## Security & Privacy Model
+## Security and Privacy
 
-- **Renderer Isolation:** Electron runs with `contextIsolation`, `sandbox`, and `webSecurity` enabled; `nodeIntegration` is disabled. The preload bridge exposes named operations only.
-- **Scoped Filesystem Access:** Main-process writes are limited to an opened workspace root, reject traversal and symlinks, and use temporary-file replacement.
-- **Confirmed Commands:** Every terminal command requires explicit native approval and runs in the opened folder with a timeout and bounded output.
-- **Local Backend Proxy:** The production app binds its API/static server to loopback on an ephemeral port; it does not listen on the LAN.
-- **Zero Cloud Code Uploads:** Workspace files are not sent to the AI proxy as files; relevant code context is included only in the user's chat request.
-- **BYOK Privacy:** User API keys are stored solely in local browser storage and passed directly through stateless backend proxies.
-- **Zero Disk Secret Footprint:** API secrets entered in the vault stay in browser memory and are never serialized to `.env` files on disk.
+- **Renderer isolation:** `contextIsolation` and `sandbox` are enabled, `nodeIntegration` is disabled, and `webSecurity` remains on. The preload bridge exposes named operations only.
+- **Scoped filesystem access:** Main-process reads and writes are limited to an opened workspace root. Traversal, hidden preview paths, and paths that resolve outside the root through symlinks or junctions are rejected.
+- **Confirmed commands:** Every terminal command is shown in a native confirmation dialog with its working directory. Commands run with a timeout and bounded output.
+- **Loopback backend:** The packaged app's HTTP server binds to `127.0.0.1` on an ephemeral port.
+- **Preview isolation:** The static protocol uses an unguessable workspace host, a trusted-frame request guard, and `no-referrer` responses. Preview content is sandboxed.
+- **BYOK privacy:** API keys are stored in local browser storage and sent directly to the stateless backend validation/chat endpoints. They are not written to server-side storage by ShadRox.
+- **Secrets vault:** Named secrets are kept in local browser storage and injected into the bundler/runtime as `process.env.*` and `import.meta.env.*`. ShadRox does not write `.env` files to disk. Browser storage is not a hardware-backed secret store; treat it accordingly on shared machines.
+- **No automatic code upload:** Workspace files are not uploaded as a repository. Only the context included in a chat request is sent to the configured AI provider.
+
+---
+
+## Testing
+
+```bash
+npm test
+npm run typecheck
+node --check electron/main.cjs
+```
+
+The automated suites cover:
+
+- Workspace scanning, path normalization, traversal rejection, symlink escape prevention, and scoped writes.
+- Static preview entry discovery, asset resolution, document assembly, sandboxing, and project runtime lifecycle.
+- Project detection, package manager selection, dependency installation, localhost URL parsing, and process cleanup.
 
 ---
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+Proprietary software. Copyright (c) 2026 Sourav Maurya. All rights reserved.
+
+This repository is provided for viewing and reference only. Copying, modification, distribution, sublicensing, or commercial use requires prior written permission from the owner. See [LICENSE](LICENSE) for the full terms. `package.json` marks the package as `UNLICENSED`.
