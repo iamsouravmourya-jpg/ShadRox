@@ -1,4 +1,5 @@
 import type { HandleEntry } from './workspace';
+import { canUseIndexedDb } from './persistence';
 
 /**
  * File System Access handles survive a page reload when kept in IndexedDB.
@@ -21,7 +22,7 @@ let dbPromise: Promise<IDBDatabase | null> | null = null;
 
 function createDb(): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
-    if (typeof indexedDB === 'undefined') {
+    if (!canUseIndexedDb()) {
       resolve(null);
       return;
     }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import CodeMirror, { type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import {
   closeSearchPanel,
@@ -17,6 +17,8 @@ import {
   Download,
   FileCode2,
   FilePlus,
+  Folder,
+  FolderOpen,
   FolderTree,
   Loader2,
   Save,
@@ -44,6 +46,54 @@ interface CodeEditorProps {
   workspaceName?: string;
 }
 
+interface ExplorerFile {
+  file: WorkspaceFile;
+  index: number;
+}
+
+interface ExplorerFolder {
+  name: string;
+  path: string;
+  folders: ExplorerFolder[];
+  files: ExplorerFile[];
+}
+
+function buildExplorerTree(files: WorkspaceFile[], filter: string): ExplorerFolder {
+  const root: ExplorerFolder = { name: '', path: '', folders: [], files: [] };
+  const folders = new Map<string, ExplorerFolder>([['', root]]);
+  const query = filter.trim().toLowerCase();
+
+  files.forEach((file, index) => {
+    if (query && !file.name.toLowerCase().includes(query)) return;
+    const segments = file.name.split('/').filter(Boolean);
+    const fileName = segments.pop();
+    if (!fileName) return;
+
+    let parent = root;
+    let parentPath = '';
+    for (const segment of segments) {
+      const folderPath = parentPath ? `${parentPath}/${segment}` : segment;
+      let folder = folders.get(folderPath);
+      if (!folder) {
+        folder = { name: segment, path: folderPath, folders: [], files: [] };
+        folders.set(folderPath, folder);
+        parent.folders.push(folder);
+      }
+      parent = folder;
+      parentPath = folderPath;
+    }
+    parent.files.push({ file, index });
+  });
+
+  const sort = (folder: ExplorerFolder) => {
+    folder.folders.sort((a, b) => a.name.localeCompare(b.name));
+    folder.files.sort((a, b) => a.file.name.localeCompare(b.file.name));
+    folder.folders.forEach(sort);
+  };
+  sort(root);
+  return root;
+}
+
 export function CodeEditor({
   files,
   activeFileIndex,
@@ -63,10 +113,21 @@ export function CodeEditor({
   const [fileFilter, setFileFilter] = useState('');
   const [findQuery, setFindQuery] = useState('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set(['']));
   const [hasCopied, setHasCopied] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const dirty = useMemo(() => new Set(dirtyFiles), [dirtyFiles]);
+  const filePathSignature = useMemo(() => files.map((file) => file.name).join('\n'), [files]);
+  const explorerTree = useMemo(() => buildExplorerTree(files, fileFilter), [files, fileFilter]);
+  const allFoldersExpanded = fileFilter.trim().length > 0;
+
+  useEffect(() => {
+    const firstLevel = new Set(['', ...files
+      .map((file) => file.name.split('/').filter(Boolean).slice(0, 1)[0])
+      .filter((name): name is string => Boolean(name) && files.some((file) => file.name.startsWith(`${name}/`)))]);
+    setExpandedFolders(firstLevel);
+  }, [workspaceName, filePathSignature]);
 
   const extensions = useMemo(() => {
     const list = [search({ top: true })];
@@ -136,13 +197,14 @@ export function CodeEditor({
     onDeleteFile(index);
   };
 
-  // Filter files in vertical sidebar
-  const filterLower = fileFilter.trim().toLowerCase();
-  const visibleFiles = useMemo(() => {
-    return files
-      .map((file, index) => ({ file, index }))
-      .filter((entry) => !filterLower || entry.file.name.toLowerCase().includes(filterLower));
-  }, [files, filterLower]);
+  const toggleFolder = (folderPath: string) => {
+    setExpandedFolders((previous) => {
+      const next = new Set(previous);
+      if (next.has(folderPath)) next.delete(folderPath);
+      else next.add(folderPath);
+      return next;
+    });
+  };
 
   const lineCount = activeFile ? activeFile.content.split('\n').length : 0;
   const charCount = activeFile ? activeFile.content.length : 0;
@@ -214,53 +276,16 @@ export function CodeEditor({
           </div>
         </div>
 
-        {/* Vertical Files List */}
-        <div className="flex-1 overflow-y-auto divide-y divide-neutral-900/40">
-          {visibleFiles.length === 0 ? (
+        {/* Hierarchical workspace tree */}
+        <div className="flex-1 overflow-y-auto py-1">
+          {files.length === 0 ? (
             <div className="p-4 text-center text-[11px] text-neutral-600 italic">
-              {fileFilter ? 'No matching files' : 'No files in workspace'}
+              No files in workspace
             </div>
           ) : (
-            visibleFiles.map(({ file, index }) => {
-              const isActive = index === activeFileIndex;
-              const hasUnsaved = dirty.has(file.name);
-              return (
-                <div
-                  key={`${file.name}-${index}`}
-                  onClick={() => onSelectFile(index)}
-                  className={`group flex items-center justify-between px-3 py-2 text-left cursor-pointer transition-colors ${
-                    isActive
-                      ? 'bg-neutral-900/90 border-l-2 border-emerald-500 text-white'
-                      : 'hover:bg-neutral-900/50 text-neutral-400 border-l-2 border-transparent'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 min-w-0 flex-1 mr-2">
-                    <FileCode2
-                      className={`w-3.5 h-3.5 shrink-0 ${
-                        isActive ? 'text-emerald-400' : 'text-neutral-500 group-hover:text-neutral-300'
-                      }`}
-                    />
-                    <span className="font-mono text-xs truncate">{file.name}</span>
-                    {hasUnsaved && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved changes" />
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteFile(index);
-                      }}
-                      title="Delete file"
-                      className="opacity-0 group-hover:opacity-100 p-0.5 text-neutral-600 hover:text-red-400 transition-opacity cursor-pointer"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })
+            explorerTree.files.length + explorerTree.folders.length === 0
+              ? <div className="p-4 text-center text-[11px] text-neutral-600 italic">No matching files</div>
+              : renderFolder(explorerTree, 0, workspaceName || 'Workspace')
           )}
         </div>
       </div>
@@ -428,4 +453,77 @@ export function CodeEditor({
       </div>
     </div>
   );
+
+  function renderFolder(folder: ExplorerFolder, depth: number, label?: string): ReactNode {
+    const isExpanded = allFoldersExpanded || expandedFolders.has(folder.path);
+    const folderLabel = label ?? folder.name;
+    const isRoot = folder.path === '';
+    const folderFiles = folder.files.map(({ file, index }) => {
+      const isActive = index === activeFileIndex;
+      const hasUnsaved = dirty.has(file.name);
+      return (
+        <div key={`${file.name}-${index}`} className="group flex items-center min-w-0 pr-2">
+          <button
+            type="button"
+            onClick={() => onSelectFile(index)}
+            title={file.name}
+            className={`flex flex-1 min-w-0 items-center gap-1.5 py-1 text-left cursor-pointer transition-colors ${
+              isActive ? 'bg-neutral-900/90 text-white' : 'hover:bg-neutral-900/50 text-neutral-400'
+            }`}
+            style={{ paddingLeft: `${8 + (depth + 1) * 14}px` }}
+          >
+            <FileCode2
+              className={`w-3 h-3 shrink-0 ${
+                isActive ? 'text-emerald-400' : 'text-neutral-500 group-hover:text-neutral-300'
+              }`}
+            />
+            <span className="font-mono text-[11px] truncate">{file.name.split('/').pop()}</span>
+            {hasUnsaved && (
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved changes" />
+            )}
+          </button>
+          <div className="flex items-center shrink-0">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDeleteFile(index);
+              }}
+              title="Delete file"
+              className="opacity-0 group-hover:opacity-100 p-0.5 text-neutral-600 hover:text-red-400 transition-opacity cursor-pointer"
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      );
+    });
+    const childItems = isExpanded
+      ? [
+          ...folder.folders.map((child) => renderFolder(child, depth + 1)),
+          ...folderFiles
+        ]
+      : [];
+
+    return (
+      <div key={folder.path || 'workspace-root'}>
+        <button
+          type="button"
+          onClick={() => toggleFolder(folder.path)}
+          aria-expanded={isExpanded}
+          className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-neutral-300 hover:bg-neutral-900/60 cursor-pointer"
+          style={{ paddingLeft: `${8 + depth * 14}px` }}
+        >
+          <ChevronRight className={`w-3 h-3 shrink-0 text-neutral-600 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+          {isExpanded ? (
+            <FolderOpen className="w-3.5 h-3.5 shrink-0 text-amber-300" />
+          ) : (
+            <Folder className="w-3.5 h-3.5 shrink-0 text-amber-300" />
+          )}
+          <span className="truncate font-medium">{folderLabel}</span>
+        </button>
+        {isExpanded && childItems}
+      </div>
+    );
+  }
 }
