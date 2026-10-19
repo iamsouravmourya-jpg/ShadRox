@@ -149,6 +149,8 @@ export function Header({ title }: { title: string }) {
   assert.ok(result.code.includes('Result:'), 'Bundle code should include compiled JSX content');
   assert.ok(result.importMap.react, 'Import map should provide React from CDN');
   assert.ok(result.importMap['react-dom'], 'Import map should provide ReactDOM from CDN');
+  assert.match(result.importMap['react/jsx-runtime'], /jsx-runtime\?external=react-dom$/);
+  assert.match(result.importMap['react-dom/client'], /\/client\?external=react$/);
 });
 
 test('3. CSS imports, CSS Modules (local-css), CSS url-tokens, and actionable missing dependency errors', async () => {
@@ -247,6 +249,30 @@ export default function Button() {
   );
 });
 
+test('Tailwind package stylesheet import uses the preview CDN instead of requiring mounted node_modules', async () => {
+  const files = [
+    {
+      name: 'package.json',
+      language: 'json',
+      content: JSON.stringify({ devDependencies: { tailwindcss: '^4.3.3' } })
+    },
+    {
+      name: 'src/main.ts',
+      language: 'typescript',
+      content: "import './index.css';"
+    },
+    {
+      name: 'src/index.css',
+      language: 'css',
+      content: '@import "tailwindcss"; body { color: white; }'
+    }
+  ];
+
+  const result = await bundleProject(files);
+  assert.ok(result.css.includes('color: white'), 'Workspace CSS should still be bundled');
+  assert.ok(!result.css.includes('@import "tailwindcss"'), 'The browser CDN replaces the build-time package stylesheet');
+});
+
 test('4. Workspace assets (images, SVGs, fonts) and desktop folder scanning', async (context) => {
   // Test asset lookup helper
   const assets = {
@@ -294,7 +320,7 @@ test('5. Preview document assembly, index.html template preservation, and error 
     css: 'h1 { color: green; }',
     entry: 'src/main.tsx',
     importMap: { react: 'https://esm.sh/react@19' },
-    routes: []
+    routes: [{ method: 'GET', path: '/api/test', source: 'server.ts' }]
   };
 
   const userIndexHtml = `<!doctype html>
@@ -321,6 +347,10 @@ test('5. Preview document assembly, index.html template preservation, and error 
   assert.ok(bundledDoc.includes('shadrox-preview'), 'Preview error bridge must be injected');
   assert.ok(bundledDoc.includes('console.log("running");'), 'Bundle JavaScript must be injected');
   assert.ok(bundledDoc.includes('API_URL'), 'Virtual secret must be injected into window.process.env');
+  assert.ok(
+    bundledDoc.includes("new RegExp('^' + route.pattern + '$')"),
+    'API bridge source must remain intact when inserted into the document'
+  );
 });
 
 test('6. Sandbox isolation and security verification', () => {

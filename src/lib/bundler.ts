@@ -268,10 +268,16 @@ export function buildImportMap(files: WorkspaceFile[], root: string = ''): Recor
 
   imports['react'] = reactUrl;
   imports['react-dom'] = reactDomUrl;
-  
-  // Ensure subpaths also point to the same version
+
+  // Import-map prefix targets cannot safely append subpaths after a query
+  // string, and React's JSX runtime must externalize React to preserve hooks.
   if (!imports['react/']) imports['react/'] = `${reactUrl}/`;
   if (!imports['react-dom/']) imports['react-dom/'] = `${reactDomUrl}/`;
+  const reactBaseUrl = reactUrl.split('?')[0];
+  const reactDomBaseUrl = reactDomUrl.split('?')[0];
+  imports['react/jsx-runtime'] = `${reactBaseUrl}/jsx-runtime?external=react-dom`;
+  imports['react/jsx-dev-runtime'] = `${reactBaseUrl}/jsx-dev-runtime?external=react-dom`;
+  imports['react-dom/client'] = `${reactDomBaseUrl}/client?external=react`;
 
   return imports;
 }
@@ -528,6 +534,13 @@ export async function bundleProject(
           return { errors: [{ text: `Asset not found: ${args.path}` }] };
         }
 
+        // Tailwind's package stylesheet is a build-time entrypoint. The preview
+        // document injects Tailwind's browser CDN, so importing it in VFS would
+        // otherwise fail because node_modules are intentionally not mounted.
+        if (args.kind === 'import-rule' && specifier === 'tailwindcss') {
+          return { path: 'shadrox-tailwindcss-cdn.css', namespace: 'shadrox-inline-css' };
+        }
+
         // 3. Relative imports or CSS @import rules
         if (isRelative || args.kind === 'import-rule') {
           const asset = resolveAsset(specifier, importer);
@@ -616,6 +629,11 @@ export async function bundleProject(
         if (contents === undefined) return { errors: [{ text: `Virtual module not found: ${args.path}` }] };
         return { contents, loader: 'js' };
       });
+
+      build.onLoad({ filter: /.*/, namespace: 'shadrox-inline-css' }, () => ({
+        contents: '',
+        loader: 'css'
+      }));
     }
   };
 
@@ -741,7 +759,7 @@ ${result.code}
 
     // Inject head items
     if (/<\/head>/i.test(html)) {
-      html = html.replace(/<\/head>/i, `${headInjections}\n</head>`);
+      html = html.replace(/<\/head>/i, () => `${headInjections}\n</head>`);
     } else {
       html = `${headInjections}\n${html}`;
     }
@@ -753,7 +771,7 @@ ${result.code}
 
     // Inject body items
     if (/<\/body>/i.test(html)) {
-      html = html.replace(/<\/body>/i, `${bodyInjections}\n</body>`);
+      html = html.replace(/<\/body>/i, () => `${bodyInjections}\n</body>`);
     } else {
       html = `${html}\n${bodyInjections}`;
     }

@@ -1,4 +1,5 @@
 import { detectLanguage } from './languages';
+import { canUseIndexedDb } from './persistence';
 import type { WorkspaceFile } from './types';
 
 /**
@@ -39,7 +40,7 @@ let dbPromise: Promise<IDBDatabase | null> | null = null;
 
 function createDb(): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
-    if (typeof indexedDB === 'undefined') {
+    if (!canUseIndexedDb()) {
       resolve(null);
       return;
     }

@@ -1,4 +1,5 @@
 import type { WorkspaceFile } from './types';
+import { canUseIndexedDb } from './persistence';
 
 /** A remembered copy of a workspace so "Recently opened" never has to re-ask for the folder. */
 export interface WorkspaceSnapshot {
@@ -21,7 +22,7 @@ let dbPromise: Promise<IDBDatabase | null> | null = null;
 
 function createDb(): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
-    if (typeof indexedDB === 'undefined') {
+    if (!canUseIndexedDb()) {
       resolve(null);
       return;
     }
