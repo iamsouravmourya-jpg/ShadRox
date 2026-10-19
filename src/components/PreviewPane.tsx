@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   ChevronRight,
   ExternalLink,
+  FolderOpen,
   Laptop,
   Loader2,
   Maximize2,
@@ -17,7 +18,7 @@ import {
 } from 'lucide-react';
 import type { ViewportSize } from '../lib/types';
 import type { PreviewDocument } from '../lib/preview';
-import type { DesktopPreviewOutput, DesktopPreviewState } from '../lib/desktop';
+import type { DesktopPreviewOutput, DesktopPreviewState, PreviewProjectCandidate } from '../lib/desktop';
 
 interface PreviewPaneProps {
   document: PreviewDocument | null;
@@ -35,6 +36,9 @@ interface PreviewPaneProps {
   onStartLocalPreview?: () => void;
   onStopLocalPreview?: () => void;
   onClearLocalPreviewLogs?: () => void;
+  previewProjects?: PreviewProjectCandidate[];
+  onChoosePreviewProject?: (project: PreviewProjectCandidate) => void;
+  onCancelProjectSelection?: () => void;
 }
 
 interface ConsoleEntry {
@@ -78,7 +82,10 @@ export function PreviewPane({
   localPreviewLogs = [],
   onStartLocalPreview,
   onStopLocalPreview,
-  onClearLocalPreviewLogs
+  onClearLocalPreviewLogs,
+  previewProjects = [],
+  onChoosePreviewProject,
+  onCancelProjectSelection
 }: PreviewPaneProps) {
   const [reloadKey, setReloadKey] = useState(0);
   const [isConsoleOpen, setIsConsoleOpen] = useState(false);
@@ -325,6 +332,45 @@ export function PreviewPane({
             className="block shrink-0 border-0 bg-black shadow-2xl"
             style={{ width: '100%', height: '100%' }}
           />
+        ) : localPreviewAvailable && previewProjects.length > 0 ? (
+          <div className="w-full max-w-xl self-center px-6 py-8">
+            <div className="flex items-center gap-2 text-sm text-neutral-100 font-medium">
+              <FolderOpen className="w-4 h-4 text-emerald-400" />
+              Choose a folder to preview
+            </div>
+            <p className="mt-2 text-xs text-neutral-500">
+              {previewProjects[0]?.kind === 'static'
+                ? 'Choose the nested static website folder to serve through ShadRox.'
+                : 'More than one runnable app was found in this workspace.'}
+            </p>
+            <div className="mt-4 space-y-2">
+              {previewProjects.map((project) => (
+                <button
+                  key={`${project.kind}:${project.projectPath}`}
+                  type="button"
+                  onClick={() => onChoosePreviewProject?.(project)}
+                  className="w-full border border-neutral-800 bg-neutral-950 p-3 text-left hover:border-emerald-800/70 hover:bg-neutral-900/60 cursor-pointer"
+                >
+                  <span className="block text-xs text-neutral-100 font-mono">{project.projectPath}</span>
+                  {project.kind === 'node' ? (
+                    <>
+                      <span className="mt-1 block text-[11px] text-neutral-400">
+                        {project.packageManager} run {project.scriptName} · {project.scriptCommand}
+                      </span>
+                      <span className="mt-1 block text-[10px] text-neutral-500">
+                        {project.missingDependencies.length > 0
+                          ? `${project.missingDependencies.length} dependency package(s) need installation after approval`
+                          : 'Dependencies appear to be installed'}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="mt-1 block text-[11px] text-neutral-400">Static website · served locally without running a project script</span>
+                  )}
+                </button>
+              ))}
+            </div>
+            <button type="button" onClick={onCancelProjectSelection} className="mt-3 text-[11px] text-neutral-500 hover:text-white">Cancel</button>
+          </div>
         ) : localPreviewAvailable && localPreviewState.status === 'starting' ? (
           <div className="self-center px-6 py-8 text-center">
             <Loader2 className="w-6 h-6 text-emerald-400 mx-auto animate-spin" />

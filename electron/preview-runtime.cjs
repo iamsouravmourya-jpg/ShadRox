@@ -1,6 +1,7 @@
 const fs = require('node:fs/promises');
 const { createHash } = require('node:crypto');
 const http = require('node:http');
+const https = require('node:https');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
@@ -44,7 +45,7 @@ function getPackageManager(manifest, root) {
 function getPreviewScript(manifest) {
   const scripts = manifest && typeof manifest.scripts === 'object' && manifest.scripts;
   if (!scripts) return null;
-  for (const name of ['dev', 'start']) {
+  for (const name of ['dev', 'start', 'preview', 'serve']) {
     if (typeof scripts[name] === 'string' && scripts[name].trim()) {
       return { name, command: scripts[name] };
     }
@@ -66,25 +67,33 @@ async function findMissingDependencies(manifest, root) {
   return missing;
 }
 
-async function findPreviewProject(root) {
-  const rootManifest = path.join(root, 'package.json');
-  try {
-    const contents = await fs.readFile(rootManifest, 'utf8');
-    const manifest = JSON.parse(contents);
-    if (getPreviewScript(manifest)) {
-      return { root, manifest, manifestHash: createHash('sha256').update(contents).digest('hex') };
-    }
-  } catch {
-    // Parent folders opened as workspaces may contain the actual app one level down.
-  }
-
-  const ignored = new Set(['.git', 'node_modules', 'dist', 'build', '.next', 'coverage']);
-  const queue = [{ directory: root, depth: 0 }];
+async function findPreviewProjects(root) {
+  const realRoot = await fs.realpath(root);
+  const ignored = new Set(['.git', 'node_modules', 'dist', 'build', '.next', 'out', 'coverage', '.cache', '.turbo', '.vercel', 'vendor']);
+  const queue = [{ directory: realRoot, depth: 0 }];
   const candidates = [];
   let visited = 0;
-  while (queue.length > 0 && visited < 1000) {
+  while (queue.length > 0 && visited < 5000) {
     const current = queue.shift();
-    if (current.depth >= 3) continue;
+    let contents;
+    try {
+      contents = await fs.readFile(path.join(current.directory, 'package.json'), 'utf8');
+      const manifest = JSON.parse(contents);
+      const script = getPreviewScript(manifest);
+      if (script) {
+        candidates.push({
+          root: current.directory,
+          relativePath: path.relative(realRoot, current.directory).split(path.sep).join('/') || '.',
+          manifest,
+          manifestHash: createHash('sha256').update(contents).digest('hex'),
+          script,
+          packageManager: getPackageManager(manifest, current.directory)
+        });
+      }
+    } catch {
+      // A malformed manifest is not a runnable candidate; keep scanning subfolders.
+    }
+    if (current.depth >= 10) continue;
     let entries;
     try {
       entries = await fs.readdir(current.directory, { withFileTypes: true });
@@ -92,37 +101,62 @@ async function findPreviewProject(root) {
       continue;
     }
     for (const entry of entries) {
-      if (!entry.isDirectory() || entry.isSymbolicLink() || ignored.has(entry.name)) continue;
+      if (!entry.isDirectory() || entry.isSymbolicLink() || entry.name.startsWith('.') || ignored.has(entry.name)) continue;
       visited += 1;
       const directory = path.join(current.directory, entry.name);
-      const manifestPath = path.join(directory, 'package.json');
-      try {
-        const contents = await fs.readFile(manifestPath, 'utf8');
-        const manifest = JSON.parse(contents);
-        if (getPreviewScript(manifest)) {
-          candidates.push({
-            root: directory,
-            manifest,
-            manifestHash: createHash('sha256').update(contents).digest('hex')
-          });
-        }
-      } catch {
-        queue.push({ directory, depth: current.depth + 1 });
-      }
       queue.push({ directory, depth: current.depth + 1 });
     }
   }
+  if (queue.length > 0) throw new Error('Project detection reached its directory scan limit. Open the intended project subfolder directly.');
+  return candidates.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+async function findStaticPreviewProjects(root) {
+  const realRoot = await fs.realpath(root);
+  const ignored = new Set(['.git', 'node_modules', 'coverage', '.cache', '.turbo', '.vercel', 'vendor']);
+  const queue = [{ directory: realRoot, depth: 0 }];
+  const candidates = [];
+  let visited = 0;
+  while (queue.length > 0 && visited < 5000) {
+    const current = queue.shift();
+    try {
+      const entries = await fs.readdir(current.directory, { withFileTypes: true });
+      if (entries.some((entry) => entry.isFile() && entry.name.toLowerCase() === 'index.html')) {
+        candidates.push({
+          root: current.directory,
+          relativePath: path.relative(realRoot, current.directory).split(path.sep).join('/') || '.',
+          kind: 'static'
+        });
+      }
+      if (current.depth >= 10) continue;
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.isSymbolicLink() || entry.name.startsWith('.') || ignored.has(entry.name)) continue;
+        visited += 1;
+        queue.push({ directory: path.join(current.directory, entry.name), depth: current.depth + 1 });
+      }
+    } catch {
+      // Unreadable folders do not prevent scanning the rest of the workspace.
+    }
+  }
+  if (queue.length > 0) throw new Error('Static project detection reached its directory scan limit. Open the intended project subfolder directly.');
+  return candidates.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+async function findPreviewProject(root) {
+  const candidates = await findPreviewProjects(root);
+  const rootProject = candidates.find((candidate) => candidate.relativePath === '.');
+  if (rootProject) return rootProject;
   if (candidates.length === 1) return candidates[0];
   if (candidates.length > 1) {
-    throw new Error('More than one runnable package.json was found. Open the specific project folder to choose its preview root.');
+    throw new Error('More than one runnable package.json was found. Select a project folder to choose its preview root.');
   }
-  throw new Error('No runnable package.json found. Add a "dev" or "start" script to run this project locally.');
+  throw new Error('No runnable package.json found. Add a "dev", "start", "preview", or "serve" script to run this project locally.');
 }
 
 function getRunArgs(manager, script, scriptCommand) {
   const args = manager === 'yarn' ? ['run', script.name] : ['run', script.name];
   const command = scriptCommand.toLowerCase();
-  if (/\b(vite|astro|nuxt|angular|webpack-dev-server)\b/.test(command)) {
+  if (/\b(vite|astro|nuxt|angular|webpack-dev-server|webpack|parcel)\b/.test(command)) {
     args.push('--', '--host', '127.0.0.1');
   } else if (/\bnext\b/.test(command)) {
     args.push('--', '--hostname', '127.0.0.1');
@@ -139,6 +173,28 @@ function parsePreviewUrl(text) {
     .replace('[::1]', '127.0.0.1')
     .replace('[::]', '127.0.0.1')
     .replace(/[),.;]+$/, '');
+}
+
+const COMMON_DEV_PORTS = [3000, 3001, 3002, 4173, 4174, 4200, 4321, 5000, 5173, 5174, 8000, 8001, 8080, 8081, 9000];
+
+function probeHttp(url, timeoutMs = 700) {
+  return new Promise((resolve) => {
+    let target;
+    try { target = new URL(url); } catch { resolve(false); return; }
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') { resolve(false); return; }
+    if (!['127.0.0.1', 'localhost', '::1'].includes(target.hostname)) { resolve(false); return; }
+    const transport = target.protocol === 'https:' ? https : http;
+    const options = target.protocol === 'https:' ? { rejectUnauthorized: false } : undefined;
+    const request = transport.get(target, options, (response) => {
+      response.resume();
+      // A development server may keep a response stream open (for example, an
+      // event stream). Receiving headers is enough to establish readiness.
+      resolve(response.statusCode < 500);
+      response.once('error', () => resolve(false));
+    });
+    request.setTimeout(timeoutMs, () => request.destroy());
+    request.once('error', () => resolve(false));
+  });
 }
 
 function createPreviewRuntime({
@@ -282,6 +338,11 @@ function createPreviewRuntime({
   function stop(workspaceId) {
     const record = processes.get(workspaceId);
     if (!record) return Promise.resolve(false);
+    if (record.rejectReady) {
+      const rejectReady = record.rejectReady;
+      record.rejectReady = null;
+      rejectReady(new Error('Preview stopped before the local server became ready.'));
+    }
     processes.delete(workspaceId);
     if (record.server) {
       return new Promise((resolve, reject) => {
@@ -345,6 +406,9 @@ function createPreviewRuntime({
       emit(workspaceId, 'status', 'Dependencies installed. Starting local project...');
     }
 
+    const baselinePorts = new Set((await Promise.all(COMMON_DEV_PORTS.map(async (port) =>
+      await probeHttp(`http://127.0.0.1:${port}/`, 180) ? port : null
+    ))).filter(Number.isInteger));
     const child = spawnCommand(manager, getRunArgs(manager, script, script.command), root);
     const record = { child, url: null, rejectReady: null };
     processes.set(workspaceId, record);
@@ -353,17 +417,58 @@ function createPreviewRuntime({
     return new Promise((resolve, reject) => {
       let settled = false;
       let buffer = '';
+      const hintedUrls = new Set();
+      const probingUrls = new Set();
+      let checking = false;
+      const checkUrl = async (url) => {
+        if (settled || probingUrls.has(url)) return;
+        probingUrls.add(url);
+        try {
+          const port = Number(new URL(url).port);
+          const exitCode = record.child.exitCode;
+          if (baselinePorts.has(port) || (exitCode !== null && exitCode !== undefined)) return;
+          if (await probeHttp(url)) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            clearInterval(probeTimer);
+            record.url = url;
+            record.rejectReady = null;
+            emit(workspaceId, 'ready', `Local preview is responding at ${url}`);
+            resolve({ url, script: script.name });
+          }
+        } finally {
+          probingUrls.delete(url);
+        }
+      };
+      const probeTimer = setInterval(async () => {
+        if (settled || checking) return;
+        checking = true;
+        try {
+          const urls = [...hintedUrls];
+          for (const port of COMMON_DEV_PORTS) {
+            if (!baselinePorts.has(port)) urls.push(`http://127.0.0.1:${port}/`);
+          }
+          await Promise.all([...new Set(urls)].map(checkUrl));
+        } finally {
+          checking = false;
+        }
+      }, 450);
       const timeout = setTimeout(() => {
         if (settled) return;
         settled = true;
+        clearInterval(probeTimer);
         record.rejectReady = null;
         void stop(workspaceId);
-        reject(new Error(`Project server did not report a localhost URL within ${Math.round(readyTimeout / 1000)} seconds.`));
+        const hints = [...hintedUrls];
+        const hintDetail = hints.length ? ` Detected URL: ${hints.join(', ')}.` : ' No local URL was detected in server output.';
+        reject(new Error(`Project server did not become HTTP-ready on a detected localhost address within ${Math.round(readyTimeout / 1000)} seconds.${hintDetail} Check the Console for startup errors or choose a supported run script.`));
       }, readyTimeout);
       const fail = (error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
+        clearInterval(probeTimer);
         processes.delete(workspaceId);
         reject(error);
       };
@@ -374,13 +479,10 @@ function createPreviewRuntime({
         buffer = (buffer + text).slice(-16_384);
         emit(workspaceId, stream, text);
         const url = parsePreviewUrl(buffer);
-        if (!url || settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        record.url = url;
-        record.rejectReady = null;
-        emit(workspaceId, 'ready', `Local preview available at ${url}`);
-        resolve({ url, script: script.name });
+        if (url && !settled) {
+          hintedUrls.add(url);
+          void checkUrl(url);
+        }
       };
 
       child.stdout?.on('data', (chunk) => onData('stdout', chunk));
@@ -425,7 +527,9 @@ module.exports = {
   createPreviewRuntime,
   MIME_TYPES,
   findMissingDependencies,
+  findPreviewProjects,
   findPreviewProject,
+  findStaticPreviewProjects,
   getPackageManager,
   getPreviewScript,
   getRunArgs,

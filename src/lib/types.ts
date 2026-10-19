@@ -1,4 +1,4 @@
-export type Stage = 'STAGE_1' | 'STAGE_2' | 'STAGE_3';
+export type Stage = 'STAGE_2' | 'STAGE_3';
 
 export type TabType = 'CODE' | 'PREVIEW';
 
@@ -22,6 +22,7 @@ export interface WorkspaceFile {
   name: string;
   content: string;
   language: string;
+  version?: string;
 }
 
 export interface WorkspaceFolder {

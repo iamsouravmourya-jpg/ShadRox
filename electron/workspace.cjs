@@ -1,11 +1,12 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
 
 const MAX_FILES = 400;
 const MAX_ASSETS = 200;
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_ASSET_BYTES = 4 * 1024 * 1024;
+const DIRECTORY_PAGE_SIZE = 200;
 const IGNORED_DIRECTORIES = new Set([
   'node_modules', '.git', 'dist', 'build', '.next', 'out', 'coverage',
   '.cache', '.vercel', '.turbo', 'vendor', '__pycache__'
@@ -75,10 +76,57 @@ function isIgnoredFile(fileName) {
   return BINARY_EXTENSIONS.has(ext) && !isPreviewAsset(fileName);
 }
 
-function ensureInsideRoot(root, target) {
-  const absolute = path.resolve(root, ...target.split('/'));
-  if (!isWithinRoot(root, absolute)) throw new Error('The file path resolves outside the opened workspace.');
-  return absolute;
+async function resolveWorkspaceDirectory(workspace, relativePath = '', create = false) {
+  const clean = relativePath ? normalizeRelativePath(relativePath) : '';
+  let current = workspace.root;
+  const segments = clean ? clean.split('/') : [];
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    const next = path.join(current, segment);
+    let stat;
+    try {
+      stat = await fs.lstat(next);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      if (!create) return path.resolve(current, ...segments.slice(index));
+      await fs.mkdir(next);
+      stat = await fs.lstat(next);
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('The directory path contains a symbolic link or non-directory.');
+    const real = await fs.realpath(next);
+    if (!isWithinRoot(workspace.root, real)) throw new Error('The directory resolves outside the opened workspace.');
+    current = real;
+  }
+  return current;
+}
+
+function hashContent(content) {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+async function resolveWorkspaceFile(workspace, relativePath) {
+  const clean = normalizeRelativePath(relativePath);
+  if (clean.split('/').some((part) => part.startsWith('.') || IGNORED_DIRECTORIES.has(part))) {
+    throw new Error('Hidden and generated project files are not available in the editor.');
+  }
+  if (isIgnoredFile(path.posix.basename(clean)) || isPreviewAsset(clean)) throw new Error('Binary and generated files cannot be opened as text.');
+  const segments = clean.split('/');
+  let absolute;
+  if (workspace.fileMap.has(clean)) {
+    const mapped = workspace.fileMap.get(clean);
+    if (!isWithinRoot(workspace.root, mapped)) throw new Error('The file path resolves outside the opened workspace.');
+    const parent = await fs.realpath(path.dirname(mapped));
+    if (parent !== workspace.root && !isWithinRoot(workspace.root, parent)) throw new Error('The file path resolves outside the opened workspace.');
+    absolute = path.join(parent, path.basename(mapped));
+  } else {
+    const parent = await resolveWorkspaceDirectory(workspace, segments.slice(0, -1).join('/'));
+    absolute = path.join(parent, segments.at(-1));
+  }
+  const stat = await fs.lstat(absolute);
+  if (stat.isSymbolicLink()) throw new Error('Symbolic links are not opened in the workspace editor.');
+  if (!stat.isFile()) throw new Error('The requested path is not a regular file.');
+  if (stat.size > MAX_TEXT_BYTES) throw new Error('The file exceeds the 2 MiB editor limit.');
+  return { clean, realPath: absolute };
 }
 
 async function readTextFile(absolutePath, relativePath, files, fileMap) {
@@ -86,7 +134,7 @@ async function readTextFile(absolutePath, relativePath, files, fileMap) {
   if (!stat.isFile() || stat.size > MAX_TEXT_BYTES) return false;
 
   const content = await fs.readFile(absolutePath, 'utf8');
-  files.push({ name: relativePath, content });
+  files.push({ name: relativePath, content, version: hashContent(content) });
   fileMap.set(relativePath, absolutePath);
   return true;
 }
@@ -102,62 +150,22 @@ async function readAssetFile(absolutePath, relativePath, assets) {
   assets[relativePath] = `data:${ASSET_MIME_TYPES[extension]};base64,${encoded}`;
 }
 
-async function scanDirectory(root, directory, prefix, result, fileMap) {
-  if (result.files.length >= MAX_FILES) return;
-
-  const entries = await fs.readdir(directory, { withFileTypes: true });
-  for (const entry of entries) {
-    if (result.files.length >= MAX_FILES) break;
-    if (entry.isSymbolicLink()) continue;
-
-    const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-    const absolutePath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      if (!IGNORED_DIRECTORIES.has(entry.name)) {
-        await scanDirectory(root, absolutePath, relativePath, result, fileMap);
-      }
-      continue;
-    }
-    if (!entry.isFile()) continue;
-
-    if (isPreviewAsset(entry.name)) {
-      try {
-        await readAssetFile(absolutePath, relativePath, result.assets);
-      } catch (error) {
-        result.warnings.push(`Could not read asset ${relativePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      }
-      continue;
-    }
-
-    if (isIgnoredFile(entry.name)) continue;
-
-    try {
-      await readTextFile(absolutePath, relativePath, result.files, fileMap);
-    } catch (error) {
-      result.warnings.push(`Could not read ${relativePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-}
-
 function createWorkspaceAccess() {
   const workspaces = new Map();
 
   async function openFolder(folderPath) {
     const root = await fs.realpath(folderPath);
-    const result = { files: [], assets: {}, warnings: [] };
     const fileMap = new Map();
-    await scanDirectory(root, root, '', result, fileMap);
 
     const workspaceId = randomUUID();
     workspaces.set(workspaceId, { root, fileMap, mode: 'folder' });
-    if (result.files.length >= MAX_FILES) result.warnings.push(`Only the first ${MAX_FILES} text files were loaded.`);
     return {
       workspaceId,
       name: path.basename(root),
       kind: 'folder',
-      files: result.files,
-      assets: result.assets,
-      warnings: result.warnings
+      files: [],
+      assets: {},
+      warnings: []
     };
   }
 
@@ -206,6 +214,40 @@ function createWorkspaceAccess() {
     };
   }
 
+  async function readFile(workspaceId, relativePath) {
+    const workspace = workspaces.get(workspaceId);
+    if (!workspace) throw new Error('This desktop workspace is no longer open. Reopen its folder before reading.');
+    const { clean, realPath } = await resolveWorkspaceFile(workspace, relativePath);
+    const content = await fs.readFile(realPath, 'utf8');
+    workspace.fileMap.set(clean, realPath);
+    return { name: clean, content, version: hashContent(content) };
+  }
+
+  async function listDirectory(workspaceId, relativePath = '', cursor = 0) {
+    const workspace = workspaces.get(workspaceId);
+    if (!workspace || workspace.mode !== 'folder') throw new Error('Directory browsing requires an opened folder workspace.');
+    const clean = relativePath ? normalizeRelativePath(relativePath) : '';
+    if (clean.split('/').some((part) => part.startsWith('.') || IGNORED_DIRECTORIES.has(part))) {
+      throw new Error('Hidden and generated project directories cannot be browsed.');
+    }
+    const realDirectory = await resolveWorkspaceDirectory(workspace, clean);
+    const stat = await fs.stat(realDirectory);
+    if (!stat.isDirectory()) throw new Error('The requested path is not a directory.');
+    const entries = await fs.readdir(realDirectory, { withFileTypes: true });
+    const visible = entries
+      .filter((entry) => !entry.name.startsWith('.') && !entry.isSymbolicLink() && (entry.isDirectory() || entry.isFile()))
+      .filter((entry) => !entry.isDirectory() || !IGNORED_DIRECTORIES.has(entry.name))
+      .filter((entry) => entry.isDirectory() || (!isIgnoredFile(entry.name) && !isPreviewAsset(entry.name)))
+      .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
+    const offset = Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0;
+    const page = visible.slice(offset, offset + DIRECTORY_PAGE_SIZE).map((entry) => ({
+      name: entry.name,
+      path: clean ? `${clean}/${entry.name}` : entry.name,
+      kind: entry.isDirectory() ? 'directory' : 'file'
+    }));
+    return { entries: page, nextCursor: offset + page.length < visible.length ? offset + page.length : null };
+  }
+
   async function saveFiles(workspaceId, requestedFiles) {
     const workspace = workspaces.get(workspaceId);
     if (!workspace) throw new Error('This desktop workspace is no longer open. Reopen its folder before saving.');
@@ -223,22 +265,24 @@ function createWorkspaceAccess() {
         }
 
         const relativePath = normalizeRelativePath(file.name);
-        let target = workspace.fileMap.get(relativePath);
-        const wasOpenedFile = Boolean(target);
-        if (!target) {
+        const hadMappedPath = workspace.fileMap.has(relativePath);
+        if (!hadMappedPath) {
           if (workspace.mode !== 'folder') {
             throw new Error('New files can only be created in a folder workspace.');
           }
-          target = ensureInsideRoot(workspace.root, relativePath);
-          await fs.mkdir(path.dirname(target), { recursive: true });
         }
-
-        if (!isWithinRoot(workspace.root, target)) throw new Error('The destination is outside the opened workspace.');
-        const realParent = await fs.realpath(path.dirname(target));
-        if (realParent !== workspace.root && !isWithinRoot(workspace.root, realParent)) {
-          throw new Error('The destination directory resolves outside the opened workspace.');
+        const pathParts = relativePath.split('/');
+        let target;
+        if (hadMappedPath) {
+          const mapped = workspace.fileMap.get(relativePath);
+          if (!isWithinRoot(workspace.root, mapped)) throw new Error('The destination is outside the opened workspace.');
+          const parent = await fs.realpath(path.dirname(mapped));
+          if (parent !== workspace.root && !isWithinRoot(workspace.root, parent)) throw new Error('The destination is outside the opened workspace.');
+          target = path.join(parent, path.basename(mapped));
+        } else {
+          const parent = await resolveWorkspaceDirectory(workspace, pathParts.slice(0, -1).join('/'), true);
+          target = path.join(parent, pathParts.at(-1));
         }
-        target = path.join(realParent, path.basename(target));
         try {
           const existing = await fs.lstat(target);
           if (existing.isSymbolicLink() || !existing.isFile()) {
@@ -251,9 +295,15 @@ function createWorkspaceAccess() {
           if (error && error.code !== 'ENOENT') throw error;
         }
 
+        if (file.expectedVersion !== undefined) {
+          const current = await fs.readFile(target, 'utf8').catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+          const currentVersion = current === null ? null : hashContent(current);
+          if (currentVersion !== (file.expectedVersion || null)) throw new Error('This file changed on disk. Reload it before saving to avoid overwriting external changes.');
+        }
+
         temporaryPath = path.join(path.dirname(target), `.shadrox-${randomUUID()}.tmp`);
         await fs.writeFile(temporaryPath, file.content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-        if (wasOpenedFile) {
+        if (hadMappedPath) {
           await fs.rename(temporaryPath, target);
         } else {
           await fs.link(temporaryPath, target);
@@ -261,6 +311,7 @@ function createWorkspaceAccess() {
         }
         workspace.fileMap.set(relativePath, target);
         saved.push(relativePath);
+        if (!workspace.fileMap.has(relativePath)) workspace.fileMap.set(relativePath, target);
       } catch (error) {
         if (temporaryPath) await fs.rm(temporaryPath, { force: true }).catch(() => {});
         errors.push({
@@ -272,6 +323,67 @@ function createWorkspaceAccess() {
     return { saved, errors };
   }
 
+  async function stageFiles(workspaceId, requestedFiles) {
+    const workspace = workspaces.get(workspaceId);
+    if (!workspace) throw new Error('This desktop workspace is no longer open.');
+    if (!Array.isArray(requestedFiles) || requestedFiles.length === 0 || requestedFiles.length > MAX_FILES) throw new Error('A staged change must contain between 1 and 400 files.');
+    const staged = [];
+    for (const file of requestedFiles) {
+      const clean = normalizeRelativePath(file?.name);
+      const content = file?.content;
+      if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > MAX_TEXT_BYTES) throw new Error(`${clean} is missing content or exceeds the 2 MiB write limit.`);
+      if (clean.split('/').some((part) => part.startsWith('.') || IGNORED_DIRECTORIES.has(part)) || isIgnoredFile(path.posix.basename(clean)) || isPreviewAsset(clean)) {
+        throw new Error(`${clean} is not an editable workspace file.`);
+      }
+      let target;
+      if (workspace.fileMap.has(clean)) {
+        target = (await resolveWorkspaceFile(workspace, clean)).realPath;
+      } else {
+        if (workspace.mode !== 'folder') throw new Error(`Cannot create ${clean} in a file-only workspace.`);
+        const parts = clean.split('/');
+        const parent = await resolveWorkspaceDirectory(workspace, parts.slice(0, -1).join('/'));
+        target = path.join(parent, parts.at(-1));
+        const existing = await fs.lstat(target).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+        if (existing?.isSymbolicLink() || (existing && !workspace.fileMap.has(clean))) throw new Error(`A file already exists at ${clean}.`);
+      }
+      const current = await fs.readFile(target, 'utf8').catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+      const version = current === null ? null : hashContent(current);
+      if (file.expectedVersion !== undefined && (file.expectedVersion || null) !== version) throw new Error(`${clean} changed on disk. Reload it before staging changes.`);
+      staged.push({ name: clean, before: current, after: content, expectedVersion: version });
+    }
+    const transactionId = randomUUID();
+    workspace.transactions ??= new Map();
+    workspace.transactions.set(transactionId, staged);
+    return { transactionId, files: staged.map(({ name, before, after }) => ({ name, before, after })) };
+  }
+
+  async function commitTransaction(workspaceId, transactionId) {
+    const workspace = workspaces.get(workspaceId);
+    const transaction = workspace?.transactions?.get(transactionId);
+    if (!workspace || !transaction) throw new Error('The staged change expired. Generate it again.');
+    const files = [];
+    for (const file of transaction) {
+      const parts = file.name.split('/');
+      const target = workspace.fileMap.has(file.name)
+        ? (await resolveWorkspaceFile(workspace, file.name)).realPath
+        : path.join(await resolveWorkspaceDirectory(workspace, parts.slice(0, -1).join('/')), parts.at(-1));
+      const existing = await fs.lstat(target).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+      if (existing?.isSymbolicLink() || (existing && !workspace.fileMap.has(file.name))) throw new Error(`A file appeared at ${file.name} after the proposal was prepared.`);
+      const current = await fs.readFile(target, 'utf8').catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+      if ((current === null ? null : hashContent(current)) !== file.expectedVersion) throw new Error(`${file.name} changed after the proposal was prepared. Generate it again.`);
+      files.push({ name: file.name, content: file.after, expectedVersion: file.expectedVersion });
+    }
+    const result = await saveFiles(workspaceId, files);
+    if (result.errors.length) return result;
+    workspace.transactions.delete(transactionId);
+    return result;
+  }
+
+  function discardTransaction(workspaceId, transactionId) {
+    const workspace = workspaces.get(workspaceId);
+    workspace?.transactions?.delete(transactionId);
+  }
+
   function getWorkspace(workspaceId) {
     return workspaces.get(workspaceId) ?? null;
   }
@@ -280,7 +392,7 @@ function createWorkspaceAccess() {
     workspaces.delete(workspaceId);
   }
 
-  return { openFolder, openFiles, saveFiles, getWorkspace, closeWorkspace };
+  return { openFolder, openFiles, listDirectory, readFile, saveFiles, stageFiles, commitTransaction, discardTransaction, getWorkspace, closeWorkspace };
 }
 
 module.exports = { createWorkspaceAccess, normalizeRelativePath, isWithinRoot };

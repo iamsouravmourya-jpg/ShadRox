@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Bug, Code2, Eye, FolderOpen, Loader2, Save, Settings } from 'lucide-react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, Bug, Code2, Eye, FolderOpen, Loader2, Save, Settings, Terminal } from 'lucide-react';
 import { ShadRoxLogo } from './components/Logo';
-import { Stage1Auth } from './components/Stage1Auth';
 import { Stage2Hub } from './components/Stage2Hub';
 import { CodeEditor } from './components/CodeEditor';
 import { PreviewPane } from './components/PreviewPane';
@@ -15,12 +14,13 @@ import {
   getDesktopBridge,
   type DesktopPreviewOutput,
   type DesktopPreviewState,
-  type PreviewApprovalRequest
+  type PreviewApprovalRequest,
+  type PreviewProjectCandidate
 } from './lib/desktop';
 import { extractFilePatches } from './lib/markdown';
 import { PREVIEW_BASE_STYLE, PREVIEW_ERROR_BRIDGE, previewCapabilityMessage, resolvePreviewDocument } from './lib/preview';
 import { renderRetrievedContext, retrieveContext } from './lib/retrieval';
-import { getPlan, getSessionToken, setPlan as persistPlan, setSessionToken } from './lib/storage';
+import { getPlan, setPlan as persistPlan } from './lib/storage';
 import { getMonthlyUsage, recordMessageSent } from './lib/quota';
 import type {
   ChatMessage,
@@ -34,6 +34,8 @@ import type {
   TabType,
   ViewportSize
 } from './lib/types';
+
+const TerminalPanel = lazy(() => import('./components/TerminalPanel').then((module) => ({ default: module.TerminalPanel })));
 
 /** Result of the esbuild-wasm compile that powers the live preview. */
 type BundleState =
@@ -51,8 +53,7 @@ function makeId(prefix: string): string {
 }
 
 export default function App() {
-  const [activeStage, setActiveStage] = useState<Stage>(() => (getSessionToken() ? 'STAGE_2' : 'STAGE_1'));
-  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [activeStage, setActiveStage] = useState<Stage>('STAGE_2');
 
   const workspace = useWorkspace();
   const byok = useByok();
@@ -60,6 +61,7 @@ export default function App() {
   const assets = workspace.assets;
 
   const [activeTab, setActiveTab] = useState<TabType>('CODE');
+  const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [viewport, setViewport] = useState<ViewportSize>('desktop');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('CHAT');
@@ -81,6 +83,7 @@ export default function App() {
   const [localRuntime, setLocalRuntime] = useState<DesktopPreviewState>({ status: 'idle', url: null });
   const [localRuntimeLogs, setLocalRuntimeLogs] = useState<DesktopPreviewOutput[]>([]);
   const [previewApproval, setPreviewApproval] = useState<PreviewApprovalRequest | null>(null);
+  const [previewProjects, setPreviewProjects] = useState<PreviewProjectCandidate[]>([]);
 
   const abortRef = useRef<AbortController | null>(null);
   const autoPreviewWorkspaceRef = useRef<string | null>(null);
@@ -91,9 +94,14 @@ export default function App() {
   }, [desktop, nativeWorkspaceId, workspace.workspace?.kind]);
 
   useEffect(() => {
+    setIsTerminalOpen(false);
+  }, [nativeWorkspaceId]);
+
+  useEffect(() => {
     setLocalRuntime({ status: 'idle', url: null });
     setLocalRuntimeLogs([]);
     setPreviewApproval(null);
+    setPreviewProjects([]);
     if (!desktop || !nativeWorkspaceId) return;
 
     return desktop.onPreviewOutput((output) => {
@@ -112,25 +120,35 @@ export default function App() {
     });
   }, [desktop, nativeWorkspaceId]);
 
-  const startLocalPreview = useCallback(async (approval?: PreviewApprovalRequest) => {
+  const startLocalPreview = useCallback(async (approval?: PreviewApprovalRequest, project?: PreviewProjectCandidate) => {
     if (!desktop || !nativeWorkspaceId) return;
     setLocalRuntime({ status: 'starting', url: null });
     setLocalRuntimeLogs([]);
+    setPreviewProjects([]);
     try {
       const result = await desktop.startPreview(
         nativeWorkspaceId,
-        approval ? { manifestHash: approval.manifestHash, approved: true } : undefined
+        approval
+          ? { projectPath: approval.projectPath, projectKind: 'node', manifestHash: approval.manifestHash, approved: true }
+          : project ? { projectPath: project.projectPath, projectKind: project.kind, approved: false } : undefined
       );
+      if (result.status === 'selection-required') {
+        setPreviewProjects(result.projects);
+        setLocalRuntime({ status: 'idle', url: null });
+        return;
+      }
       if (result.status === 'approval-required') {
         setPreviewApproval(result.approval);
         setLocalRuntime({ status: 'idle', url: null });
         return;
       }
       setPreviewApproval(null);
+      setPreviewProjects([]);
       setLocalRuntime({ status: 'ready', url: result.url });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setPreviewApproval(null);
+      setPreviewProjects([]);
       setLocalRuntime({ status: 'error', url: null, message });
       setLocalRuntimeLogs((previous) => [...previous.slice(-99), {
         workspaceId: nativeWorkspaceId,
@@ -148,6 +166,7 @@ export default function App() {
 
   const cancelPreviewApproval = useCallback(() => {
     setPreviewApproval(null);
+    setPreviewProjects([]);
     if (!nativeWorkspaceId) return;
     setLocalRuntime({ status: 'idle', url: null });
     setLocalRuntimeLogs((previous) => [...previous.slice(-99), {
@@ -204,15 +223,6 @@ export default function App() {
 
   useEffect(() => {
     return () => abortRef.current?.abort();
-  }, []);
-
-  const handleSignIn = useCallback(() => {
-    setIsSigningIn(true);
-    window.setTimeout(() => {
-      setSessionToken(`demo-${Date.now()}`);
-      setActiveStage('STAGE_2');
-      setIsSigningIn(false);
-    }, 350);
   }, []);
 
   const handleReopenRecent = useCallback(
@@ -432,6 +442,7 @@ export default function App() {
 
     let reply = '';
     let applied = false;
+    let streamCompleted = false;
 
     const applyReplyPatches = () => {
       if (applied) return;
@@ -488,12 +499,14 @@ export default function App() {
               )
             );
           },
-          onDone: () =>
+          onDone: () => {
+            streamCompleted = true;
             setMessages((previous) =>
               previous.map((message) =>
                 message.id === modelMessage.id ? { ...message, streaming: false } : message
               )
-            ),
+            );
+          },
           onError: (error) =>
             setMessages((previous) =>
               previous.map((message) =>
@@ -524,7 +537,7 @@ export default function App() {
     } finally {
       setIsGenerating(false);
       abortRef.current = null;
-      applyReplyPatches();
+      if (streamCompleted) applyReplyPatches();
     }
   }, [
     input,
@@ -619,10 +632,6 @@ export default function App() {
     window.setTimeout(() => setToast(null), 2500);
   }, [byok.activeProvider, byok.selectedModel, workspace.files.length, workspace.dirtyFiles.length]);
 
-  if (activeStage === 'STAGE_1') {
-    return <Stage1Auth onSignIn={handleSignIn} isSigningIn={isSigningIn} />;
-  }
-
   if (activeStage === 'STAGE_2') {
     return (
       <Stage2Hub
@@ -696,6 +705,20 @@ export default function App() {
           )}
 
           {/* Code vs Preview Tab Switcher */}
+          {localPreviewAvailable && (
+            <button
+              type="button"
+              onClick={() => setIsTerminalOpen((open) => !open)}
+              aria-pressed={isTerminalOpen}
+              className={`flex items-center gap-1.5 px-2 py-1 border text-[11px] transition-colors cursor-pointer ${
+                isTerminalOpen ? 'border-emerald-900/60 bg-emerald-950/30 text-emerald-300' : 'border-neutral-800 text-neutral-500 hover:text-white'
+              }`}
+              title={isTerminalOpen ? 'Close interactive terminal' : 'Open interactive terminal'}
+            >
+              <Terminal className="w-3 h-3" />
+              Terminal
+            </button>
+          )}
           <div className="flex items-center border border-neutral-800 mr-1">
             <button
               type="button"
@@ -782,7 +805,8 @@ export default function App() {
         </div>
 
         <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-          {workspace.files.length === 0 ? (
+          <div className="flex-1 min-h-0 flex flex-col">
+          {workspace.files.length === 0 && workspace.workspace?.kind !== 'folder' ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
               <FolderOpen className="w-6 h-6 text-neutral-700" />
               <p className="mt-3 text-xs text-neutral-400">No files open in workspace.</p>
@@ -808,6 +832,10 @@ export default function App() {
               onNewFile={handleNewFile}
               onSaveAll={() => void workspace.saveAll()}
               workspaceName={workspace.workspace?.name}
+              nativeDirectoryPages={workspace.workspace?.kind === 'folder' ? workspace.directoryPages : undefined}
+              loadingDirectories={workspace.loadingDirectories}
+              onLoadDirectory={(path, cursor) => void workspace.loadDirectory(path, cursor)}
+              onOpenPath={(path) => void workspace.openFile(path)}
             />
           ) : (
             <PreviewPane
@@ -816,6 +844,9 @@ export default function App() {
               localPreviewAvailable={localPreviewAvailable}
               localPreviewState={localRuntime}
               localPreviewLogs={localRuntimeLogs}
+              previewProjects={previewProjects}
+              onChoosePreviewProject={(project) => void startLocalPreview(undefined, project)}
+              onCancelProjectSelection={() => setPreviewProjects([])}
               onStartLocalPreview={() => void startLocalPreview()}
               onStopLocalPreview={() => void stopLocalPreview()}
               onClearLocalPreviewLogs={() => setLocalRuntimeLogs([])}
@@ -827,6 +858,20 @@ export default function App() {
               isBundling={bundleState.status === 'loading'}
               bundleError={bundleState.status === 'error' ? bundleState.message : null}
             />
+          )}
+          </div>
+          {isTerminalOpen && localPreviewAvailable && desktop && nativeWorkspaceId && (
+            <div className="h-56 shrink-0 border-t border-neutral-800">
+              <Suspense fallback={<div className="h-full bg-neutral-950 px-3 py-2 text-xs text-neutral-500">Loading terminal…</div>}>
+                <TerminalPanel
+                  key={nativeWorkspaceId}
+                  desktop={desktop}
+                  workspaceId={nativeWorkspaceId}
+                  workspaceName={workspace.workspace?.name ?? 'Workspace'}
+                  onClose={() => setIsTerminalOpen(false)}
+                />
+              </Suspense>
+            </div>
           )}
         </div>
       </div>

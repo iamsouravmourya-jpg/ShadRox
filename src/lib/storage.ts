@@ -7,7 +7,6 @@ const STORE_KEYS = {
   activeProvider: 'shadrox.provider.active',
   useSharedKey: 'shadrox.key.shared',
   plan: 'shadrox.plan',
-  session: 'shadrox.session',
   recents: 'shadrox.recents'
 } as const;
 
@@ -83,18 +82,6 @@ export function getPlan(): PlanTier {
 
 export function setPlan(plan: PlanTier): void {
   safeSet(STORE_KEYS.plan, plan);
-}
-
-export function getSessionToken(): string {
-  return safeGet(STORE_KEYS.session) || '';
-}
-
-export function setSessionToken(token: string): void {
-  safeSet(STORE_KEYS.session, token);
-}
-
-export function clearSessionToken(): void {
-  safeRemove(STORE_KEYS.session);
 }
 
 export function getRecentWorkspaces(): RecentEntry[] {

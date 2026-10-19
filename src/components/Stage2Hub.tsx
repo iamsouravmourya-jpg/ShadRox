@@ -1,4 +1,4 @@
-import { Clock, FileCode, FolderOpen } from 'lucide-react';
+import { Clock, FileCode, FolderOpen, Laptop } from 'lucide-react';
 import { ShadRoxLogo } from './Logo';
 import type { RecentEntry } from '../lib/types';
 
@@ -39,19 +39,17 @@ export function Stage2Hub({
           <span className="text-neutral-700 text-xs">/</span>
           <span className="text-xs text-neutral-400">Workspace Hub</span>
         </div>
-        <div className="flex items-center gap-2 text-xs text-neutral-500">
-          <span className="hidden sm:inline">Local Engine</span>
-          <div className="w-7 h-7 rounded-full border border-neutral-800 bg-neutral-900 flex items-center justify-center text-[11px] font-semibold text-white">
-            S
-          </div>
+        <div className="flex items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-xs text-neutral-400">
+          <Laptop className="h-3.5 w-3.5 text-emerald-400" />
+          <span>Runs on this device</span>
         </div>
       </header>
 
       <main className="flex-1 overflow-y-auto px-6 py-12 flex items-center justify-center">
         <div className="w-full max-w-lg mx-auto flex flex-col items-center text-center">
           <h2 className="text-lg font-semibold text-white">Open Project</h2>
-          <p className="text-xs text-neutral-400 mt-1 max-w-sm">
-            Files remain strictly on your local computer. Zero server uploads.
+          <p className="text-xs text-neutral-400 mt-1 max-w-sm leading-relaxed">
+            Your project stays on this device. Chat sends your prompt and relevant code context directly to your selected AI provider.
           </p>
 
           <div className="mt-8 grid grid-cols-2 gap-4 w-full">

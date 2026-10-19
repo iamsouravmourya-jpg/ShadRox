@@ -24,17 +24,23 @@ test('loads a folder and writes existing and new files only inside that workspac
 
   const access = createWorkspaceAccess();
   const opened = await access.openFolder(root);
-  assert.deepEqual(opened.files.map((file) => file.name), ['src/App.tsx']);
+  assert.deepEqual(opened.files, [], 'Opening a folder should not eagerly read all files.');
+  const rootPage = await access.listDirectory(opened.workspaceId);
+  assert.deepEqual(rootPage.entries.map(({ name, kind }) => [name, kind]), [['src', 'directory']]);
+  const sourcePage = await access.listDirectory(opened.workspaceId, 'src');
+  assert.deepEqual(sourcePage.entries.map(({ name, kind }) => [name, kind]), [['App.tsx', 'file']]);
+  const appFile = await access.readFile(opened.workspaceId, 'src/App.tsx');
+  assert.equal(appFile.content, 'export default 1;');
   await fs.writeFile(path.join(root, 'src', 'unseen.ts'), 'do not overwrite');
 
   const result = await access.saveFiles(opened.workspaceId, [
-    { name: 'src/App.tsx', content: 'export default 2;' },
-    { name: 'src/new/Widget.tsx', content: 'export default 3;' },
+    { name: 'src/App.tsx', content: 'export default 2;', expectedVersion: appFile.version },
+    { name: 'src/new/Widget.tsx', content: 'export default 3;', expectedVersion: null },
     { name: 'src/unseen.ts', content: 'must not overwrite' },
     { name: '../outside.txt', content: 'must not escape' }
   ]);
 
-  assert.deepEqual(result.saved, ['src/App.tsx', 'src/new/Widget.tsx']);
+  assert.deepEqual(result.saved, ['src/App.tsx', 'src/new/Widget.tsx'], JSON.stringify(result.errors));
   assert.equal(result.errors.length, 2);
   assert.equal(await fs.readFile(path.join(root, 'src', 'App.tsx'), 'utf8'), 'export default 2;');
   assert.equal(await fs.readFile(path.join(root, 'src', 'new', 'Widget.tsx'), 'utf8'), 'export default 3;');
@@ -76,12 +82,13 @@ test('multi-file workspaces may update selected files but cannot create arbitrar
 
   const access = createWorkspaceAccess();
   const opened = await access.openFiles([selected]);
+  assert.equal(opened.files[0].content, 'before');
   const result = await access.saveFiles(opened.workspaceId, [
-    { name: 'Selected.ts', content: 'after' },
+    { name: 'Selected.ts', content: 'after', expectedVersion: opened.files[0].version },
     { name: 'New.ts', content: 'not allowed' }
   ]);
 
-  assert.deepEqual(result.saved, ['Selected.ts']);
+  assert.deepEqual(result.saved, ['Selected.ts'], JSON.stringify(result.errors));
   assert.equal(result.errors.length, 1);
   assert.equal(await fs.readFile(selected, 'utf8'), 'after');
   assert.equal(await fs.access(path.join(root, 'New.ts')).then(() => true, () => false), false);
