@@ -6,7 +6,7 @@ import { loadHandles, pruneHandles, saveHandles } from '../lib/fileHandles';
 import { listCheckpoints, loadCheckpointFiles, saveCheckpoint, type CheckpointMeta } from '../lib/history';
 import { getSnapshot, pruneSnapshots, saveSnapshot } from '../lib/snapshots';
 import { getRecentWorkspaces, pushRecentWorkspace } from '../lib/storage';
-import { getDesktopBridge } from '../lib/desktop';
+import { getDesktopBridge, type DirectoryPage, type StagedTransaction, type WorkspaceChange } from '../lib/desktop';
 import {
   filesFromFileList,
   hydrateAssets,
@@ -33,7 +33,24 @@ interface MountOptions {
   assets?: AssetMap;
 }
 
+export interface PatchProposal extends StagedTransaction {
+  workspaceId: string;
+  base: WorkspaceFile[];
+}
+
 interface UseWorkspaceResult {
+  directoryPages: Record<string, DirectoryPage>;
+  loadingDirectories: string[];
+  loadDirectory: (path: string, cursor?: number) => Promise<void>;
+  openFile: (path: string) => Promise<void>;
+  closeTab: (index: number) => void;
+  conflicts: string[];
+  resolveConflict: (name: string, action: 'reload' | 'keep') => Promise<void>;
+  pendingProposal: PatchProposal | null;
+  stageFilePatches: (patches: FilePatch[], base: WorkspaceFile[], workspaceId: string) => Promise<void>;
+  applyProposal: () => Promise<void>;
+  discardProposal: () => Promise<void>;
+  changeRevision: number;
   workspace: WorkspaceFolder | null;
   files: WorkspaceFile[];
   activeFile: WorkspaceFile | null;
@@ -77,6 +94,11 @@ interface UseWorkspaceResult {
 
 const EMPTY_FILES: WorkspaceFile[] = [];
 
+async function contentVersion(content: string): Promise<string> {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
+  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export function useWorkspace(): UseWorkspaceResult {
   const [workspace, setWorkspace] = useState<WorkspaceFolder | null>(null);
   // Nothing is selected on mount: the user sees the file list first and picks.
@@ -102,7 +124,22 @@ export function useWorkspace(): UseWorkspaceResult {
   const directoryHandleRef = useRef<any>(null);
   const canWriteRef = useRef(false);
   const desktopWorkspaceIdRef = useRef<string | null>(null);
-  const desktopWorkspaceIdsRef = useRef(new Map<string, string>());
+  const workspaceIdentityRef = useRef<string | null>(null);
+  const [directoryPages, setDirectoryPages] = useState<Record<string, DirectoryPage>>({});
+  const pagesRef = useRef(directoryPages);
+  pagesRef.current = directoryPages;
+  const [loadingDirectories, setLoadingDirectories] = useState<string[]>([]);
+  const directoryRequests = useRef(new Map<string, symbol>());
+  const fileRequest = useRef(0);
+  const [conflicts, setConflicts] = useState<string[]>([]);
+  const conflictRef = useRef(conflicts);
+  conflictRef.current = conflicts;
+  const deletedPaths = useRef(new Set<string>());
+  const [pendingProposal, setPendingProposal] = useState<PatchProposal | null>(null);
+  const proposalRef = useRef(pendingProposal);
+  proposalRef.current = pendingProposal;
+  const savingRef = useRef(false);
+  const [changeRevision, setChangeRevision] = useState(0);
 
   useEffect(() => {
     filesRef.current = files;
@@ -128,7 +165,16 @@ export function useWorkspace(): UseWorkspaceResult {
       handlesRef.current = new Map(handles.map((entry) => [entry.path, entry.handle]));
       directoryHandleRef.current = options.directoryHandle ?? null;
       desktopWorkspaceIdRef.current = options.nativeWorkspaceId ?? null;
-      if (options.nativeWorkspaceId) desktopWorkspaceIdsRef.current.set(path, options.nativeWorkspaceId);
+      workspaceIdentityRef.current = `${kind}-${path}`;
+      filesRef.current = nextFiles;
+      baselineRef.current = Object.fromEntries(nextFiles.map((file) => [file.name, file.content]));
+      setDirectoryPages({});
+      pagesRef.current = {};
+      directoryRequests.current.clear();
+      fileRequest.current += 1;
+      setLoadingDirectories([]);
+      setConflicts([]);
+      setPendingProposal(null);
       setAssets(options.assets ?? {});
       const writable = handles.length > 0 || Boolean(options.directoryHandle) || Boolean(options.nativeWorkspaceId);
       canWriteRef.current = writable;
@@ -163,10 +209,6 @@ export function useWorkspace(): UseWorkspaceResult {
       try {
         const opened = await desktop.openFolder();
         if (!opened) return;
-        if (opened.files.length === 0) {
-          setStatusMessage('No readable code files found in the selected folder.');
-          return;
-        }
         mount(opened.name, opened.workspaceId, 'folder', opened.files.map((file) => ({
           ...file,
           language: detectLanguage(file.name)
@@ -284,21 +326,21 @@ export function useWorkspace(): UseWorkspaceResult {
     async (entry: RecentEntry) => {
       setIsBusy(true);
       try {
+        if (getDesktopBridge()) {
+          setStatusMessage(`Select ${entry.name} again to read its current files and restore disk access.`);
+          if (entry.kind === 'folder') await openFolder();
+          else await openFiles();
+          return;
+        }
         const snapshot = await getSnapshot(entry.path);
         if (snapshot && snapshot.files.length > 0) {
-          const nativeWorkspaceId = desktopWorkspaceIdsRef.current.get(entry.path);
-          if (getDesktopBridge() && !nativeWorkspaceId) {
-            setStatusMessage(`Reopen ${entry.name} from its folder to restore native disk access.`);
-            return;
-          }
           // Handles live in their own store, so a reopened workspace can still
           // write to disk once the browser re-grants permission — and its
           // images can be read back into the preview.
           const handles = await loadHandles(entry.path);
           mount(snapshot.name, snapshot.path, snapshot.kind, snapshot.files, {
             handles,
-            assets: await hydrateAssets(handles),
-            nativeWorkspaceId
+            assets: await hydrateAssets(handles)
           });
           return;
         }
@@ -315,7 +357,155 @@ export function useWorkspace(): UseWorkspaceResult {
     [mount, openFolder, openFiles]
   );
 
-  const selectFile = useCallback((index: number) => setActiveFileIndex(index), []);
+  const loadDirectory = useCallback(async (path: string, cursor = 0) => {
+    const desktop = getDesktopBridge();
+    const id = desktopWorkspaceIdRef.current;
+    if (!desktop || !id || directoryRequests.current.has(path)) return;
+    const request = Symbol();
+    directoryRequests.current.set(path, request);
+    setLoadingDirectories((previous) => [...previous, path]);
+    try {
+      const page = await desktop.listDirectory(id, path, cursor);
+      if (desktopWorkspaceIdRef.current !== id) return;
+      setDirectoryPages((previous) => ({
+        ...previous,
+        [path]: { ...page, entries: cursor ? [...(previous[path]?.entries ?? []), ...page.entries] : page.entries }
+      }));
+    } catch (error) {
+      if (desktopWorkspaceIdRef.current === id) setStatusMessage(String(error));
+    } finally {
+      if (directoryRequests.current.get(path) === request) {
+        directoryRequests.current.delete(path);
+        setLoadingDirectories((previous) => previous.filter((entry) => entry !== path));
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (workspace?.nativeWorkspaceId) void loadDirectory('');
+  }, [workspace?.nativeWorkspaceId, loadDirectory]);
+
+  const openFile = useCallback(async (name: string) => {
+    const desktop = getDesktopBridge();
+    const id = desktopWorkspaceIdRef.current;
+    if (!desktop || !id) return;
+    const request = ++fileRequest.current;
+    const existing = filesRef.current.findIndex((file) => file.name === name);
+    if (existing >= 0) { setActiveFileIndex(existing); return; }
+    try {
+      const loaded = await desktop.readFile(id, name);
+      if (desktopWorkspaceIdRef.current !== id) return;
+      const next = [...filesRef.current.filter((file) => file.name !== name), { ...loaded, language: detectLanguage(name) }];
+      while (next.length > 48) {
+        const removable = next.findIndex((file) => file.name !== name && file.content === baselineRef.current[file.name] && !conflictRef.current.includes(file.name));
+        if (removable < 0) break;
+        next.splice(removable, 1);
+      }
+      filesRef.current = next;
+      baselineRef.current = { ...baselineRef.current, [name]: loaded.content };
+      setDiskBaseline(baselineRef.current);
+      setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
+      if (request === fileRequest.current) setActiveFileIndex(next.findIndex((file) => file.name === name));
+    } catch (error) {
+      if (desktopWorkspaceIdRef.current === id) setStatusMessage(`Could not open ${name}: ${String(error)}`);
+    }
+  }, []);
+
+  const closeTab = useCallback((index: number) => {
+    const current = filesRef.current;
+    const file = current[index];
+    if (!file) return;
+    if (file.content !== baselineRef.current[file.name] && !window.confirm(`Discard unsaved changes in ${file.name}?`)) return;
+    const next = current.filter((_, i) => i !== index);
+    filesRef.current = next;
+    setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
+    setActiveFileIndex((active) => active === index ? Math.min(index, next.length - 1) : active > index ? active - 1 : active);
+    setConflicts((previous) => previous.filter((name) => name !== file.name));
+  }, []);
+
+  const refreshDiskFile = useCallback(async (name: string, force?: 'reload' | 'keep') => {
+    const desktop = getDesktopBridge();
+    const id = desktopWorkspaceIdRef.current;
+    if (!desktop || !id) return;
+    try {
+      const loaded = await desktop.readFile(id, name);
+      if (desktopWorkspaceIdRef.current !== id) return;
+      const current = filesRef.current.find((file) => file.name === name);
+      if (!current) return;
+      if (!force && current.content !== baselineRef.current[name] && current.content !== loaded.content && baselineRef.current[name] !== loaded.content) {
+        setConflicts((previous) => [...new Set([...previous, name])]);
+        return;
+      }
+      const next = filesRef.current.map((file) => file.name !== name ? file : {
+        ...file, content: force === 'keep' || (!force && current.content !== baselineRef.current[name]) ? current.content : loaded.content,
+        version: loaded.version
+      });
+      filesRef.current = next;
+      baselineRef.current = { ...baselineRef.current, [name]: loaded.content };
+      setDiskBaseline(baselineRef.current);
+      setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
+      setConflicts((previous) => previous.filter((path) => path !== name));
+    } catch (error) {
+      if (desktopWorkspaceIdRef.current !== id) return;
+      setConflicts((previous) => [...new Set([...previous, name])]);
+      setDiskMessage(`Cannot reload ${name}; it may have been deleted or moved. Your editor buffer is preserved. ${String(error)}`);
+    }
+  }, []);
+
+  const resolveConflict = useCallback(async (name: string, action: 'reload' | 'keep') => {
+    if (deletedPaths.current.has(name)) {
+      const next = action === 'reload' ? filesRef.current.filter((file) => file.name !== name)
+        : filesRef.current.map((file) => file.name === name ? { ...file, version: undefined } : file);
+      filesRef.current = next;
+      delete baselineRef.current[name];
+      setDiskBaseline({ ...baselineRef.current });
+      setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
+      setActiveFileIndex(-1);
+      setConflicts((previous) => previous.filter((path) => path !== name));
+      deletedPaths.current.delete(name);
+      return;
+    }
+    await refreshDiskFile(name, action);
+  }, [refreshDiskFile]);
+
+  useEffect(() => {
+    const desktop = getDesktopBridge();
+    const id = workspace?.nativeWorkspaceId;
+    if (!desktop || !id) return;
+    let queued: WorkspaceChange['changes'] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
+    const flush = () => {
+      if (disposed) return;
+      if (savingRef.current) { timer = setTimeout(flush, 100); return; }
+      const changes = queued;
+      queued = [];
+      const parents = new Set(changes.map(({ path }) => path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''));
+      for (const parent of parents) if (pagesRef.current[parent]) void loadDirectory(parent);
+      for (const file of filesRef.current) {
+        const change = [...changes].reverse().find((entry) => entry.path === file.name || (entry.kind === 'unlinkDir' && file.name.startsWith(`${entry.path}/`)));
+        if (change) {
+          if (change.kind === 'unlink' || change.kind === 'unlinkDir') {
+            deletedPaths.current.add(file.name);
+            setConflicts((previous) => [...new Set([...previous, file.name])]);
+          } else {
+            deletedPaths.current.delete(file.name);
+            void refreshDiskFile(file.name);
+          }
+        }
+      }
+      setChangeRevision((value) => value + 1);
+    };
+    const unsubscribe = desktop.onWorkspaceChange((event) => {
+      if (event.workspaceId !== id) return;
+      queued = [...queued, ...event.changes].slice(-2000);
+      clearTimeout(timer);
+      timer = setTimeout(flush, 150);
+    });
+    return () => { disposed = true; clearTimeout(timer); unsubscribe(); };
+  }, [workspace?.nativeWorkspaceId, loadDirectory, refreshDiskFile]);
+
+  const selectFile = useCallback((index: number) => { fileRequest.current += 1; setActiveFileIndex(index); }, []);
 
   const closeFile = useCallback(() => setActiveFileIndex(-1), []);
 
@@ -331,6 +521,33 @@ export function useWorkspace(): UseWorkspaceResult {
     },
     [activeFileIndex]
   );
+
+  const applyFilePatches = useCallback((patches: FilePatch[]): ApplyPatchesResult => {
+    const result: ApplyPatchesResult = { updated: [], created: [], unchanged: [] };
+    if (!workspace || workspaceIdentityRef.current !== `${workspace.kind}-${workspace.path}` || patches.length === 0) return result;
+    const next = [...filesRef.current];
+    for (const patch of patches) {
+      const target = patch.path.replace(/\\/g, '/').replace(/^\.\//, '');
+      if (!target || target.split('/').some((part) => !part || part === '.' || part === '..')) continue;
+      const index = next.findIndex((file) => file.name.toLowerCase() === target.toLowerCase());
+      if (index >= 0) {
+        if (next[index].content === patch.content) result.unchanged.push(next[index].name);
+        else {
+          next[index] = { ...next[index], content: patch.content };
+          result.updated.push(next[index].name);
+        }
+      } else {
+        next.push({ name: target, content: patch.content, language: detectLanguage(target) });
+        result.created.push(target);
+      }
+    }
+    if (result.updated.length || result.created.length) {
+      filesRef.current = next;
+      setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
+      setActiveFileIndex(next.findIndex((file) => file.name === result.updated[0] || file.name === result.created[0]));
+    }
+    return result;
+  }, [workspace]);
 
   // --- disk write-back -------------------------------------------------------
 
@@ -397,8 +614,12 @@ export function useWorkspace(): UseWorkspaceResult {
 
   const saveFilesToDisk = useCallback(
     async (names: string[]): Promise<void> => {
-      if (!canWriteRef.current || names.length === 0) return;
-
+      if (!canWriteRef.current || names.length === 0 || savingRef.current) return;
+      if (names.some((name) => conflictRef.current.includes(name))) {
+        setDiskMessage('Resolve external file changes before saving. No files were written.');
+        return;
+      }
+      savingRef.current = true;
       setIsSaving(true);
       setDiskMessage(null);
 
@@ -411,17 +632,20 @@ export function useWorkspace(): UseWorkspaceResult {
         const nativeWorkspaceId = desktopWorkspaceIdRef.current;
         if (desktop && nativeWorkspaceId) {
           const requested = snapshot.filter((file) => names.includes(file.name));
-          const result = await desktop.saveFiles(nativeWorkspaceId, requested);
+          const result = await desktop.saveFiles(nativeWorkspaceId, requested.map((file) => ({
+            name: file.name, content: file.content, expectedVersion: file.version ?? null
+          })));
+          if (desktopWorkspaceIdRef.current !== nativeWorkspaceId) return;
           const savedFiles = new Set(result.saved);
           written = result.saved.length;
           failed = result.errors.length > 0;
           if (savedFiles.size > 0) {
-            setDiskBaseline((previous) => ({
-              ...previous,
-              ...Object.fromEntries(
-                snapshot.filter((file) => savedFiles.has(file.name)).map((file) => [file.name, file.content])
-              )
-            }));
+            const saved = snapshot.filter((file) => savedFiles.has(file.name));
+            const versions = new Map(await Promise.all(saved.map(async (file) => [file.name, await contentVersion(file.content)] as const)));
+            if (desktopWorkspaceIdRef.current !== nativeWorkspaceId) return;
+            baselineRef.current = { ...baselineRef.current, ...Object.fromEntries(saved.map((file) => [file.name, file.content])) };
+            setDiskBaseline(baselineRef.current);
+            setWorkspace((previous) => previous ? { ...previous, files: previous.files.map((file) => versions.has(file.name) ? { ...file, version: versions.get(file.name) } : file) } : previous);
           }
           if (result.errors.length > 0) {
             setDiskMessage(
@@ -446,6 +670,7 @@ export function useWorkspace(): UseWorkspaceResult {
       } catch (error) {
         setDiskMessage(error instanceof Error ? `Save failed: ${error.message}` : 'Save failed.');
       } finally {
+        savingRef.current = false;
         setIsSaving(false);
       }
     },
@@ -461,66 +686,90 @@ export function useWorkspace(): UseWorkspaceResult {
 
   // --- assistant edits -------------------------------------------------------
 
-  /**
-   * Writes assistant-authored file rewrites into the workspace.
-   *
-   * Only files that genuinely exist here are updated — a patch lands on the
-   * exact name the model named, never on "some file". A path with no match
-   * becomes a new file instead of overwriting anything.
-   */
-  const applyFilePatches = useCallback(
-    (patches: FilePatch[]): ApplyPatchesResult => {
-      const empty: ApplyPatchesResult = { updated: [], created: [], unchanged: [] };
-      if (!workspace || patches.length === 0) return empty;
+  const discardProposal = useCallback(async () => {
+    const proposal = proposalRef.current;
+    if (!proposal || savingRef.current) return;
+    const desktop = getDesktopBridge();
+    if (desktop && desktopWorkspaceIdRef.current) {
+      await desktop.discardTransaction(desktopWorkspaceIdRef.current, proposal.transactionId);
+    }
+    proposalRef.current = null;
+    setPendingProposal(null);
+  }, []);
 
-      const resolveIndex = (target: string): number => {
-        const normalized = target.replace(/\\/g, '/').replace(/^\.?\/+/, '').toLowerCase();
-        const basename = normalized.split('/').pop() || normalized;
+  const stageFilePatches = useCallback(async (patches: FilePatch[], base: WorkspaceFile[], identity: string) => {
+    if (workspaceIdentityRef.current !== identity || !patches.length) return;
+    if (savingRef.current) throw new Error('Wait for the current save before staging changes.');
+    const originals = new Map(base.map((file) => [file.name, file]));
+    for (const patch of patches) {
+      const current = filesRef.current.find((file) => file.name === patch.path);
+      if (current?.content !== originals.get(patch.path)?.content) throw new Error(`${patch.path} changed during generation. Generate a fresh proposal.`);
+      if (conflictRef.current.includes(patch.path)) throw new Error(`Resolve the external change in ${patch.path} first.`);
+    }
+    await discardProposal();
+    const desktop = getDesktopBridge();
+    const id = desktopWorkspaceIdRef.current;
+    const staged = desktop && id ? await desktop.stageFiles(id, patches.map((patch) => ({
+      name: patch.path, content: patch.content, expectedVersion: originals.get(patch.path)?.version ?? null
+    }))) : {
+      transactionId: crypto.randomUUID(),
+      files: patches.map((patch) => ({ name: patch.path, before: originals.get(patch.path)?.content ?? null, after: patch.content }))
+    };
+    if (workspaceIdentityRef.current !== identity) {
+      if (desktop && id) await desktop.discardTransaction(id, staged.transactionId).catch(() => {});
+      return;
+    }
+    const proposal = { ...staged, workspaceId: identity, base };
+    proposalRef.current = proposal;
+    setPendingProposal(proposal);
+  }, [discardProposal]);
 
-        const exact = workspace.files.findIndex((file) => file.name.toLowerCase() === normalized);
-        if (exact !== -1) return exact;
-        return workspace.files.findIndex((file) => file.name.toLowerCase() === basename);
-      };
-
-      const updated = new Set<string>();
-      const created = new Set<string>();
-      const unchanged = new Set<string>();
-      const nextFiles = [...workspace.files];
-
-      patches.forEach((patch) => {
-        const index = resolveIndex(patch.path);
-
-        if (index === -1) {
-          const name = patch.path.replace(/\\/g, '/').split('/').pop() || patch.path;
-          if (nextFiles.some((file) => file.name.toLowerCase() === name.toLowerCase())) {
-            unchanged.add(name);
-            return;
-          }
-          nextFiles.push({ name, content: patch.content, language: detectLanguage(name) });
-          created.add(name);
-          return;
-        }
-
-        if (nextFiles[index].content === patch.content) {
-          unchanged.add(nextFiles[index].name);
-          return;
-        }
-
-        nextFiles[index] = { ...nextFiles[index], content: patch.content };
-        updated.add(nextFiles[index].name);
-      });
-
-      if (updated.size === 0 && created.size === 0) return empty;
-
-      setWorkspace((previous) => (previous ? { ...previous, files: nextFiles } : previous));
-
-      const focus = nextFiles.findIndex((file) => updated.has(file.name) || created.has(file.name));
-      if (focus !== -1) setActiveFileIndex(focus);
-
-      return { updated: [...updated], created: [...created], unchanged: [...unchanged] };
-    },
-    [workspace]
-  );
+  const applyProposal = useCallback(async () => {
+    const proposal = proposalRef.current;
+    if (!proposal || savingRef.current || proposal.workspaceId !== workspaceIdentityRef.current) return;
+    const current = filesRef.current;
+    for (const patch of proposal.files) {
+      if (current.find((file) => file.name === patch.name)?.content !== proposal.base.find((file) => file.name === patch.name)?.content || conflictRef.current.includes(patch.name)) {
+        setDiskMessage(`${patch.name} changed after staging. Discard this proposal and generate it again.`);
+        return;
+      }
+    }
+    savingRef.current = true;
+    setIsSaving(true);
+    try {
+      const desktop = getDesktopBridge();
+      const id = desktopWorkspaceIdRef.current;
+      const versions = new Map(await Promise.all(proposal.files.map(async (patch) => [patch.name, await contentVersion(patch.after)] as const)));
+      if (desktop && id) {
+        const result = await desktop.commitTransaction(id, proposal.transactionId);
+        if (result.errors.length) throw new Error(result.errors.map((error) => `${error.name}: ${error.message}`).join(' '));
+      }
+      if (proposal.workspaceId !== workspaceIdentityRef.current) return;
+      const next = [...filesRef.current];
+      for (const patch of proposal.files) {
+        const index = next.findIndex((file) => file.name === patch.name);
+        const original = proposal.base.find((file) => file.name === patch.name);
+        const file = { name: patch.name, content: patch.after, language: detectLanguage(patch.name), version: desktop && id ? versions.get(patch.name) : undefined };
+        if (index < 0) next.push(file);
+        else next[index] = { ...file, content: next[index].content === original?.content ? patch.after : next[index].content };
+        if (desktop && id) baselineRef.current = { ...baselineRef.current, [patch.name]: patch.after };
+      }
+      filesRef.current = next;
+      setDiskBaseline(baselineRef.current);
+      setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
+      setActiveFileIndex(next.findIndex((file) => file.name === proposal.files[0]?.name));
+      proposalRef.current = null;
+      setPendingProposal(null);
+      setDiskMessage(desktop && id ? `${proposal.files.length} staged files applied to disk.` : 'Proposal applied to editor buffers. Save to disk separately; browser saves are not transactional.');
+      setChangeRevision((value) => value + 1);
+      for (const path of Object.keys(pagesRef.current)) void loadDirectory(path);
+    } catch (error) {
+      setDiskMessage(`Proposal not applied: ${String(error)}`);
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
+    }
+  }, [loadDirectory]);
 
   const createFile = useCallback((name: string, content = '') => {
     const cleanName = name.trim();
@@ -552,9 +801,23 @@ export function useWorkspace(): UseWorkspaceResult {
   }, []);
 
   const closeWorkspace = useCallback(() => {
+    const desktop = getDesktopBridge();
+    const currentId = desktopWorkspaceIdRef.current;
+    if (desktop && currentId) void desktop.closeWorkspace(currentId);
     setWorkspace(null);
     setActiveFileIndex(-1);
+    workspaceIdentityRef.current = null;
+    filesRef.current = [];
+    baselineRef.current = {};
+    directoryRequests.current.clear();
+    deletedPaths.current.clear();
     setAssets({});
+    setDirectoryPages({});
+    pagesRef.current = {};
+    setLoadingDirectories([]);
+    setConflicts([]);
+    setPendingProposal(null);
+    proposalRef.current = null;
     setStatusMessage(null);
     setDiskMessage(null);
     setCheckpoints([]);
@@ -634,6 +897,18 @@ export function useWorkspace(): UseWorkspaceResult {
 
   return useMemo(
     () => ({
+      directoryPages,
+      loadingDirectories,
+      loadDirectory,
+      openFile,
+      closeTab,
+      conflicts,
+      resolveConflict,
+      pendingProposal,
+      stageFilePatches,
+      applyProposal,
+      discardProposal,
+      changeRevision,
       workspace,
       files,
       activeFile,
@@ -665,6 +940,18 @@ export function useWorkspace(): UseWorkspaceResult {
       restoreCheckpoint
     }),
     [
+      directoryPages,
+      loadingDirectories,
+      loadDirectory,
+      openFile,
+      closeTab,
+      conflicts,
+      resolveConflict,
+      pendingProposal,
+      stageFilePatches,
+      applyProposal,
+      discardProposal,
+      changeRevision,
       workspace,
       files,
       activeFile,

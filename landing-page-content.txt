@@ -1,0 +1,127 @@
+SHADROX LANDING PAGE — CONTENT BRIEF
+====================================
+
+POSITIONING
+-----------
+ShadRox is a desktop coding workspace for people who want their project files, editor, AI chat, local preview, and terminal together in one app.
+
+Keep the promise grounded: projects are worked on locally, while prompts and the selected code context are sent to the AI provider when the user asks for AI help. Do not claim that code is never uploaded, that ShadRox has cloud sync, or that accounts/subscriptions are available.
+
+
+HERO
+----
+Eyebrow:
+YOUR PROJECT. YOUR DESKTOP. YOUR WORKFLOW.
+
+Headline:
+Code with your project, chat, preview, and terminal in one place.
+
+Supporting copy:
+ShadRox brings a focused code editor, AI-assisted changes, local project previews, and an interactive terminal into one desktop workspace. Open a folder on your computer and keep building from there.
+
+Primary CTA:
+Join the beta
+
+Secondary CTA:
+See how it works
+
+CTA note:
+Use “Download” only after a current installer has been built and verified for the target operating system. If beta access is invitation-based, connect “Join the beta” to the actual signup/contact flow before publishing.
+
+
+FEATURE SECTION
+---------------
+Section heading:
+Everything around the code, together.
+
+1. A workspace rooted on your machine
+Open a local project folder, browse files as you need them, and save edits back to the project on disk.
+
+2. AI help that fits the task
+Ask Gemini or Groq for help with Code, Plan, or Complex workflows. Bring your own provider key, and review AI-proposed file changes before applying them.
+
+3. Preview without leaving the workspace
+View static sites and supported Node-based web projects in an in-app preview. Choose among detected nested projects and approve managed run or install actions.
+
+4. A terminal in the project folder
+Use an interactive terminal alongside your files and preview. Commands run with your computer account's permissions, so you stay in control of what you execute.
+
+
+HOW IT WORKS
+------------
+Section heading:
+Open a project and get into the flow.
+
+Step 1 — Open a folder
+Choose a project folder from your computer.
+
+Step 2 — Explore and build
+Browse files, edit code, and ask the connected AI provider for help when you want it.
+
+Step 3 — Run and preview
+Start a supported project or open a static site. ShadRox asks before it installs missing dependencies or launches a detected preview script.
+
+
+PRIVACY / DATA FLOW
+-------------------
+Section heading:
+Local project workflow, clear AI data flow.
+
+Copy:
+Your project folder is opened and edited on your computer. When you send a message to AI, the prompt and the project context included with that request are sent to the Gemini or Groq provider you selected. You can use your own provider key. In the current beta, keys entered in the app are stored in local browser storage on your device. ShadRox does not yet offer accounts or cloud project sync.
+
+Short callout:
+Local files. Provider-powered AI. No ShadRox account required in the current beta.
+
+Do not shorten this to “your code never leaves your device” or “zero data upload.” Those statements would be inaccurate when AI features are used.
+
+
+PREVIEW SUPPORT NOTE
+--------------------
+Heading:
+Preview the web projects you are working on.
+
+Copy:
+ShadRox can serve static sites and launch detected Node-based web projects with supported package scripts. It is not yet a universal runtime for Python, Go, PHP, Java, or .NET backends. Some apps also restrict embedding in previews.
+
+
+BETA STATUS / FAQ
+-----------------
+Is ShadRox available for everyone?
+ShadRox is in beta. Add the real beta access or waitlist details here.
+
+Does ShadRox store my project in the cloud?
+The desktop workspace opens and edits project files locally. There is no ShadRox cloud project sync today. AI requests send the prompt and included project context to the selected AI provider.
+
+Which AI providers are supported?
+The current app supports Gemini and Groq. Provider availability, model access, and usage charges depend on your provider account and key.
+
+Can I preview any project?
+Static sites and supported Node-based web projects are the current focus. Other backend runtimes are not supported yet, and some sites may block embedded previews.
+
+Are accounts or paid plans available?
+ShadRox does not currently have account sign-in, Supabase, billing, or enforced subscriptions. Do not publish pricing or subscription claims until those systems exist and have been tested.
+
+Is the installer production-ready?
+Only claim a platform is ready after its latest installer has been built and tested on a clean machine. The current repository status is beta/development; a renderer build is not the same as a verified installer.
+
+
+FOOTER
+------
+ShadRox — a desktop workspace for building with your local projects.
+
+Suggested links (only publish working destinations):
+- Join the beta
+- Documentation
+- Privacy
+- Terms
+- GitHub / contact
+
+
+VISUAL / BRAND DIRECTION
+------------------------
+- Show the actual ShadRox app UI, not generic IDE screenshots.
+- Emphasize the project explorer/editor, chat, preview, and terminal working together.
+- Use short, concrete headings and avoid unsupported comparisons such as “the world's fastest IDE.”
+- Make beta status visible and provide a real feedback path for testers.
+- Link a privacy page that repeats the AI-provider data-flow explanation above.

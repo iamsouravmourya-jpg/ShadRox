@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs/promises');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { PassThrough } = require('node:stream');
@@ -9,6 +10,7 @@ const test = require('node:test');
 const {
   createPreviewRuntime,
   findPreviewProject,
+  findStaticPreviewProjects,
   getPackageManager,
   getPreviewScript,
   getRunArgs,
@@ -53,11 +55,25 @@ test('finds a single runnable nested project and refuses ambiguous roots', async
   await fs.mkdir(path.join(root, 'project'), { recursive: true });
   await fs.writeFile(path.join(root, 'project', 'package.json'), JSON.stringify({ scripts: { dev: 'vite' } }));
   const project = await findPreviewProject(root);
-  assert.equal(project.root, path.join(root, 'project'));
+  assert.equal(project.root, await fs.realpath(path.join(root, 'project')));
 
   await fs.mkdir(path.join(root, 'other'), { recursive: true });
   await fs.writeFile(path.join(root, 'other', 'package.json'), JSON.stringify({ scripts: { start: 'next dev' } }));
   await assert.rejects(findPreviewProject(root), /More than one runnable package\.json/);
+});
+
+test('finds nested static projects and skips dependency folders', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-static-projects-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, 'apps', 'site'), { recursive: true });
+  await fs.mkdir(path.join(root, 'node_modules', 'fixture'), { recursive: true });
+  await fs.writeFile(path.join(root, 'apps', 'site', 'index.html'), '<h1>nested</h1>');
+  await fs.writeFile(path.join(root, 'node_modules', 'fixture', 'index.html'), '<h1>dependency</h1>');
+
+  const projects = await findStaticPreviewProjects(root);
+  assert.deepEqual(projects.map(({ relativePath, kind }) => ({ relativePath, kind })), [
+    { relativePath: 'apps/site', kind: 'static' }
+  ]);
 });
 
 test('rejects a project manifest changed after the user approved it', async (context) => {
@@ -82,18 +98,27 @@ test('does not pass ShadRox process secrets into the approved project process', 
   const previousSecret = process.env.SHADROX_RUNTIME_TEST_TOKEN;
   process.env.SHADROX_RUNTIME_TEST_TOKEN = 'must-not-leak';
   let capturedEnvironment;
+  let server;
+  context.after(() => server && new Promise((resolve) => server.close(resolve)));
   const spawnProcess = (command, _args, options) => {
     const child = new EventEmitter();
     child.pid = 200;
+    child.exitCode = null;
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
-    child.kill = () => true;
+    child.kill = () => {
+      server?.close();
+      return true;
+    };
     if (command === 'taskkill.exe') {
       setImmediate(() => child.emit('close', 0));
       return child;
     }
     capturedEnvironment = options.env;
-    setImmediate(() => child.stdout.write('Local: http://127.0.0.1:5174/'));
+    server = http.createServer((_request, response) => response.end('ready'));
+    server.listen(0, '127.0.0.1', () => {
+      child.stdout.write(`Local: http://127.0.0.1:${server.address().port}/`);
+    });
     return child;
   };
   try {
@@ -117,12 +142,15 @@ test('installs missing npm dependencies, starts the approved script, and stops t
 
   const calls = [];
   const children = [];
+  const servers = [];
   const spawnProcess = (command, args, options) => {
     const child = new EventEmitter();
     child.pid = children.length + 100;
+    child.exitCode = null;
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
     child.kill = () => {
+      for (const server of servers) server.close();
       setImmediate(() => child.emit('close', 1));
       return true;
     };
@@ -138,12 +166,17 @@ test('installs missing npm dependencies, starts the approved script, and stops t
         child.stdout.write('installed dependencies\n');
         child.emit('close', 0);
       } else {
-        child.stdout.write('Local: http://localhost:5173/\n');
+        const server = http.createServer((_request, response) => response.end('ready'));
+        servers.push(server);
+        server.listen(0, '127.0.0.1', () => {
+          child.stdout.write(`Local: http://127.0.0.1:${server.address().port}/\n`);
+        });
       }
     });
     return child;
   };
   const output = [];
+  context.after(() => Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve)))));
   const runtime = createPreviewRuntime({
     spawnProcess,
     onOutput: (entry) => output.push(entry),
@@ -151,7 +184,9 @@ test('installs missing npm dependencies, starts the approved script, and stops t
   });
 
   const result = await runtime.start('workspace-1', root);
-  assert.deepEqual(result, { url: 'http://127.0.0.1:5173/', script: 'dev' });
+  assert.equal(result.script, 'dev');
+  assert.match(result.url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
+  assert.equal((await fetch(result.url)).status, 200);
   assert.equal(calls.length, 2);
   const invocations = calls.map(({ command, args }) => `${command} ${args.join(' ')}`).join('\n');
   assert.match(invocations, /npm(?:\.cmd)? install/);
@@ -160,6 +195,37 @@ test('installs missing npm dependencies, starts the approved script, and stops t
   assert.equal(await runtime.stop('workspace-1'), true);
   assert.equal(await runtime.stop('workspace-1'), false);
   assert.ok(output.some((entry) => entry.type === 'stopped'));
+});
+
+test('handles an HTTPS URL over a non-TLS local endpoint without hanging', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-https-probe-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ scripts: { dev: 'node server.js' } }));
+  let server;
+  context.after(() => server && new Promise((resolve) => server.close(resolve)));
+  const spawnProcess = (command) => {
+    const child = new EventEmitter();
+    child.pid = 300;
+    child.exitCode = null;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    if (command === 'taskkill.exe') {
+      setImmediate(() => child.emit('close', 0));
+      return child;
+    }
+    server = http.createServer((_request, response) => response.end('plain HTTP'));
+    server.listen(0, '127.0.0.1', () => {
+      child.stdout.write(`Local: https://127.0.0.1:${server.address().port}/`);
+    });
+    return child;
+  };
+  const runtime = createPreviewRuntime({ spawnProcess, readyTimeout: 900 });
+  context.after(() => runtime.stop('https-probe-workspace'));
+  await assert.rejects(
+    runtime.start('https-probe-workspace', root),
+    /Detected URL: https:\/\/127\.0\.0\.1:\d+\//
+  );
 });
 
 test('serves a local static workspace securely inside the desktop app', async (context) => {

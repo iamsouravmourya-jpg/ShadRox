@@ -4,11 +4,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
+const { randomUUID } = require('node:crypto');
+const chokidar = require('chokidar');
+let pty = null;
+try { pty = require('node-pty'); } catch { /* PTY support may be unavailable in an unbuilt development install. */ }
 const { createWorkspaceAccess } = require('./workspace.cjs');
 const {
   createPreviewRuntime,
   findMissingDependencies,
-  findPreviewProject,
+  findPreviewProjects,
+  findStaticPreviewProjects,
   getPackageManager,
   getPreviewScript
 } = require('./preview-runtime.cjs');
@@ -37,6 +42,9 @@ protocol.registerSchemesAsPrivileged([{
 }]);
 
 const workspaceAccess = createWorkspaceAccess();
+const workspaceWatchers = new Map();
+const terminalSessions = new Map();
+let activeWorkspaceId = null;
 let mainWindow = null;
 let backend = null;
 let rendererOrigin = null;
@@ -154,6 +162,27 @@ function installPreviewRequestGuard() {
       return;
     }
     callback({ cancel: !isTrustedPreviewRequest(details) });
+  });
+}
+
+function allowLoopbackPreviewCertificates() {
+  session.defaultSession.on('certificate-error', (event, _webContents, url, _error, _certificate, callback) => {
+    let hostname = '';
+    let protocolName = '';
+    try {
+      const target = new URL(url);
+      hostname = target.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+      protocolName = target.protocol;
+    } catch {
+      callback(false);
+      return;
+    }
+    if (protocolName === 'https:' && ['localhost', '127.0.0.1', '::1'].includes(hostname)) {
+      event.preventDefault();
+      callback(true);
+      return;
+    }
+    callback(false);
   });
 }
 
@@ -431,16 +460,16 @@ async function handlePreviewRequest(request) {
   }
 }
 
-async function startProtocolPreview(workspaceId, root, reportStatus) {
+async function startProtocolPreview(workspaceId, workspaceRoot, reportStatus, projectRoot = workspaceRoot) {
   await previewRuntime.stop(workspaceId);
-  const entry = await findStaticPreviewFile(root);
+  const entry = await findStaticPreviewFile(projectRoot);
   if (!entry) {
     throw new Error('Static local preview requires an index.html file in the workspace, public, dist, build, out, or src folder.');
   }
 
-  const relativeEntry = path.relative(root, entry.filePath).split(path.sep).join('/');
+  const relativeEntry = path.relative(workspaceRoot, entry.filePath).split(path.sep).join('/');
   const url = `${PREVIEW_SCHEME}://${workspaceId}/${relativeEntry.split('/').map(encodeURIComponent).join('/')}`;
-  reportStatus(`Serving ${relativeEntry} from ${path.basename(root)} through the local preview protocol.`);
+  reportStatus(`Serving ${relativeEntry} from ${path.basename(projectRoot)} through the local preview protocol.`);
   return { url, script: 'static' };
 }
 
@@ -461,6 +490,51 @@ function assertTrustedRenderer(event) {
   if (!mainWindow || event.sender !== mainWindow.webContents) {
     throw new Error('Desktop operation rejected for an untrusted renderer.');
   }
+}
+
+function stopWorkspaceServices(workspaceId) {
+  const watcher = workspaceWatchers.get(workspaceId);
+  if (watcher) {
+    workspaceWatchers.delete(workspaceId);
+    void watcher.close();
+  }
+  for (const [sessionId, sessionInfo] of terminalSessions) {
+    if (sessionInfo.workspaceId !== workspaceId) continue;
+    terminalSessions.delete(sessionId);
+    try { sessionInfo.terminal.kill(); } catch { /* process already exited */ }
+  }
+}
+
+function watchWorkspace(workspaceId, root) {
+  const watcher = chokidar.watch(root, {
+    ignoreInitial: true,
+    ignored: (value) => {
+      const relative = path.relative(root, value);
+      return relative.split(path.sep).some((part) => part.startsWith('.') || ['node_modules', 'dist', 'build', '.next', 'out', 'coverage', 'vendor'].includes(part));
+    },
+    awaitWriteFinish: { stabilityThreshold: 180, pollInterval: 50 }
+  });
+  const changes = new Map();
+  let timer;
+  const flush = () => {
+    timer = null;
+    if (!changes.size) return;
+    mainWindow?.webContents.send('workspace:change', {
+      workspaceId,
+      changes: [...changes.values()]
+    });
+    changes.clear();
+  };
+  watcher.on('all', (event, absolutePath) => {
+    if (!['add', 'change', 'unlink', 'addDir', 'unlinkDir'].includes(event)) return;
+    const relative = path.relative(root, absolutePath).split(path.sep).join('/');
+    if (!relative || relative.startsWith('../')) return;
+    changes.set(relative, { path: relative, kind: event });
+    clearTimeout(timer);
+    timer = setTimeout(flush, 120);
+  });
+  watcher.on('error', (error) => console.warn('[workspace] watcher error', error));
+  workspaceWatchers.set(workspaceId, watcher);
 }
 
 async function startPackagedBackend() {
@@ -503,7 +577,15 @@ function registerIpcHandlers() {
     });
     if (result.canceled || result.filePaths.length === 0) return null;
     await previewRuntime.stopAll();
-    return workspaceAccess.openFolder(result.filePaths[0]);
+    const previousWorkspaceId = activeWorkspaceId;
+    const opened = await workspaceAccess.openFolder(result.filePaths[0]);
+    if (previousWorkspaceId) {
+      stopWorkspaceServices(previousWorkspaceId);
+      workspaceAccess.closeWorkspace(previousWorkspaceId);
+    }
+    activeWorkspaceId = opened.workspaceId;
+    watchWorkspace(opened.workspaceId, workspaceAccess.getWorkspace(opened.workspaceId).root);
+    return opened;
   });
 
   ipcMain.handle('workspace:open-files', async (event) => {
@@ -515,7 +597,36 @@ function registerIpcHandlers() {
     });
     if (result.canceled || result.filePaths.length === 0) return null;
     await previewRuntime.stopAll();
-    return workspaceAccess.openFiles(result.filePaths);
+    const previousWorkspaceId = activeWorkspaceId;
+    const opened = await workspaceAccess.openFiles(result.filePaths);
+    if (opened) {
+      if (previousWorkspaceId) {
+        stopWorkspaceServices(previousWorkspaceId);
+        workspaceAccess.closeWorkspace(previousWorkspaceId);
+      }
+      activeWorkspaceId = opened.workspaceId;
+    }
+    return opened;
+  });
+
+  ipcMain.handle('workspace:close', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    if (workspaceAccess.getWorkspace(workspaceId)) {
+      await previewRuntime.stop(workspaceId);
+      stopWorkspaceServices(workspaceId);
+      workspaceAccess.closeWorkspace(workspaceId);
+    }
+    if (activeWorkspaceId === workspaceId) activeWorkspaceId = null;
+  });
+
+  ipcMain.handle('workspace:list-directory', async (event, workspaceId, relativePath, cursor) => {
+    assertTrustedRenderer(event);
+    return workspaceAccess.listDirectory(workspaceId, relativePath, cursor);
+  });
+
+  ipcMain.handle('workspace:read-file', async (event, workspaceId, relativePath) => {
+    assertTrustedRenderer(event);
+    return workspaceAccess.readFile(workspaceId, relativePath);
   });
 
   ipcMain.handle('workspace:save-files', async (event, workspaceId, files) => {
@@ -523,7 +634,67 @@ function registerIpcHandlers() {
     return workspaceAccess.saveFiles(workspaceId, files);
   });
 
-  ipcMain.handle('preview:start', async (event, workspaceId, approval) => {
+  ipcMain.handle('workspace:stage-files', async (event, workspaceId, files) => {
+    assertTrustedRenderer(event);
+    return workspaceAccess.stageFiles(workspaceId, files);
+  });
+
+  ipcMain.handle('workspace:commit', async (event, workspaceId, transactionId) => {
+    assertTrustedRenderer(event);
+    return workspaceAccess.commitTransaction(workspaceId, transactionId);
+  });
+
+  ipcMain.handle('workspace:discard', async (event, workspaceId, transactionId) => {
+    assertTrustedRenderer(event);
+    workspaceAccess.discardTransaction(workspaceId, transactionId);
+  });
+
+  ipcMain.handle('terminal:create', async (event, workspaceId, cols = 100, rows = 30) => {
+    assertTrustedRenderer(event);
+    if (!pty) throw new Error('Interactive terminal support is unavailable. Reinstall the desktop dependencies and restart ShadRox.');
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    if (!workspace || workspace.mode !== 'folder') throw new Error('Terminal sessions require an opened folder workspace.');
+    const sessionId = randomUUID();
+    const shellPath = process.platform === 'win32' ? (process.env.ComSpec || 'powershell.exe') : (process.env.SHELL || '/bin/zsh');
+    const shellArgs = process.platform === 'win32' && /powershell/i.test(shellPath) ? ['-NoLogo'] : [];
+    const terminal = pty.spawn(shellPath, shellArgs, {
+      name: 'xterm-256color', cols: Math.max(20, Math.min(400, Number(cols) || 100)), rows: Math.max(5, Math.min(200, Number(rows) || 30)),
+      cwd: workspace.root, env: { ...process.env, TERM: 'xterm-256color' }, useConpty: process.platform === 'win32',
+      windowsHide: true
+    });
+    const sessionInfo = { workspaceId, terminal };
+    terminalSessions.set(sessionId, sessionInfo);
+    terminal.onData((data) => mainWindow?.webContents.send('terminal:output', { workspaceId, sessionId, type: 'data', data }));
+    terminal.onExit(({ exitCode }) => {
+      terminalSessions.delete(sessionId);
+      mainWindow?.webContents.send('terminal:output', { workspaceId, sessionId, type: 'exit', exitCode });
+    });
+    return { sessionId, title: path.basename(workspace.root) };
+  });
+
+  ipcMain.handle('terminal:write', async (event, workspaceId, sessionId, data) => {
+    assertTrustedRenderer(event);
+    const sessionInfo = terminalSessions.get(sessionId);
+    if (!sessionInfo || sessionInfo.workspaceId !== workspaceId || typeof data !== 'string' || data.length > 64_000) throw new Error('Invalid terminal session or input.');
+    sessionInfo.terminal.write(data);
+  });
+
+  ipcMain.handle('terminal:resize', async (event, workspaceId, sessionId, cols, rows) => {
+    assertTrustedRenderer(event);
+    const sessionInfo = terminalSessions.get(sessionId);
+    if (!sessionInfo || sessionInfo.workspaceId !== workspaceId) throw new Error('Invalid terminal session.');
+    sessionInfo.terminal.resize(Math.max(20, Math.min(400, Number(cols) || 100)), Math.max(5, Math.min(200, Number(rows) || 30)));
+  });
+
+  ipcMain.handle('terminal:close', async (event, workspaceId, sessionId) => {
+    assertTrustedRenderer(event);
+    const sessionInfo = terminalSessions.get(sessionId);
+    if (!sessionInfo || sessionInfo.workspaceId !== workspaceId) return;
+    terminalSessions.delete(sessionId);
+    sessionInfo.terminal.kill();
+  });
+
+  ipcMain.handle('preview:start', async (event, workspaceId, approval = {}) => {
     assertTrustedRenderer(event);
     const workspace = workspaceAccess.getWorkspace(workspaceId);
     if (!workspace || workspace.mode !== 'folder') {
@@ -535,15 +706,45 @@ function registerIpcHandlers() {
     };
     reportStatus(`Checking ${path.basename(workspace.root)} for a runnable web project...`);
 
-    let project;
-    try {
-      project = await findPreviewProject(workspace.root);
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('No runnable package.json found.')) {
-        reportStatus('No runnable package script found. Streaming the static website through shadrox-preview...');
-        return startProtocolPreview(workspaceId, workspace.root, reportStatus);
+    const projects = await findPreviewProjects(workspace.root);
+    if (projects.length === 0) {
+      const staticProjects = await findStaticPreviewProjects(workspace.root);
+      if (approval.projectKind === 'static' && approval.projectPath) {
+        const selected = staticProjects.find((candidate) => candidate.relativePath === approval.projectPath);
+        if (!selected) throw new Error('The selected static folder no longer contains an index.html file. Scan the workspace again.');
+        return startProtocolPreview(workspaceId, workspace.root, reportStatus, selected.root);
       }
-      throw error;
+      if (approval.projectPath || approval.approved) throw new Error('The selected project no longer has a supported preview entry. Scan the workspace again before previewing.');
+      if (staticProjects.length > 1) {
+        reportStatus(`No runnable package script found. Found ${staticProjects.length} static site folders; choose which one to preview.`);
+        return { status: 'selection-required', projects: staticProjects.map(({ relativePath }) => ({ kind: 'static', projectPath: relativePath })) };
+      }
+      if (staticProjects.length === 1) {
+        reportStatus('No runnable package script found. Streaming the detected static website through shadrox-preview...');
+        return startProtocolPreview(workspaceId, workspace.root, reportStatus, staticProjects[0].root);
+      }
+      reportStatus('No runnable package script or nested index.html found. Checking supported static entry folders...');
+      return startProtocolPreview(workspaceId, workspace.root, reportStatus);
+    }
+    if (approval.projectKind === 'static') throw new Error('The selected static folder is no longer available. Scan the workspace again before previewing.');
+    let project = null;
+    if (approval.projectPath) {
+      project = projects.find((candidate) => candidate.relativePath === approval.projectPath);
+      if (!project) throw new Error('The selected project folder is no longer available. Scan the workspace again.');
+    } else if (projects.length === 1) {
+      project = projects[0];
+    } else {
+      const choices = await Promise.all(projects.map(async (candidate) => ({
+        kind: 'node',
+        projectPath: candidate.relativePath,
+        manifestHash: candidate.manifestHash,
+        packageManager: candidate.packageManager,
+        scriptName: candidate.script.name,
+        scriptCommand: candidate.script.command,
+        missingDependencies: await findMissingDependencies(candidate.manifest, candidate.root)
+      })));
+      reportStatus(`Found ${choices.length} runnable web project folders. Choose which one to preview.`);
+      return { status: 'selection-required', projects: choices };
     }
     const { manifest } = project;
     const script = getPreviewScript(manifest);
@@ -671,6 +872,7 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  allowLoopbackPreviewCertificates();
   installPreviewRequestGuard();
   protocol.handle(PREVIEW_SCHEME, handlePreviewRequest);
   registerIpcHandlers();
@@ -686,6 +888,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   void previewRuntime.stopAll();
+  for (const workspaceId of [...workspaceWatchers.keys()]) stopWorkspaceServices(workspaceId);
   if (backend) {
     void backend.close().catch((error) => console.error('[desktop] backend shutdown failed', error));
     backend = null;

@@ -30,6 +30,7 @@ import {
 import { copyToClipboard, downloadFile, downloadWorkspaceZip, estimateTokens, formatCode } from '../lib/toolUtils';
 import { getLanguageExtension } from '../lib/languages';
 import type { WorkspaceFile } from '../lib/types';
+import type { DirectoryPage } from '../lib/desktop';
 
 interface CodeEditorProps {
   files: WorkspaceFile[];
@@ -44,6 +45,10 @@ interface CodeEditorProps {
   onNewFile: () => void;
   onSaveAll: () => void;
   workspaceName?: string;
+  nativeDirectoryPages?: Record<string, DirectoryPage>;
+  loadingDirectories?: string[];
+  onLoadDirectory?: (path: string, cursor?: number) => void;
+  onOpenPath?: (path: string) => void;
 }
 
 interface ExplorerFile {
@@ -106,7 +111,11 @@ export function CodeEditor({
   onDeleteFile,
   onNewFile,
   onSaveAll,
-  workspaceName
+  workspaceName,
+  nativeDirectoryPages,
+  loadingDirectories = [],
+  onLoadDirectory,
+  onOpenPath
 }: CodeEditorProps) {
   const activeFile = files[activeFileIndex] ?? files[0] ?? null;
   const editorRef = useRef<ReactCodeMirrorRef>(null);
@@ -278,14 +287,16 @@ export function CodeEditor({
 
         {/* Hierarchical workspace tree */}
         <div className="flex-1 overflow-y-auto py-1">
-          {files.length === 0 ? (
+          {files.length === 0 && !nativeDirectoryPages ? (
             <div className="p-4 text-center text-[11px] text-neutral-600 italic">
               No files in workspace
             </div>
           ) : (
             explorerTree.files.length + explorerTree.folders.length === 0
               ? <div className="p-4 text-center text-[11px] text-neutral-600 italic">No matching files</div>
-              : renderFolder(explorerTree, 0, workspaceName || 'Workspace')
+              : nativeDirectoryPages
+                ? renderNativeFolder('', 0, workspaceName || 'Workspace')
+                : renderFolder(explorerTree, 0, workspaceName || 'Workspace')
           )}
         </div>
       </div>
@@ -523,6 +534,59 @@ export function CodeEditor({
           <span className="truncate font-medium">{folderLabel}</span>
         </button>
         {isExpanded && childItems}
+      </div>
+    );
+  }
+
+  function renderNativeFolder(path: string, depth: number, label?: string): ReactNode {
+    const isExpanded = allFoldersExpanded || expandedFolders.has(path);
+    const page = nativeDirectoryPages?.[path];
+    const isLoading = loadingDirectories.includes(path);
+    const folderLabel = label ?? path.split('/').pop() ?? 'Workspace';
+    return (
+      <div key={path || 'workspace-root'}>
+        <button
+          type="button"
+          onClick={() => {
+            toggleFolder(path);
+            if (!isExpanded && !page) onLoadDirectory?.(path);
+          }}
+          aria-expanded={isExpanded}
+          className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-neutral-300 hover:bg-neutral-900/60 cursor-pointer"
+          style={{ paddingLeft: `${8 + depth * 14}px` }}
+        >
+          <ChevronRight className={`w-3 h-3 shrink-0 text-neutral-600 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+          {isExpanded ? <FolderOpen className="w-3.5 h-3.5 shrink-0 text-amber-300" /> : <Folder className="w-3.5 h-3.5 shrink-0 text-amber-300" />}
+          <span className="truncate font-medium">{folderLabel}</span>
+          {isLoading && <Loader2 className="ml-auto w-3 h-3 animate-spin text-neutral-500" />}
+        </button>
+        {isExpanded && (page?.entries ?? []).map((entry) => {
+          if (entry.kind === 'directory') {
+            return renderNativeFolder(entry.path, depth + 1, entry.name);
+          }
+          const index = files.findIndex((file) => file.name === entry.path);
+          const isActive = index >= 0 && index === activeFileIndex;
+          const isDirty = dirty.has(entry.path);
+          return (
+            <button
+              key={entry.path}
+              type="button"
+              onClick={() => index >= 0 ? onSelectFile(index) : onOpenPath?.(entry.path)}
+              title={entry.path}
+              className={`w-full flex min-w-0 items-center gap-1.5 py-1 pr-2 text-left cursor-pointer transition-colors ${isActive ? 'bg-neutral-900/90 text-white' : 'hover:bg-neutral-900/50 text-neutral-400'}`}
+              style={{ paddingLeft: `${22 + depth * 14}px` }}
+            >
+              <FileCode2 className={`w-3 h-3 shrink-0 ${isActive ? 'text-emerald-400' : 'text-neutral-500'}`} />
+              <span className="font-mono text-[11px] truncate">{entry.name}</span>
+              {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />}
+            </button>
+          );
+        })}
+        {isExpanded && page?.nextCursor !== null && page?.nextCursor !== undefined && (
+          <button type="button" onClick={() => onLoadDirectory?.(path, page.nextCursor ?? undefined)} className="pl-8 py-1 text-[10px] text-neutral-500 hover:text-white">
+            Load more…
+          </button>
+        )}
       </div>
     );
   }

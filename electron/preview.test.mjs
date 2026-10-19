@@ -306,7 +306,7 @@ test('nested Node.js built-ins remain unsupported instead of being fetched from 
   );
 });
 
-test('4. Workspace assets (images, SVGs, fonts) and desktop folder scanning', async (context) => {
+test('4. Workspace assets (images, SVGs, fonts) and lazy desktop folder loading', async (context) => {
   // Test asset lookup helper
   const assets = {
     'public/logo.png': 'data:image/png;base64,logo',
@@ -339,12 +339,12 @@ test('4. Workspace assets (images, SVGs, fonts) and desktop folder scanning', as
 
   const access = createWorkspaceAccess();
   const opened = await access.openFolder(tempDir);
-
-  assert.ok(opened.files.some((f) => f.name === 'index.html'), 'index.html should be in files');
-  assert.ok(opened.assets['public/favicon.png'], 'public/favicon.png must be scanned into assets');
-  assert.ok(opened.assets['public/favicon.png'].startsWith('data:image/png;base64,'), 'favicon.png should be data URL');
-  assert.ok(opened.assets['public/logo.svg'], 'public/logo.svg must be scanned into assets');
-  assert.ok(opened.assets['public/logo.svg'].startsWith('data:image/svg+xml;base64,'), 'logo.svg should be data URL');
+  assert.deepEqual(opened.files, [], 'Opening a folder should defer file contents until requested.');
+  assert.deepEqual(opened.assets, {}, 'Folder preview assets are served directly by the desktop preview protocol.');
+  const rootPage = await access.listDirectory(opened.workspaceId);
+  assert.ok(rootPage.entries.some((entry) => entry.path === 'index.html'), 'index.html should be listed before it is read');
+  const index = await access.readFile(opened.workspaceId, 'index.html');
+  assert.equal(index.content, '<h1>Asset Test</h1>', 'Selecting a listed file should read it from disk.');
 });
 
 test('5. Preview document assembly, index.html template preservation, and error bridge', () => {
