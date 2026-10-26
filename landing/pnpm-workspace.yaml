@@ -1,0 +1,11 @@
+pmOnFail: ignore
+
+minimumReleaseAgeExclude:
+  - '@next/*'
+  - next
+
+overrides:
+  baseline-browser-mapping: 2.11.0
+  browserslist: 4.28.7
+  nanoid@<3.3.18: 3.3.18
+  source-map-js: 1.2.2
