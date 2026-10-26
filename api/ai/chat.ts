@@ -240,7 +240,7 @@ async function streamGroq(options: {
  * Streams normalised SSE events: {type:'delta'|'done'|'error'}.
  *
  * - apiKey present  -> BYOK passthrough, user pays, we never store the key.
- * - apiKey absent   -> falls back to the Devora key from the environment, which
+ * - apiKey absent   -> falls back to the ShadRox shared key from the environment, which
  *                      is restricted to Pro-tier models.
  */
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
@@ -266,31 +266,31 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   const thinking = body.thinking === 'high' || body.thinking === 'low' ? body.thinking : undefined;
 
   const byokKey = (body.apiKey || '').trim();
-  const devoraKey = byokKey ? '' : sharedKeyFor(provider);
-  const apiKey = byokKey || devoraKey;
+  const sharedKey = byokKey ? '' : sharedKeyFor(provider);
+  const apiKey = byokKey || sharedKey;
 
   if (!apiKey) {
     sendError(
       res,
       400,
-      `Is provider (${provider}) ke liye Devora ki shared key set nahi hai. Settings → BYOK me apni key add karo.`
+      `Is provider (${provider}) ke liye ShadRox ki shared key set nahi hai. Settings → BYOK me apni key add karo.`
     );
     return;
   }
 
   if (!byokKey) {
-    // The shared key belongs to Devora's paid plan, so it only serves the Pro
+    // The shared key belongs to ShadRox's paid plan, so it only serves the Pro
     // tier. The free list stays BYOK-only, which keeps the spend bounded.
     if (classifyTier(provider, model) !== 'pro') {
       sendError(
         res,
         400,
-        `Devora ki shared key sirf Pro models par chalti hai, aur "${model}" free tier me hai. Free models ke liye Settings → BYOK me apni key add karo.`
+        `ShadRox ki shared key sirf Pro models par chalti hai, aur "${model}" free tier me hai. Free models ke liye Settings → BYOK me apni key add karo.`
       );
       return;
     }
     // TODO(phase-3): verify Supabase session + apply per-user rate limit before
-    // spending the shared Devora key. See docs in README.
+    // spending the shared ShadRox key. See docs in README.
   }
 
   const abort = new AbortController();
@@ -322,7 +322,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
             signal: abort.signal
           });
 
-    sseSend(res, { type: 'done', tokens, provider, model, tier: byokKey ? 'byok' : 'devora' });
+    sseSend(res, { type: 'done', tokens, provider, model, tier: byokKey ? 'byok' : 'shadrox' });
   } catch (error) {
     if (abort.signal.aborted) {
       sseEnd(res);

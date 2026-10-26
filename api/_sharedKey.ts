@@ -8,8 +8,8 @@
 export type SharedKeyProvider = 'gemini' | 'groq';
 
 const SHARED_KEY_ENV: Record<SharedKeyProvider, readonly string[]> = {
-  gemini: ['SHADROX_GEMINI_API_KEY', 'DEVORA_GEMINI_API_KEY', 'GEMINI_API_KEY'],
-  groq: ['SHADROX_GROQ_API_KEY', 'DEVORA_GROQ_API_KEY', 'GROQ_API_KEY']
+  gemini: ['SHADROX_GEMINI_API_KEY', 'GEMINI_API_KEY'],
+  groq: ['SHADROX_GROQ_API_KEY', 'GROQ_API_KEY']
 };
 
 /** First non-empty shared key for this provider, or '' when none is set. */

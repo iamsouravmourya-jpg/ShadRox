@@ -31,7 +31,7 @@ const MODE_DIRECTIVE: Record<RefineMode, string> = {
 };
 
 function buildInstruction(contextInfo: string, mode: RefineMode): string {
-  return `You are the Devora Multilingual Prompt Refinement Engine.
+  return `You are the ShadRox Multilingual Prompt Refinement Engine.
 The developer speaks or types in any language (Hindi, Hinglish, Bengali, Tamil, Telugu, Marathi, Gujarati, Spanish, French or English).
 Run this 3 step pipeline:
 1. Identify the input language and translate it into clear developer English.
@@ -117,7 +117,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   const geminiKey = (
     body.apiKeyByProvider?.gemini ||
     (body.provider === 'gemini' ? body.apiKey : '') ||
-    process.env.DEVORA_GEMINI_API_KEY ||
+    process.env.SHADROX_GEMINI_API_KEY ||
     process.env.GEMINI_API_KEY ||
     ''
   ).trim();

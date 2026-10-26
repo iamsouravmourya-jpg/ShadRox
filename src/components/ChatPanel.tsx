@@ -183,11 +183,15 @@ export function ChatPanel({
           <button
             type="button"
             onClick={() => onOpenSettings('PLAN')}
-            title={`Monthly chat quota: ${usage.count}/${usage.limit} messages used (${usage.remaining} remaining this month)`}
+            title={
+              usage.isUnlimited
+                ? `Monthly chat quota: unlimited (${usage.count} messages used this month)`
+                : `Monthly chat quota: ${usage.count}/${usage.limit} messages used (${usage.remaining} remaining this month)`
+            }
             className={`flex items-center gap-1 px-2 py-1 border text-[10px] tracking-wide transition-colors cursor-pointer ${quotaTone.pill}`}
           >
             <Zap className={`w-3 h-3 ${quotaTone.icon}`} />
-            <span className="font-mono">{usage.count}/{usage.limit}</span>
+            <span className="font-mono">{usage.count}/{usage.isUnlimited ? '∞' : usage.limit}</span>
           </button>
 
           {plan === 'free' && (

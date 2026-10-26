@@ -30,11 +30,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         Authorization: `Bearer ${cleanToken}`,
         Accept: 'application/vnd.github.v3+json',
         'Content-Type': 'application/json',
-        'User-Agent': 'Devora'
+        'User-Agent': 'ShadRox'
       },
       body: JSON.stringify({
         name: repoName.replace(/\s+/g, '-'),
-        description: description || 'Created with Devora',
+        description: description || 'Created with ShadRox',
         private: !!isPrivate,
         auto_init: true
       })
