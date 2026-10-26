@@ -13,7 +13,7 @@ export interface PlanMeta {
 
 /**
  * Plans definition with accurate pricing & chat limits:
- * - Free (BYOK): 100 messages / month cap
+ * - Free (BYOK): unlimited messages
  * - Pro: ₹499/month (includes GST, no extra tax) — 250 messages / month
  * - Adv: ₹1,099/month (includes GST, no extra tax) — 500 messages / month cap
  * - Enterprise: Custom
@@ -23,11 +23,11 @@ export const PLANS: PlanMeta[] = [
     id: 'free',
     label: 'Free (BYOK)',
     price: '₹0',
-    monthlyCap: 100,
+    monthlyCap: Infinity,
     gstNote: 'Always free — with your own key',
-    blurb: 'Bring your own API key (BYOK) — 100 messages/month cap.',
+    blurb: 'Bring your own API key (BYOK) — unlimited messages, ₹0 to you and to ShadRox.',
     perks: [
-      '100 messages / month cap (BYOK)',
+      'Unlimited messages / month — BYOK, no cap, ₹0 cost',
       'Gemini + Groq free models support',
       'Unlimited local workspaces & files',
       'Direct disk write-back + live project preview'

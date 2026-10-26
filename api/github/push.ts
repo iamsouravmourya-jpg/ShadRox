@@ -37,10 +37,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     Authorization: `Bearer ${cleanToken}`,
     Accept: 'application/vnd.github.v3+json',
     'Content-Type': 'application/json',
-    'User-Agent': 'Devora'
+    'User-Agent': 'ShadRox'
   };
 
-  const message = commitMessage || `Update from Devora - ${new Date().toISOString()}`;
+  const message = commitMessage || `Update from ShadRox - ${new Date().toISOString()}`;
   const results: Array<{ file: string; status: 'success' | 'failed'; error: string | null }> = [];
 
   try {

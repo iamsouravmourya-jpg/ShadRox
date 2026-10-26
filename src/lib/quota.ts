@@ -7,6 +7,7 @@ export interface UsageState {
   remaining: number;
   percentage: number;
   isCapReached: boolean;
+  isUnlimited: boolean;
   monthKey: string;
   monthLabel: string;
 }
@@ -39,9 +40,10 @@ export function getMonthlyUsage(plan: PlanTier): UsageState {
   const count = getUsageCount();
   const meta = getPlanMeta(plan);
   const limit = meta.monthlyCap;
-  const remaining = Math.max(0, limit - count);
-  const percentage = Math.min(100, Math.round((count / limit) * 100));
-  const isCapReached = count >= limit;
+  const isUnlimited = !Number.isFinite(limit);
+  const remaining = isUnlimited ? Infinity : Math.max(0, limit - count);
+  const percentage = isUnlimited ? 0 : Math.min(100, Math.round((count / limit) * 100));
+  const isCapReached = !isUnlimited && count >= limit;
 
   return {
     count,
@@ -49,6 +51,7 @@ export function getMonthlyUsage(plan: PlanTier): UsageState {
     remaining,
     percentage,
     isCapReached,
+    isUnlimited,
     monthKey: getMonthKey(),
     monthLabel: getMonthLabel()
   };

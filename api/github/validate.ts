@@ -7,7 +7,7 @@ interface ValidateGithubBody {
 const GH_HEADERS = (token: string) => ({
   Authorization: `Bearer ${token}`,
   Accept: 'application/vnd.github.v3+json',
-  'User-Agent': 'Devora'
+  'User-Agent': 'ShadRox'
 });
 
 /** POST /api/github/validate -> verifies the PAT and returns the user + recent repos. */

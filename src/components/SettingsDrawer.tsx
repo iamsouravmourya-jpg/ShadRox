@@ -435,10 +435,10 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 <div className="space-y-1.5 pt-1">
                   <div className="flex items-center justify-between text-xs font-mono">
                     <span className="text-neutral-400">
-                      Messages Used: <strong className="text-white">{usage.count}</strong> / {usage.limit}
+                      Messages Used: <strong className="text-white">{usage.count}</strong> / {usage.isUnlimited ? 'Unlimited' : usage.limit}
                     </span>
                     <span className={usage.isCapReached ? 'text-rose-400 font-bold' : 'text-emerald-400'}>
-                      {usage.remaining} remaining
+                      {usage.isUnlimited ? 'Unlimited' : usage.remaining} remaining
                     </span>
                   </div>
 
@@ -508,7 +508,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                             )}
                           </div>
                           <div className="text-[11px] text-emerald-400 font-mono mt-0.5">
-                            {entry.monthlyCap} messages / month
+                            {entry.monthlyCap === Infinity ? 'Unlimited' : entry.monthlyCap} messages / month
                           </div>
                         </div>
 
