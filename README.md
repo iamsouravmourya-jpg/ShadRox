@@ -15,7 +15,9 @@ corepack pnpm --dir landing install --frozen-lockfile
 npm run dev:landing
 ```
 
-The landing page opens at `http://localhost:3001`; the existing desktop-app development server continues to use port `3000`. The Windows download button is intentionally disabled and labeled as coming soon until an installer is ready. The beta request button opens an email draft; there is no hosted waitlist yet. For a future Vercel deployment, configure the Vercel project root as `landing` rather than using the repository's existing Vite app deployment settings.
+The landing page opens at `http://localhost:3001`; the existing desktop-app development server continues to use port `3000`. The Windows download button is intentionally disabled and labeled as coming soon until an installer is ready. The beta request button opens an email draft; there is no hosted waitlist yet.
+
+Vercel deploys the static export from `landing/out` using the root `vercel.json`, while keeping the existing `api/` functions available. Keep the Vercel project connected to this repository's `main` branch and use the repository root as its Root Directory; the deployment config selects the landing build instead of the desktop Vite app.
 
 ## What it can do
 

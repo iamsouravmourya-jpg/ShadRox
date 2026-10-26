@@ -1,14 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "vite",
-  "buildCommand": "vite build",
-  "outputDirectory": "dist",
-  "rewrites": [
-    {
-      "source": "/((?!api/).*)",
-      "destination": "/index.html"
-    }
-  ],
+  "framework": null,
+  "installCommand": "npm install && corepack pnpm --dir landing install --frozen-lockfile",
+  "buildCommand": "corepack pnpm --dir landing build",
+  "outputDirectory": "landing/out",
   "functions": {
     "api/**/*.ts": {
       "maxDuration": 60
