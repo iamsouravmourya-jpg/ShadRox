@@ -9,6 +9,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "tsx server.ts",
+    "dev:landing": "npm --prefix landing run dev",
     "dev:desktop": "concurrently -k \"npm:dev\" \"wait-on http://localhost:3000 && electron .\"",
     "build": "vite build",
     "build:desktop": "node scripts/package-desktop.js",

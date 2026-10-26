@@ -6,15 +6,36 @@ The application is built with React, TypeScript, Vite, and Electron. Project fil
 
 > **Project status:** ShadRox is an early beta/development project. The local development app and core workflows have been exercised, but a distributable installer has not yet been verified end-to-end for release. There is no ShadRox account system, Supabase integration, or billing enforcement today. Do not treat the plan labels in the UI as active subscriptions.
 
+## Beta landing page
+
+The ShadRox-branded beta landing page lives in `landing/` as a separate Next.js app; it is not the desktop workspace. Its original shield-and-S mark matches the ShadRox app branding. From the repository root, install its locked dependencies once and run the preview with:
+
+```sh
+corepack pnpm --dir landing install --frozen-lockfile
+npm run dev:landing
+```
+
+The landing page opens at `http://localhost:3001`; the existing desktop-app development server continues to use port `3000`. The Windows download button is intentionally disabled and labeled as coming soon until an installer is ready. The beta request button opens an email draft; there is no hosted waitlist yet. For a future Vercel deployment, configure the Vercel project root as `landing` rather than using the repository's existing Vite app deployment settings.
+
 ## What it can do
 
 - Open a folder or selected files from the desktop app.
 - Browse folder contents on demand and load text files when selected. The desktop workspace applies size, generated-file, binary-file, path traversal, and symbolic-link safeguards.
 - Edit source in a CodeMirror-based editor and save changes to the local project. AI-proposed changes can be reviewed and applied through the chat workflow; checkpoint/history features are also available in the app.
-- Chat using Gemini or Groq through the app's local API handlers. The app supports a Code mode, a read-only Plan mode, and a Complex mode. Model availability depends on the provider and key.
+- Chat using Gemini or Groq through the app's local API handlers, with your own key (BYOK, free tier) or ShadRox's shared key (paid tiers). The app supports a Code mode, a read-only Plan mode, and a Complex mode. Model availability depends on the provider and key.
 - Preview static sites and supported Node-based web projects inside the desktop app.
 - Open an interactive terminal in the workspace and view terminal output.
 - Connect GitHub actions from Settings using a GitHub token, including validation, repository creation, and pushing a project, where configured.
+
+## Plans and BYOK
+
+ShadRox is free-first by design. The goal is a zero-cost acquisition surface that competes with other AI coding tools on the free tier.
+
+- **Free (BYOK) — unlimited, ₹0.** Bring your own Gemini or Groq key. There is no message cap on the free tier. The user pays their AI provider directly for tokens, and ShadRox's marginal cost is ₹0, so an unlimited free tier costs ShadRox nothing. This is the acquisition surface: a genuinely useful, no-cap free tier that metered tools cannot match.
+- **Pro (₹499/mo, 250 msgs) and Adv (₹1,099/mo, 500 msgs).** These tiers use ShadRox's shared provider key, so the subscriber never manages an API key, never sees a per-token bill, and gets fast/premium models at a flat, GST-inclusive price. The upgrade levers are convenience (no key management), premium model access, and flat predictable cost — not artificial scarcity on the free tier.
+- **Enterprise (custom).** Higher quotas, SSO, audit log, secrets vault — listed in the UI but not yet implemented.
+
+The Pro/Adv/Enterprise message caps are currently client-side only (tracked in `localStorage`) and are not yet enforced against the API. Server-side entitlement enforcement (Supabase session + per-user usage meter) is the gating work before the shared key is turned on for real testers; the free BYOK tier needs none of it because it carries no ShadRox cost.
 
 ## Local project and AI data
 
@@ -118,7 +139,7 @@ Shared keys are optional. Their use is not a user authentication system, and thi
 
 ## Current limitations and beta checklist
 
-- No ShadRox sign-in, Supabase, cloud sync, subscription billing, or entitlement enforcement.
+- No ShadRox sign-in, Supabase, cloud sync, subscription billing, or entitlement enforcement. The Free tier is unlimited BYOK; the Pro/Adv/Enterprise message caps are client-side only and not enforced against the API.
 - API keys in the renderer are stored in `localStorage`, not an OS credential vault.
 - AI features need internet access and send the request context to the chosen external provider.
 - Preview support is limited to static sites and detected Node scripts; embedded-app restrictions can still prevent rendering.
