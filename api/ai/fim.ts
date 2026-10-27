@@ -6,9 +6,9 @@ import {
   type ApiResponse
 } from '../_http.js';
 import { buildFimMessages, postprocessFimCompletion } from '../../src/lib/fim.js';
-import { ADAPTERS, isProviderId, resolveKeyAccess } from './access.js';
-import { completeOnce } from './completion.js';
-import type { ProviderId } from './types.js';
+import { ADAPTERS, isProviderId, resolveKeyAccess } from './_access.js';
+import { completeOnce } from './_completion.js';
+import type { ProviderId } from './_types.js';
 
 export const config = { maxDuration: 15 };
 

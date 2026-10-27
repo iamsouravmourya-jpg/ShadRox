@@ -1,7 +1,7 @@
 import { readJsonBody, sendError, sendJson, type ApiRequest, type ApiResponse } from '../_http.js';
-import { ADAPTERS, isProviderId, resolveKeyAccess } from './access.js';
-import { completeOnce } from './completion.js';
-import type { ProviderId } from './types.js';
+import { ADAPTERS, isProviderId, resolveKeyAccess } from './_access.js';
+import { completeOnce } from './_completion.js';
+import type { ProviderId } from './_types.js';
 
 export const config = { maxDuration: 30 };
 

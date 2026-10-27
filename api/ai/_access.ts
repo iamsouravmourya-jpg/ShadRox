@@ -1,8 +1,8 @@
 import { classifyTier } from '../../src/lib/providers.js';
 import { sharedKeyFor } from '../_sharedKey.js';
-import { streamGemini } from './gemini.js';
-import { streamGroq } from './openai.js';
-import type { ProviderAdapter, ProviderId } from './types.js';
+import { streamGemini } from './_gemini.js';
+import { streamGroq } from './_openai.js';
+import type { ProviderAdapter, ProviderId } from './_types.js';
 
 export const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
   gemini: { id: 'gemini', defaultModel: 'gemini-3.8-flash', stream: streamGemini },

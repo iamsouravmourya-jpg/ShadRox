@@ -1,7 +1,7 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
 import { estimateTokens, readErrorPayload } from '../_http.js';
-import { UpstreamError, type StreamRequest, type StreamResult, type StreamSink, type ThinkingLevel } from './types.js';
-import { fetchUpstream } from './upstream.js';
+import { UpstreamError, type StreamRequest, type StreamResult, type StreamSink, type ThinkingLevel } from './_types.js';
+import { fetchUpstream } from './_upstream.js';
 
 const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
 
