@@ -1,8 +1,13 @@
-import { readJsonBody, sendError, sendJson, type ApiRequest, type ApiResponse } from '../_http.js';
-
-interface ValidateGithubBody {
-  token?: string;
-}
+import {
+  readJsonBody,
+  sanitizeErrorMessage,
+  sendError,
+  sendIfRejected,
+  sendJson,
+  type ApiRequest,
+  type ApiResponse
+} from '../_http.js';
+import { BODY_LIMITS, FIELD_LIMITS, requiredString } from '../_validate.js';
 
 const GH_HEADERS = (token: string) => ({
   Authorization: `Bearer ${token}`,
@@ -17,12 +22,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     return;
   }
 
-  const { token } = await readJsonBody<ValidateGithubBody>(req);
-  const cleanToken = (token || '').trim();
-
-  if (!cleanToken) {
-    sendError(res, 400, 'GitHub personal access token required hai.');
-    return;
+  let cleanToken: string;
+  try {
+    const body = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.githubSmall });
+    cleanToken = requiredString(body, 'token', FIELD_LIMITS.apiKeyChars, 'GitHub personal access token required hai.');
+  } catch (error) {
+    if (sendIfRejected(res, error)) return;
+    throw error;
   }
 
   try {
@@ -33,7 +39,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       sendError(
         res,
         userResponse.status,
-        (userData.message as string) || 'GitHub token invalid hai. `repo` scope check karo.'
+        sanitizeErrorMessage(
+          (userData.message as string) || 'GitHub token invalid hai. `repo` scope check karo.',
+          'GitHub token invalid hai. `repo` scope check karo.'
+        )
       );
       return;
     }
@@ -60,6 +69,6 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       }))
     });
   } catch (error) {
-    sendError(res, 502, error instanceof Error ? error.message : 'GitHub authentication failed.');
+    sendError(res, 502, sanitizeErrorMessage(error, 'GitHub authentication failed.'));
   }
 }

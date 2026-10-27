@@ -1,5 +1,5 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
-import { estimateTokens, readErrorPayload } from '../_http.js';
+import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
 import { UpstreamError, type StreamRequest, type StreamResult, type StreamSink } from './_types.js';
 import { fetchUpstream } from './_upstream.js';
 
@@ -25,7 +25,10 @@ function buildContents(request: StreamRequest) {
 
 export async function streamGemini(request: StreamRequest, sink: StreamSink): Promise<StreamResult> {
   const { apiKey, model, temperature, thinking, signal } = request;
-  const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+  // The key travels in the documented `x-goog-api-key` header, never as a `?key=`
+  // query parameter: query strings get written into proxy/CDN logs and can be
+  // echoed back inside upstream error bodies.
+  const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
   const contents = buildContents(request);
   const systemText = buildSystemInstruction(request);
 
@@ -34,7 +37,10 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
       url,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey
+        },
         body: JSON.stringify({
           contents,
           ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
@@ -116,7 +122,8 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
   } catch (error) {
     if (signal.aborted) throw error;
     if (error instanceof UpstreamError) throw error;
-    throw new Error(error instanceof Error ? error.message : 'Gemini stream failed.');
+    // Scrub again: transport-level failures can quote the request.
+    throw new Error(sanitizeErrorMessage(error, 'Gemini stream failed.'));
   }
 
   if (!fullText.trim()) {

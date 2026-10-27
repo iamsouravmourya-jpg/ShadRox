@@ -1,17 +1,27 @@
-import { readErrorPayload, readJsonBody, sendError, sendJson, type ApiRequest, type ApiResponse } from '../_http.js';
-
-type ProviderId = 'gemini' | 'groq';
+import {
+  readJsonBody,
+  readErrorPayload,
+  sanitizeErrorMessage,
+  sendError,
+  sendIfRejected,
+  sendJson,
+  type ApiRequest,
+  type ApiResponse
+} from '../_http.js';
+import {
+  BODY_LIMITS,
+  FIELD_LIMITS,
+  enumValue,
+  keyByProvider,
+  optionalKey,
+  optionalString,
+  requiredString
+} from '../_validate.js';
+import { resolveKeyAccess } from '../ai/_access.js';
+import { checkSharedKeySpend, clientIp, outputCeiling, rateLimitedMessage } from '../ai/_spendGuard.js';
+import type { ProviderId } from '../ai/_types.js';
 
 type RefineMode = 'code' | 'plan' | 'complex';
-
-interface RefineRequestBody {
-  rawPrompt?: string;
-  provider?: ProviderId;
-  apiKey?: string;
-  apiKeyByProvider?: Partial<Record<ProviderId, string>>;
-  contextInfo?: string;
-  mode?: RefineMode;
-}
 
 export const config = { maxDuration: 30 };
 
@@ -19,6 +29,14 @@ const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b';
+
+/** The model this route actually calls, per provider — the tier gate keys off it. */
+const ROUTE_MODEL: Record<ProviderId, string> = {
+  gemini: DEFAULT_GEMINI_MODEL,
+  groq: DEFAULT_GROQ_MODEL
+};
+
+const PROVIDERS = ['gemini', 'groq'] as const;
 
 /** How the refined prompt should be shaped, per thinking mode. */
 const MODE_DIRECTIVE: Record<RefineMode, string> = {
@@ -50,11 +68,16 @@ Reply strictly as JSON with this schema:
 }
 
 async function refineWithGemini(apiKey: string, rawPrompt: string, instruction: string): Promise<string> {
+  // `x-goog-api-key` is Google's documented alternative to the `?key=` query
+  // parameter: query strings end up in proxy/CDN logs next to the model name.
   const response = await fetch(
-    `${GEMINI_API_BASE}/models/${DEFAULT_GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    `${GEMINI_API_BASE}/models/${encodeURIComponent(DEFAULT_GEMINI_MODEL)}:generateContent`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey
+      },
       body: JSON.stringify({
         contents: [{ role: 'user', parts: [{ text: rawPrompt }] }],
         systemInstruction: { parts: [{ text: instruction }] },
@@ -106,38 +129,59 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     return;
   }
 
-  const body = await readJsonBody<RefineRequestBody>(req);
-  const rawPrompt = (body.rawPrompt || '').trim();
-
-  if (!rawPrompt) {
-    sendError(res, 400, 'Prompt text chahiye.');
-    return;
-  }
-
-  const geminiKey = (
-    body.apiKeyByProvider?.gemini ||
-    (body.provider === 'gemini' ? body.apiKey : '') ||
-    process.env.SHADROX_GEMINI_API_KEY ||
-    process.env.GEMINI_API_KEY ||
-    ''
-  ).trim();
-
-  const groqKey = (body.apiKeyByProvider?.groq || (body.provider === 'groq' ? body.apiKey : '') || '').trim();
-
-  if (!geminiKey && !groqKey) {
-    sendError(res, 400, 'Prompt refine ke liye Gemini ya Groq key chahiye.');
-    return;
-  }
-
-  const mode: RefineMode =
-    body.mode === 'plan' || body.mode === 'complex' || body.mode === 'code' ? body.mode : 'code';
-  const instruction = buildInstruction(body.contextInfo || 'React + TypeScript workspace', mode);
+  let provider: ProviderId;
+  let rawPrompt: string;
+  let contextInfo: string;
+  let mode: RefineMode;
+  let userKey: string | undefined;
 
   try {
-    const raw = geminiKey
-      ? await refineWithGemini(geminiKey, rawPrompt, instruction)
-      : await refineWithGroq(groqKey, rawPrompt, instruction);
+    const body = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.refine });
+    provider = enumValue<ProviderId>(body, 'provider', PROVIDERS, 'gemini');
+    rawPrompt = requiredString(body, 'rawPrompt', FIELD_LIMITS.refinePromptChars, 'Prompt text chahiye.');
+    contextInfo = optionalString(body, 'contextInfo', FIELD_LIMITS.refineContextChars);
+    mode = enumValue<RefineMode>(body, 'mode', ['code', 'plan', 'complex'] as const, 'code');
+    // A plain `apiKey` is only honoured for the provider the caller named, which
+    // is what the client used to do.
+    const keys = keyByProvider(body, PROVIDERS);
+    const plainKey = optionalKey(body);
+    userKey = keys[provider] || (body.provider === provider ? plainKey : undefined);
+  } catch (error) {
+    if (sendIfRejected(res, error)) return;
+    throw error;
+  }
 
+  // BYOK policy, shared with chat/fim/commit-message: this route used to read
+  // `process.env.SHADROX_GEMINI_API_KEY` as its own fallback, which let any
+  // anonymous caller on the public Vercel deployment spend the operator's key
+  // with no tier gate and no limit. The env fallback is gone on purpose —
+  // `resolveKeyAccess` is the only path to a shared key, and it still requires
+  // a Pro-tier model, which this route's fixed free-tier models never are.
+  const resolved = resolveKeyAccess(provider, ROUTE_MODEL[provider], userKey);
+  if ('error' in resolved) {
+    sendError(res, 400, resolved.error);
+    return;
+  }
+  const { apiKey, byok } = resolved.access;
+
+  const decision = checkSharedKeySpend('refine', clientIp(req), byok);
+  if (!decision.allowed) {
+    res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+    sendError(res, 429, rateLimitedMessage(decision.retryAfterSeconds));
+    return;
+  }
+
+  const instruction = buildInstruction(contextInfo || 'React + TypeScript workspace', mode);
+  const ceiling = outputCeiling('refine', byok);
+
+  try {
+    const produced =
+      provider === 'gemini'
+        ? await refineWithGemini(apiKey, rawPrompt, instruction)
+        : await refineWithGroq(apiKey, rawPrompt, instruction);
+
+    // Shared-key requests get the hard output ceiling; `Infinity` (BYOK) is a no-op.
+    const raw = produced.slice(0, ceiling);
     const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
 
     let parsed: {
@@ -160,7 +204,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       refinedPrompt: parsed.refinedPrompt || parsed.translatedText || rawPrompt
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Prompt refine failed.';
-    sendError(res, 502, message);
+    sendError(
+      res,
+      502,
+      error instanceof Error ? sanitizeErrorMessage(error.message, 'Prompt refine failed.') : 'Prompt refine failed.'
+    );
   }
 }

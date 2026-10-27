@@ -1,5 +1,4 @@
-import { capSystemInstruction, trimMessagesToBudget } from '../../src/lib/contextBudget.js';
-import { resolveContextWindow } from '../../src/lib/modelCapabilities.js';
+import { budgetRequest } from './_budget.js';
 import type { ProviderAdapter } from './_types.js';
 import type { ChatMessage, ThinkingLevel } from './_types.js';
 
@@ -30,8 +29,11 @@ export async function completeOnce(request: CompletionRequest): Promise<Completi
   const maxChars = request.maxChars ?? 4_000;
 
   let messages: ChatMessage[] = [{ role: 'user', content: prompt }];
-  messages = trimMessagesToBudget(messages, resolveContextWindow(adapter.id, model)).messages;
-  const systemInstruction = request.systemInstruction ? capSystemInstruction(request.systemInstruction) : undefined;
+  // Same per-model budget as chat: the system instruction counts against the
+  // context window, so it is subtracted before the prompt is trimmed.
+  const budget = budgetRequest(adapter.id, model, messages, request.systemInstruction);
+  messages = budget.messages;
+  const systemInstruction = budget.systemInstruction;
 
   // Truncate server-side: the model keeps talking but we stop listening, which
   // is the only way to bound latency for an inline suggestion.

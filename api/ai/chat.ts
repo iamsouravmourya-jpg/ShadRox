@@ -1,15 +1,33 @@
 import {
   readJsonBody,
+  sanitizeErrorMessage,
   sendError,
+  sendIfRejected,
   sendSseHeaders,
   sseEnd,
   sseSend,
   type ApiRequest,
   type ApiResponse
 } from '../_http.js';
-import { capSystemInstruction, trimMessagesToBudget } from '../../src/lib/contextBudget.js';
-import { resolveContextWindow } from '../../src/lib/modelCapabilities.js';
-import { ADAPTERS, isProviderId, resolveKeyAccess } from './_access.js';
+import {
+  BODY_LIMITS,
+  FIELD_LIMITS,
+  chatMessages,
+  clampedNumber,
+  enumValue,
+  nestedString,
+  optionalKey,
+  optionalString
+} from '../_validate.js';
+import { ADAPTERS, resolveKeyAccess } from './_access.js';
+import { budgetRequest } from './_budget.js';
+import {
+  checkSharedKeySpend,
+  clientIp,
+  fitChunk,
+  outputCeiling,
+  rateLimitedMessage
+} from './_spendGuard.js';
 import type { ChatMessage, ChatRequestBody, ProviderId } from './_types.js';
 
 const PROVIDER_LABEL: Record<ProviderId, string> = {
@@ -19,26 +37,15 @@ const PROVIDER_LABEL: Record<ProviderId, string> = {
 
 export const config = { maxDuration: 60 };
 
-function normalizedMessages(input: ChatRequestBody['messages']): ChatMessage[] {
-  return (input || [])
-    .filter((message): message is { role: ChatMessage['role']; content: string } =>
-      Boolean(
-        message &&
-        (message.role === 'user' || message.role === 'assistant' || message.role === 'system') &&
-        typeof message.content === 'string' &&
-        message.content.trim().length > 0
-      )
-    )
-    .map((message) => ({ role: message.role, content: message.content }));
-}
-
 function errorMessage(error: unknown, provider: ProviderId): string {
   if (error instanceof Error) {
     if (error.name === 'AbortError') return 'Generation stopped.';
     if (error instanceof TypeError && /fetch failed|network/i.test(error.message)) {
       return `Could not reach ${PROVIDER_LABEL[provider]}. Check your internet connection and try again.`;
     }
-    return error.message;
+    // Never forward a raw provider/transport message verbatim: it can quote the
+    // request URL and carry key-shaped tokens back into the renderer and logs.
+    return sanitizeErrorMessage(error.message, 'AI generation failed.');
   }
   return 'AI generation failed.';
 }
@@ -58,56 +65,81 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     return;
   }
 
-  const body = await readJsonBody<ChatRequestBody>(req);
-  let messages = normalizedMessages(body.messages);
+  let rawMessages: ChatMessage[];
+  let systemText: string;
+  let resumePrefix: string;
+  let temperature: number;
+  let thinking: ChatRequestBody['thinking'];
+  let apiKey: string | undefined;
+  let provider: ProviderId;
+  let model: string;
 
-  if (messages.length === 0) {
+  try {
+    const raw = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.chat });
+    provider = enumValue<ProviderId>(raw, 'provider', ['gemini', 'groq'], 'gemini');
+    const adapter = ADAPTERS[provider];
+    model = optionalString(raw, 'model', FIELD_LIMITS.modelChars).trim() || adapter.defaultModel;
+    apiKey = optionalKey(raw);
+
+    // Length + per-element caps happen before anything can spend a key.
+    rawMessages = chatMessages(raw).filter((message) => message.content.trim().length > 0);
+    systemText = optionalString(raw, 'systemInstruction', FIELD_LIMITS.systemInstructionChars);
+    resumePrefix = nestedString(raw, 'resume', 'prefix', FIELD_LIMITS.resumePrefixChars);
+    temperature = clampedNumber(raw, 'temperature', FIELD_LIMITS.temperature);
+    const level = enumValue(raw, 'thinking', ['high', 'low', 'none'] as const, 'none' as const);
+    thinking = level === 'high' || level === 'low' ? level : undefined;
+  } catch (error) {
+    if (sendIfRejected(res, error)) return;
+    throw error;
+  }
+
+  if (rawMessages.length === 0) {
     sendError(res, 400, 'Kam se kam ek message chahiye.');
     return;
   }
 
-  const provider: ProviderId = isProviderId(body.provider) ? body.provider : 'gemini';
-  const adapter = ADAPTERS[provider];
-  const model = (body.model || '').trim() || adapter.defaultModel;
-
-  // Enforce the model's context budget on the message history. The client
-  // trims too, but the server is the boundary that actually spends the key.
-  const contextWindow = resolveContextWindow(provider, model);
-  const trimmed = trimMessagesToBudget(messages, contextWindow);
-  messages = trimmed.messages;
-  if (trimmed.trimmed > 0) {
-    console.warn(
-      `[ai] trimmed ${trimmed.trimmed} message(s) for ${model} (${trimmed.trimmedChars} chars dropped)`
-    );
-  }
-
-  const systemInstruction = body.systemInstruction
-    ? capSystemInstruction(body.systemInstruction)
-    : undefined;
-
   // Stream recovery: the client can resume an interrupted reply by echoing the
   // partial text it already received. We append it as a USER message because
   // Gemini rejects requests that end with a model turn.
-  const resumePrefix = (body.resume?.prefix || '').slice(0, 60_000).trim();
-  if (resumePrefix) {
+  const messages: ChatMessage[] = rawMessages.map((message) => ({ ...message }));
+  const cleanResume = resumePrefix.trim();
+  if (cleanResume) {
     messages.push({
       role: 'user',
       content:
         'Continue your previous reply from where it stopped. Do not repeat the partial text below; ' +
         'start with the very next characters, completing the thought in the same style.\n\n' +
-        `<partial-reply>\n${resumePrefix}\n</partial-reply>`
+        `<partial-reply>\n${cleanResume}\n</partial-reply>`
     });
   }
 
-  const temperature = typeof body.temperature === 'number' ? body.temperature : 0.7;
-  const thinking = body.thinking === 'high' || body.thinking === 'low' ? body.thinking : undefined;
-
-  const resolved = resolveKeyAccess(provider, model, body.apiKey);
+  const resolved = resolveKeyAccess(provider, model, apiKey);
   if ('error' in resolved) {
     sendError(res, 400, resolved.error);
     return;
   }
-  const { apiKey, byok } = resolved.access;
+  const { apiKey: spendKey, byok } = resolved.access;
+  const adapter = ADAPTERS[provider];
+
+  // Shared-key traffic only: a best-effort, in-process per-IP brake. BYOK calls
+  // cost the operator nothing, so they never pass through this gate.
+  const decision = checkSharedKeySpend('chat', clientIp(req), byok);
+  if (!decision.allowed) {
+    res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+    sendError(res, 429, rateLimitedMessage(decision.retryAfterSeconds));
+    return;
+  }
+
+  // Enforce the model's context budget on the message history. The client
+  // trims too, but the server is the boundary that actually spends the key.
+  // The system instruction is billed against the same window, so its tokens are
+  // subtracted before the history is trimmed.
+  const budget = budgetRequest(provider, model, messages, systemText || undefined);
+  if (budget.trimmed > 0) {
+    console.warn(
+      `[ai] trimmed ${budget.trimmed} message(s) for ${model} (${budget.trimmedChars} chars dropped)`
+    );
+  }
 
   const abort = new AbortController();
   res.on('close', () => {
@@ -118,9 +150,51 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   const startedAt = performance.now();
   let firstTokenMs: number | null = null;
+  let sentChars = 0;
+  let capped = false;
+  // Hard output ceiling, shared-key requests only.
+  const ceiling = outputCeiling('chat', byok);
 
   const markFirstToken = () => {
     if (firstTokenMs === null) firstTokenMs = Math.round(performance.now() - startedAt);
+  };
+
+  const emit = (event: Record<string, unknown>) => {
+    if (abort.signal.aborted || res.writableEnded) return;
+    sseSend(res, event);
+  };
+
+  const forward = (type: 'delta' | 'reasoning', text: string) => {
+    if (capped || abort.signal.aborted || res.writableEnded) return;
+    const { head, capped: hitCeiling } = fitChunk(sentChars, ceiling, text);
+    if (head) {
+      sentChars += head.length;
+      markFirstToken();
+      emit({ type, text: head });
+    }
+    if (hitCeiling) {
+      capped = true;
+      // Stop listening: the model would keep talking, we just stop paying.
+      abort.abort();
+    }
+  };
+
+  // Closing turn for a reply that hit the ceiling: a normal `done` event, marked
+  // truncated. Written with `sseSend` directly because the abort flag is already
+  // set by then and `emit()` would (correctly) refuse to write.
+  const finishTruncated = () => {
+    if (res.writableEnded) return;
+    sseSend(res, {
+      type: 'done',
+      tokens: 0,
+      provider,
+      model,
+      tier: 'shadrox',
+      finishReason: 'length',
+      truncated: true,
+      firstTokenMs,
+      durationMs: Math.round(performance.now() - startedAt)
+    });
   };
 
   try {
@@ -128,28 +202,25 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       {
         provider,
         model,
-        apiKey,
-        messages,
-        systemInstruction,
+        apiKey: spendKey,
+        messages: budget.messages,
+        systemInstruction: budget.systemInstruction,
         temperature,
         thinking,
         signal: abort.signal
       },
       {
         delta(text) {
-          if (abort.signal.aborted || res.writableEnded) return;
-          markFirstToken();
-          sseSend(res, { type: 'delta', text });
+          forward('delta', text);
         },
         reasoning(text) {
-          if (abort.signal.aborted || res.writableEnded) return;
-          markFirstToken();
-          sseSend(res, { type: 'reasoning', text });
+          forward('reasoning', text);
         }
       }
     );
 
     if (abort.signal.aborted || res.writableEnded) {
+      if (capped) finishTruncated();
       sseEnd(res);
       return;
     }
@@ -165,11 +236,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       durationMs: Math.round(performance.now() - startedAt)
     });
   } catch (error) {
-    if (abort.signal.aborted) {
+    if (capped) {
+      // Reaching the ceiling is expected, not a failure: close the turn cleanly.
+      finishTruncated();
+    } else if (abort.signal.aborted) {
       sseEnd(res);
       return;
+    } else {
+      sseSend(res, { type: 'error', message: errorMessage(error, provider) });
     }
-    sseSend(res, { type: 'error', message: errorMessage(error, provider) });
   }
 
   sseEnd(res);
