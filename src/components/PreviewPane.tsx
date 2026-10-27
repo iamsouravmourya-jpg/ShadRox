@@ -362,6 +362,11 @@ export function PreviewPane({
         className="relative flex-1 min-h-0 min-w-0 overflow-hidden flex justify-center bg-[repeating-linear-gradient(45deg,#0a0a0a_0,#0a0a0a_10px,#0d0d0d_10px,#0d0d0d_20px)]"
       >
         {localPreviewAvailable && localPreviewState.status === 'ready' ? (
+          // `allow-same-origin` stays for the dev server: dropping it makes the frame an
+          // opaque origin, whose `Origin: null` module requests Vite/HMR reject and whose
+          // localStorage/IndexedDB access throws, breaking the previewed app itself.
+          // Untrusted frames are locked out of the desktop bridge instead — see
+          // electron/preload.cjs and assertTrustedRenderer in electron/main.cjs.
           <iframe
             key={effectiveReloadKey}
             ref={previewFrameRef}

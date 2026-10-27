@@ -10,6 +10,16 @@ let pty = null;
 try { pty = require('node-pty'); } catch { /* PTY support may be unavailable in an unbuilt development install. */ }
 const { createWorkspaceAccess } = require('./workspace.cjs');
 const {
+  buildGitArgv,
+  buildIsolatedGitEnv,
+  collectRepoFilterDrivers,
+  extractFolderArgument,
+  isPathInsideDirectory,
+  isSameOriginAsRenderer,
+  isTrustedRendererEvent,
+  resolveGitExecutable
+} = require('./desktop-security.cjs');
+const {
   createPreviewRuntime,
   findMissingDependencies,
   findPreviewProjects,
@@ -55,6 +65,9 @@ let rendererDirty = false;
 let allowClose = false;
 let backend = null;
 let rendererOrigin = null;
+let gitExecutable = null;
+let gitEnvironment = null;
+let gitSafetyCache = { root: null, context: null };
 const previewRuntime = createPreviewRuntime({
   onOutput: (output) => mainWindow?.webContents.send('preview:output', output)
 });
@@ -493,8 +506,15 @@ function configurePackagedEsbuild() {
   );
 }
 
+/**
+ * The bridge is for ShadRox's own document only. Electron injects preload.cjs
+ * into every frame of a webContents and the preview iframes live inside this
+ * document, so `event.sender` alone would let workspace-authored code reach the
+ * terminal, the decrypted key store and the folder picker. `isTrustedRendererEvent`
+ * additionally pins the frame to the main frame and to the app's own origin.
+ */
 function assertTrustedRenderer(event) {
-  if (!mainWindow || event.sender !== mainWindow.webContents) {
+  if (!isTrustedRendererEvent(event, mainWindow, rendererOrigin)) {
     throw new Error('Desktop operation rejected for an untrusted renderer.');
   }
 }
@@ -623,13 +643,19 @@ function secureStorePath() {
 }
 
 /**
- * Read-only git access for the renderer: a fixed argv per call, no shell, so
- * a workspace can never inject commands through this path.
+ * Read-only git access for the renderer: one absolute executable, one isolated
+ * environment, and a fixed argv per call built by `buildGitArgv`, so neither the
+ * opened folder nor its `.git/config` can name a program to run.
  */
 function runGit(cwd, args) {
   return new Promise((resolve) => {
-    execFile('git', args, {
+    if (!gitExecutable || !gitEnvironment) {
+      resolve({ ok: false, stdout: '', stderr: 'git is unavailable on a trusted path.' });
+      return;
+    }
+    execFile(gitExecutable, args, {
       cwd,
+      env: gitEnvironment,
       timeout: 15_000,
       maxBuffer: 4 * 1024 * 1024,
       windowsHide: true
@@ -637,6 +663,48 @@ function runGit(cwd, args) {
       resolve({ ok: !error, stdout: String(stdout || ''), stderr: String(stderr || '') });
     });
   });
+}
+
+function locateGitExecutable() {
+  gitExecutable = resolveGitExecutable({});
+  gitEnvironment = gitExecutable ? buildIsolatedGitEnv({}) : null;
+  gitSafetyCache = { root: null, context: null };
+  if (!gitExecutable) {
+    console.warn('[desktop] no absolute git executable found outside the workspace; commit context is disabled');
+  }
+}
+
+/**
+ * Per-workspace argv for the three read calls, plus whether the repository's own
+ * config could be fully enumerated. `complete: false` means an unknown filter
+ * driver may exist, so the two commands that convert working-tree files are
+ * skipped rather than run blindly.
+ */
+async function gitSafetyContext(workspaceRoot) {
+  if (gitSafetyCache.root === workspaceRoot && gitSafetyCache.context) return gitSafetyCache.context;
+
+  const options = { safeDirectories: [workspaceRoot] };
+  const probeArgs = buildGitArgv(['rev-parse', '--absolute-git-dir'], options);
+  const probe = await runGit(workspaceRoot, probeArgs);
+  const gitDir = probe.ok ? probe.stdout.trim() : '';
+
+  let drivers = [];
+  let complete = false;
+  if (gitDir && path.isAbsolute(gitDir)) {
+    const collected = await collectRepoFilterDrivers(gitDir);
+    drivers = collected.drivers;
+    complete = collected.complete;
+  }
+
+  const context = {
+    complete,
+    probeArgs: buildGitArgv(['rev-parse', '--is-inside-work-tree'], options),
+    statusArgs: buildGitArgv(['status', '--porcelain=v1', '--branch'], { ...options, filterDrivers: drivers }),
+    diffArgs: buildGitArgv(['diff', '--no-color', '--unified=2', 'HEAD'], { ...options, filterDrivers: drivers }),
+    logArgs: buildGitArgv(['log', '-n', '8', '--pretty=%s'], { ...options, filterDrivers: drivers })
+  };
+  gitSafetyCache = { root: workspaceRoot, context };
+  return context;
 }
 
 function truncateText(text, max) {
@@ -698,6 +766,23 @@ function registerSecureStoreHandlers() {
   });
 }
 
+/**
+ * Replaces the active folder workspace. One path backs the folder picker, the
+ * 1-click recent reopen and a second launch's command-line folder.
+ */
+async function openFolderWorkspace(rootPath) {
+  await previewRuntime.stopAll();
+  const previousWorkspaceId = activeWorkspaceId;
+  const opened = await workspaceAccess.openFolder(rootPath);
+  if (previousWorkspaceId) {
+    stopWorkspaceServices(previousWorkspaceId);
+    workspaceAccess.closeWorkspace(previousWorkspaceId);
+  }
+  activeWorkspaceId = opened.workspaceId;
+  watchWorkspace(opened.workspaceId, workspaceAccess.getWorkspace(opened.workspaceId).root);
+  return opened;
+}
+
 function registerIpcHandlers() {
   ipcMain.handle('workspace:open-folder', async (event) => {
     assertTrustedRenderer(event);
@@ -706,16 +791,7 @@ function registerIpcHandlers() {
       properties: ['openDirectory']
     });
     if (result.canceled || result.filePaths.length === 0) return null;
-    await previewRuntime.stopAll();
-    const previousWorkspaceId = activeWorkspaceId;
-    const opened = await workspaceAccess.openFolder(result.filePaths[0]);
-    if (previousWorkspaceId) {
-      stopWorkspaceServices(previousWorkspaceId);
-      workspaceAccess.closeWorkspace(previousWorkspaceId);
-    }
-    activeWorkspaceId = opened.workspaceId;
-    watchWorkspace(opened.workspaceId, workspaceAccess.getWorkspace(opened.workspaceId).root);
-    return opened;
+    return openFolderWorkspace(result.filePaths[0]);
   });
 
   ipcMain.handle('workspace:open-files', async (event) => {
@@ -754,14 +830,7 @@ function registerIpcHandlers() {
       if (!stat?.isDirectory()) {
         throw new Error('That folder no longer exists. It may have been moved, renamed, or deleted.');
       }
-      const opened = await workspaceAccess.openFolder(target.path);
-      if (previousWorkspaceId) {
-        stopWorkspaceServices(previousWorkspaceId);
-        workspaceAccess.closeWorkspace(previousWorkspaceId);
-      }
-      activeWorkspaceId = opened.workspaceId;
-      watchWorkspace(opened.workspaceId, workspaceAccess.getWorkspace(opened.workspaceId).root);
-      return opened;
+      return openFolderWorkspace(target.path);
     }
 
     if (target.kind === 'file') {
@@ -1009,13 +1078,18 @@ function registerIpcHandlers() {
       throw new Error('Git info is available only for an opened folder workspace.');
     }
 
-    const probe = await runGit(workspace.root, ['rev-parse', '--is-inside-work-tree']);
-    if (!probe.ok || probe.stdout.trim() !== 'true') return { isRepo: false, status: '', diff: '', log: '', dirty: 0 };
+    const unavailable = { isRepo: false, status: '', diff: '', log: '', dirty: 0 };
+    if (!gitExecutable || isPathInsideDirectory(workspace.root, gitExecutable)) return unavailable;
 
+    const context = await gitSafetyContext(workspace.root);
+    const probe = await runGit(workspace.root, context.probeArgs);
+    if (!probe.ok || probe.stdout.trim() !== 'true') return unavailable;
+
+    const empty = Promise.resolve({ ok: false, stdout: '', stderr: '' });
     const [status, diff, log] = await Promise.all([
-      runGit(workspace.root, ['status', '--porcelain=v1', '--branch']),
-      runGit(workspace.root, ['diff', '--no-color', '--unified=2', 'HEAD']),
-      runGit(workspace.root, ['log', '-n', '8', '--pretty=%s'])
+      context.complete ? runGit(workspace.root, context.statusArgs) : empty,
+      context.complete ? runGit(workspace.root, context.diffArgs) : empty,
+      runGit(workspace.root, context.logArgs)
     ]);
 
     return {
@@ -1026,6 +1100,44 @@ function registerIpcHandlers() {
       dirty: status.stdout.split('\n').filter((line) => line && !line.startsWith('##')).length
     };
   });
+}
+
+/**
+ * A second launch is handled by the surviving instance: bring its window back and
+ * take over the folder the new process was pointed at, using the same recent
+ * workspace path the hub uses.
+ */
+async function handleSecondInstanceLaunch(argv, workingDirectory) {
+  if (!mainWindow) {
+    await createWindow();
+  } else {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.focus();
+  }
+
+  const folder = extractFolderArgument(argv, {
+    workingDirectory,
+    applicationDirectory: path.dirname(app.getPath('exe'))
+  });
+  if (!folder) return;
+  if (activeWorkspaceId) {
+    if (workspaceAccess.getWorkspace(activeWorkspaceId)?.root === folder) return;
+    // The renderer owns the live workspace and is the only thing that can mount a
+    // replacement, so closing its folder from here would desync the editor. Report
+    // the request on the existing preview status channel instead.
+    mainWindow?.webContents.send('preview:output', {
+      workspaceId: activeWorkspaceId,
+      type: 'status',
+      message: `Another ShadRox asked to open ${folder}. Open it from Recents to switch workspaces.`
+    });
+    return;
+  }
+  try {
+    await openFolderWorkspace(folder);
+  } catch (error) {
+    console.warn('[desktop] second-instance folder could not be opened', error);
+  }
 }
 
 async function createWindow() {
@@ -1099,11 +1211,7 @@ async function createWindow() {
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    try {
-      if (new URL(url).origin !== new URL(rendererOrigin).origin) event.preventDefault();
-    } catch {
-      event.preventDefault();
-    }
+    if (!isSameOriginAsRenderer(url, rendererOrigin)) event.preventDefault();
   });
   mainWindow.webContents.on('console-message', (details) => {
     const workspaceId = getPreviewWorkspaceIdForUrl(details.frame?.url || '');
@@ -1122,7 +1230,22 @@ async function createWindow() {
   await mainWindow.loadURL(rendererOrigin);
 }
 
+// Two processes race the backend port fallback and both rewrite runtime.json,
+// which changes the app origin and orphans the IndexedDB chat history and file
+// snapshots saved under the previous one. Only the first launch may boot ShadRox.
+const isPrimaryInstance = app.requestSingleInstanceLock();
+if (!isPrimaryInstance) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv, workingDirectory) => {
+    void handleSecondInstanceLaunch(argv, workingDirectory).catch((error) => {
+      console.warn('[desktop] second-instance request failed', error);
+    });
+  });
+}
+
 app.whenReady().then(async () => {
+  if (!isPrimaryInstance) return;
   // A default File/Edit/View menu is what makes a packaged Electron app read as
   // a generic system utility. Windows/Linux get no menu bar; macOS keeps the
   // minimal role menu it needs for standard shortcuts.
@@ -1140,6 +1263,7 @@ app.whenReady().then(async () => {
   allowLoopbackPreviewCertificates();
   installPreviewRequestGuard();
   protocol.handle(PREVIEW_SCHEME, handlePreviewRequest);
+  locateGitExecutable();
   registerIpcHandlers();
   registerSecureStoreHandlers();
   await createWindow();
