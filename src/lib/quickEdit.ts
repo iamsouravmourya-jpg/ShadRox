@@ -21,6 +21,32 @@ export interface QuickEditAiOptions {
   provider: ProviderId;
   model: string;
   apiKey?: string;
+  /** The user's chat temperature. Clamped down — see `clampInlineTemperature`. */
+  temperature?: number;
+}
+
+/** Sampling default when the caller has no preference. */
+export const INLINE_TEMPERATURE_DEFAULT = 0.1;
+
+/**
+ * Inline edits get a tighter ceiling than chat.
+ *
+ * A chat reply is prose, so a hot temperature mostly changes wording. An inline
+ * edit has to return the selected region and *nothing else* — every token above
+ * this range makes the model rewrite the surrounding style, re-indent code it
+ * was not asked to touch, or narrate its reasoning into the buffer, and the
+ * replacement is dropped straight into the user's file. So even a user who runs
+ * chat at 1.5 is capped here; the preference is honoured within the range where
+ * it is still safe to write into a document.
+ */
+export const INLINE_TEMPERATURE_MAX = 0.4;
+
+export const INLINE_TEMPERATURE_MIN = 0;
+
+/** Keeps the user's preference, but only inside the safe inline-edit band. */
+export function clampInlineTemperature(temperature?: number): number {
+  if (typeof temperature !== 'number' || !Number.isFinite(temperature)) return INLINE_TEMPERATURE_DEFAULT;
+  return Math.min(INLINE_TEMPERATURE_MAX, Math.max(INLINE_TEMPERATURE_MIN, temperature));
 }
 
 export function buildQuickEditPrompt(context: QuickEditContext): { systemInstruction: string; prompt: string } {
@@ -97,7 +123,7 @@ export async function runQuickEdit(
       apiKey: ai.apiKey,
       messages: [{ role: 'user', content: prompt }],
       systemInstruction,
-      temperature: 0.1,
+      temperature: clampInlineTemperature(ai.temperature),
       thinking: 'low',
       signal
     },

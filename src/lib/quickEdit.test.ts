@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildQuickEditPrompt, extractReplacement, sliceQuickEditContext } from './quickEdit';
+import {
+  INLINE_TEMPERATURE_DEFAULT,
+  INLINE_TEMPERATURE_MAX,
+  buildQuickEditPrompt,
+  clampInlineTemperature,
+  extractReplacement,
+  runQuickEdit,
+  sliceQuickEditContext
+} from './quickEdit';
 
 const DOC = [
   "import express from 'express';",
@@ -58,4 +66,71 @@ test('the prompt tells the model to touch only the selected region', () => {
   assert.match(prompt, /<SELECTED>\nb\n<\/SELECTED>/);
   assert.match(prompt, /<BELOW>\nc\n<\/BELOW>/);
   assert.match(prompt, /Instruction: make it async/);
+});
+
+/* ------------------------------------------------------------------ *
+ * Temperature: the user's setting has to reach the model — clamped.
+ * ------------------------------------------------------------------ */
+
+test('clamps to the inline-edit band instead of trusting the chat setting', () => {
+  assert.equal(clampInlineTemperature(undefined), INLINE_TEMPERATURE_DEFAULT);
+  assert.equal(clampInlineTemperature(0.3), 0.3, 'preferences inside the band are honoured');
+  assert.equal(clampInlineTemperature(0), 0);
+  assert.equal(clampInlineTemperature(1.4), INLINE_TEMPERATURE_MAX, 'chat heat is capped for edits');
+  assert.equal(clampInlineTemperature(-2), 0);
+  assert.equal(clampInlineTemperature(Number.NaN), INLINE_TEMPERATURE_DEFAULT);
+});
+
+/** Drives runQuickEdit against a fake /api/ai/chat and returns the request body. */
+async function captureRequestBody(ai: Parameters<typeof runQuickEdit>[1]): Promise<any> {
+  const encoder = new TextEncoder();
+  const payload = [
+    'data: {"type":"delta","text":"```ts\\nconst replaced = 1;\\n```"}\n\n',
+    'data: {"type":"done","tokens":7}\n\n'
+  ].map((chunk) => encoder.encode(chunk));
+  let cursor = 0;
+  let captured: any = null;
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: any, init: any) => {
+    captured = JSON.parse(init.body);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+      body: {
+        getReader: () => ({
+          read: async () =>
+            cursor < payload.length
+              ? { done: false, value: payload[cursor++] }
+              : { done: true, value: undefined }
+        })
+      }
+    } as any;
+  }) as typeof fetch;
+
+  try {
+    const context = sliceQuickEditContext('const a = 1;\n', 0, 12, 'rename it', 'a.ts', 'typescript');
+    const replacement = await runQuickEdit(context, ai);
+    assert.equal(replacement, 'const replaced = 1;');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  return captured;
+}
+
+test('Ctrl+K sends the user temperature on the wire', async () => {
+  const body = await captureRequestBody({ provider: 'gemini', model: 'gemini-flash', apiKey: 'k', temperature: 0.3 });
+  assert.equal(body.temperature, 0.3);
+  assert.equal(body.messages.length, 1);
+});
+
+test('a hot chat temperature is clamped before it can reach an inline edit', async () => {
+  const body = await captureRequestBody({ provider: 'groq', model: 'llama', temperature: 1.8 });
+  assert.equal(body.temperature, INLINE_TEMPERATURE_MAX);
+});
+
+test('no temperature preference still sends the deterministic default', async () => {
+  const body = await captureRequestBody({ provider: 'groq', model: 'llama' });
+  assert.equal(body.temperature, INLINE_TEMPERATURE_DEFAULT);
 });

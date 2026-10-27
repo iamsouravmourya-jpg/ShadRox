@@ -262,11 +262,15 @@ export function retrieveContext(files: WorkspaceFile[], query: string, budgetCha
   return { repoMap, snippets, totalChars: used + repoMap.length };
 }
 
+/** The retrieved snippets as standalone blocks, strongest match first. */
+export function renderRetrievedChunks(result: RetrievalResult): string[] {
+  return result.snippets.map(
+    (snippet) => `--- ${snippet.path} (lines ${snippet.startLine}-${snippet.endLine}) ---\n${snippet.content}`
+  );
+}
+
 /** Renders retrieval results as the block that goes into the system instruction. */
 export function renderRetrievedContext(result: RetrievalResult): string {
   if (result.snippets.length === 0) return '';
-  const blocks = result.snippets.map(
-    (snippet) => `--- ${snippet.path} (lines ${snippet.startLine}-${snippet.endLine}) ---\n${snippet.content}`
-  );
-  return blocks.join('\n\n');
+  return renderRetrievedChunks(result).join('\n\n');
 }

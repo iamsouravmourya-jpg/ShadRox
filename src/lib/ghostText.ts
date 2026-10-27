@@ -29,6 +29,14 @@ export interface GhostTextOptions extends FimRequestContext {
   /** Disables the feature without tearing the extension down. */
   enabled?: boolean;
   debounceMs?: number;
+  /**
+   * NOTE: there is deliberately no `temperature` here, and the chat
+   * temperature must never be forwarded to a completion request. Tab
+   * completion continues the code that is already on screen; it wants
+   * near-deterministic output, so sampling stays at the provider's completion
+   * default (see api/ai/fim.ts). Chat creativity is a different knob for a
+   * different job — see `runQuickEdit`, which does honour it, clamped.
+   */
 }
 
 class GhostWidget extends WidgetType {
