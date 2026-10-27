@@ -1,7 +1,11 @@
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import { hydrateSecureStore } from './lib/secureStore';
+import { injectSpeedInsights } from '@vercel/speed-insights';
 import './index.css';
+
+// Initialize Vercel Speed Insights
+injectSpeedInsights();
 
 const platform = window.shadroxDesktop?.platform;
 if (platform) document.documentElement.dataset.platform = platform;
