@@ -6,7 +6,7 @@ function subscribe(channel, listener) {
   return () => ipcRenderer.removeListener(channel, handler);
 }
 
-contextBridge.exposeInMainWorld('shadroxDesktop', Object.freeze({
+const shadroxDesktop = Object.freeze({
   platform: process.platform,
   openFolder: () => ipcRenderer.invoke('workspace:open-folder'),
   openFiles: () => ipcRenderer.invoke('workspace:open-files'),
@@ -37,4 +37,21 @@ contextBridge.exposeInMainWorld('shadroxDesktop', Object.freeze({
     set: (key, value) => ipcRenderer.invoke('secure:set', key, value),
     delete: (key) => ipcRenderer.invoke('secure:delete', key)
   })
-}));
+});
+
+// Electron injects this script into every frame of the webContents, and the
+// preview iframes render workspace-authored code, so exposing the bridge there
+// would hand the terminal, the decrypted key store and the folder picker to the
+// opened folder. Only ShadRox's own top-level document gets it; main.cjs
+// re-checks frame identity and origin on every call as a second layer.
+const isTopFrame = (() => {
+  try {
+    return window.top === window;
+  } catch {
+    return false;
+  }
+})();
+
+if (isTopFrame) {
+  contextBridge.exposeInMainWorld('shadroxDesktop', shadroxDesktop);
+}
