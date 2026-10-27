@@ -24,7 +24,11 @@ Vercel deploys the static export from `landing/out` using the root `vercel.json`
 - Open a folder or selected files from the desktop app.
 - Browse folder contents on demand and load text files when selected. The desktop workspace applies size, generated-file, binary-file, path traversal, and symbolic-link safeguards.
 - Edit source in a CodeMirror-based editor and save changes to the local project. AI-proposed changes can be reviewed and applied through the chat workflow; checkpoint/history features are also available in the app.
-- Chat using Gemini or Groq through the app's local API handlers, with your own key (BYOK, free tier) or ShadRox's shared key (paid tiers). The app supports a Code mode, a read-only Plan mode, and a Complex mode. Model availability depends on the provider and key.
+- Accept multi-file edits as SEARCH/REPLACE patches: each block is matched independently, applied right-to-left, and a block that does not match fails alone instead of blocking the rest of the reply.
+- Use inline AI in the editor: ghost-text completion at the caret (Tab to accept, Escape to dismiss) and a Ctrl+K quick edit that rewrites the selection, or the line under a bare caret.
+- Resume an interrupted reply. A dropped stream keeps the partial text, and continuing re-sends it as context so the model picks up where it stopped instead of starting over.
+- Generate a commit message from the workspace's git status, diff, and recent subjects through a read-only git bridge; outside a git folder it falls back to the editor's unsaved-file list.
+- Chat using Gemini or Groq through the app's local API handlers, with your own key (BYOK, free tier) or ShadRox's shared key (paid tiers). The app supports a Code mode, a read-only Plan mode, and a Complex mode. Model availability depends on the provider and key. Each request is trimmed to the selected model's context window, in the renderer and again at the server route that spends the key.
 - Preview static sites and supported Node-based web projects inside the desktop app.
 - Open an interactive terminal in the workspace and view terminal output.
 - Connect GitHub actions from Settings using a GitHub token, including validation, repository creation, and pushing a project, where configured.
@@ -43,7 +47,7 @@ The Pro/Adv/Enterprise message caps are currently client-side only (tracked in `
 
 ShadRox is designed around a local desktop workspace: opening, browsing, editing, and saving project files happens on the user's computer. The desktop app runs a local Express process for the UI and API routes; this local process is not a ShadRox-hosted account backend.
 
-When the user sends a chat or prompt-refinement request, the prompt and the project context selected for that request are sent to the chosen Gemini or Groq provider via the app's API route. A provider API key is required for BYOK use. Keys entered in the UI are stored in browser `localStorage` in the current implementation; they are not stored in hardware-backed credential storage. A ShadRox shared provider key can optionally be supplied through environment variables by an operator. Requests using that key are still sent to the selected AI provider.
+When the user sends a chat or prompt-refinement request, the prompt and the project context selected for that request are sent to the chosen Gemini or Groq provider via the app's API route. A provider API key is required for BYOK use. In the desktop app, keys entered in the Settings UI are mirrored into an OS-encrypted store (Electron `safeStorage`, so DPAPI on Windows) that survives a cache clear or reinstall; the renderer's working copy still lives in `localStorage`, which is where browser mode keeps them too. ShadRox's own server never stores a user key — BYOK requests pass the key straight through to the provider for that one call. A ShadRox shared provider key can optionally be supplied through environment variables by an operator. Requests using that key are still sent to the selected AI provider.
 
 GitHub operations send the token and requested repository data to GitHub through the app's API handlers. Review provider and GitHub terms before sending private code or credentials. ShadRox currently has no sign-in, cloud project sync, or centralized user account service.
 
@@ -73,7 +77,7 @@ Preview scripts and dependency installation are separate managed actions that re
 | Area | Location | Responsibility |
 | --- | --- | --- |
 | React UI | `src/` | Hub, chat, editor, preview, settings, and terminal interface. |
-| Renderer helpers | `src/lib/`, `src/hooks/` | AI requests, provider metadata, workspace state, persistence, retrieval, and preview/UI logic. |
+| Renderer helpers | `src/lib/`, `src/hooks/` | AI requests, provider metadata, context budgeting, the SEARCH/REPLACE patch engine, editor completion/quick-edit extensions, workspace state, persistence, retrieval, and preview/UI logic. |
 | Electron main process | `electron/main.cjs` | Native dialogs, IPC handlers, local preview protocol, managed preview and PTY lifecycle, and desktop security settings. |
 | Preload bridge | `electron/preload.cjs` | Narrow, named renderer-to-main API exposed with `contextBridge`; raw Node and Electron APIs are not exposed to the renderer. |
 | Workspace layer | `electron/workspace.cjs` | Lazy directory listing, read-on-click, scoped file access, and guarded local writes. |
@@ -116,7 +120,7 @@ Copy `.env.example` to `.env` only if you are developing with optional operator-
 | `npm run dev:desktop` | Start the server and Electron desktop shell together. |
 | `npm run build` | Build the renderer into `dist/`; this does not create an installer. |
 | `npm run typecheck` | Run TypeScript type checking. |
-| `npm test` | Run the Node test suite for workspace, preview, and preview-runtime modules. |
+| `npm test` | Run the Node test suite: workspace, preview and preview-runtime modules, SSE decoding, context budgeting, the patch engine, stream resume, FIM postprocessing, quick edit, commit context, and the provider adapters. |
 | `npm run build:desktop` | Build and package the desktop app through the staging script. |
 | `npm run dist:win` | Request a Windows NSIS installer. |
 | `npm run dist:mac` | Request a macOS DMG. |
@@ -144,7 +148,7 @@ Shared keys are optional. Their use is not a user authentication system, and thi
 ## Current limitations and beta checklist
 
 - No ShadRox sign-in, Supabase, cloud sync, subscription billing, or entitlement enforcement. The Free tier is unlimited BYOK; the Pro/Adv/Enterprise message caps are client-side only and not enforced against the API.
-- API keys in the renderer are stored in `localStorage`, not an OS credential vault.
+- Provider keys still live in `localStorage` for the renderer's working copy; the OS-encrypted desktop store is a mirror, so browser mode has no hardware-backed protection.
 - AI features need internet access and send the request context to the chosen external provider.
 - Preview support is limited to static sites and detected Node scripts; embedded-app restrictions can still prevent rendering.
 - Interactive terminal commands run with the operating-system user's permissions.
