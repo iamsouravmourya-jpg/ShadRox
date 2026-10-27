@@ -27,6 +27,7 @@ const {
   getPackageManager,
   getPreviewScript
 } = require('./preview-runtime.cjs');
+const { createUpdater } = require('./updater.cjs');
 
 const PREVIEW_SCHEME = 'shadrox-preview';
 const APP_BACKGROUND = '#090a0d';
@@ -61,6 +62,7 @@ const workspaceWatchers = new Map();
 const terminalSessions = new Map();
 let activeWorkspaceId = null;
 let mainWindow = null;
+let updater = null;
 let rendererDirty = false;
 let allowClose = false;
 let backend = null;
@@ -1100,6 +1102,13 @@ function registerIpcHandlers() {
       dirty: status.stdout.split('\n').filter((line) => line && !line.startsWith('##')).length
     };
   });
+
+  ipcMain.handle('updater:check', async (event) => {
+    assertTrustedRenderer(event);
+    if (!updater?.available) return { available: false };
+    await updater.check(true);
+    return { available: true };
+  });
 }
 
 /**
@@ -1267,6 +1276,17 @@ app.whenReady().then(async () => {
   registerIpcHandlers();
   registerSecureStoreHandlers();
   await createWindow();
+  updater = createUpdater({
+    app,
+    dialog,
+    broadcast: (payload) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('updater:status', payload);
+      }
+    },
+    log: (message) => console.warn('[updater]', message)
+  });
+  updater.start();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) void createWindow();
   });
