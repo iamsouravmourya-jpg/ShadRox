@@ -2,7 +2,7 @@
 
 ShadRox is a desktop coding workspace for opening a local project, browsing and editing its files, asking an AI provider for help, running a local preview, and using a terminal in the project folder.
 
-The application is built with React, TypeScript, Vite, and Electron. Project files are opened from the user's computer and the desktop app writes accepted edits back to that folder. AI chat is optional and requires a Gemini or Groq provider key, or a shared key configured by the ShadRox operator.
+The application is built with React, TypeScript, Vite, and Electron. Project files are opened from the user's computer and the desktop app writes accepted edits back to that folder. AI chat is optional and requires a Gemini or Groq provider key that the user brings (BYOK). The shared operator key exists in the code but is switched off for the beta; see **Beta scope**.
 
 > **Project status:** ShadRox is an early beta/development project. The local development app and core workflows have been exercised, but a distributable installer has not yet been verified end-to-end for release. There is no ShadRox account system, Supabase integration, or billing enforcement today. Do not treat the plan labels in the UI as active subscriptions.
 
@@ -28,7 +28,7 @@ Vercel deploys the static export from `landing/out` using the root `vercel.json`
 - Use inline AI in the editor: ghost-text completion at the caret (Tab to accept, Escape to dismiss) and a Ctrl+K quick edit that rewrites the selection, or the line under a bare caret.
 - Resume an interrupted reply. A dropped stream keeps the partial text and survives a reload, and continuing re-sends it as context so the model picks up where it stopped instead of starting over. The persisted snapshot always describes the conversation on screen, so a regenerate, stop, or cleared chat can never restore a stale one over live work.
 - Generate a commit message from the workspace's git status, diff, and recent subjects through a read-only git bridge; outside a git folder it falls back to the editor's unsaved-file list.
-- Chat using Gemini or Groq through the app's local API handlers, with your own key (BYOK, free tier) or ShadRox's shared key (paid tiers). The app supports a Code mode, a read-only Plan mode, and a Complex mode. Model availability depends on the provider and key. Each request is trimmed to the selected model's context window, in the renderer and again at the server route that spends the key.
+- Chat using Gemini or Groq through the app's local API handlers with your own key (BYOK). The shared operator key is compiled in but gated off, so a request without a key is refused rather than served from ShadRox's plan. The app supports a Code mode, a read-only Plan mode, and a Complex mode. Model availability depends on the provider and key. Each request is trimmed to the selected model's context window, in the renderer and again at the server route that spends the key.
 - Preview static sites and supported Node-based web projects inside the desktop app.
 - Open an interactive terminal in the workspace and view terminal output.
 - Connect GitHub actions from Settings using a GitHub token, including validation, repository creation, and pushing a project, where configured.
@@ -41,7 +41,7 @@ ShadRox is free-first by design. The goal is a zero-cost acquisition surface tha
 - **Pro (₹499/mo, 250 msgs) and Adv (₹1,099/mo, 500 msgs).** These tiers use ShadRox's shared provider key, so the subscriber never manages an API key, never sees a per-token bill, and gets fast/premium models at a flat, GST-inclusive price. The upgrade levers are convenience (no key management), premium model access, and flat predictable cost — not artificial scarcity on the free tier.
 - **Enterprise (custom).** Higher quotas, SSO, audit log, secrets vault — listed in the UI but not yet implemented.
 
-The Pro/Adv/Enterprise message caps are currently client-side only (tracked in `localStorage`) and are not yet enforced against the API. Server-side entitlement enforcement (Supabase session + per-user usage meter) is the gating work before the shared key is turned on for real testers; the free BYOK tier needs none of it because it carries no ShadRox cost.
+The Pro/Adv/Enterprise message caps are currently client-side only (tracked in `localStorage`) and are not yet enforced against the API. Server-side entitlement enforcement (Supabase session + per-user usage meter) is the gating work before the shared key is turned on for real testers — during the beta the shared key is switched off entirely (see **Beta scope**), so the point is moot until launch. The free BYOK tier needs none of it because it carries no ShadRox cost.
 
 ## Local project and AI data
 
@@ -80,7 +80,7 @@ The threat model is unusual for a desktop app: ShadRox opens an arbitrary folder
 - **Read-only git, hardened against a hostile repository.** `git` is resolved once to an absolute path from trusted locations, and any candidate inside the opened workspace is rejected — a planted `git.exe` cannot be chosen. Every call runs with a minimal environment (`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` pointed at the null device, `GIT_CONFIG_NOSYSTEM`, `GIT_ATTR_NOSYSTEM`, `GIT_PAGER=cat`, `GIT_TERMINAL_PROMPT=0`), a fixed argv with no shell, and `-c core.fsmonitor=false -c core.hooksPath=NUL -c diff.external=` plus `--no-textconv --no-ext-diff`. Repo-declared clean/smudge/process filter drivers are enumerated from the repository's own config chain and individually disarmed; if the config chain cannot be fully enumerated, status and diff return empty rather than risk executing a driver.
 - **Workspace writes stay inside the workspace.** Path normalization plus `lstat`/`realpath` checks reject `..`, absolute, drive-letter, UNC and alternate-data-stream paths, and symlink or junction escapes.
 - **Provider keys are never server-side.** BYOK requests pass the key straight through to the provider for that single call. The Vercel functions do not persist keys, and provider error text is sanitized before it reaches the renderer so a key or an outgoing URL cannot be echoed back.
-- **Shared-key spend is policy-gated.** One module decides which key a request may spend: the caller's key always wins, and the operator's shared key serves Pro-tier models only. Prompt refinement uses the same gate rather than reading an environment key directly. A best-effort per-IP token bucket limits shared-key requests only — BYOK traffic is never throttled because it costs the operator nothing. The bucket is per warm serverless container and trusts `x-forwarded-for`, so it is a cost brake, not an entitlement system; that still needs accounts.
+- **Shared-key spend is policy-gated — and switched off for the beta.** One module decides which key a request may spend. `SHADROX_ALLOW_SHARED_KEY=1` is the master gate: while it is unset, an unkeyed request is refused *before* the operator key is looked up, so neither the UI nor a hand-crafted `fetch` in devtools can spend it. Turning the gate back on restores the previous policy — the caller's key always wins, and the shared key serves Pro-tier models only. Prompt refinement uses the same gate rather than reading an environment key directly. A best-effort per-IP token bucket limits shared-key requests only — BYOK traffic is never throttled because it costs the operator nothing. The bucket is per warm serverless container and trusts `x-forwarded-for`, so it is a cost brake, not an entitlement system; that still needs accounts.
 - **Sandboxed renderer.** No Node integration, context isolation on, sandbox on, and navigation restricted to the app's own origin.
 
 ## Architecture
@@ -91,6 +91,7 @@ The threat model is unusual for a desktop app: ShadRox opens an arbitrary folder
 | Renderer helpers | `src/lib/`, `src/hooks/` | AI requests, provider metadata, context budgeting, the SEARCH/REPLACE patch engine, editor completion/quick-edit extensions, workspace state, persistence, retrieval, and preview/UI logic. |
 | Electron main process | `electron/main.cjs` | Native dialogs, IPC handlers, local preview protocol, managed preview and PTY lifecycle, single-instance handling, read-only git access, and desktop security settings. |
 | Desktop trust + git hardening | `electron/desktop-security.cjs` | Testable predicates for which renderer frames may call IPC, the git executable lookup, the isolated git environment, and the argument set that disarms repo-controlled git hooks, external diffs, textconv, and filter drivers. |
+| Automatic updates | `electron/updater.cjs` | electron-updater wiring for Windows/macOS: quiet startup and periodic checks, automatic download, one restart dialog, and a status channel for the Settings UI. Inactive in development and in the browser build. |
 | Preload bridge | `electron/preload.cjs` | Narrow, named renderer-to-main API exposed with `contextBridge`; raw Node and Electron APIs are not exposed to the renderer. |
 | Workspace layer | `electron/workspace.cjs` | Lazy directory listing, read-on-click, scoped file access, and guarded local writes. |
 | Local API server | `server.ts`, `api/` | Express routes used for AI, key validation, prompt refinement, GitHub actions, and local frontend serving. |
@@ -103,7 +104,7 @@ The renderer is configured without Node integration and runs with context isolat
 - Node.js compatible with the installed Vite/Electron toolchain (Node 22.12+ is recommended; the project has also been developed with a newer Node release).
 - npm. Optional project previews may additionally need pnpm, Yarn, or Bun to match the opened project.
 - Windows or macOS for the configured desktop packaging targets. The development UI can also run in a browser.
-- A Gemini or Groq API key to use AI chat with BYOK. Without a valid provider key or an operator-configured shared key, AI requests are unavailable.
+- A Gemini or Groq API key. The beta is BYOK-only: without a valid provider key, AI requests are refused.
 
 Native dependencies such as `node-pty` may need platform build tools during installation. Windows native builds generally need Python, Visual Studio C++ Build Tools, and a Windows SDK. macOS native builds require the Apple command-line build tools. Package downloads require network access.
 
@@ -122,7 +123,7 @@ This starts the local API/Vite server and opens the Electron app. To run only th
 npm run dev
 ```
 
-Copy `.env.example` to `.env` only if you are developing with optional operator-configured shared provider keys or need to change the local server port. Users can instead add their own provider key in the app. Keep `.env` private and never commit real API keys.
+Copy `.env.example` to `.env` only if you are developing the gated operator path (it needs `SHADROX_ALLOW_SHARED_KEY=1` alongside the keys) or need to change the local server port. Beta testers do not need a `.env`: they add their own provider key in the app. Keep `.env` private and never commit real API keys.
 
 ## Development commands
 
@@ -132,16 +133,36 @@ Copy `.env.example` to `.env` only if you are developing with optional operator-
 | `npm run dev:desktop` | Start the server and Electron desktop shell together. |
 | `npm run build` | Build the renderer into `dist/`; this does not create an installer. |
 | `npm run typecheck` | Run TypeScript type checking. |
-| `npm test` | Run the Node test suite (131 tests): workspace, preview and preview-runtime modules, desktop trust and git-hardening predicates, SSE decoding, context budgeting and system-context degradation, the patch engine, the stream-snapshot lifecycle, FIM postprocessing and cache behavior, quick edit, commit context, AI access policy, and the provider adapters. |
+| `npm test` | Run the Node test suite (147 tests): workspace, preview and preview-runtime modules, desktop trust and git-hardening predicates, the updater lifecycle, SSE decoding, context budgeting and system-context degradation, the patch engine, the stream-snapshot lifecycle, FIM postprocessing and cache behavior, quick edit, commit context, AI access policy including the shared-key lockdown, and the provider adapters. |
 | `npm run build:desktop` | Build and package the desktop app through the staging script. |
-| `npm run dist:win` | Request a Windows NSIS installer. |
+| `npm run dist:win` | Request a Windows NSIS installer (no publishing). |
+| `npm run release:win` | Build the Windows installer and publish it plus `latest.yml` to GitHub Releases, which is what the in-app updater reads. Needs `GH_TOKEN` with `repo` scope. |
 | `npm run dist:mac` | Request a macOS DMG. |
 
 The packaging script stages the backend by walking the import graph from `server.ts`, so the API layer's `src/lib` runtime modules ship automatically; a 0.3.5 build shipped only one of them and the packaged app died at launch with `ERR_MODULE_NOT_FOUND`. Do not reintroduce a hand-maintained file list. Installer generation is still experimental and must be validated on the target OS before distributing it. A renderer build or passing unit tests alone does not prove that the packaged app installs, launches, updates, or works on a clean beta tester machine. The script uses `dist_staging/` and writes artifacts to `dist_desktop/`; do not assume an old artifact reflects the latest source.
 
+## Beta scope
+
+The beta is ten known testers on their own machines, not a public launch. Two decisions follow from that and are deliberate, not oversights:
+
+- **BYOK-only.** Every AI feature requires a real provider key in Settings. `api/ai/_access.ts` refuses the shared-key fallback unless `SHADROX_ALLOW_SHARED_KEY=1` is set, `src/lib/sharedKeyPolicy.ts` locks the "Use ShadRox Shared Key" control, and `useByok` ignores any stale persisted flag — so a request crafted in devtools still cannot spend an operator key. The shared-key code, spend guard, and Pro-tier rules stay complete so the launch is a config flip, not a rewrite.
+- **No code signing certificate.** Signing costs money the beta does not justify. Unsigned NSIS builds trigger Windows SmartScreen ("More info" → "Run anyway") and Electron's own updater cannot verify a publisher, so updates ship only to testers who already trust the source. Buying a certificate is a launch task, not a beta task.
+
+## Automatic updates
+
+The packaged app checks `iamsouravmourya-jpg/ShadRox` GitHub Releases 15 seconds after launch and every six hours, downloads a newer build silently, and then asks once to restart. A failed check — offline, blocked network, API rate limit — is logged and never shown. Settings → Models & Keys has an "Automatic updates" card with the current state and a manual "Check now".
+
+Publishing a release makes the installer and `latest.yml` downloadable by anyone who knows the repository URL, which is the trade-off of using GitHub Releases as the update feed while the repository stays public. Cut a release with:
+
+```sh
+GH_TOKEN=<token with repo scope> npm run release:win
+```
+
+`npm run dist:win` builds the same artifacts without publishing them, which is what the beta hands out today.
+
 ## Configuration
 
-`.env.example` documents optional server-side shared provider keys and `PORT`. Supported provider IDs are `gemini` and `groq`. For BYOK, users enter their own key in Settings. The app's available-model list is based on the provider response plus the local model catalog; actual model access and cost are controlled by the provider account.
+`.env.example` documents the shared-key master switch (`SHADROX_ALLOW_SHARED_KEY`), the optional server-side shared provider keys, and `PORT`. Supported provider IDs are `gemini` and `groq`. For BYOK, users enter their own key in Settings. The app's available-model list is based on the provider response plus the local model catalog; actual model access and cost are controlled by the provider account.
 
 The API routes currently mounted by the local server include:
 
@@ -155,7 +176,7 @@ The API routes currently mounted by the local server include:
 - `POST /api/github/create-repo`
 - `POST /api/github/push`
 
-Shared keys are optional. Their use is not a user authentication system, and this codebase does not currently enforce account entitlements or billing for the UI's plan labels.
+Shared keys are off by default and gated behind `SHADROX_ALLOW_SHARED_KEY=1` (see **Beta scope**). Their use is not a user authentication system, and this codebase does not currently enforce account entitlements or billing for the UI's plan labels.
 
 ## Current limitations and beta checklist
 

@@ -122,6 +122,14 @@ export type DesktopPreviewState =
   | { status: 'ready'; url: string; /** `static` previews reload on file changes; `dev` servers may use their own HMR. */ mode?: 'dev' | 'static'; hmr?: boolean }
   | { status: 'error'; url: null; message: string };
 
+export type UpdaterStatus =
+  | { state: 'checking' }
+  | { state: 'available'; version: string }
+  | { state: 'up-to-date' }
+  | { state: 'downloading'; percent: number }
+  | { state: 'ready'; version: string }
+  | { state: 'error'; message: string };
+
 export interface ShadRoxDesktopAPI {
   platform: string;
   openFolder: () => Promise<DesktopWorkspace | null>;
@@ -149,6 +157,9 @@ export interface ShadRoxDesktopAPI {
   startPreview: (workspaceId: string, approval?: { manifestHash?: string; approved?: boolean; projectPath?: string; projectKind?: 'node' | 'static' }) => Promise<DesktopPreviewStartResult>;
   stopPreview: (workspaceId: string) => Promise<boolean>;
   onPreviewOutput: (listener: (output: DesktopPreviewOutput) => void) => () => void;
+  /** Runs an update check; `{ available: false }` in dev and on unsupported platforms. */
+  checkForUpdates: () => Promise<{ available: boolean }>;
+  onUpdaterStatus: (listener: (status: UpdaterStatus) => void) => () => void;
   secureStore: {
     getAll: () => Promise<Record<string, string>>;
     set: (key: string, value: string) => Promise<boolean>;

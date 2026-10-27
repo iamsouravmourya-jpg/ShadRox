@@ -32,6 +32,8 @@ const shadroxDesktop = Object.freeze({
   startPreview: (id, approval) => ipcRenderer.invoke('preview:start', id, approval),
   stopPreview: (id) => ipcRenderer.invoke('preview:stop', id),
   onPreviewOutput: (listener) => subscribe('preview:output', listener),
+  checkForUpdates: () => ipcRenderer.invoke('updater:check'),
+  onUpdaterStatus: (listener) => subscribe('updater:status', listener),
   secureStore: Object.freeze({
     getAll: () => ipcRenderer.invoke('secure:get-all'),
     set: (key, value) => ipcRenderer.invoke('secure:set', key, value),
