@@ -14,6 +14,7 @@ const {
   getPackageManager,
   getPreviewScript,
   getRunArgs,
+  hasHmrSupport,
   parsePreviewUrl
 } = require('./preview-runtime.cjs');
 
@@ -47,6 +48,9 @@ test('binds recognized web dev servers to localhost and extracts local preview U
   assert.equal(parsePreviewUrl('Local: http://localhost:5173/'), 'http://127.0.0.1:5173/');
   assert.equal(parsePreviewUrl('http://0.0.0.0:8080/'), 'http://127.0.0.1:8080/');
   assert.equal(parsePreviewUrl('https://example.com:443/'), null);
+  assert.equal(hasHmrSupport('vite --port 5173'), true);
+  assert.equal(hasHmrSupport('next dev'), true);
+  assert.equal(hasHmrSupport('node server.js'), false);
 });
 
 test('finds a single runnable nested project and refuses ambiguous roots', async (context) => {
@@ -185,6 +189,7 @@ test('installs missing npm dependencies, starts the approved script, and stops t
 
   const result = await runtime.start('workspace-1', root);
   assert.equal(result.script, 'dev');
+  assert.equal(result.hmr, true);
   assert.match(result.url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
   assert.equal((await fetch(result.url)).status, 200);
   assert.equal(calls.length, 2);
@@ -289,14 +294,14 @@ test('runs a real local Node web project and serves it through the preview URL',
 
   const runtime = createPreviewRuntime({ readyTimeout: 10_000 });
   context.after(() => runtime.stop('live-workspace'));
-  const { url } = await runtime.start('live-workspace', root);
+  const { url, hmr } = await runtime.start('live-workspace', root);
+  assert.equal(hmr, false);
   assert.equal(runtime.getWorkspaceIdForUrl(url), 'live-workspace');
   assert.equal(runtime.getWorkspaceIdForUrl('http://127.0.0.1:1/'), null);
   const response = await fetch(url);
   assert.equal(response.status, 200);
   assert.equal(await response.text(), 'local runtime works');
   await runtime.stop('live-workspace');
-
   const stopDeadline = Date.now() + 5000;
   while (Date.now() < stopDeadline) {
     try {

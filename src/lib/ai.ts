@@ -1,4 +1,5 @@
 import { buildModelList, type ModelInfo, type ProviderId } from './providers';
+import { createSseDecoder } from './sse';
 import type { RefineMode } from './types';
 
 export interface ValidateKeyResult {
@@ -62,13 +63,29 @@ export interface StreamChatOptions {
   apiKey?: string;
   messages: ChatTurn[];
   systemInstruction?: string;
+  temperature?: number;
   thinking?: ThinkingLevel;
   signal?: AbortSignal;
+  /** Partial reply text from an interrupted stream, for resume-with-dedupe. */
+  resumePrefix?: string;
+}
+
+export interface StreamDoneInfo {
+  tokens: number;
+  provider: ProviderId;
+  model: string;
+  tier: string;
+  finishReason?: string | null;
+  /** Milliseconds until the first delta/reasoning chunk arrived. */
+  firstTokenMs?: number | null;
+  durationMs?: number | null;
 }
 
 export interface StreamChatHandlers {
   onDelta: (text: string) => void;
-  onDone?: (info: { tokens: number; provider: ProviderId; model: string; tier: string }) => void;
+  /** Model reasoning/thinking stream, when the provider exposes it. */
+  onReasoning?: (text: string) => void;
+  onDone?: (info: StreamDoneInfo) => void;
   onError: (message: string) => void;
 }
 
@@ -133,9 +150,46 @@ export async function validateProviderKey(provider: ProviderId, apiKey: string):
   return { latencyMs: data.latencyMs ?? 0, models };
 }
 
+/**
+ * Builds a stateful filter that strips an echoed partial reply from the start
+ * of a resumed stream. The model is told not to repeat the prefix, but many
+ * providers echo it anyway; we consume code points until the stream diverges
+ * from the prefix, then pass everything through untouched.
+ */
+export function createPrefixStripper(prefix: string): (text: string) => string {
+  const expected = Array.from(prefix);
+  let cursor = 0;
+  let matching = true;
+  return (text: string) => {
+    if (!matching) return text;
+    let output = '';
+    for (const char of text) {
+      if (cursor < expected.length) {
+        if (char === expected[cursor]) {
+          cursor += 1;
+          continue;
+        }
+        matching = false;
+      }
+      output += char;
+    }
+    return output;
+  };
+}
+
 /** Streams a chat completion as normalised SSE events from /api/ai/chat. */
 export async function streamChat(options: StreamChatOptions, handlers: StreamChatHandlers): Promise<void> {
-  const { provider, model, apiKey, messages, systemInstruction, thinking, signal } = options;
+  const {
+    provider,
+    model,
+    apiKey,
+    messages,
+    systemInstruction,
+    temperature,
+    thinking,
+    signal,
+    resumePrefix
+  } = options;
 
   let response: Response;
   try {
@@ -143,11 +197,24 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal,
-      body: JSON.stringify({ provider, model, apiKey, messages, systemInstruction, thinking })
+      body: JSON.stringify({
+        provider,
+        model,
+        apiKey,
+        messages,
+        systemInstruction,
+        temperature,
+        thinking,
+        resume: resumePrefix ? { prefix: resumePrefix } : undefined
+      })
     });
   } catch (error) {
     if (signal?.aborted) return;
-    handlers.onError(error instanceof Error ? error.message : 'Network error.');
+    handlers.onError(
+      error instanceof TypeError
+        ? 'Could not reach the ShadRox AI service. Check your internet connection and try again.'
+        : error instanceof Error ? error.message : 'Network error.'
+    );
     return;
   }
 
@@ -163,53 +230,77 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
     return;
   }
 
-  const decoder = new TextDecoder();
-  let buffer = '';
+  const textDecoder = new TextDecoder();
   let streamError: string | null = null;
+  let sawDone = false;
+  let receivedOutput = false;
+  const stripPrefix = resumePrefix ? createPrefixStripper(resumePrefix) : null;
 
-  const handleLine = (line: string) => {
-    if (!line.startsWith('data:')) return;
-    const payload = line.slice(5).trim();
-    if (!payload || payload === '[DONE]') return;
+  const decoder = createSseDecoder(({ data }) => {
+    if (!data || data === '[DONE]') return;
 
     let event: any;
     try {
-      event = JSON.parse(payload);
+      event = JSON.parse(data);
     } catch {
       return;
     }
 
     if (event.type === 'delta' && typeof event.text === 'string') {
-      handlers.onDelta(event.text);
+      receivedOutput = true;
+      handlers.onDelta(stripPrefix ? stripPrefix(event.text) : event.text);
+    } else if (event.type === 'reasoning' && typeof event.text === 'string') {
+      receivedOutput = true;
+      handlers.onReasoning?.(event.text);
     } else if (event.type === 'done') {
+      sawDone = true;
       handlers.onDone?.({
         tokens: event.tokens ?? 0,
         provider: event.provider ?? provider,
         model: event.model ?? model,
-        tier: event.tier ?? 'byok'
+        tier: event.tier ?? 'byok',
+        finishReason: event.finishReason ?? null,
+        firstTokenMs: typeof event.firstTokenMs === 'number' ? event.firstTokenMs : null,
+        durationMs: typeof event.durationMs === 'number' ? event.durationMs : null
       });
     } else if (event.type === 'error') {
       streamError = event.message || 'AI generation failed.';
     }
-  };
+  });
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let newlineIndex = buffer.indexOf('\n');
-    while (newlineIndex !== -1) {
-      const line = buffer.slice(0, newlineIndex).replace(/\r$/, '');
-      buffer = buffer.slice(newlineIndex + 1);
-      handleLine(line);
-      newlineIndex = buffer.indexOf('\n');
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      decoder.push(textDecoder.decode(value, { stream: true }));
     }
+    decoder.flush();
+  } catch (error) {
+    if (signal?.aborted) return;
+    handlers.onError(
+      error instanceof Error && error.name === 'AbortError'
+        ? 'Generation stopped.'
+        : 'The AI stream was interrupted before it finished.'
+    );
+    return;
   }
 
-  if (buffer.trim()) handleLine(buffer.trim());
+  if (signal?.aborted) return;
 
-  if (streamError) handlers.onError(streamError);
+  if (streamError) {
+    handlers.onError(streamError);
+    return;
+  }
+
+  if (!sawDone) {
+    if (receivedOutput) {
+      // The connection closed cleanly without a done event; finalise the UI
+      // instead of leaving the reply stuck in a streaming state.
+      handlers.onDone?.({ tokens: 0, provider, model, tier: 'byok', finishReason: 'stream-ended' });
+    } else {
+      handlers.onError('The model returned an empty response.');
+    }
+  }
 }
 
 export interface RefinedPrompt {

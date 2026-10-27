@@ -51,7 +51,7 @@ export function renderMarkdownContent(content: string): React.ReactNode {
     }
     if (trimmed.startsWith('## ')) {
       blocks.push(
-        <h2 key={idx} className="text-sm font-semibold text-emerald-400">
+        <h2 key={idx} className="text-sm font-semibold text-violet-300">
           {trimmed.slice(3)}
         </h2>
       );
@@ -68,7 +68,7 @@ export function renderMarkdownContent(content: string): React.ReactNode {
     if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
       blocks.push(
         <div key={idx} className="flex items-start gap-2 pl-1 text-neutral-300">
-          <span className="text-emerald-400 font-bold">•</span>
+          <span className="text-violet-300 font-bold">•</span>
           <span>{trimmed.slice(2)}</span>
         </div>
       );
@@ -167,7 +167,7 @@ function languageMatchesFence(info: string, fileName: string): boolean {
  * Every signal is checked against the real file names in the workspace, so the
  * assistant can never point a write at a file the user does not have.
  */
-function resolveTarget(info: string, context: string, body: string, files: KnownFile[]): string | null {
+export function resolveTarget(info: string, context: string, body: string, files: KnownFile[]): string | null {
   // 1. The model declared the path itself: ```tsx path=src/App.tsx
   const declared = info.match(/(?:path|file|filename|filepath)\s*[:=]\s*["'`]?([^\s"'`]+)/i);
   if (declared) return declared[1];
@@ -293,7 +293,12 @@ export function maskFileWrites(content: string, files: KnownFile[] = []): string
 
     if (target) {
       const known = files.some((file) => file.name === target);
-      output.push(`- ${target} — ${known ? 'updated' : 'created'}, open in code editor`);
+      const hasSearchReplace = body.includes('<<<<<<< ORIGINAL');
+      output.push(
+        hasSearchReplace
+          ? `- ${target} — patched via search/replace, open in code editor`
+          : `- ${target} — ${known ? 'updated' : 'created'}, open in code editor`
+      );
     } else {
       output.push(lines[index], ...bodyLines);
       if (terminated) output.push(lines[close]);

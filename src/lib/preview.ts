@@ -204,7 +204,7 @@ export function detectWorkspaceStack(files: WorkspaceFile[]): {
 }
 
 const METHOD_STYLES: Record<string, string> = {
-  GET: 'bg-emerald-950 text-emerald-400 border-emerald-800/60',
+  GET: 'bg-violet-500/10 text-violet-300 border-violet-300/25',
   POST: 'bg-sky-950 text-sky-400 border-sky-800/60',
   PUT: 'bg-amber-950 text-amber-400 border-amber-800/60',
   PATCH: 'bg-amber-950 text-amber-400 border-amber-800/60',
@@ -258,7 +258,7 @@ export function generateUniversalSaaSSandbox(
     <!-- Header -->
     <header class="flex items-center justify-between border-b border-neutral-800 pb-4">
       <div class="flex items-center gap-3">
-        <div class="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold text-sm">
+        <div class="w-8 h-8 rounded-lg bg-violet-500/10 border border-violet-300/25 flex items-center justify-center text-violet-300 font-bold text-sm">
           SR
         </div>
         <div>
@@ -266,7 +266,7 @@ export function generateUniversalSaaSSandbox(
           <p class="text-[11px] text-neutral-400">${escapeHtml(stack.framework)}</p>
         </div>
       </div>
-      <span class="px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider bg-emerald-950/60 text-emerald-400 border border-emerald-800/60 rounded">
+      <span class="px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider bg-violet-500/10 text-violet-300 border border-violet-300/25 rounded">
         ${escapeHtml(stack.badge)}
       </span>
     </header>
@@ -347,7 +347,7 @@ export function generateUniversalSaaSSandbox(
       }
       <div id="api-response-box" class="hidden border border-neutral-800 bg-black p-3 rounded text-xs font-mono">
         <div class="text-neutral-500 mb-1">Simulated response (server is not running):</div>
-        <pre id="api-response-text" class="text-emerald-400"></pre>
+        <pre id="api-response-text" class="text-violet-300"></pre>
       </div>
     </div>
 

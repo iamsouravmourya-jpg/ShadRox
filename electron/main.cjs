@@ -1,5 +1,5 @@
-const { app, BrowserWindow, dialog, ipcMain, protocol, session, shell } = require('electron');
-const { exec } = require('node:child_process');
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, protocol, safeStorage, session, shell } = require('electron');
+const { exec, execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { Readable } = require('node:stream');
@@ -19,6 +19,11 @@ const {
 } = require('./preview-runtime.cjs');
 
 const PREVIEW_SCHEME = 'shadrox-preview';
+const APP_BACKGROUND = '#090a0d';
+const TITLE_BAR_HEIGHT = 48;
+
+app.setAppUserModelId('com.shadrox.desktop');
+nativeTheme.themeSource = 'dark';
 
 // AMD drivers on Windows can terminate Electron's GPU process with E_INVALIDARG
 // (0x80070057). Software compositing keeps the preview surface stable.
@@ -46,6 +51,8 @@ const workspaceWatchers = new Map();
 const terminalSessions = new Map();
 let activeWorkspaceId = null;
 let mainWindow = null;
+let rendererDirty = false;
+let allowClose = false;
 let backend = null;
 let rendererOrigin = null;
 const previewRuntime = createPreviewRuntime({
@@ -537,18 +544,61 @@ function watchWorkspace(workspaceId, root) {
   workspaceWatchers.set(workspaceId, watcher);
 }
 
+function runtimeConfigPath() {
+  return path.join(app.getPath('userData'), 'runtime.json');
+}
+
+function readStoredPort() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(runtimeConfigPath(), 'utf8'));
+    const port = Number(parsed?.port);
+    return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+function storePort(port) {
+  try {
+    fs.mkdirSync(path.dirname(runtimeConfigPath()), { recursive: true });
+    fs.writeFileSync(runtimeConfigPath(), JSON.stringify({ port }), 'utf8');
+  } catch (error) {
+    console.warn('[runtime] could not persist local port', error);
+  }
+}
+
 async function startPackagedBackend() {
   configurePackagedEsbuild();
   const { register } = await import('tsx/esm/api');
   register();
   const serverUrl = pathToFileURL(path.join(app.getAppPath(), 'server.ts')).href;
   const { startServer } = await import(serverUrl);
-  return startServer({
+  const options = {
     mode: 'production',
     host: '127.0.0.1',
-    port: 0,
     staticDirectory: path.join(app.getAppPath(), 'dist')
-  });
+  };
+
+  // The renderer origin must stay stable between launches: localStorage and
+  // IndexedDB are scoped to it, so a fresh random port would wipe saved keys,
+  // recents, and plan state on every start.
+  const storedPort = readStoredPort();
+  const candidates = [...new Set([storedPort, 43121, 43122, 43123].filter((port) => Number.isInteger(port) && port > 0))];
+
+  for (const port of candidates) {
+    try {
+      const backend = await startServer({ ...options, port });
+      const actualPort = Number(new URL(backend.origin).port);
+      if (actualPort !== storedPort) storePort(actualPort);
+      return backend;
+    } catch (error) {
+      console.warn(`[runtime] local port ${port} unavailable, trying next`, error instanceof Error ? error.message : error);
+    }
+  }
+
+  const backend = await startServer({ ...options, port: 0 });
+  storePort(Number(new URL(backend.origin).port));
+  return backend;
 }
 
 function executeCommand(command, cwd) {
@@ -565,6 +615,86 @@ function executeCommand(command, cwd) {
         exitCode: error ? (typeof error.code === 'number' ? error.code : 1) : 0
       });
     });
+  });
+}
+
+function secureStorePath() {
+  return path.join(app.getPath('userData'), 'secure-store.json');
+}
+
+/**
+ * Read-only git access for the renderer: a fixed argv per call, no shell, so
+ * a workspace can never inject commands through this path.
+ */
+function runGit(cwd, args) {
+  return new Promise((resolve) => {
+    execFile('git', args, {
+      cwd,
+      timeout: 15_000,
+      maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true
+    }, (error, stdout, stderr) => {
+      resolve({ ok: !error, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+  });
+}
+
+function truncateText(text, max) {
+  return text.length > max ? `${text.slice(0, max)}\n... truncated ...` : text;
+}
+
+function readSecureStore() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(secureStorePath(), 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSecureStore(store) {
+  const file = secureStorePath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(store), { encoding: 'utf8', mode: 0o600 });
+}
+
+const SECURE_KEY_PATTERN = /^shadrox\.[a-z0-9._-]{1,80}$/i;
+
+function registerSecureStoreHandlers() {
+  ipcMain.handle('secure:get-all', (event) => {
+    assertTrustedRenderer(event);
+    if (!safeStorage.isEncryptionAvailable()) return {};
+    const store = readSecureStore();
+    const result = {};
+    for (const [key, value] of Object.entries(store)) {
+      if (typeof value !== 'string') continue;
+      try {
+        result[key] = safeStorage.decryptString(Buffer.from(value, 'base64'));
+      } catch {
+        // Values encrypted under a different OS profile are simply dropped.
+      }
+    }
+    return result;
+  });
+
+  ipcMain.handle('secure:set', (event, key, value) => {
+    assertTrustedRenderer(event);
+    if (typeof key !== 'string' || !SECURE_KEY_PATTERN.test(key)) throw new Error('Invalid settings key.');
+    if (typeof value !== 'string' || value.length > 200_000) throw new Error('Invalid settings value.');
+    if (!safeStorage.isEncryptionAvailable()) return false;
+    const store = readSecureStore();
+    store[key] = safeStorage.encryptString(value).toString('base64');
+    writeSecureStore(store);
+    return true;
+  });
+
+  ipcMain.handle('secure:delete', (event, key) => {
+    assertTrustedRenderer(event);
+    if (typeof key !== 'string' || !(key in readSecureStore())) return false;
+    const store = readSecureStore();
+    delete store[key];
+    writeSecureStore(store);
+    return true;
   });
 }
 
@@ -609,6 +739,53 @@ function registerIpcHandlers() {
     return opened;
   });
 
+  ipcMain.handle('workspace:reopen', async (event, target) => {
+    assertTrustedRenderer(event);
+    if (!target || typeof target !== 'object') throw new Error('Invalid recent workspace.');
+
+    await previewRuntime.stopAll();
+    const previousWorkspaceId = activeWorkspaceId;
+
+    if (target.kind === 'folder') {
+      if (typeof target.path !== 'string' || target.path.length === 0) {
+        throw new Error('This recent folder has no stored location.');
+      }
+      const stat = await fs.promises.stat(target.path).catch(() => null);
+      if (!stat?.isDirectory()) {
+        throw new Error('That folder no longer exists. It may have been moved, renamed, or deleted.');
+      }
+      const opened = await workspaceAccess.openFolder(target.path);
+      if (previousWorkspaceId) {
+        stopWorkspaceServices(previousWorkspaceId);
+        workspaceAccess.closeWorkspace(previousWorkspaceId);
+      }
+      activeWorkspaceId = opened.workspaceId;
+      watchWorkspace(opened.workspaceId, workspaceAccess.getWorkspace(opened.workspaceId).root);
+      return opened;
+    }
+
+    if (target.kind === 'file') {
+      const filePaths = Array.isArray(target.filePaths)
+        ? target.filePaths.filter((entry) => typeof entry === 'string' && entry.length > 0)
+        : [];
+      if (filePaths.length === 0) throw new Error('This recent entry has no stored file paths.');
+      for (const filePath of filePaths) {
+        const stat = await fs.promises.stat(filePath).catch(() => null);
+        if (!stat?.isFile()) throw new Error(`${path.basename(filePath)} no longer exists.`);
+      }
+      const opened = await workspaceAccess.openFiles(filePaths);
+      if (!opened) throw new Error('Those files could not be reopened.');
+      if (previousWorkspaceId) {
+        stopWorkspaceServices(previousWorkspaceId);
+        workspaceAccess.closeWorkspace(previousWorkspaceId);
+      }
+      activeWorkspaceId = opened.workspaceId;
+      return opened;
+    }
+
+    throw new Error('Unknown recent workspace type.');
+  });
+
   ipcMain.handle('workspace:close', async (event, workspaceId) => {
     assertTrustedRenderer(event);
     if (workspaceAccess.getWorkspace(workspaceId)) {
@@ -619,6 +796,11 @@ function registerIpcHandlers() {
     if (activeWorkspaceId === workspaceId) activeWorkspaceId = null;
   });
 
+  ipcMain.handle('app:set-dirty', (event, dirty) => {
+    assertTrustedRenderer(event);
+    rendererDirty = Boolean(dirty);
+  });
+
   ipcMain.handle('workspace:list-directory', async (event, workspaceId, relativePath, cursor) => {
     assertTrustedRenderer(event);
     return workspaceAccess.listDirectory(workspaceId, relativePath, cursor);
@@ -627,6 +809,16 @@ function registerIpcHandlers() {
   ipcMain.handle('workspace:read-file', async (event, workspaceId, relativePath) => {
     assertTrustedRenderer(event);
     return workspaceAccess.readFile(workspaceId, relativePath);
+  });
+
+  ipcMain.handle('workspace:rename-file', async (event, workspaceId, fromPath, toPath) => {
+    assertTrustedRenderer(event);
+    return workspaceAccess.renameFile(workspaceId, fromPath, toPath);
+  });
+
+  ipcMain.handle('workspace:search-files', async (event, workspaceId, query, limit) => {
+    assertTrustedRenderer(event);
+    return workspaceAccess.searchFiles(workspaceId, query, limit);
   });
 
   ipcMain.handle('workspace:save-files', async (event, workspaceId, files) => {
@@ -809,6 +1001,31 @@ function registerIpcHandlers() {
     if (confirmation.response !== 1) throw new Error('Terminal command cancelled.');
     return executeCommand(command, workspace.root);
   });
+
+  ipcMain.handle('git:read', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    if (!workspace || workspace.mode !== 'folder') {
+      throw new Error('Git info is available only for an opened folder workspace.');
+    }
+
+    const probe = await runGit(workspace.root, ['rev-parse', '--is-inside-work-tree']);
+    if (!probe.ok || probe.stdout.trim() !== 'true') return { isRepo: false, status: '', diff: '', log: '', dirty: 0 };
+
+    const [status, diff, log] = await Promise.all([
+      runGit(workspace.root, ['status', '--porcelain=v1', '--branch']),
+      runGit(workspace.root, ['diff', '--no-color', '--unified=2', 'HEAD']),
+      runGit(workspace.root, ['log', '-n', '8', '--pretty=%s'])
+    ]);
+
+    return {
+      isRepo: true,
+      status: truncateText(status.stdout, 4_000),
+      diff: truncateText(diff.stdout, 60_000),
+      log: truncateText(log.stdout, 2_000),
+      dirty: status.stdout.split('\n').filter((line) => line && !line.startsWith('##')).length
+    };
+  });
 }
 
 async function createWindow() {
@@ -821,13 +1038,29 @@ async function createWindow() {
     }
   }
 
+  const appIcon = path.join(__dirname, '..', 'assets', 'icon.png');
+  const isMac = process.platform === 'darwin';
+
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 960,
     minWidth: 960,
     minHeight: 640,
     show: false,
-    backgroundColor: '#000000',
+    title: 'ShadRox',
+    backgroundColor: APP_BACKGROUND,
+    autoHideMenuBar: true,
+    titleBarStyle: 'hidden',
+    ...(fs.existsSync(appIcon) ? { icon: appIcon } : {}),
+    ...(isMac
+      ? { trafficLightPosition: { x: 18, y: 15 } }
+      : {
+          titleBarOverlay: {
+            color: APP_BACKGROUND,
+            symbolColor: '#d4d4d8',
+            height: TITLE_BAR_HEIGHT
+          }
+        }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -842,6 +1075,24 @@ async function createWindow() {
   });
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.on('close', (event) => {
+    if (allowClose || !rendererDirty || !mainWindow) return;
+    const choice = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      buttons: ['Cancel', 'Close without saving'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: 'Unsaved changes',
+      message: 'You have unsaved changes in ShadRox.',
+      detail: 'Save your files before closing, or close and lose those edits.'
+    });
+    if (choice === 1) {
+      allowClose = true;
+      return;
+    }
+    event.preventDefault();
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('blob:')) return { action: 'allow' };
     if (url.startsWith('https://')) void shell.openExternal(url);
@@ -872,10 +1123,25 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // A default File/Edit/View menu is what makes a packaged Electron app read as
+  // a generic system utility. Windows/Linux get no menu bar; macOS keeps the
+  // minimal role menu it needs for standard shortcuts.
+  if (process.platform === 'darwin') {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { role: 'appMenu' },
+      { role: 'editMenu' },
+      { role: 'viewMenu' },
+      { role: 'windowMenu' }
+    ]));
+  } else {
+    Menu.setApplicationMenu(null);
+  }
+
   allowLoopbackPreviewCertificates();
   installPreviewRequestGuard();
   protocol.handle(PREVIEW_SCHEME, handlePreviewRequest);
   registerIpcHandlers();
+  registerSecureStoreHandlers();
   await createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) void createWindow();

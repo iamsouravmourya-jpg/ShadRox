@@ -6,6 +6,8 @@ import type { ViteDevServer } from 'vite';
 
 import byokValidate from './api/byok/validate';
 import aiChat from './api/ai/chat';
+import aiFim from './api/ai/fim';
+import aiCommitMessage from './api/ai/commit-message';
 import promptRefine from './api/prompt/refine';
 import githubValidate from './api/github/validate';
 import githubCreateRepo from './api/github/create-repo';
@@ -58,6 +60,8 @@ export async function startServer(options: {
 
   mount('post', '/api/byok/validate', byokValidate);
   mount('post', '/api/ai/chat', aiChat);
+  mount('post', '/api/ai/fim', aiFim);
+  mount('post', '/api/ai/commit-message', aiCommitMessage);
   mount('post', '/api/prompt/refine', promptRefine);
 
   mount('post', '/api/github/validate', githubValidate);

@@ -3,7 +3,10 @@ build/
 dist/
 dist_desktop/
 dist_desktop_oneclick/
+dist_release/
+dist_staging/
 coverage/
+reference/
 .DS_Store
 *.log
 .env*

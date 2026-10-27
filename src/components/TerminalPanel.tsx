@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { X } from 'lucide-react';
+import { X, Eraser, RotateCcw } from 'lucide-react';
 import type { ShadRoxDesktopAPI, TerminalOutput } from '../lib/desktop';
 
 interface TerminalPanelProps {
@@ -14,11 +14,14 @@ interface TerminalPanelProps {
 
 export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: TerminalPanelProps) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<XTerm | null>(null);
   const [status, setStatus] = useState('Starting');
+  const [sessionKey, setSessionKey] = useState(0);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    setStatus('Starting');
 
     let disposed = false;
     let sessionId: string | null = null;
@@ -41,6 +44,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host);
+    terminalRef.current = terminal;
 
     const applyOutput = (output: TerminalOutput) => {
       if (output.type === 'data' && output.data) terminal.write(output.data);
@@ -105,22 +109,48 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
       input.dispose();
       if (sessionId) void desktop.closeTerminal(workspaceId, sessionId).catch(() => {});
       terminal.dispose();
+      terminalRef.current = null;
       pendingOutput.clear();
     };
-  }, [desktop, workspaceId]);
+  }, [desktop, workspaceId, sessionKey]);
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-[#050505]" aria-label="Interactive terminal">
-      <div className="flex h-8 shrink-0 items-center justify-between border-b border-neutral-900 bg-neutral-950 px-3">
+    <section className="flex h-full min-h-0 flex-col bg-[#07080b]" aria-label="Interactive terminal">
+      <div className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.07] bg-ink-950 px-3">
         <div className="flex min-w-0 items-center gap-2 text-[10px] font-mono uppercase tracking-wider text-neutral-400">
-          <span className={`h-1.5 w-1.5 rounded-full ${status === 'Connected' ? 'bg-emerald-400' : status === 'Starting' ? 'bg-amber-400' : 'bg-neutral-600'}`} />
+          <span className={`h-1.5 w-1.5 rounded-full ${status === 'Connected' ? 'bg-violet-400' : status === 'Starting' ? 'bg-amber-400' : 'bg-neutral-600'}`} />
           <span>Terminal</span>
           <span className="truncate normal-case tracking-normal text-neutral-600">{workspaceName}</span>
           <span className="text-neutral-600">{status}</span>
         </div>
-        <button type="button" onClick={onClose} className="p-1 text-neutral-500 hover:text-white" title="Close terminal" aria-label="Close terminal">
-          <X className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => {
+              terminalRef.current?.clear();
+              terminalRef.current?.focus();
+            }}
+            className="flex items-center gap-1 rounded p-1 text-[10px] text-neutral-500 hover:text-white"
+            title="Clear terminal scrollback"
+            aria-label="Clear terminal"
+          >
+            <Eraser className="h-3 w-3" />
+            Clear
+          </button>
+          <button
+            type="button"
+            onClick={() => setSessionKey((key) => key + 1)}
+            className="flex items-center gap-1 rounded p-1 text-[10px] text-neutral-500 hover:text-white"
+            title="Restart terminal session"
+            aria-label="Restart terminal"
+          >
+            <RotateCcw className="h-3 w-3" />
+            Restart
+          </button>
+          <button type="button" onClick={onClose} className="p-1 text-neutral-500 hover:text-white" title="Close terminal" aria-label="Close terminal">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
       <div ref={hostRef} className="min-h-0 flex-1 px-2 py-1" />
     </section>

@@ -82,6 +82,9 @@ export const PLANS: PlanMeta[] = [
 
 export const DEFAULT_PLAN: PlanTier = 'free';
 
+/** Beta-phase switch: paid tiers are visible but cannot be selected yet. */
+export const PLANS_LOCKED = true;
+
 export function getPlanMeta(plan: PlanTier): PlanMeta {
   return PLANS.find((entry) => entry.id === plan) || PLANS[0];
 }
