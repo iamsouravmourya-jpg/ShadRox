@@ -17,6 +17,8 @@ import { resolveTarget, type FilePatch, type KnownFile } from './markdown';
  *
  * - ORIGINAL must match the file exactly; a whitespace-stripped unique match
  *   is accepted as a fallback. Blocks must be disjoint.
+ * - A block that matches more than one place is refused as `ambiguous` rather
+ *   than silently applied to the first hit.
  * - Every patch carries its target path, so one reply can touch many files and
  *   the UI reviews/accepts them as a single set.
  */
@@ -36,7 +38,9 @@ export type UnifiedPatch =
 
 export interface ApplyFailure {
   blockIndex: number;
-  reason: 'not-found' | 'not-unique' | 'overlap';
+  reason: 'not-found' | 'not-unique' | 'ambiguous' | 'overlap';
+  /** How many places the ORIGINAL matched; only set for 'ambiguous'. */
+  matches?: number;
 }
 
 export interface ApplySearchReplaceResult {
@@ -90,9 +94,31 @@ export function parseSearchReplaceBlocks(text: string): SearchReplaceBlock[] {
 }
 
 export type BlockRange = { start: number; end: number };
-export type BlockLookup = BlockRange | 'not-found' | 'not-unique';
+export type BlockLookup = BlockRange | 'not-found' | 'not-unique' | 'ambiguous';
 
-/** Maps an index in whitespace-stripped text back to the original offset. */
+export type BlockMatch =
+  | { status: 'found'; range: BlockRange; matches: number }
+  | { status: 'not-found'; matches: 0 }
+  /** Matched in more than one place: the engine cannot know which one was meant. */
+  | { status: 'ambiguous'; matches: number; occurrences: BlockRange[] }
+  /** Matched in more than one place only after whitespace normalisation. */
+  | { status: 'not-unique'; matches: number };
+
+/** Every start index of `needle` in `haystack` (non-overlapping). */
+function allIndexes(haystack: string, needle: string): number[] {
+  if (!needle) return [];
+  const found: number[] = [];
+  let from = 0;
+  for (;;) {
+    const index = haystack.indexOf(needle, from);
+    if (index === -1) return found;
+    found.push(index);
+    from = index + needle.length;
+  }
+}
+
+/**
+ * Maps an index in whitespace-stripped text back to the original offset. */
 function mapStrippedIndex(content: string, strippedIndex: number): number {
   let stripped = 0;
   for (let index = 0; index < content.length; index += 1) {
@@ -105,23 +131,49 @@ function mapStrippedIndex(content: string, strippedIndex: number): number {
 }
 
 /**
- * Finds a block's ORIGINAL inside the file. Exact substring first (with and
- * without a trailing newline), then a whitespace-stripped unique match.
+ * Locates a block's ORIGINAL inside a file and — this is the whole point —
+ * reports *every* place it matches.
+ *
+ * The first version of this engine took the first match and stayed silent,
+ * which for an auto-apply feature is a wrong-edit generator: `x(1);\nx(1);\n`
+ * with SEARCH `x(1);` silently rewrote line 1. A block that fits more than one
+ * location is refused as `ambiguous` so the model (or the user) has to add
+ * surrounding context.
+ *
+ * Exact duplicates are counted directly, not inferred from the
+ * whitespace-normalised fallback: the fallback is only reached when the block
+ * does not match verbatim at all, and it still requires a unique match.
  */
-export function findBlockRange(content: string, original: string): BlockLookup {
-  const candidates = [original, `${original}\n`, `\n${original}`];
-  for (const candidate of candidates) {
-    const index = content.indexOf(candidate);
-    if (index !== -1) return { start: index, end: index + candidate.length };
+export function locateBlock(content: string, original: string): BlockMatch {
+  // An empty/whitespace-only ORIGINAL has no meaning as an anchor; refusing it
+  // also stops a match-at-index-0 from rewriting the head of the file.
+  if (!original.trim()) return { status: 'not-found', matches: 0 };
+
+  const occurrences = allIndexes(content, original);
+  if (occurrences.length > 1) {
+    return {
+      status: 'ambiguous',
+      matches: occurrences.length,
+      occurrences: occurrences.map((start) => ({ start, end: start + original.length }))
+    };
+  }
+  if (occurrences.length === 1) {
+    return {
+      status: 'found',
+      range: { start: occurrences[0], end: occurrences[0] + original.length },
+      matches: 1
+    };
   }
 
   const strip = (value: string) => value.replace(/[ \t]+/g, '');
   const strippedFile = strip(content);
   const strippedOriginal = strip(original);
-  if (!strippedOriginal) return 'not-found';
+  if (!strippedOriginal) return { status: 'not-found', matches: 0 };
   const first = strippedFile.indexOf(strippedOriginal);
-  if (first === -1) return 'not-found';
-  if (strippedFile.indexOf(strippedOriginal, first + strippedOriginal.length) !== -1) return 'not-unique';
+  if (first === -1) return { status: 'not-found', matches: 0 };
+  if (strippedFile.indexOf(strippedOriginal, first + strippedOriginal.length) !== -1) {
+    return { status: 'not-unique', matches: 2 };
+  }
   // Snap to whole lines so the replacement keeps the original indentation
   // and the surrounding newlines stay intact.
   const rawStart = mapStrippedIndex(content, first);
@@ -129,7 +181,18 @@ export function findBlockRange(content: string, original: string): BlockLookup {
   const start = content.lastIndexOf('\n', rawStart - 1) + 1;
   const lineEnd = content.indexOf('\n', rawEnd);
   const end = lineEnd === -1 ? content.length : lineEnd;
-  return { start, end };
+  return { status: 'found', range: { start, end }, matches: 1 };
+}
+
+/**
+ * Finds a block's ORIGINAL inside the file. Exact substring first (with and
+ * without a trailing newline), then a whitespace-stripped unique match.
+ * `'ambiguous'` means the text fits more than one place in the file.
+ */
+export function findBlockRange(content: string, original: string): BlockLookup {
+  const match = locateBlock(content, original);
+  if (match.status === 'found') return match.range;
+  return match.status;
 }
 
 /**
@@ -145,16 +208,27 @@ export function applySearchReplaceBlocks(
   const failures: ApplyFailure[] = [];
 
   blocks.forEach((block, blockIndex) => {
-    const lookup = findBlockRange(content, block.original);
-    if (lookup === 'not-found') {
+    const match = locateBlock(content, block.original);
+
+    if (match.status === 'not-found') {
       failures.push({ blockIndex, reason: 'not-found' });
       return;
     }
-    if (lookup === 'not-unique') {
-      failures.push({ blockIndex, reason: 'not-unique' });
+    if (match.status === 'not-unique') {
+      failures.push({ blockIndex, reason: 'not-unique', matches: match.matches });
       return;
     }
-    placed.push({ ...lookup, blockIndex });
+    if (match.status === 'ambiguous') {
+      // The one safe case: a block that "replaces" text with itself produces
+      // byte-identical output wherever it lands, so any location is correct.
+      if (block.updated === block.original) {
+        placed.push({ ...match.occurrences[0], blockIndex });
+        return;
+      }
+      failures.push({ blockIndex, reason: 'ambiguous', matches: match.matches });
+      return;
+    }
+    placed.push({ ...match.range, blockIndex });
   });
 
   const sorted = [...placed].sort((a, b) => a.start - b.start);
@@ -180,9 +254,27 @@ export function applySearchReplaceBlocks(
   return { content: result, failures };
 }
 
+/**
+ * Turns a failure into the sentence the review UI shows. `ambiguous` gets the
+ * match count and the instruction the user actually needs — add context lines —
+ * because "it did not apply" alone tells them nothing.
+ */
+export function formatApplyFailure(failure: ApplyFailure): string {
+  const label = `block ${failure.blockIndex + 1}`;
+  switch (failure.reason) {
+    case 'not-found':
+      return `${label}: text not found in the file`;
+    case 'not-unique':
+      return `${label}: matches several places once whitespace is ignored — add surrounding lines`;
+    case 'ambiguous':
+      return `${label}: matches ${failure.matches ?? 'several'} places — add surrounding lines to make it unique`;
+    case 'overlap':
+      return `${label}: overlaps another block`;
+  }
+}
+
 /** The known files the user currently has open, for patch target resolution. */
 export interface PatchWorkspaceFile extends KnownFile {}
-
 interface BlockScan {
   info: string;
   context: string;

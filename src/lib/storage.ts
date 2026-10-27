@@ -1,6 +1,13 @@
 import type { ProviderId } from './providers';
 import type { PlanTier, RecentEntry } from './types';
-import { mirrorSecureItem, removeSecureItem } from './secureStore';
+import {
+  deleteSecretItem,
+  mirrorSecureItem,
+  purgePlaintextSecret,
+  readSecretItem,
+  removeSecureItem,
+  writeSecretItem
+} from './secureStore';
 
 const STORE_KEYS = {
   apiKey: (provider: ProviderId) => `shadrox.byok.${provider}`,
@@ -39,16 +46,26 @@ function safeRemove(key: string): void {
   removeSecureItem(key);
 }
 
+/**
+ * Provider keys go through the secret path: on desktop they live in the
+ * OS-encrypted store plus session memory and are never written to localStorage,
+ * in a browser there is no alternative so localStorage stays the store.
+ */
 export function getApiKey(provider: ProviderId): string {
-  return safeGet(STORE_KEYS.apiKey(provider)) || '';
+  const key = STORE_KEYS.apiKey(provider);
+  return readSecretItem(key) || '';
 }
 
 export function setApiKey(provider: ProviderId, apiKey: string): void {
+  const key = STORE_KEYS.apiKey(provider);
   if (apiKey.trim()) {
-    safeSet(STORE_KEYS.apiKey(provider), apiKey.trim());
+    writeSecretItem(key, apiKey.trim());
   } else {
-    safeRemove(STORE_KEYS.apiKey(provider));
+    deleteSecretItem(key);
   }
+  // Older builds mirrored the plaintext key into localStorage. Drop it on
+  // desktop; in a browser localStorage is the store, so nothing is stale.
+  purgePlaintextSecret(key);
 }
 
 export function getActiveProvider(): ProviderId {

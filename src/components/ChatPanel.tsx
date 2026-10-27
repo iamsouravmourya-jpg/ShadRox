@@ -80,6 +80,9 @@ interface ChatPanelProps {
   onAcceptAllPatches: (messageId: string) => void;
   onUndoPatch: (messageId: string, patchIndex: number) => void;
   onResume: (messageId: string) => void;
+  /** One-line notice when a request had to be degraded to fit the context window. */
+  contextNotice?: string | null;
+  onDismissContextNotice?: () => void;
 }
 
 const TIER_STYLES: Record<ModelTier, string> = {
@@ -134,7 +137,9 @@ export function ChatPanel({
   onRejectPatch,
   onAcceptAllPatches,
   onUndoPatch,
-  onResume
+  onResume,
+  contextNotice = null,
+  onDismissContextNotice
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
@@ -625,6 +630,31 @@ export function ChatPanel({
           </div>
         )}
       </div>
+
+      {/*
+        Context-window degradation notice: one line, dismissible, and never a
+        modal — the request still went through, the user just deserves to know
+        what the model did not get to see.
+      */}
+      {contextNotice && (
+        <div
+          role="status"
+          className="flex shrink-0 items-center gap-2 border-t border-amber-300/15 bg-amber-400/[0.06] px-3 py-1.5 text-[10.5px] text-amber-200/90"
+        >
+          <AlertTriangle className="w-3 h-3 shrink-0" />
+          <span className="min-w-0 flex-1 truncate" title={contextNotice}>
+            {contextNotice}
+          </span>
+          <button
+            type="button"
+            onClick={onDismissContextNotice}
+            aria-label="Dismiss context notice"
+            className="rounded p-0.5 text-amber-200/60 transition-colors hover:text-white cursor-pointer"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
 
       {/* Input Area & Prompt Box */}
       <div className="shrink-0 border-t border-white/[0.07] p-3 bg-ink-950">

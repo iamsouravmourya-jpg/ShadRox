@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import CodeMirror, { type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { EditorView } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
@@ -35,6 +35,12 @@ import {
 import { copyToClipboard, downloadFile, downloadWorkspaceZip, estimateTokens, formatCode } from '../lib/toolUtils';
 import { getLanguageExtension } from '../lib/languages';
 import { ghostText } from '../lib/ghostText';
+import {
+  FIM_FAILURE_HINT_THRESHOLD,
+  clearFimHealth,
+  getFimHealth,
+  subscribeFimHealth
+} from '../lib/fimClient';
 import { runQuickEdit, sliceQuickEditContext } from '../lib/quickEdit';
 import type { ProviderId } from '../lib/providers';
 import type { WorkspaceFile } from '../lib/types';
@@ -71,6 +77,15 @@ export interface EditorAiConfig {
   apiKey?: string;
   completionEnabled: boolean;
   onToggleCompletion: () => void;
+  /**
+   * The user's chat temperature, forwarded to Ctrl+K and clamped there —
+   * inline edits have a tighter safe band than chat (see clampInlineTemperature).
+   * Tab completion intentionally ignores it: a completion continues the code on
+   * screen and wants near-deterministic output.
+   */
+  temperature?: number;
+  /** False when BYOK is on but no key is saved, so the editor can say so. */
+  hasCredential?: boolean;
 }
 
 interface QuickEditTarget {
@@ -164,6 +179,9 @@ export function CodeEditor({
   const [isQuickEditing, setIsQuickEditing] = useState(false);
   const [quickEditError, setQuickEditError] = useState<string | null>(null);
   const quickEditAbort = useRef<AbortController | null>(null);
+  /** One-line, dismissible notice about why Tab may be doing nothing. */
+  const [dismissedCompletionHint, setDismissedCompletionHint] = useState<string | null>(null);
+  const fimHealth = useSyncExternalStore(subscribeFimHealth, getFimHealth);
 
   const dirty = useMemo(() => new Set(dirtyFiles), [dirtyFiles]);
   const filePathSignature = useMemo(() => files.map((file) => file.name).join('\n'), [files]);
@@ -190,6 +208,8 @@ export function CodeEditor({
           model: editorAi.model,
           apiKey: editorAi.apiKey,
           language: activeFile?.language
+          // editorAi.temperature is deliberately NOT forwarded: completions are
+          // continuations of existing code and must stay near-deterministic.
         })
       );
     }
@@ -261,7 +281,14 @@ export function CodeEditor({
       );
       const replacement = await runQuickEdit(
         context,
-        { provider: editorAi.provider, model: editorAi.model, apiKey: editorAi.apiKey },
+        {
+          provider: editorAi.provider,
+          model: editorAi.model,
+          apiKey: editorAi.apiKey,
+          // The user's chat temperature, clamped inside runQuickEdit to the
+          // band that is still safe for writing straight into a document.
+          temperature: editorAi.temperature
+        },
         controller.signal
       );
       view.dispatch({
@@ -282,6 +309,36 @@ export function CodeEditor({
       setIsQuickEditing(false);
     }
   }, [activeFile, editorAi, isQuickEditing, quickEdit, quickEditPrompt]);
+
+  /**
+   * Tab completion failures used to be invisible: the client cached an empty
+   * completion after one HTTP failure, so the ghost text never came back and
+   * the user had no idea why. The client now counts failures instead of caching
+   * them, and this is the line that tells the user.
+   */
+  const completionHint = useMemo<{ id: string; text: string } | null>(() => {
+    if (!editorAi?.completionEnabled) return null;
+    if (editorAi.hasCredential === false) {
+      return {
+        id: `no-key-${editorAi.provider}`,
+        text: 'Tab completion is on but no API key is saved — add one in Settings → Models & Keys.'
+      };
+    }
+    if (fimHealth.consecutiveFailures >= FIM_FAILURE_HINT_THRESHOLD) {
+      return {
+        id: `failing-${editorAi.model}-${fimHealth.consecutiveFailures}`,
+        text: `Tab completion has failed ${fimHealth.consecutiveFailures} times in a row — check the key and model in Settings, then turn "Tab complete" off and on to retry.`
+      };
+    }
+    return null;
+  }, [editorAi, fimHealth.consecutiveFailures]);
+
+  const dismissCompletionHint = useCallback(() => {
+    if (!completionHint) return;
+    setDismissedCompletionHint(completionHint.id);
+    // Reset the counter so a fresh run of failures can raise the notice again.
+    if (completionHint.id.startsWith('failing-')) clearFimHealth();
+  }, [completionHint]);
 
   const runSearch = (term: string) => {
     const view = editorRef.current?.view;
@@ -653,6 +710,27 @@ export function CodeEditor({
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* One-line, dismissible inline-AI notice. Non-blocking by design. */}
+        {completionHint && dismissedCompletionHint !== completionHint.id && (
+          <div
+            role="status"
+            className="flex shrink-0 items-center gap-2 border-b border-amber-300/15 bg-amber-400/[0.07] px-3 py-1 text-[10.5px] text-amber-200/90"
+          >
+            <Zap className="w-3 h-3 shrink-0" />
+            <span className="min-w-0 flex-1 truncate" title={completionHint.text}>
+              {completionHint.text}
+            </span>
+            <button
+              type="button"
+              onClick={dismissCompletionHint}
+              aria-label="Dismiss completion hint"
+              className="rounded p-0.5 text-amber-200/60 transition-colors hover:text-white cursor-pointer"
+            >
+              <X className="h-3 w-3" />
+            </button>
           </div>
         )}
 
