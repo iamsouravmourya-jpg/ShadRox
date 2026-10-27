@@ -1,18 +1,28 @@
-import { readJsonBody, sendError, sendJson, type ApiRequest, type ApiResponse } from '../_http.js';
-import { ADAPTERS, isProviderId, resolveKeyAccess } from './_access.js';
+import {
+  readJsonBody,
+  sanitizeErrorMessage,
+  sendError,
+  sendIfRejected,
+  sendJson,
+  type ApiRequest,
+  type ApiResponse
+} from '../_http.js';
+import {
+  BODY_LIMITS,
+  FIELD_LIMITS,
+  enumValue,
+  optionalKey,
+  optionalString
+} from '../_validate.js';
+import { ADAPTERS, resolveKeyAccess } from './_access.js';
 import { completeOnce } from './_completion.js';
+import { checkSharedKeySpend, clientIp, outputCeiling, rateLimitedMessage } from './_spendGuard.js';
 import type { ProviderId } from './_types.js';
 
 export const config = { maxDuration: 30 };
 
-interface CommitMessageBody {
-  provider?: ProviderId;
-  model?: string;
-  apiKey?: string;
-  status?: string;
-  diff?: string;
-  log?: string;
-}
+/** A commit message never needs more than this many characters of model output. */
+const COMMIT_MAX_OUTPUT_CHARS = 600;
 
 const SYSTEM_INSTRUCTION =
   'You write git commit messages. Read the status and diff, then output one commit message: ' +
@@ -31,20 +41,42 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     return;
   }
 
-  const body = await readJsonBody<CommitMessageBody>(req);
-  const provider: ProviderId = isProviderId(body.provider) ? body.provider : 'gemini';
-  const adapter = ADAPTERS[provider];
-  const model = (body.model || '').trim() || adapter.defaultModel;
+  let provider: ProviderId;
+  let model: string;
+  let apiKey: string | undefined;
+  let status: string;
+  let diff: string;
+  let log: string;
 
-  const resolved = resolveKeyAccess(provider, model, body.apiKey);
+  try {
+    const body = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.commitMessage });
+    provider = enumValue<ProviderId>(body, 'provider', ['gemini', 'groq'], 'gemini');
+    model = optionalString(body, 'model', FIELD_LIMITS.modelChars).trim() || ADAPTERS[provider].defaultModel;
+    apiKey = optionalKey(body);
+    status = optionalString(body, 'status', FIELD_LIMITS.commitStatusChars);
+    diff = optionalString(body, 'diff', FIELD_LIMITS.commitDiffChars);
+    log = optionalString(body, 'log', FIELD_LIMITS.commitLogChars);
+  } catch (error) {
+    if (sendIfRejected(res, error)) return;
+    throw error;
+  }
+
+  const adapter = ADAPTERS[provider];
+
+  const resolved = resolveKeyAccess(provider, model, apiKey);
   if ('error' in resolved) {
     sendError(res, 400, resolved.error);
     return;
   }
+  const { apiKey: spendKey, byok } = resolved.access;
 
-  const status = (body.status || '').slice(0, 4_000);
-  const diff = (body.diff || '').slice(0, 60_000);
-  const log = (body.log || '').slice(0, 2_000);
+  const decision = checkSharedKeySpend('completion', clientIp(req), byok);
+  if (!decision.allowed) {
+    res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+    sendError(res, 429, rateLimitedMessage(decision.retryAfterSeconds));
+    return;
+  }
+
   if (!status.trim() && !diff.trim()) {
     sendError(res, 400, 'Working tree me koi change nahi hai — message generate karne ke liye kuch nahi hai.');
     return;
@@ -65,12 +97,12 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     const result = await completeOnce({
       adapter,
       model,
-      apiKey: resolved.access.apiKey,
+      apiKey: spendKey,
       prompt,
       systemInstruction: SYSTEM_INSTRUCTION,
       temperature: 0.3,
       thinking: 'low',
-      maxChars: 600,
+      maxChars: Math.min(COMMIT_MAX_OUTPUT_CHARS, outputCeiling('completion', byok)),
       signal: abort.signal
     });
     const message = result.text
@@ -85,6 +117,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     sendJson(res, 200, { message });
   } catch (error) {
     if (abort.signal.aborted || res.writableEnded) return;
-    sendError(res, 502, error instanceof Error ? error.message : 'Commit message generation failed.');
+    sendError(
+      res,
+      502,
+      error instanceof Error ? sanitizeErrorMessage(error.message, 'Commit message generation failed.') : 'Commit message generation failed.'
+    );
   }
 }

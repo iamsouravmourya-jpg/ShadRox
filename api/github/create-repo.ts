@@ -1,11 +1,19 @@
-import { readJsonBody, sendError, sendJson, type ApiRequest, type ApiResponse } from '../_http.js';
-
-interface CreateRepoBody {
-  token?: string;
-  name?: string;
-  description?: string;
-  isPrivate?: boolean;
-}
+import {
+  readJsonBody,
+  sanitizeErrorMessage,
+  sendError,
+  sendIfRejected,
+  sendJson,
+  type ApiRequest,
+  type ApiResponse
+} from '../_http.js';
+import {
+  BODY_LIMITS,
+  FIELD_LIMITS,
+  RequestRejectedError,
+  optionalString,
+  requiredString
+} from '../_validate.js';
 
 /** POST /api/github/create-repo -> creates a repository for the authenticated user. */
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
@@ -14,13 +22,23 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     return;
   }
 
-  const { token, name, description, isPrivate } = await readJsonBody<CreateRepoBody>(req);
-  const cleanToken = (token || '').trim();
-  const repoName = (name || '').trim();
+  let cleanToken: string;
+  let repoName: string;
+  let description: string;
+  let isPrivate: boolean;
 
-  if (!cleanToken || !repoName) {
-    sendError(res, 400, 'Token aur repository name dono chahiye.');
-    return;
+  try {
+    const body = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.githubSmall });
+    cleanToken = requiredString(body, 'token', FIELD_LIMITS.apiKeyChars, 'Token aur repository name dono chahiye.');
+    repoName = requiredString(body, 'name', FIELD_LIMITS.repoNameChars, 'Token aur repository name dono chahiye.');
+    description = optionalString(body, 'description', FIELD_LIMITS.repoDescriptionChars).trim();
+    if (body.isPrivate !== undefined && typeof body.isPrivate !== 'boolean') {
+      throw new RequestRejectedError(400, '`isPrivate` boolean hona chahiye.');
+    }
+    isPrivate = body.isPrivate === true;
+  } catch (error) {
+    if (sendIfRejected(res, error)) return;
+    throw error;
   }
 
   try {
@@ -35,7 +53,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       body: JSON.stringify({
         name: repoName.replace(/\s+/g, '-'),
         description: description || 'Created with ShadRox',
-        private: !!isPrivate,
+        private: isPrivate,
         auto_init: true
       })
     });
@@ -43,7 +61,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     const data = (await response.json()) as Record<string, unknown>;
 
     if (!response.ok) {
-      sendError(res, response.status, (data.message as string) || 'Repository create nahi ho payi.');
+      sendError(
+        res,
+        response.status,
+        sanitizeErrorMessage(
+          (data.message as string) || 'Repository create nahi ho payi.',
+          'Repository create nahi ho payi.'
+        )
+      );
       return;
     }
 
@@ -58,6 +83,6 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       }
     });
   } catch (error) {
-    sendError(res, 502, error instanceof Error ? error.message : 'Repository creation failed.');
+    sendError(res, 502, sanitizeErrorMessage(error, 'Repository creation failed.'));
   }
 }

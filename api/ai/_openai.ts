@@ -1,5 +1,5 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
-import { estimateTokens, readErrorPayload } from '../_http.js';
+import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
 import { UpstreamError, type StreamRequest, type StreamResult, type StreamSink, type ThinkingLevel } from './_types.js';
 import { fetchUpstream } from './_upstream.js';
 
@@ -72,7 +72,9 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
       return;
     }
 
-    if (parsed?.error?.message) throw new UpstreamError(String(parsed.error.message), 502);
+    if (parsed?.error?.message) {
+      throw new UpstreamError(sanitizeErrorMessage(parsed.error.message, 'Groq stream error.'), 502);
+    }
 
     const choice = parsed?.choices?.[0];
     const delta = choice?.delta;
@@ -101,7 +103,8 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
   } catch (error) {
     if (signal.aborted) throw error;
     if (error instanceof UpstreamError) throw error;
-    throw new Error(error instanceof Error ? error.message : 'Groq stream failed.');
+    // Scrub again: transport-level failures can quote the request.
+    throw new Error(sanitizeErrorMessage(error, 'Groq stream failed.'));
   }
 
   if (!fullText.trim()) {
