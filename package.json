@@ -1,7 +1,7 @@
 {
   "name": "shadrox",
   "private": true,
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Native desktop AI engineering workspace with BYOK and live project preview.",
   "author": "Sourav Maurya",
   "license": "UNLICENSED",
@@ -17,7 +17,7 @@
     "dist:mac": "node scripts/package-desktop.js --mac dmg",
     "start": "tsx server.ts",
     "preview": "vite preview",
-    "test": "node --import tsx --test electron/workspace.test.cjs electron/preview.test.mjs electron/preview-runtime.test.cjs src/lib/sse.test.ts src/lib/contextBudget.test.ts src/lib/patchEngine.test.ts src/lib/ai.test.ts src/lib/fim.test.ts src/lib/quickEdit.test.ts src/lib/commitMessage.test.ts tests/ai-adapters.test.ts",
+    "test": "node --import tsx --test electron/workspace.test.cjs electron/preview.test.mjs electron/preview-runtime.test.cjs src/lib/sse.test.ts src/lib/contextBudget.test.ts src/lib/patchEngine.test.ts src/lib/ai.test.ts src/lib/fim.test.ts src/lib/quickEdit.test.ts src/lib/commitMessage.test.ts tests/ai-adapters.test.ts tests/ai-access-policy.test.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
@@ -27,9 +27,7 @@
     "express": "^4.21.2",
     "node-pty": "^1.1.0",
     "tree-kill": "^1.2.2",
-    "tree-sitter-wasms": "^0.1.13",
-    "tsx": "^4.21.0",
-    "web-tree-sitter": "^0.25.10"
+    "tsx": "^4.21.0"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",
@@ -81,7 +79,7 @@
       "electron/**/*",
       "api/**/*",
       "assets/**/*",
-      "src/lib/providers.ts",
+      "src/lib/**/*",
       "server.ts",
       "package.json",
       "!node_modules/.cache/**",
