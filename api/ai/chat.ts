@@ -9,8 +9,8 @@ import {
 } from '../_http.js';
 import { capSystemInstruction, trimMessagesToBudget } from '../../src/lib/contextBudget.js';
 import { resolveContextWindow } from '../../src/lib/modelCapabilities.js';
-import { ADAPTERS, isProviderId, resolveKeyAccess } from './access.js';
-import type { ChatMessage, ChatRequestBody, ProviderId } from './types.js';
+import { ADAPTERS, isProviderId, resolveKeyAccess } from './_access.js';
+import type { ChatMessage, ChatRequestBody, ProviderId } from './_types.js';
 
 const PROVIDER_LABEL: Record<ProviderId, string> = {
   gemini: 'Google Gemini',

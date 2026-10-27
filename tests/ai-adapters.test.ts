@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { streamGroq } from './openai.ts';
-import { streamGemini } from './gemini.ts';
-import type { StreamRequest } from './types.ts';
+import { streamGroq } from '../api/ai/_openai.ts';
+import { streamGemini } from '../api/ai/_gemini.ts';
+import type { StreamRequest } from '../api/ai/_types.ts';
 
 const originalFetch = globalThis.fetch;
 

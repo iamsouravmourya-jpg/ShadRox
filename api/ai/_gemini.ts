@@ -1,7 +1,7 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
 import { estimateTokens, readErrorPayload } from '../_http.js';
-import { UpstreamError, type StreamRequest, type StreamResult, type StreamSink } from './types.js';
-import { fetchUpstream } from './upstream.js';
+import { UpstreamError, type StreamRequest, type StreamResult, type StreamSink } from './_types.js';
+import { fetchUpstream } from './_upstream.js';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 

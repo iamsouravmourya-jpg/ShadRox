@@ -17,7 +17,7 @@
     "dist:mac": "node scripts/package-desktop.js --mac dmg",
     "start": "tsx server.ts",
     "preview": "vite preview",
-    "test": "node --import tsx --test electron/workspace.test.cjs electron/preview.test.mjs electron/preview-runtime.test.cjs src/lib/sse.test.ts src/lib/contextBudget.test.ts src/lib/patchEngine.test.ts src/lib/ai.test.ts src/lib/fim.test.ts src/lib/quickEdit.test.ts src/lib/commitMessage.test.ts api/ai/adapters.test.ts",
+    "test": "node --import tsx --test electron/workspace.test.cjs electron/preview.test.mjs electron/preview-runtime.test.cjs src/lib/sse.test.ts src/lib/contextBudget.test.ts src/lib/patchEngine.test.ts src/lib/ai.test.ts src/lib/fim.test.ts src/lib/quickEdit.test.ts src/lib/commitMessage.test.ts tests/ai-adapters.test.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },

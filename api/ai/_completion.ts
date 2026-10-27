@@ -1,7 +1,7 @@
 import { capSystemInstruction, trimMessagesToBudget } from '../../src/lib/contextBudget.js';
 import { resolveContextWindow } from '../../src/lib/modelCapabilities.js';
-import type { ProviderAdapter } from './types.js';
-import type { ChatMessage, ThinkingLevel } from './types.js';
+import type { ProviderAdapter } from './_types.js';
+import type { ChatMessage, ThinkingLevel } from './_types.js';
 
 export interface CompletionRequest {
   adapter: ProviderAdapter;
