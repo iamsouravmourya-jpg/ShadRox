@@ -21,6 +21,8 @@ import {
 } from 'lucide-react';
 import { PROVIDERS, getProviderMeta, type ModelInfo, type ModelTier, type ProviderId } from '../lib/providers';
 import { PLANS, PLANS_LOCKED, getPlanMeta } from '../lib/plans';
+import { SHARED_KEY_ENABLED } from '../lib/sharedKeyPolicy';
+import { UpdateCard } from './UpdateCard';
 import { getMonthlyUsage, resetMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
 import type {
   GitHubRepo,
@@ -377,22 +379,32 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
 
               {/* Shared Key Option */}
               <section className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3">
-                <label className="flex items-start gap-2 cursor-pointer">
+                <label className={`flex items-start gap-2 ${SHARED_KEY_ENABLED ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}>
                   <input
                     type="checkbox"
                     checked={useShadRoxKey}
                     onChange={(event) => onUseShadRoxKeyChange(event.target.checked)}
+                    disabled={!SHARED_KEY_ENABLED}
                     className="mt-0.5 accent-violet-400"
                   />
                   <span className="min-w-0">
                     <span className="flex items-center gap-2">
                       <span className="text-xs text-neutral-200 font-medium">Use ShadRox Shared Key</span>
-                      <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/[.08] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300">
-                        Pro
-                      </span>
+                      {SHARED_KEY_ENABLED ? (
+                        <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/[.08] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300">
+                          Pro
+                        </span>
+                      ) : (
+                        <span className="shrink-0 flex items-center gap-1 rounded border border-white/10 bg-white/[.04] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-neutral-400">
+                          <Lock className="w-2.5 h-2.5" />
+                          Locked in beta
+                        </span>
+                      )}
                     </span>
                     <span className="block text-[11px] text-neutral-400 mt-1">
-                      Run directly without bringing your own API key. Requests flow through our secure proxy for Pro-tier models.
+                      {SHARED_KEY_ENABLED
+                        ? 'Run directly without bringing your own API key. Requests flow through our secure proxy for Pro-tier models.'
+                        : 'Beta me sirf apni key chalti hai (BYOK). Apni Gemini ya Groq key upar add karo — ShadRox ka shared key launch ke waqt chalu hoga.'}
                     </span>
                   </span>
                 </label>
@@ -412,6 +424,8 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   </button>
                 )}
               </section>
+
+              <UpdateCard />
 
               {/* Available Models */}
               <section>

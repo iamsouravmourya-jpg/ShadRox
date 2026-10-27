@@ -5,6 +5,7 @@ import test from 'node:test';
 import { readJsonBody, sanitizeErrorMessage } from '../api/_http.ts';
 import { FIELD_LIMITS, RequestRejectedError } from '../api/_validate.ts';
 import { budgetRequest } from '../api/ai/_budget.ts';
+import { resolveKeyAccess, sharedKeyPathEnabled } from '../api/ai/_access.ts';
 import { streamGemini } from '../api/ai/_gemini.ts';
 import {
   SHARED_KEY_OUTPUT_CHAR_CEILINGS,
@@ -461,4 +462,87 @@ test('a flood of BYOK chat requests never draws a 429', async () => {
     assert.match(res.text, /"type":"done"/);
   }
 });
+
+// ------------------------------------------------------- shared key lockdown (6)
+//
+// Beta is BYOK-only: even with an operator key present in the environment, no
+// request may be served from it until SHADROX_ALLOW_SHARED_KEY is set to '1'.
+
+const OPERATOR_KEY = 'AIzaOperatorKey0123456789abcdef';
+
+function withOperatorKey(run: () => void): void {
+  const previous = process.env.SHADROX_GEMINI_API_KEY;
+  const previousSwitch = process.env.SHADROX_ALLOW_SHARED_KEY;
+  process.env.SHADROX_GEMINI_API_KEY = OPERATOR_KEY;
+  delete process.env.SHADROX_ALLOW_SHARED_KEY;
+  try {
+    run();
+  } finally {
+    if (previous === undefined) delete process.env.SHADROX_GEMINI_API_KEY;
+    else process.env.SHADROX_GEMINI_API_KEY = previous;
+    if (previousSwitch === undefined) delete process.env.SHADROX_ALLOW_SHARED_KEY;
+    else process.env.SHADROX_ALLOW_SHARED_KEY = previousSwitch;
+  }
+}
+
+test('the shared-key path is closed by default even with an operator key configured', () => {
+  withOperatorKey(() => {
+    assert.equal(sharedKeyPathEnabled(), false);
+    const resolved = resolveKeyAccess('gemini', 'gemini-4-argon', undefined);
+    assert.ok('error' in resolved, 'an unkeyed call must be refused');
+    if ('error' in resolved) {
+      assert.match(resolved.error, /shared key/i);
+      assert.match(resolved.error, /BYOK/);
+      assert.doesNotMatch(resolved.error, /AIza/);
+    }
+  });
+});
+
+test('a hand-crafted unkeyed chat request never reaches the provider while locked', async () => {
+  const calls = captureFetch(() => sseResponse(['data: [DONE]\n\n']));
+  const previous = process.env.SHADROX_GEMINI_API_KEY;
+  process.env.SHADROX_GEMINI_API_KEY = OPERATOR_KEY;
+  try {
+    const res = await invoke(chatHandler, {
+      provider: 'gemini',
+      messages: [{ role: 'user', content: 'hello' }]
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(String(res.json.error), /shared key/i);
+  } finally {
+    if (previous === undefined) delete process.env.SHADROX_GEMINI_API_KEY;
+    else process.env.SHADROX_GEMINI_API_KEY = previous;
+  }
+  assert.equal(calls.length, 0, 'the locked path must not spend anything upstream');
+});
+
+test('a BYOK request is unaffected by the lockdown', () => {
+  withOperatorKey(() => {
+    const resolved = resolveKeyAccess('gemini', 'gemini-3.8-flash', USER_KEY);
+    assert.ok('access' in resolved);
+    if ('access' in resolved) {
+      assert.equal(resolved.access.apiKey, USER_KEY);
+      assert.equal(resolved.access.byok, true);
+    }
+  });
+});
+
+test('the operator path only opens behind the explicit opt-in', () => {
+  const previous = process.env.SHADROX_GEMINI_API_KEY;
+  process.env.SHADROX_GEMINI_API_KEY = OPERATOR_KEY;
+  process.env.SHADROX_ALLOW_SHARED_KEY = '1';
+  try {
+    assert.equal(sharedKeyPathEnabled(), true);
+    const resolved = resolveKeyAccess('gemini', 'gemini-4-argon', undefined);
+    assert.ok('access' in resolved, 'opt-in restores the shared-key fallback');
+    if ('access' in resolved) {
+      assert.equal(resolved.access.byok, false);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.SHADROX_GEMINI_API_KEY;
+    else process.env.SHADROX_GEMINI_API_KEY = previous;
+    delete process.env.SHADROX_ALLOW_SHARED_KEY;
+  }
+});
+
 
