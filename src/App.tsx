@@ -947,7 +947,7 @@ export default function App() {
                 ...message,
                 streaming: false,
                 content:
-                  'No API key found. Add your Google Gemini or Groq key in **Settings → Models & Keys**, or enable "ShadRox Shared Key".'
+                  'No API key found. Add your Google Gemini or Groq key in **Settings → Models & Keys** to start chatting.'
               }
             : message
         )

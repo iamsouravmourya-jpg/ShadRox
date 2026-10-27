@@ -21,6 +21,7 @@ import {
   setUseSharedKey as persistUseSharedKey
 } from '../lib/storage';
 import type { KeyStatus } from '../lib/types';
+import { SHARED_KEY_ENABLED } from '../lib/sharedKeyPolicy';
 
 interface UseByokResult {
   activeProvider: ProviderId;
@@ -66,10 +67,13 @@ export function useByok(): UseByokResult {
     gemini: getSelectedModel('gemini'),
     groq: getSelectedModel('groq')
   }));
-  const [useShadRoxKey, setUseShadRoxKeyState] = useState<boolean>(() => getUseSharedKey());
+  const [useShadRoxKey, setUseShadRoxKeyState] = useState<boolean>(
+    () => SHARED_KEY_ENABLED && getUseSharedKey()
+  );
   const [temperature, setTemperature] = useState(0.7);
 
   const setUseShadRoxKey = useCallback((value: boolean) => {
+    if (!SHARED_KEY_ENABLED) return;
     setUseShadRoxKeyState(value);
     persistUseSharedKey(value);
   }, []);

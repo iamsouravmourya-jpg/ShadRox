@@ -21,9 +21,22 @@ export interface KeyAccess {
 }
 
 /**
+ * Master switch for ShadRox's own key. The beta runs BYOK-only, so an unkeyed
+ * request — including one hand-crafted in devtools — is refused before the
+ * shared key is ever looked up. Re-enable with SHADROX_ALLOW_SHARED_KEY=1.
+ */
+export function sharedKeyPathEnabled(): boolean {
+  return process.env.SHADROX_ALLOW_SHARED_KEY === '1';
+}
+
+const SHARED_KEY_OFF_ERROR =
+  'ShadRox ka shared key abhi band hai — beta me sirf apni key chalti hai. Settings → BYOK me apni Gemini ya Groq key add karo.';
+
+/**
  * Resolves which key a request may spend: the caller's BYOK key, or ShadRox's
- * shared key (Pro tier only, never stored server-side beyond the environment).
- * Returns a user-facing error instead of a key when neither path is allowed.
+ * shared key (opt-in only, Pro tier, never stored server-side beyond the
+ * environment). Returns a user-facing error instead of a key when neither path
+ * is allowed.
  */
 export function resolveKeyAccess(
   provider: ProviderId,
@@ -31,12 +44,14 @@ export function resolveKeyAccess(
   rawKey: string | undefined
 ): { access: KeyAccess } | { error: string } {
   const byokKey = (rawKey || '').trim();
-  const sharedKey = byokKey ? '' : sharedKeyFor(provider);
+  const sharedKey = byokKey || !sharedKeyPathEnabled() ? '' : sharedKeyFor(provider);
   const apiKey = byokKey || sharedKey;
 
   if (!apiKey) {
     return {
-      error: `Is provider (${provider}) ke liye ShadRox ki shared key set nahi hai. Settings → BYOK me apni key add karo.`
+      error: sharedKeyPathEnabled()
+        ? `Is provider (${provider}) ke liye ShadRox ki shared key set nahi hai. Settings → BYOK me apni key add karo.`
+        : SHARED_KEY_OFF_ERROR
     };
   }
 
