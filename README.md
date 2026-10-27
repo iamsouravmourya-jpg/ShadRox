@@ -24,9 +24,9 @@ Vercel deploys the static export from `landing/out` using the root `vercel.json`
 - Open a folder or selected files from the desktop app.
 - Browse folder contents on demand and load text files when selected. The desktop workspace applies size, generated-file, binary-file, path traversal, and symbolic-link safeguards.
 - Edit source in a CodeMirror-based editor and save changes to the local project. AI-proposed changes can be reviewed and applied through the chat workflow; checkpoint/history features are also available in the app.
-- Accept multi-file edits as SEARCH/REPLACE patches: each block is matched independently, applied right-to-left, and a block that does not match fails alone instead of blocking the rest of the reply.
+- Accept multi-file edits as SEARCH/REPLACE patches: each block is matched independently, applied right-to-left, and a block that does not match fails alone instead of blocking the rest of the reply. A block that matches more than one place is refused as ambiguous rather than silently editing the first hit, and the review UI shows why each block failed.
 - Use inline AI in the editor: ghost-text completion at the caret (Tab to accept, Escape to dismiss) and a Ctrl+K quick edit that rewrites the selection, or the line under a bare caret.
-- Resume an interrupted reply. A dropped stream keeps the partial text, and continuing re-sends it as context so the model picks up where it stopped instead of starting over.
+- Resume an interrupted reply. A dropped stream keeps the partial text and survives a reload, and continuing re-sends it as context so the model picks up where it stopped instead of starting over. The persisted snapshot always describes the conversation on screen, so a regenerate, stop, or cleared chat can never restore a stale one over live work.
 - Generate a commit message from the workspace's git status, diff, and recent subjects through a read-only git bridge; outside a git folder it falls back to the editor's unsaved-file list.
 - Chat using Gemini or Groq through the app's local API handlers, with your own key (BYOK, free tier) or ShadRox's shared key (paid tiers). The app supports a Code mode, a read-only Plan mode, and a Complex mode. Model availability depends on the provider and key. Each request is trimmed to the selected model's context window, in the renderer and again at the server route that spends the key.
 - Preview static sites and supported Node-based web projects inside the desktop app.
@@ -47,7 +47,7 @@ The Pro/Adv/Enterprise message caps are currently client-side only (tracked in `
 
 ShadRox is designed around a local desktop workspace: opening, browsing, editing, and saving project files happens on the user's computer. The desktop app runs a local Express process for the UI and API routes; this local process is not a ShadRox-hosted account backend.
 
-When the user sends a chat or prompt-refinement request, the prompt and the project context selected for that request are sent to the chosen Gemini or Groq provider via the app's API route. A provider API key is required for BYOK use. In the desktop app, keys entered in the Settings UI are mirrored into an OS-encrypted store (Electron `safeStorage`, so DPAPI on Windows) that survives a cache clear or reinstall; the renderer's working copy still lives in `localStorage`, which is where browser mode keeps them too. ShadRox's own server never stores a user key — BYOK requests pass the key straight through to the provider for that one call. A ShadRox shared provider key can optionally be supplied through environment variables by an operator. Requests using that key are still sent to the selected AI provider.
+When the user sends a chat or prompt-refinement request, the prompt and the project context selected for that request are sent to the chosen Gemini or Groq provider via the app's API route. A provider API key is required for BYOK use. In the desktop app, provider keys are read from the OS-encrypted store (Electron `safeStorage`, so DPAPI on Windows) and held in memory for the session — they are not written back to `localStorage`, and any legacy plaintext copy left by an older build is deleted on startup. Non-secret settings keep using `localStorage` as before. Browser mode has no encrypted store available, so there the key does live in `localStorage`. ShadRox's own server never persists a user key: a BYOK request passes it through to the provider for that one call. A ShadRox shared provider key can optionally be supplied through environment variables by an operator; it is policy-gated (Pro-tier models only) and never stored server-side. Requests using that key are still sent to the selected AI provider.
 
 GitHub operations send the token and requested repository data to GitHub through the app's API handlers. Review provider and GitHub terms before sending private code or credentials. ShadRox currently has no sign-in, cloud project sync, or centralized user account service.
 
@@ -72,19 +72,31 @@ The desktop terminal uses `node-pty` to create an interactive shell rooted in th
 
 Preview scripts and dependency installation are separate managed actions that require an approval step in the UI. The app also exposes a one-shot command API with confirmation. Approval for one preview action does not mean arbitrary terminal commands are harmless.
 
+## Security model
+
+The threat model is unusual for a desktop app: ShadRox opens an arbitrary folder chosen by the user and then runs that folder's code in a preview frame, while holding the user's provider API keys. These are the controls that keep the two apart.
+
+- **Only the app's own main frame gets desktop powers.** Electron injects preload scripts into every frame, and preview content lives inside the main window's document, so `electron/desktop-security.cjs` accepts an IPC call only when it comes from the main window's main frame, on the pinned backend origin, and the preload exposes the bridge only when `window.top === window`. A previewed workspace's JavaScript therefore never sees `terminal:create`, `secure:*`, or `workspace:*`.
+- **Read-only git, hardened against a hostile repository.** `git` is resolved once to an absolute path from trusted locations, and any candidate inside the opened workspace is rejected — a planted `git.exe` cannot be chosen. Every call runs with a minimal environment (`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` pointed at the null device, `GIT_CONFIG_NOSYSTEM`, `GIT_ATTR_NOSYSTEM`, `GIT_PAGER=cat`, `GIT_TERMINAL_PROMPT=0`), a fixed argv with no shell, and `-c core.fsmonitor=false -c core.hooksPath=NUL -c diff.external=` plus `--no-textconv --no-ext-diff`. Repo-declared clean/smudge/process filter drivers are enumerated from the repository's own config chain and individually disarmed; if the config chain cannot be fully enumerated, status and diff return empty rather than risk executing a driver.
+- **Workspace writes stay inside the workspace.** Path normalization plus `lstat`/`realpath` checks reject `..`, absolute, drive-letter, UNC and alternate-data-stream paths, and symlink or junction escapes.
+- **Provider keys are never server-side.** BYOK requests pass the key straight through to the provider for that single call. The Vercel functions do not persist keys, and provider error text is sanitized before it reaches the renderer so a key or an outgoing URL cannot be echoed back.
+- **Shared-key spend is policy-gated.** One module decides which key a request may spend: the caller's key always wins, and the operator's shared key serves Pro-tier models only. Prompt refinement uses the same gate rather than reading an environment key directly. A best-effort per-IP token bucket limits shared-key requests only — BYOK traffic is never throttled because it costs the operator nothing. The bucket is per warm serverless container and trusts `x-forwarded-for`, so it is a cost brake, not an entitlement system; that still needs accounts.
+- **Sandboxed renderer.** No Node integration, context isolation on, sandbox on, and navigation restricted to the app's own origin.
+
 ## Architecture
 
 | Area | Location | Responsibility |
 | --- | --- | --- |
 | React UI | `src/` | Hub, chat, editor, preview, settings, and terminal interface. |
 | Renderer helpers | `src/lib/`, `src/hooks/` | AI requests, provider metadata, context budgeting, the SEARCH/REPLACE patch engine, editor completion/quick-edit extensions, workspace state, persistence, retrieval, and preview/UI logic. |
-| Electron main process | `electron/main.cjs` | Native dialogs, IPC handlers, local preview protocol, managed preview and PTY lifecycle, and desktop security settings. |
+| Electron main process | `electron/main.cjs` | Native dialogs, IPC handlers, local preview protocol, managed preview and PTY lifecycle, single-instance handling, read-only git access, and desktop security settings. |
+| Desktop trust + git hardening | `electron/desktop-security.cjs` | Testable predicates for which renderer frames may call IPC, the git executable lookup, the isolated git environment, and the argument set that disarms repo-controlled git hooks, external diffs, textconv, and filter drivers. |
 | Preload bridge | `electron/preload.cjs` | Narrow, named renderer-to-main API exposed with `contextBridge`; raw Node and Electron APIs are not exposed to the renderer. |
 | Workspace layer | `electron/workspace.cjs` | Lazy directory listing, read-on-click, scoped file access, and guarded local writes. |
 | Local API server | `server.ts`, `api/` | Express routes used for AI, key validation, prompt refinement, GitHub actions, and local frontend serving. |
-| Desktop packaging | `scripts/package-desktop.js`, `package.json` | Builds the web renderer, creates a production staging directory, installs runtime dependencies, and invokes Electron Builder. |
+| Desktop packaging | `scripts/package-desktop.js`, `package.json` | Builds the web renderer, derives the API layer's `src/lib` runtime dependency set by walking the import graph from `server.ts`, stages exactly that set, installs runtime dependencies, and invokes Electron Builder. |
 
-The renderer is configured without Node integration and runs with context isolation and sandboxing. Its desktop capabilities are deliberately routed through the preload bridge and main-process IPC.
+The renderer is configured without Node integration and runs with context isolation and sandboxing; see **Security model** for how desktop capabilities are restricted to the app's own frame.
 
 ## Requirements
 
@@ -120,12 +132,12 @@ Copy `.env.example` to `.env` only if you are developing with optional operator-
 | `npm run dev:desktop` | Start the server and Electron desktop shell together. |
 | `npm run build` | Build the renderer into `dist/`; this does not create an installer. |
 | `npm run typecheck` | Run TypeScript type checking. |
-| `npm test` | Run the Node test suite: workspace, preview and preview-runtime modules, SSE decoding, context budgeting, the patch engine, stream resume, FIM postprocessing, quick edit, commit context, and the provider adapters. |
+| `npm test` | Run the Node test suite (131 tests): workspace, preview and preview-runtime modules, desktop trust and git-hardening predicates, SSE decoding, context budgeting and system-context degradation, the patch engine, the stream-snapshot lifecycle, FIM postprocessing and cache behavior, quick edit, commit context, AI access policy, and the provider adapters. |
 | `npm run build:desktop` | Build and package the desktop app through the staging script. |
 | `npm run dist:win` | Request a Windows NSIS installer. |
 | `npm run dist:mac` | Request a macOS DMG. |
 
-Installer generation is currently experimental and must be validated on the target OS before distributing it. A renderer build or passing unit tests alone does not prove that the packaged app installs, launches, updates, or works on a clean beta tester machine. The packaging script uses `dist_staging/` and writes artifacts to `dist_desktop/`; do not assume an old artifact reflects the latest source.
+The packaging script stages the backend by walking the import graph from `server.ts`, so the API layer's `src/lib` runtime modules ship automatically; a 0.3.5 build shipped only one of them and the packaged app died at launch with `ERR_MODULE_NOT_FOUND`. Do not reintroduce a hand-maintained file list. Installer generation is still experimental and must be validated on the target OS before distributing it. A renderer build or passing unit tests alone does not prove that the packaged app installs, launches, updates, or works on a clean beta tester machine. The script uses `dist_staging/` and writes artifacts to `dist_desktop/`; do not assume an old artifact reflects the latest source.
 
 ## Configuration
 
@@ -148,7 +160,7 @@ Shared keys are optional. Their use is not a user authentication system, and thi
 ## Current limitations and beta checklist
 
 - No ShadRox sign-in, Supabase, cloud sync, subscription billing, or entitlement enforcement. The Free tier is unlimited BYOK; the Pro/Adv/Enterprise message caps are client-side only and not enforced against the API.
-- Provider keys still live in `localStorage` for the renderer's working copy; the OS-encrypted desktop store is a mirror, so browser mode has no hardware-backed protection.
+- Browser mode has no OS credential store, so provider keys there sit in `localStorage`. The desktop build keeps them in the encrypted store and in memory only.
 - AI features need internet access and send the request context to the chosen external provider.
 - Preview support is limited to static sites and detected Node scripts; embedded-app restrictions can still prevent rendering.
 - Interactive terminal commands run with the operating-system user's permissions.
