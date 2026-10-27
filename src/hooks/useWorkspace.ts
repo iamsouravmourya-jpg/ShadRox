@@ -5,7 +5,7 @@ import type { FilePatch } from '../lib/markdown';
 import { loadHandles, pruneHandles, saveHandles } from '../lib/fileHandles';
 import { listCheckpoints, loadCheckpointFiles, saveCheckpoint, type CheckpointMeta } from '../lib/history';
 import { getSnapshot, pruneSnapshots, saveSnapshot } from '../lib/snapshots';
-import { getRecentWorkspaces, pushRecentWorkspace } from '../lib/storage';
+import { getRecentWorkspaces, pushRecentWorkspace, removeRecentWorkspace } from '../lib/storage';
 import { getDesktopBridge, type DirectoryPage, type StagedTransaction, type WorkspaceChange } from '../lib/desktop';
 import {
   filesFromFileList,
@@ -29,6 +29,8 @@ interface MountOptions {
   handles?: HandleEntry[];
   directoryHandle?: unknown;
   nativeWorkspaceId?: string;
+  /** Absolute filesystem paths so the desktop app can reopen without a picker. */
+  filePaths?: string[];
   /** Binary assets (images, fonts) served to the preview as data URLs. */
   assets?: AssetMap;
 }
@@ -65,6 +67,8 @@ interface UseWorkspaceResult {
   openDropped: (list: FileList) => Promise<void>;
   /** Reopens a remembered workspace straight from its local snapshot. */
   openRecent: (entry: RecentEntry) => Promise<void>;
+  /** Drops one entry from the recent list. */
+  removeRecent: (id: string) => void;
   selectFile: (index: number) => void;
   /** Leaves the editor and goes back to the file list. */
   closeFile: () => void;
@@ -72,6 +76,10 @@ interface UseWorkspaceResult {
   applyFilePatches: (patches: FilePatch[]) => ApplyPatchesResult;
   createFile: (name: string, content?: string) => void;
   deleteFile: (index: number) => void;
+  /** Renames a file on disk (desktop only) and keeps its buffer in sync. */
+  renameFile: (from: string, to: string) => Promise<boolean>;
+  /** Reloads the active buffer from disk, discarding local edits. */
+  revertActiveFile: () => Promise<void>;
   closeWorkspace: () => void;
 
   // --- disk write-back -----------------------------------------------------
@@ -194,7 +202,13 @@ export function useWorkspace(): UseWorkspaceResult {
       });
       setActiveFileIndex(-1);
       setStatusMessage(null);
-      setRecents(pushRecentWorkspace({ name, path, fileCount: nextFiles.length, kind }));
+      setRecents(pushRecentWorkspace({
+        name,
+        path,
+        fileCount: nextFiles.length,
+        kind,
+        filePaths: options.filePaths
+      }));
       void saveSnapshot({ path, name, kind, files: nextFiles });
       if (handles.length > 0) void saveHandles(path, handles);
       void refreshCheckpoints(path);
@@ -209,12 +223,13 @@ export function useWorkspace(): UseWorkspaceResult {
       try {
         const opened = await desktop.openFolder();
         if (!opened) return;
-        mount(opened.name, opened.workspaceId, 'folder', opened.files.map((file) => ({
+        mount(opened.name, opened.rootPath, 'folder', opened.files.map((file) => ({
           ...file,
           language: detectLanguage(file.name)
         })), {
           assets: opened.assets,
-          nativeWorkspaceId: opened.workspaceId
+          nativeWorkspaceId: opened.workspaceId,
+          filePaths: opened.filePaths
         });
         if (opened.warnings.length > 0) setStatusMessage(opened.warnings.join(' '));
       } catch (error) {
@@ -261,12 +276,13 @@ export function useWorkspace(): UseWorkspaceResult {
           setStatusMessage('No readable code files were selected.');
           return;
         }
-        mount(opened.name, opened.workspaceId, 'file', opened.files.map((file) => ({
+        mount(opened.name, opened.rootPath, 'file', opened.files.map((file) => ({
           ...file,
           language: detectLanguage(file.name)
         })), {
           assets: opened.assets,
-          nativeWorkspaceId: opened.workspaceId
+          nativeWorkspaceId: opened.workspaceId,
+          filePaths: opened.filePaths
         });
         if (opened.warnings.length > 0) setStatusMessage(opened.warnings.join(' '));
       } catch (error) {
@@ -326,12 +342,45 @@ export function useWorkspace(): UseWorkspaceResult {
     async (entry: RecentEntry) => {
       setIsBusy(true);
       try {
-        if (getDesktopBridge()) {
-          setStatusMessage(`Select ${entry.name} again to read its current files and restore disk access.`);
+        const desktop = getDesktopBridge();
+        if (desktop?.reopenWorkspace) {
+          try {
+            const opened = await desktop.reopenWorkspace({
+              kind: entry.kind,
+              path: entry.path,
+              filePaths: entry.filePaths
+            });
+            if (!opened) return;
+            mount(opened.name, opened.rootPath, opened.kind, opened.files.map((file) => ({
+              ...file,
+              language: detectLanguage(file.name)
+            })), {
+              assets: opened.assets,
+              nativeWorkspaceId: opened.workspaceId,
+              filePaths: opened.filePaths
+            });
+            if (opened.warnings.length > 0) setStatusMessage(opened.warnings.join(' '));
+            return;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            // Entries written by older builds stored an internal id instead of
+            // a real path, so they can only be restored by picking again.
+            const hasRealPath = /[\\/]/.test(entry.path);
+            setStatusMessage(
+              hasRealPath
+                ? `Could not reopen ${entry.name}: ${message}`
+                : `Select ${entry.name} again so ShadRox can remember its location.`
+            );
+            if (hasRealPath) return;
+          }
+        }
+
+        if (desktop) {
           if (entry.kind === 'folder') await openFolder();
           else await openFiles();
           return;
         }
+
         const snapshot = await getSnapshot(entry.path);
         if (snapshot && snapshot.files.length > 0) {
           // Handles live in their own store, so a reopened workspace can still
@@ -356,6 +405,10 @@ export function useWorkspace(): UseWorkspaceResult {
     },
     [mount, openFolder, openFiles]
   );
+
+  const removeRecent = useCallback((id: string) => {
+    setRecents(removeRecentWorkspace(id));
+  }, []);
 
   const loadDirectory = useCallback(async (path: string, cursor = 0) => {
     const desktop = getDesktopBridge();
@@ -800,6 +853,65 @@ export function useWorkspace(): UseWorkspaceResult {
     });
   }, []);
 
+  const renameFile = useCallback(async (from: string, to: string) => {
+    const desktop = getDesktopBridge();
+    const id = desktopWorkspaceIdRef.current;
+    const cleanTo = to.trim().replace(/\\/g, '/').replace(/^\.\//, '');
+    if (!desktop || !id) {
+      setDiskMessage('Renaming files is available in the desktop app.');
+      return false;
+    }
+    if (!cleanTo || cleanTo === from) return false;
+    if (filesRef.current.some((file) => file.name === cleanTo)) {
+      setDiskMessage(`A file named ${cleanTo} is already open.`);
+      return false;
+    }
+    try {
+      const renamed = await desktop.renameFile(id, from, cleanTo);
+      if (desktopWorkspaceIdRef.current !== id) return false;
+      const next = filesRef.current.map((file) => file.name === from
+        ? { ...file, name: cleanTo, version: renamed.version ?? file.version, language: detectLanguage(cleanTo) }
+        : file);
+      filesRef.current = next;
+      const previousBaseline = baselineRef.current[from];
+      delete baselineRef.current[from];
+      if (previousBaseline !== undefined) baselineRef.current[cleanTo] = previousBaseline;
+      setDiskBaseline({ ...baselineRef.current });
+      setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
+      setConflicts((previous) => previous.filter((name) => name !== from));
+      setDiskMessage(`Renamed ${from} to ${cleanTo}.`);
+      return true;
+    } catch (error) {
+      setDiskMessage(`Could not rename ${from}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }, []);
+
+  const revertActiveFile = useCallback(async () => {
+    const file = filesRef.current[activeFileIndex];
+    if (!file) return;
+    const desktop = getDesktopBridge();
+    const id = desktopWorkspaceIdRef.current;
+    if (!desktop || !id) {
+      setDiskMessage('Revert to disk is available in the desktop app.');
+      return;
+    }
+    try {
+      const loaded = await desktop.readFile(id, file.name);
+      if (desktopWorkspaceIdRef.current !== id) return;
+      const next = filesRef.current.map((entry) => entry.name === file.name
+        ? { ...entry, content: loaded.content, version: loaded.version }
+        : entry);
+      filesRef.current = next;
+      baselineRef.current = { ...baselineRef.current, [file.name]: loaded.content };
+      setDiskBaseline({ ...baselineRef.current });
+      setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
+      setDiskMessage(`${file.name} reverted to the version on disk.`);
+    } catch (error) {
+      setDiskMessage(`Could not revert ${file.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, [activeFileIndex]);
+
   const closeWorkspace = useCallback(() => {
     const desktop = getDesktopBridge();
     const currentId = desktopWorkspaceIdRef.current;
@@ -921,12 +1033,15 @@ export function useWorkspace(): UseWorkspaceResult {
       openFiles,
       openDropped,
       openRecent,
+      removeRecent,
       selectFile,
       closeFile,
       updateActiveContent,
       applyFilePatches,
       createFile,
       deleteFile,
+      renameFile,
+      revertActiveFile,
       closeWorkspace,
       canWriteToDisk,
       dirtyFiles,
@@ -964,12 +1079,15 @@ export function useWorkspace(): UseWorkspaceResult {
       openFiles,
       openDropped,
       openRecent,
+      removeRecent,
       selectFile,
       closeFile,
       updateActiveContent,
       applyFilePatches,
       createFile,
       deleteFile,
+      renameFile,
+      revertActiveFile,
       closeWorkspace,
       canWriteToDisk,
       dirtyFiles,

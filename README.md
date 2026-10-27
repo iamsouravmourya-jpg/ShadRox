@@ -132,6 +132,8 @@ The API routes currently mounted by the local server include:
 - `GET /api/health`
 - `POST /api/byok/validate`
 - `POST /api/ai/chat`
+- `POST /api/ai/fim`
+- `POST /api/ai/commit-message`
 - `POST /api/prompt/refine`
 - `POST /api/github/validate`
 - `POST /api/github/create-repo`

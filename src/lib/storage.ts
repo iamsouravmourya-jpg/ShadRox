@@ -1,5 +1,6 @@
 import type { ProviderId } from './providers';
 import type { PlanTier, RecentEntry } from './types';
+import { mirrorSecureItem, removeSecureItem } from './secureStore';
 
 const STORE_KEYS = {
   apiKey: (provider: ProviderId) => `shadrox.byok.${provider}`,
@@ -26,6 +27,7 @@ function safeSet(key: string, value: string): void {
   } catch (err) {
     console.warn(`[shadrox] could not persist ${key}`, err);
   }
+  mirrorSecureItem(key, value);
 }
 
 function safeRemove(key: string): void {
@@ -34,6 +36,7 @@ function safeRemove(key: string): void {
   } catch {
     /* ignore */
   }
+  removeSecureItem(key);
 }
 
 export function getApiKey(provider: ProviderId): string {
@@ -99,14 +102,25 @@ export interface PushRecentInput {
   id?: string;
   name: string;
   path: string;
+  filePaths?: string[];
   fileCount: number;
   kind: 'folder' | 'file';
 }
 
 export function pushRecentWorkspace(input: PushRecentInput): RecentEntry[] {
-  const id = input.id || `${input.kind}-${input.path}`;
-  const current = getRecentWorkspaces().filter((item) => item.path !== input.path);
+  const id = input.id || (
+    input.kind === 'folder'
+      ? `folder-${input.path}`
+      : `file-${input.filePaths?.length ? input.filePaths.join('|') : input.path}`
+  );
+  const current = getRecentWorkspaces().filter((item) => item.id !== id);
   const next: RecentEntry[] = [{ ...input, id, openedAt: Date.now() }, ...current].slice(0, MAX_RECENTS);
+  safeSet(STORE_KEYS.recents, JSON.stringify(next));
+  return next;
+}
+
+export function removeRecentWorkspace(id: string): RecentEntry[] {
+  const next = getRecentWorkspaces().filter((item) => item.id !== id);
   safeSet(STORE_KEYS.recents, JSON.stringify(next));
   return next;
 }

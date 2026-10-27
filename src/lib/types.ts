@@ -52,6 +52,31 @@ export interface ChatMessage {
   attachments?: string[];
   attachedImage?: string;
   streaming?: boolean;
+  /** Provider reasoning stream (Gemini thoughts / Groq reasoning models). */
+  reasoning?: string;
+  /** Latency and token usage reported by the streaming endpoint. */
+  metrics?: { tokens: number; firstTokenMs: number | null; durationMs: number | null };
+  /** True when the stream died mid-way and can be continued without losing output. */
+  resumable?: boolean;
+}
+
+/** A single file change proposed by one assistant reply, awaiting review. */
+export interface ReviewPatch {
+  path: string;
+  kind: 'rewrite' | 'searchReplace';
+  blocks?: Array<{ original: string; updated: string }>;
+  content?: string;
+  status: 'pending' | 'applied' | 'rejected' | 'failed' | 'reverted';
+  /** Human-readable reason when status === 'failed'. */
+  failure?: string;
+  /** File content captured before applying, so the change can be undone. */
+  originalContent?: string;
+}
+
+/** All file changes one assistant reply proposed, reviewed as one set. */
+export interface PatchSet {
+  messageId: string;
+  patches: ReviewPatch[];
 }
 
 export interface SecretItem {
@@ -90,6 +115,8 @@ export interface RecentEntry {
   id: string;
   name: string;
   path: string;
+  /** Absolute file paths for single-file openings; lets the desktop app reopen them directly. */
+  filePaths?: string[];
   fileCount: number;
   openedAt: number;
   /** Standalone single-file opens vs full folder mounts */

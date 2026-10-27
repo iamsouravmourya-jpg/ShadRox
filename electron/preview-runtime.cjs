@@ -177,6 +177,11 @@ function parsePreviewUrl(text) {
 
 const COMMON_DEV_PORTS = [3000, 3001, 3002, 4173, 4174, 4200, 4321, 5000, 5173, 5174, 8000, 8001, 8080, 8081, 9000];
 
+/** Dev servers that ship their own hot module replacement. */
+function hasHmrSupport(command) {
+  return /\b(vite|next|nuxt|astro|angular|webpack-dev-server|webpack|parcel|remix|svelte-kit)\b/i.test(command);
+}
+
 function probeHttp(url, timeoutMs = 700) {
   return new Promise((resolve) => {
     let target;
@@ -435,7 +440,7 @@ function createPreviewRuntime({
             record.url = url;
             record.rejectReady = null;
             emit(workspaceId, 'ready', `Local preview is responding at ${url}`);
-            resolve({ url, script: script.name });
+            resolve({ url, script: script.name, hmr: hasHmrSupport(script.command) });
           }
         } finally {
           probingUrls.delete(url);
@@ -533,5 +538,6 @@ module.exports = {
   getPackageManager,
   getPreviewScript,
   getRunArgs,
+  hasHmrSupport,
   parsePreviewUrl
 };

@@ -1,6 +1,4 @@
 import {
-  estimateTokens,
-  readErrorPayload,
   readJsonBody,
   sendError,
   sendSseHeaders,
@@ -9,235 +7,46 @@ import {
   type ApiRequest,
   type ApiResponse
 } from '../_http.js';
-import { classifyTier } from '../../src/lib/providers.js';
-import { sharedKeyFor } from '../_sharedKey.js';
+import { capSystemInstruction, trimMessagesToBudget } from '../../src/lib/contextBudget.js';
+import { resolveContextWindow } from '../../src/lib/modelCapabilities.js';
+import { ADAPTERS, isProviderId, resolveKeyAccess } from './access.js';
+import type { ChatMessage, ChatRequestBody, ProviderId } from './types.js';
 
-type ProviderId = 'gemini' | 'groq';
-
-interface ChatMessageInput {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
-
-interface ChatRequestBody {
-  provider?: ProviderId;
-  model?: string;
-  apiKey?: string;
-  messages?: ChatMessageInput[];
-  systemInstruction?: string;
-  temperature?: number;
-  /** 'high' asks the model to reason before answering; 'low' keeps it snappy. */
-  thinking?: 'low' | 'high';
-}
-
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
-const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
-const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b';
+const PROVIDER_LABEL: Record<ProviderId, string> = {
+  gemini: 'Google Gemini',
+  groq: 'Groq'
+};
 
 export const config = { maxDuration: 60 };
 
-async function* iterSseData(response: Response): AsyncGenerator<string> {
-  const reader = response.body?.getReader();
-  if (!reader) return;
-
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let newlineIndex = buffer.indexOf('\n');
-    while (newlineIndex !== -1) {
-      const line = buffer.slice(0, newlineIndex).replace(/\r$/, '');
-      buffer = buffer.slice(newlineIndex + 1);
-      if (line.startsWith('data:')) yield line.slice(5).trim();
-      newlineIndex = buffer.indexOf('\n');
-    }
-  }
-
-  const tail = buffer.trim();
-  if (tail.startsWith('data:')) yield tail.slice(5).trim();
+function normalizedMessages(input: ChatRequestBody['messages']): ChatMessage[] {
+  return (input || [])
+    .filter((message): message is { role: ChatMessage['role']; content: string } =>
+      Boolean(
+        message &&
+        (message.role === 'user' || message.role === 'assistant' || message.role === 'system') &&
+        typeof message.content === 'string' &&
+        message.content.trim().length > 0
+      )
+    )
+    .map((message) => ({ role: message.role, content: message.content }));
 }
 
-async function streamGemini(options: {
-  apiKey: string;
-  model: string;
-  messages: ChatMessageInput[];
-  systemInstruction?: string;
-  temperature: number;
-  thinking?: 'low' | 'high';
-  res: ApiResponse;
-  signal: AbortSignal;
-}): Promise<number> {
-  const { apiKey, model, messages, systemInstruction, temperature, thinking, res, signal } = options;
-
-  const contents = messages
-    .filter((message) => message.role !== 'system')
-    .map((message) => ({
-      role: message.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: message.content }]
-    }));
-
-  const systemText =
-    systemInstruction ||
-    messages
-      .filter((message) => message.role === 'system')
-      .map((message) => message.content)
-      .join('\n\n');
-
-  const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
-
-  const send = (generationConfig: Record<string, unknown>) =>
-    fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal,
-      body: JSON.stringify({
-        contents,
-        ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
-        generationConfig
-      })
-    });
-
-  const baseConfig: Record<string, unknown> = { temperature };
-  if (thinking) {
-    // Not every Gemini model exposes a thinking budget, so a rejection of this
-    // field falls back to a plain request instead of failing the whole turn.
-    baseConfig.thinkingConfig = { thinkingBudget: thinking === 'high' ? 8192 : 0 };
+function errorMessage(error: unknown, provider: ProviderId): string {
+  if (error instanceof Error) {
+    if (error.name === 'AbortError') return 'Generation stopped.';
+    if (error instanceof TypeError && /fetch failed|network/i.test(error.message)) {
+      return `Could not reach ${PROVIDER_LABEL[provider]}. Check your internet connection and try again.`;
+    }
+    return error.message;
   }
-
-  let response = await send(baseConfig);
-
-  if (!response.ok && thinking) {
-    const payload = await readErrorPayload(response);
-    if (!/thinking|generation_config|Unknown name/i.test(payload)) throw new Error(payload);
-    response = await send({ temperature });
-  }
-
-  if (!response.ok) {
-    throw new Error(await readErrorPayload(response));
-  }
-
-  let fullText = '';
-  let totalTokens = 0;
-
-  for await (const data of iterSseData(response)) {
-    if (!data || data === '[DONE]') continue;
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(data);
-    } catch {
-      continue;
-    }
-
-    const blockReason = parsed?.promptFeedback?.blockReason;
-    if (blockReason) {
-      throw new Error(`Model ne request block kar di (${blockReason}).`);
-    }
-
-    const parts = parsed?.candidates?.[0]?.content?.parts;
-    if (Array.isArray(parts)) {
-      for (const part of parts) {
-        if (typeof part?.text === 'string' && part.text) {
-          fullText += part.text;
-          sseSend(res, { type: 'delta', text: part.text });
-        }
-      }
-    }
-
-    if (typeof parsed?.usageMetadata?.totalTokenCount === 'number') {
-      totalTokens = parsed.usageMetadata.totalTokenCount;
-    }
-  }
-
-  return totalTokens || estimateTokens(fullText);
-}
-
-async function streamGroq(options: {
-  apiKey: string;
-  model: string;
-  messages: ChatMessageInput[];
-  systemInstruction?: string;
-  temperature: number;
-  thinking?: 'low' | 'high';
-  res: ApiResponse;
-  signal: AbortSignal;
-}): Promise<number> {
-  const { apiKey, model, messages, systemInstruction, temperature, thinking, res, signal } = options;
-
-  const payloadMessages: Array<{ role: string; content: string }> = [];
-  if (systemInstruction) payloadMessages.push({ role: 'system', content: systemInstruction });
-  messages.forEach((message) => payloadMessages.push({ role: message.role, content: message.content }));
-
-  const send = (reasoningEffort?: 'low' | 'high') =>
-    fetch(`${GROQ_API_BASE}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      signal,
-      body: JSON.stringify({
-        model,
-        messages: payloadMessages,
-        temperature,
-        stream: true,
-        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {})
-      })
-    });
-
-  let response = await send(thinking);
-
-  if (!response.ok && thinking) {
-    // Only some Groq models accept `reasoning_effort`; retry plainly otherwise.
-    const payload = await readErrorPayload(response);
-    if (!/reasoning_effort|reasoning/i.test(payload)) throw new Error(payload);
-    response = await send(undefined);
-  }
-
-  if (!response.ok) {
-    throw new Error(await readErrorPayload(response));
-  }
-
-  let fullText = '';
-  let totalTokens = 0;
-
-  for await (const data of iterSseData(response)) {
-    if (!data || data === '[DONE]') continue;
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(data);
-    } catch {
-      continue;
-    }
-
-    if (parsed?.error?.message) {
-      throw new Error(parsed.error.message);
-    }
-
-    const delta = parsed?.choices?.[0]?.delta?.content;
-    if (typeof delta === 'string' && delta) {
-      fullText += delta;
-      sseSend(res, { type: 'delta', text: delta });
-    }
-
-    if (typeof parsed?.usage?.total_tokens === 'number') {
-      totalTokens = parsed.usage.total_tokens;
-    }
-  }
-
-  return totalTokens || estimateTokens(fullText);
+  return 'AI generation failed.';
 }
 
 /**
  * POST /api/ai/chat
  * Body: { provider, model, apiKey?, messages[], systemInstruction?, temperature? }
- * Streams normalised SSE events: {type:'delta'|'done'|'error'}.
+ * Streams normalised SSE events: {type:'delta'|'reasoning'|'done'|'error'}.
  *
  * - apiKey present  -> BYOK passthrough, user pays, we never store the key.
  * - apiKey absent   -> falls back to the ShadRox shared key from the environment, which
@@ -250,86 +59,117 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   }
 
   const body = await readJsonBody<ChatRequestBody>(req);
-  const messages = (body.messages || []).filter(
-    (message) => message && typeof message.content === 'string' && message.content.trim().length > 0
-  );
+  let messages = normalizedMessages(body.messages);
 
   if (messages.length === 0) {
     sendError(res, 400, 'Kam se kam ek message chahiye.');
     return;
   }
 
-  const provider: ProviderId = body.provider === 'groq' ? 'groq' : 'gemini';
-  const fallbackModel = provider === 'gemini' ? DEFAULT_GEMINI_MODEL : DEFAULT_GROQ_MODEL;
-  const model = (body.model || '').trim() || fallbackModel;
+  const provider: ProviderId = isProviderId(body.provider) ? body.provider : 'gemini';
+  const adapter = ADAPTERS[provider];
+  const model = (body.model || '').trim() || adapter.defaultModel;
+
+  // Enforce the model's context budget on the message history. The client
+  // trims too, but the server is the boundary that actually spends the key.
+  const contextWindow = resolveContextWindow(provider, model);
+  const trimmed = trimMessagesToBudget(messages, contextWindow);
+  messages = trimmed.messages;
+  if (trimmed.trimmed > 0) {
+    console.warn(
+      `[ai] trimmed ${trimmed.trimmed} message(s) for ${model} (${trimmed.trimmedChars} chars dropped)`
+    );
+  }
+
+  const systemInstruction = body.systemInstruction
+    ? capSystemInstruction(body.systemInstruction)
+    : undefined;
+
+  // Stream recovery: the client can resume an interrupted reply by echoing the
+  // partial text it already received. We append it as a USER message because
+  // Gemini rejects requests that end with a model turn.
+  const resumePrefix = (body.resume?.prefix || '').slice(0, 60_000).trim();
+  if (resumePrefix) {
+    messages.push({
+      role: 'user',
+      content:
+        'Continue your previous reply from where it stopped. Do not repeat the partial text below; ' +
+        'start with the very next characters, completing the thought in the same style.\n\n' +
+        `<partial-reply>\n${resumePrefix}\n</partial-reply>`
+    });
+  }
+
   const temperature = typeof body.temperature === 'number' ? body.temperature : 0.7;
   const thinking = body.thinking === 'high' || body.thinking === 'low' ? body.thinking : undefined;
 
-  const byokKey = (body.apiKey || '').trim();
-  const sharedKey = byokKey ? '' : sharedKeyFor(provider);
-  const apiKey = byokKey || sharedKey;
-
-  if (!apiKey) {
-    sendError(
-      res,
-      400,
-      `Is provider (${provider}) ke liye ShadRox ki shared key set nahi hai. Settings → BYOK me apni key add karo.`
-    );
+  const resolved = resolveKeyAccess(provider, model, body.apiKey);
+  if ('error' in resolved) {
+    sendError(res, 400, resolved.error);
     return;
   }
-
-  if (!byokKey) {
-    // The shared key belongs to ShadRox's paid plan, so it only serves the Pro
-    // tier. The free list stays BYOK-only, which keeps the spend bounded.
-    if (classifyTier(provider, model) !== 'pro') {
-      sendError(
-        res,
-        400,
-        `ShadRox ki shared key sirf Pro models par chalti hai, aur "${model}" free tier me hai. Free models ke liye Settings → BYOK me apni key add karo.`
-      );
-      return;
-    }
-    // TODO(phase-3): verify Supabase session + apply per-user rate limit before
-    // spending the shared ShadRox key. See docs in README.
-  }
+  const { apiKey, byok } = resolved.access;
 
   const abort = new AbortController();
-  req.on('close', () => abort.abort());
+  res.on('close', () => {
+    if (!res.writableEnded) abort.abort();
+  });
 
   sendSseHeaders(res);
 
-  try {
-    const tokens =
-      provider === 'gemini'
-        ? await streamGemini({
-            apiKey,
-            model,
-            messages,
-            systemInstruction: body.systemInstruction,
-            temperature,
-            thinking,
-            res,
-            signal: abort.signal
-          })
-        : await streamGroq({
-            apiKey,
-            model,
-            messages,
-            systemInstruction: body.systemInstruction,
-            temperature,
-            thinking,
-            res,
-            signal: abort.signal
-          });
+  const startedAt = performance.now();
+  let firstTokenMs: number | null = null;
 
-    sseSend(res, { type: 'done', tokens, provider, model, tier: byokKey ? 'byok' : 'shadrox' });
+  const markFirstToken = () => {
+    if (firstTokenMs === null) firstTokenMs = Math.round(performance.now() - startedAt);
+  };
+
+  try {
+    const result = await adapter.stream(
+      {
+        provider,
+        model,
+        apiKey,
+        messages,
+        systemInstruction,
+        temperature,
+        thinking,
+        signal: abort.signal
+      },
+      {
+        delta(text) {
+          if (abort.signal.aborted || res.writableEnded) return;
+          markFirstToken();
+          sseSend(res, { type: 'delta', text });
+        },
+        reasoning(text) {
+          if (abort.signal.aborted || res.writableEnded) return;
+          markFirstToken();
+          sseSend(res, { type: 'reasoning', text });
+        }
+      }
+    );
+
+    if (abort.signal.aborted || res.writableEnded) {
+      sseEnd(res);
+      return;
+    }
+
+    sseSend(res, {
+      type: 'done',
+      tokens: result.tokens,
+      provider,
+      model,
+      tier: byok ? 'byok' : 'shadrox',
+      finishReason: result.finishReason,
+      firstTokenMs,
+      durationMs: Math.round(performance.now() - startedAt)
+    });
   } catch (error) {
     if (abort.signal.aborted) {
       sseEnd(res);
       return;
     }
-    const message = error instanceof Error ? error.message : 'AI generation failed.';
-    sseSend(res, { type: 'error', message });
+    sseSend(res, { type: 'error', message: errorMessage(error, provider) });
   }
 
   sseEnd(res);

@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import CodeMirror, { type ReactCodeMirrorRef } from '@uiw/react-codemirror';
+import { EditorView } from '@codemirror/view';
+import type { Extension } from '@codemirror/state';
 import {
   closeSearchPanel,
   findNext,
@@ -21,14 +23,20 @@ import {
   FolderOpen,
   FolderTree,
   Loader2,
+  Pencil,
   Save,
   Search,
   Sparkles,
   Trash2,
-  X
+  Undo2,
+  X,
+  Zap
 } from 'lucide-react';
 import { copyToClipboard, downloadFile, downloadWorkspaceZip, estimateTokens, formatCode } from '../lib/toolUtils';
 import { getLanguageExtension } from '../lib/languages';
+import { ghostText } from '../lib/ghostText';
+import { runQuickEdit, sliceQuickEditContext } from '../lib/quickEdit';
+import type { ProviderId } from '../lib/providers';
 import type { WorkspaceFile } from '../lib/types';
 import type { DirectoryPage } from '../lib/desktop';
 
@@ -40,15 +48,36 @@ interface CodeEditorProps {
   isSaving: boolean;
   onSelectFile: (index: number) => void;
   onCloseFile: () => void;
+  onCloseTab: (index: number) => void;
   onChangeContent: (content: string) => void;
   onDeleteFile: (index: number) => void;
   onNewFile: () => void;
   onSaveAll: () => void;
+  onRenameFile: (from: string, to: string) => void;
+  onRevertFile: () => void;
+  revealTarget?: { name: string; line: number; column?: number; nonce: number } | null;
   workspaceName?: string;
   nativeDirectoryPages?: Record<string, DirectoryPage>;
   loadingDirectories?: string[];
   onLoadDirectory?: (path: string, cursor?: number) => void;
   onOpenPath?: (path: string) => void;
+  editorAi?: EditorAiConfig | null;
+}
+
+/** BYOK settings the editor spends on inline AI work (tab completion, Ctrl+K). */
+export interface EditorAiConfig {
+  provider: ProviderId;
+  model: string;
+  apiKey?: string;
+  completionEnabled: boolean;
+  onToggleCompletion: () => void;
+}
+
+interface QuickEditTarget {
+  from: number;
+  to: number;
+  top: number;
+  left: number;
 }
 
 interface ExplorerFile {
@@ -107,15 +136,20 @@ export function CodeEditor({
   isSaving,
   onSelectFile,
   onCloseFile,
+  onCloseTab,
   onChangeContent,
   onDeleteFile,
   onNewFile,
   onSaveAll,
+  onRenameFile,
+  onRevertFile,
+  revealTarget,
   workspaceName,
   nativeDirectoryPages,
   loadingDirectories = [],
   onLoadDirectory,
-  onOpenPath
+  onOpenPath,
+  editorAi
 }: CodeEditorProps) {
   const activeFile = files[activeFileIndex] ?? files[0] ?? null;
   const editorRef = useRef<ReactCodeMirrorRef>(null);
@@ -125,6 +159,11 @@ export function CodeEditor({
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set(['']));
   const [hasCopied, setHasCopied] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [quickEdit, setQuickEdit] = useState<QuickEditTarget | null>(null);
+  const [quickEditPrompt, setQuickEditPrompt] = useState('');
+  const [isQuickEditing, setIsQuickEditing] = useState(false);
+  const [quickEditError, setQuickEditError] = useState<string | null>(null);
+  const quickEditAbort = useRef<AbortController | null>(null);
 
   const dirty = useMemo(() => new Set(dirtyFiles), [dirtyFiles]);
   const filePathSignature = useMemo(() => files.map((file) => file.name).join('\n'), [files]);
@@ -139,13 +178,110 @@ export function CodeEditor({
   }, [workspaceName, filePathSignature]);
 
   const extensions = useMemo(() => {
-    const list = [search({ top: true })];
+    const list: Extension[] = [search({ top: true })];
     if (activeFile) {
       const ext = getLanguageExtension(activeFile.name, activeFile.language);
       if (ext) list.push(ext);
     }
+    if (editorAi?.completionEnabled) {
+      list.push(
+        ghostText({
+          provider: editorAi.provider,
+          model: editorAi.model,
+          apiKey: editorAi.apiKey,
+          language: activeFile?.language
+        })
+      );
+    }
+    if (editorAi) {
+      list.push(
+        EditorView.domEventHandlers({
+          keydown: (event, view) => {
+            if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.key.toLowerCase() !== 'k') return false;
+            event.preventDefault();
+            const range = view.state.selection.main;
+            const caret = view.coordsAtPos(range.from);
+            const box = view.dom.getBoundingClientRect();
+            setQuickEditError(null);
+            setQuickEditPrompt('');
+            setQuickEdit({
+              from: range.from,
+              to: range.to,
+              top: Math.max(6, (caret?.bottom ?? box.top + 22) - box.top + 6),
+              left: Math.min(Math.max(6, (caret?.left ?? box.left + 12) - box.left), Math.max(6, box.width - 340))
+            });
+            return true;
+          }
+        })
+      );
+    }
     return list;
-  }, [activeFile?.name, activeFile?.language]);
+  }, [activeFile?.name, activeFile?.language, editorAi]);
+
+  // Ctrl+K edits are scoped to the open buffer; switching files drops the bubble.
+  useEffect(() => {
+    quickEditAbort.current?.abort();
+    quickEditAbort.current = null;
+    setQuickEdit(null);
+    setQuickEditError(null);
+    setIsQuickEditing(false);
+  }, [activeFile?.name]);
+
+  const closeQuickEdit = useCallback(() => {
+    quickEditAbort.current?.abort();
+    quickEditAbort.current = null;
+    setIsQuickEditing(false);
+    setQuickEdit(null);
+  }, []);
+
+  const applyQuickEdit = useCallback(async () => {
+    const view = editorRef.current?.view;
+    const instruction = quickEditPrompt.trim();
+    if (!view || !activeFile || !editorAi || !quickEdit || !instruction || isQuickEditing) return;
+
+    setIsQuickEditing(true);
+    setQuickEditError(null);
+    const controller = new AbortController();
+    quickEditAbort.current = controller;
+
+    try {
+      const doc = view.state.doc;
+      // A bare caret edits the whole line, the same fallback Void uses.
+      const caretOnly = quickEdit.from === quickEdit.to;
+      const line = doc.lineAt(quickEdit.from);
+      const from = caretOnly ? line.from : quickEdit.from;
+      const to = caretOnly ? line.to : quickEdit.to;
+      const context = sliceQuickEditContext(
+        doc.toString(),
+        from,
+        to,
+        instruction,
+        activeFile.name,
+        activeFile.language
+      );
+      const replacement = await runQuickEdit(
+        context,
+        { provider: editorAi.provider, model: editorAi.model, apiKey: editorAi.apiKey },
+        controller.signal
+      );
+      view.dispatch({
+        changes: { from, to, insert: replacement },
+        selection: { anchor: from + replacement.length },
+        userEvent: 'input.replace'
+      });
+      setQuickEdit(null);
+      setQuickEditPrompt('');
+      setToastMsg('Quick edit applied · Ctrl+Z to undo');
+      window.setTimeout(() => setToastMsg(null), 3500);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setQuickEditError(error instanceof Error ? error.message : 'Quick edit failed.');
+      }
+    } finally {
+      quickEditAbort.current = null;
+      setIsQuickEditing(false);
+    }
+  }, [activeFile, editorAi, isQuickEditing, quickEdit, quickEditPrompt]);
 
   const runSearch = (term: string) => {
     const view = editorRef.current?.view;
@@ -206,6 +342,36 @@ export function CodeEditor({
     onDeleteFile(index);
   };
 
+  const handleRename = () => {
+    if (!activeFile) return;
+    const next = window.prompt('Rename file (workspace-relative path):', activeFile.name);
+    if (!next || !next.trim() || next.trim() === activeFile.name) return;
+    onRenameFile(activeFile.name, next.trim());
+  };
+
+  const handleRevert = () => {
+    if (!activeFile || !dirty.has(activeFile.name)) return;
+    if (!window.confirm(`Discard local changes in "${activeFile.name}" and reload it from disk?`)) return;
+    onRevertFile();
+  };
+
+  useEffect(() => {
+    if (!revealTarget || !activeFile || revealTarget.name !== activeFile.name) return;
+    const frame = requestAnimationFrame(() => {
+      const view = editorRef.current?.view;
+      if (!view) return;
+      const lineNumber = Math.min(Math.max(1, revealTarget.line), view.state.doc.lines);
+      const line = view.state.doc.line(lineNumber);
+      const position = Math.min(line.from + Math.max(0, (revealTarget.column ?? 1) - 1), line.to);
+      view.dispatch({
+        selection: { anchor: position, head: position },
+        effects: EditorView.scrollIntoView(position, { y: 'center' })
+      });
+      view.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [revealTarget, activeFile?.name]);
+
   const toggleFolder = (folderPath: string) => {
     setExpandedFolders((previous) => {
       const next = new Set(previous);
@@ -221,10 +387,10 @@ export function CodeEditor({
   const isDirty = activeFile ? dirty.has(activeFile.name) : false;
 
   return (
-    <div className="flex-1 min-h-0 flex bg-black overflow-hidden relative">
+    <div className="flex-1 min-h-0 flex bg-ink-950 overflow-hidden relative">
       {/* Toast Notification */}
       {toastMsg && (
-        <div className="absolute top-12 right-6 z-30 px-3 py-1 bg-emerald-950/90 border border-emerald-800 text-emerald-300 text-xs font-mono shadow-lg transition-opacity">
+        <div className="absolute top-12 right-6 z-30 rounded-lg border border-violet-300/30 bg-violet-500/15 px-3 py-1 font-mono text-xs text-violet-200 shadow-lg transition-opacity">
           {toastMsg}
         </div>
       )}
@@ -233,10 +399,10 @@ export function CodeEditor({
       <div
         className={`${
           isSidebarOpen ? 'w-60 sm:w-64' : 'w-0'
-        } shrink-0 border-r border-neutral-900 bg-neutral-950 flex flex-col transition-all duration-200 overflow-hidden select-none`}
+        } shrink-0 border-r border-white/[0.07] bg-ink-950 flex flex-col transition-all duration-200 overflow-hidden select-none`}
       >
         {/* Explorer Header */}
-        <div className="h-9 shrink-0 flex items-center justify-between px-3 border-b border-neutral-900">
+        <div className="h-9 shrink-0 flex items-center justify-between px-3 border-b border-white/[0.07]">
           <span className="text-[10px] uppercase font-bold tracking-wider text-neutral-400 flex items-center gap-1.5">
             <FolderTree className="w-3.5 h-3.5 text-neutral-500" />
             Explorer
@@ -263,7 +429,7 @@ export function CodeEditor({
         </div>
 
         {/* Quick Filter Input */}
-        <div className="p-2 border-b border-neutral-900/70">
+        <div className="p-2 border-b border-white/[0.05]">
           <div className="relative">
             <Search className="w-3 h-3 text-neutral-600 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
@@ -271,7 +437,7 @@ export function CodeEditor({
               onChange={(e) => setFileFilter(e.target.value)}
               placeholder="Search files..."
               spellCheck={false}
-              className="w-full border border-neutral-800 focus:border-neutral-700 bg-black text-[11px] text-neutral-200 pl-6 pr-5 py-1 outline-none placeholder:text-neutral-600"
+              className="w-full rounded-lg border border-white/[0.09] bg-ink-950 py-1 pl-6 pr-5 text-[11px] text-neutral-200 outline-none transition-colors placeholder:text-neutral-600 focus:border-violet-300/40"
             />
             {fileFilter && (
               <button
@@ -306,20 +472,20 @@ export function CodeEditor({
         type="button"
         onClick={() => setIsSidebarOpen((open) => !open)}
         title={isSidebarOpen ? 'Collapse file tree' : 'Expand file tree'}
-        className="w-3.5 hover:w-4 bg-neutral-950 border-r border-neutral-900 flex items-center justify-center text-neutral-600 hover:text-white transition-all cursor-pointer z-10"
+        className="w-3.5 hover:w-4 bg-ink-950 border-r border-white/[0.07] flex items-center justify-center text-neutral-600 hover:text-white transition-all cursor-pointer z-10"
       >
         {isSidebarOpen ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
       </button>
 
       {/* Right Column: Code Editor Beside File List */}
-      <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-black">
+      <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-ink-950">
         {/* Editor Top Navigation & Action Toolbar */}
-        <div className="h-9 shrink-0 flex items-center justify-between gap-2 px-3 border-b border-neutral-900 bg-neutral-950/70">
+        <div className="h-9 shrink-0 flex items-center justify-between gap-2 px-3 border-b border-white/[0.07] bg-ink-900/70">
           {/* Active file metadata */}
           <div className="flex items-center gap-2 min-w-0">
             {activeFile ? (
               <>
-                <FileCode2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <FileCode2 className="w-3.5 h-3.5 text-violet-300 shrink-0" />
                 <span className="font-mono text-xs text-neutral-100 truncate font-medium">
                   {activeFile.name}
                 </span>
@@ -353,7 +519,7 @@ export function CodeEditor({
                   }}
                   placeholder="Find in file..."
                   spellCheck={false}
-                  className="w-28 sm:w-36 border border-neutral-800 focus:border-neutral-600 bg-black text-[11px] text-neutral-200 pl-6 pr-2 py-0.5 outline-none placeholder:text-neutral-600"
+                  className="w-28 sm:w-36 rounded-lg border border-white/[0.09] bg-ink-950 py-1 pl-6 pr-2 text-[11px] text-neutral-200 outline-none transition-colors placeholder:text-neutral-600 focus:border-violet-300/40"
                 />
               </div>
 
@@ -362,21 +528,41 @@ export function CodeEditor({
                 type="button"
                 onClick={handleFormat}
                 title="Format Code"
-                className="flex items-center gap-1 px-2 py-1 text-[11px] text-neutral-400 hover:text-white border border-neutral-800 hover:border-neutral-700 transition-colors cursor-pointer"
+                className="flex items-center gap-1 rounded-lg border border-white/[0.09] px-2 py-1 text-[11px] text-neutral-400 transition-colors hover:border-white/[0.14] hover:text-white cursor-pointer"
               >
-                <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                <Sparkles className="w-3.5 h-3.5 text-violet-300" />
                 <span className="hidden lg:inline">Format</span>
               </button>
+
+              {editorAi && (
+                <button
+                  type="button"
+                  onClick={editorAi.onToggleCompletion}
+                  title={
+                    editorAi.completionEnabled
+                      ? 'Inline tab completion is ON — press Tab to accept a ghost suggestion'
+                      : 'Turn on inline tab completion'
+                  }
+                  className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] transition-colors cursor-pointer ${
+                    editorAi.completionEnabled
+                      ? 'border-violet-300/30 bg-violet-500/10 text-violet-200 hover:bg-violet-500/20'
+                      : 'border-white/[0.09] text-neutral-500 hover:border-white/[0.14] hover:text-white'
+                  }`}
+                >
+                  <Zap className={`w-3.5 h-3.5 ${editorAi.completionEnabled ? 'text-violet-300' : 'text-neutral-600'}`} />
+                  <span className="hidden lg:inline">Tab complete</span>
+                </button>
+              )}
 
               {/* Copy file content */}
               <button
                 type="button"
                 onClick={handleCopy}
                 title="Copy Code"
-                className="flex items-center gap-1 px-2 py-1 text-[11px] text-neutral-400 hover:text-white border border-neutral-800 hover:border-neutral-700 transition-colors cursor-pointer"
+                className="flex items-center gap-1 rounded-lg border border-white/[0.09] px-2 py-1 text-[11px] text-neutral-400 transition-colors hover:border-white/[0.14] hover:text-white cursor-pointer"
               >
                 {hasCopied ? (
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  <Check className="w-3.5 h-3.5 text-violet-300" />
                 ) : (
                   <Copy className="w-3.5 h-3.5 text-neutral-400" />
                 )}
@@ -388,10 +574,32 @@ export function CodeEditor({
                 type="button"
                 onClick={handleDownloadFile}
                 title="Download this file"
-                className="p-1 text-neutral-400 hover:text-white transition-colors cursor-pointer border border-neutral-800 hover:border-neutral-700"
+                className="rounded-lg border border-white/[0.09] p-1 text-neutral-400 transition-colors hover:border-white/[0.14] hover:text-white cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
               </button>
+
+              {canWriteToDisk && (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleRename}
+                    title="Rename file on disk"
+                    className="rounded-lg border border-white/[0.09] p-1 text-neutral-400 transition-colors hover:border-white/[0.14] hover:text-white cursor-pointer"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRevert}
+                    disabled={!isDirty}
+                    title="Discard local edits and reload from disk"
+                    className="rounded-lg border border-white/[0.09] p-1 text-neutral-400 transition-colors hover:border-amber-300/40 hover:text-amber-300 disabled:opacity-30 cursor-pointer"
+                  >
+                    <Undo2 className="w-3.5 h-3.5" />
+                  </button>
+                </>
+              )}
 
               {/* Save file */}
               {canWriteToDisk && (
@@ -400,7 +608,7 @@ export function CodeEditor({
                   onClick={onSaveAll}
                   disabled={!isDirty || isSaving}
                   title="Save changes to disk (Ctrl+S)"
-                  className="flex items-center gap-1 px-2 py-1 text-[11px] bg-white text-black hover:bg-neutral-200 disabled:opacity-30 font-medium transition-colors cursor-pointer"
+                  className="flex items-center gap-1 rounded-lg bg-violet-300 px-2.5 py-1 text-[11px] font-semibold text-[#16121f] transition-colors hover:bg-violet-200 disabled:opacity-30 disabled:hover:bg-violet-300 cursor-pointer"
                 >
                   {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
                   Save
@@ -410,8 +618,101 @@ export function CodeEditor({
           )}
         </div>
 
+        {/* Open file tabs */}
+        {files.length > 0 && (
+          <div className="flex h-8 shrink-0 items-stretch gap-px overflow-x-auto border-b border-white/[0.07] bg-ink-950">
+            {files.map((file, index) => {
+              const isActive = index === activeFileIndex;
+              const hasUnsaved = dirty.has(file.name);
+              return (
+                <div
+                  key={`${file.name}-${index}`}
+                  className={`group flex shrink-0 items-center gap-1.5 border-r border-white/[0.06] px-2.5 transition-colors ${
+                    isActive ? 'bg-ink-900 text-white' : 'text-neutral-500 hover:bg-white/[0.03] hover:text-neutral-300'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onSelectFile(index)}
+                    title={file.name}
+                    className="flex min-w-0 max-w-[180px] items-center gap-1.5 font-mono text-[11px] cursor-pointer"
+                  >
+                    <FileCode2 className={`h-3 w-3 shrink-0 ${isActive ? 'text-violet-300' : 'text-neutral-600'}`} />
+                    <span className="truncate">{file.name.split('/').pop()}</span>
+                    {hasUnsaved && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" title="Unsaved changes" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onCloseTab(index)}
+                    title={`Close ${file.name}`}
+                    aria-label={`Close ${file.name}`}
+                    className="rounded p-0.5 text-neutral-600 opacity-0 transition-opacity hover:text-white group-hover:opacity-100 cursor-pointer"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* CodeMirror Editor Area */}
-        <div className="flex-1 min-h-0 overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-hidden relative">
+          {quickEdit && editorAi && (
+            <div
+              role="dialog"
+              aria-label="Quick edit selection"
+              className="absolute z-30 w-[340px] rounded-xl border border-white/[0.12] bg-ink-900/95 p-2 shadow-2xl backdrop-blur"
+              style={{ top: quickEdit.top, left: quickEdit.left }}
+            >
+              <div className="mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-wider text-neutral-500">
+                <span className="flex items-center gap-1.5">
+                  <Sparkles className="w-3 h-3 text-violet-300" />
+                  Quick edit
+                  {quickEdit.from !== quickEdit.to && <span className="normal-case tracking-normal">selection</span>}
+                </span>
+                <button
+                  type="button"
+                  onClick={closeQuickEdit}
+                  className="text-neutral-600 transition-colors hover:text-white cursor-pointer"
+                  aria-label="Close quick edit"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+              <input
+                autoFocus
+                value={quickEditPrompt}
+                onChange={(event) => setQuickEditPrompt(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void applyQuickEdit();
+                  }
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeQuickEdit();
+                  }
+                }}
+                placeholder="Describe the change to this code..."
+                spellCheck={false}
+                className="w-full rounded-lg border border-white/[0.09] bg-ink-950 px-2 py-1.5 text-xs text-neutral-100 outline-none transition-colors placeholder:text-neutral-600 focus:border-violet-300/40"
+              />
+              {quickEditError && <p className="mt-1.5 text-[10px] text-rose-400">{quickEditError}</p>}
+              <div className="mt-1.5 flex items-center justify-between text-[10px] text-neutral-600">
+                <span className="font-mono">Enter to apply · Esc to cancel</span>
+                <button
+                  type="button"
+                  onClick={() => void applyQuickEdit()}
+                  disabled={!quickEditPrompt.trim() || isQuickEditing}
+                  className="flex items-center gap-1 rounded-md bg-violet-300 px-2 py-1 font-semibold text-[#16121f] transition-colors hover:bg-violet-200 disabled:opacity-40 cursor-pointer"
+                >
+                  {isQuickEditing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                  {isQuickEditing ? 'Writing' : 'Apply'}
+                </button>
+              </div>
+            </div>
+          )}
           {activeFile ? (
             <CodeMirror
               ref={editorRef}
@@ -448,7 +749,7 @@ export function CodeEditor({
 
         {/* Professional IDE Status Bar */}
         {activeFile && (
-          <div className="h-6 shrink-0 border-t border-neutral-900 bg-neutral-950 px-3 flex items-center justify-between text-[10px] font-mono text-neutral-500 select-none">
+          <div className="h-6 shrink-0 border-t border-white/[0.07] bg-ink-950 px-3 flex items-center justify-between text-[10px] font-mono text-neutral-500 select-none">
             <div className="flex items-center gap-3">
               <span>{lineCount} lines</span>
               <span>{charCount} chars</span>
@@ -478,14 +779,14 @@ export function CodeEditor({
             type="button"
             onClick={() => onSelectFile(index)}
             title={file.name}
-            className={`flex flex-1 min-w-0 items-center gap-1.5 py-1 text-left cursor-pointer transition-colors ${
-              isActive ? 'bg-neutral-900/90 text-white' : 'hover:bg-neutral-900/50 text-neutral-400'
+            className={`flex flex-1 min-w-0 items-center gap-1.5 rounded-md py-1 text-left transition-colors cursor-pointer ${
+              isActive ? 'bg-violet-500/[.12] text-white' : 'text-neutral-400 hover:bg-white/[0.04]'
             }`}
             style={{ paddingLeft: `${8 + (depth + 1) * 14}px` }}
           >
             <FileCode2
               className={`w-3 h-3 shrink-0 ${
-                isActive ? 'text-emerald-400' : 'text-neutral-500 group-hover:text-neutral-300'
+                isActive ? 'text-violet-300' : 'text-neutral-500 group-hover:text-neutral-300'
               }`}
             />
             <span className="font-mono text-[11px] truncate">{file.name.split('/').pop()}</span>
@@ -522,7 +823,7 @@ export function CodeEditor({
           type="button"
           onClick={() => toggleFolder(folder.path)}
           aria-expanded={isExpanded}
-          className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-neutral-300 hover:bg-neutral-900/60 cursor-pointer"
+          className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-neutral-300 hover:bg-white/[0.03] cursor-pointer"
           style={{ paddingLeft: `${8 + depth * 14}px` }}
         >
           <ChevronRight className={`w-3 h-3 shrink-0 text-neutral-600 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
@@ -552,7 +853,7 @@ export function CodeEditor({
             if (!isExpanded && !page) onLoadDirectory?.(path);
           }}
           aria-expanded={isExpanded}
-          className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-neutral-300 hover:bg-neutral-900/60 cursor-pointer"
+          className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-neutral-300 hover:bg-white/[0.03] cursor-pointer"
           style={{ paddingLeft: `${8 + depth * 14}px` }}
         >
           <ChevronRight className={`w-3 h-3 shrink-0 text-neutral-600 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
@@ -573,10 +874,10 @@ export function CodeEditor({
               type="button"
               onClick={() => index >= 0 ? onSelectFile(index) : onOpenPath?.(entry.path)}
               title={entry.path}
-              className={`w-full flex min-w-0 items-center gap-1.5 py-1 pr-2 text-left cursor-pointer transition-colors ${isActive ? 'bg-neutral-900/90 text-white' : 'hover:bg-neutral-900/50 text-neutral-400'}`}
+              className={`w-full flex min-w-0 items-center gap-1.5 rounded-md py-1 pr-2 text-left transition-colors cursor-pointer ${isActive ? 'bg-violet-500/[.12] text-white' : 'text-neutral-400 hover:bg-white/[0.04]'}`}
               style={{ paddingLeft: `${22 + depth * 14}px` }}
             >
-              <FileCode2 className={`w-3 h-3 shrink-0 ${isActive ? 'text-emerald-400' : 'text-neutral-500'}`} />
+              <FileCode2 className={`w-3 h-3 shrink-0 ${isActive ? 'text-violet-300' : 'text-neutral-500'}`} />
               <span className="font-mono text-[11px] truncate">{entry.name}</span>
               {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />}
             </button>

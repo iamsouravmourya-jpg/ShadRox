@@ -42,6 +42,7 @@ fs.mkdirSync(stagingDirectory, { recursive: true });
 copyIntoStage('dist', 'dist');
 copyIntoStage('electron', 'electron');
 copyIntoStage('api', 'api');
+copyIntoStage('assets', 'assets');
 copyIntoStage('src/lib/providers.ts', 'src/lib/providers.ts');
 copyIntoStage('server.ts', 'server.ts');
 copyIntoStage('package-lock.json', 'package-lock.json');

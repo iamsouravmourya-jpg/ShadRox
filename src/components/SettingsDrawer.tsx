@@ -20,7 +20,7 @@ import {
   Zap
 } from 'lucide-react';
 import { PROVIDERS, getProviderMeta, type ModelInfo, type ModelTier, type ProviderId } from '../lib/providers';
-import { PLANS, getPlanMeta } from '../lib/plans';
+import { PLANS, PLANS_LOCKED, getPlanMeta } from '../lib/plans';
 import { getMonthlyUsage, resetMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
 import type {
   GitHubRepo,
@@ -62,6 +62,8 @@ interface SettingsDrawerProps {
   onSecretsChange: (secrets: SecretItem[]) => void;
 
   workspaceFiles: WorkspaceFile[];
+  onGenerateCommitMessage: () => Promise<string>;
+  isWritingCommitMessage: boolean;
 }
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
@@ -72,7 +74,7 @@ const TABS: Array<{ id: SettingsTab; label: string }> = [
 ];
 
 const TIER_BADGE: Record<ModelTier, string> = {
-  free: 'text-emerald-400 border-emerald-900/60',
+  free: 'text-violet-300 border-violet-300/25',
   pro: 'text-amber-400 border-amber-900/60'
 };
 
@@ -111,7 +113,9 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     onPlanChange,
     secrets,
     onSecretsChange,
-    workspaceFiles
+    workspaceFiles,
+    onGenerateCommitMessage,
+    isWritingCommitMessage
   } = props;
 
   const [githubToken, setGithubToken] = useState('');
@@ -135,12 +139,22 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     });
   }, [plan]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const currentMeta = getProviderMeta(activeProvider);
   const currentDraft = apiKeyDraft[activeProvider] ?? '';
   const currentStatus = keyStatus[activeProvider];
   const currentSavedKey = currentStatus && currentStatus.state === 'ok';
+  const hasStoredKey = currentDraft.trim().length > 0 || currentSavedKey;
   const currentPlan = getPlanMeta(plan);
 
   const handleGithubConnect = async () => {
@@ -148,7 +162,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     setIsCheckingGithub(true);
     setGithubMessage(null);
     try {
-      const data = await postJson('/api/github/check', { token: githubToken });
+      const data = await postJson('/api/github/validate', { token: githubToken });
       setGithubUser(data.user);
       setGithubRepos(data.repos || []);
       setGithubMessage({ type: 'ok', text: `Connected as @${data.user.login}` });
@@ -162,20 +176,43 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     }
   };
 
+  const handleWriteCommitMessage = async () => {
+    const message = await onGenerateCommitMessage();
+    if (message) setCommitMessage(message);
+  };
+
   const handleGithubPush = async () => {
     if (!targetRepo || workspaceFiles.length === 0) return;
+    const [owner, repoName] = targetRepo.split('/');
+    if (!owner || !repoName) {
+      setGithubMessage({ type: 'error', text: 'Select a repository first.' });
+      return;
+    }
     setIsPushing(true);
     setGithubMessage(null);
     try {
       const data = await postJson('/api/github/push', {
         token: githubToken,
-        repo: targetRepo,
-        message: commitMessage || 'Update from ShadRox IDE',
-        files: workspaceFiles
+        owner,
+        repo: repoName,
+        commitMessage: commitMessage || 'Update from ShadRox IDE',
+        files: workspaceFiles.map((file) => ({ name: file.name, content: file.content }))
       });
+      const failed: Array<{ file: string; error?: string | null }> = (data.results ?? [])
+        .filter((result: { status?: string }) => result.status !== 'success');
+      if (failed.length > 0) {
+        setGithubMessage({
+          type: 'error',
+          text: `${workspaceFiles.length - failed.length} file(s) pushed, ${failed.length} failed: ${failed
+            .slice(0, 3)
+            .map((entry) => `${entry.file}${entry.error ? ` (${entry.error})` : ''}`)
+            .join(', ')}`
+        });
+        return;
+      }
       setGithubMessage({
         type: 'ok',
-        text: `Committed ${workspaceFiles.length} file(s) to ${targetRepo} (${data.commitSha ? data.commitSha.slice(0, 7) : 'latest'}).`
+        text: `Committed ${workspaceFiles.length} file(s) to ${targetRepo}.`
       });
     } catch (error) {
       setGithubMessage({
@@ -188,34 +225,43 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/70 backdrop-blur-sm">
-      <aside className="w-full max-w-xl h-full bg-black border-l border-neutral-900 flex flex-col text-white shadow-2xl">
+    <div
+      className="fixed inset-x-0 bottom-0 top-12 z-50 flex justify-end bg-black/60 backdrop-blur-md"
+      onClick={onClose}
+    >
+      <aside
+        onClick={(event) => event.stopPropagation()}
+        className="flex h-full w-full max-w-xl flex-col border-l border-white/[0.08] bg-ink-950 text-white shadow-[-24px_0_60px_rgb(0_0_0/.45)]"
+      >
         {/* Header */}
-        <header className="h-12 shrink-0 flex items-center justify-between px-4 border-b border-neutral-900">
+        <header className="flex h-12 shrink-0 items-center justify-between border-b border-white/[0.07] px-4">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wider text-neutral-300">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-300 shadow-[0_0_8px_#c4b5fd]" />
+            <span className="text-xs font-semibold uppercase tracking-wider text-neutral-200">
               ShadRox Settings
             </span>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="p-1 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+            title="Close settings (Esc)"
+            aria-label="Close settings"
+            className="flex items-center gap-1 rounded-md p-1 text-neutral-500 hover:bg-white/[0.06] hover:text-white transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </header>
 
         {/* Tabs */}
-        <nav className="shrink-0 flex border-b border-neutral-900">
+        <nav className="shrink-0 flex border-b border-white/[0.07]">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               type="button"
               onClick={() => onTabChange(tab.id)}
-              className={`flex-1 py-2.5 text-xs text-center border-b-2 transition-colors cursor-pointer ${
+              className={`flex-1 border-b-2 py-2.5 text-center text-xs transition-colors cursor-pointer ${
                 activeTab === tab.id
-                  ? 'border-white text-white font-medium'
+                  ? 'border-violet-300 font-medium text-white'
                   : 'border-transparent text-neutral-500 hover:text-neutral-300'
               }`}
             >
@@ -237,10 +283,10 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                       key={provider.id}
                       type="button"
                       onClick={() => onProviderChange(provider.id)}
-                      className={`border px-3 py-2 text-left text-xs transition-colors cursor-pointer ${
+                      className={`rounded-xl border px-3 py-2 text-left text-xs transition-colors cursor-pointer ${
                         provider.id === activeProvider
-                          ? 'border-white text-white bg-neutral-950'
-                          : 'border-neutral-800 text-neutral-400 hover:border-neutral-600'
+                          ? 'border-violet-300/40 bg-violet-500/[.08] text-violet-100'
+                          : 'border-white/[0.09] text-neutral-400 hover:border-white/[0.15] hover:text-neutral-200'
                       }`}
                     >
                       {provider.label}
@@ -255,7 +301,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   {currentMeta.label} API Key (BYOK)
                 </h3>
                 <p className="mt-1 text-[11px] text-neutral-400">
-                  {currentMeta.keyHint}. Keys are securely stored in your local browser storage.
+                  {currentMeta.keyHint}. Keys are encrypted on this device (Windows DPAPI) and only sent to {currentMeta.label}.
                 </p>
                 <div className="mt-2 flex gap-2">
                   <input
@@ -264,13 +310,13 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     onChange={(event) => onApiKeyDraftChange(activeProvider, event.target.value)}
                     placeholder={currentMeta.keyPlaceholder}
                     autoComplete="off"
-                    className="flex-1 min-w-0 bg-black border border-neutral-800 focus:border-neutral-600 px-3 py-2 text-xs font-mono text-neutral-100 outline-none placeholder:text-neutral-700"
+                    className="flex-1 min-w-0 rounded-xl border border-white/[0.09] bg-white/[0.03] px-3 py-2 text-xs font-mono text-neutral-100 outline-none transition-colors placeholder:text-neutral-700 focus:border-violet-300/40"
                   />
                   <button
                     type="button"
                     onClick={() => onValidateKey(activeProvider)}
                     disabled={currentStatus?.state === 'checking'}
-                    className="px-3 py-2 border border-neutral-700 text-xs text-white hover:bg-neutral-900 disabled:opacity-40 transition-colors cursor-pointer whitespace-nowrap"
+                    className="whitespace-nowrap rounded-xl border border-violet-300/25 bg-violet-500/[.08] px-3 py-2 text-xs text-violet-100 transition-colors hover:bg-violet-500/[.14] disabled:opacity-40 cursor-pointer"
                   >
                     {currentStatus?.state === 'checking' ? 'Testing...' : 'Save & Test'}
                   </button>
@@ -279,12 +325,12 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 {currentStatus && currentStatus.state !== 'idle' && (
                   <div
                     role="status"
-                    className={`mt-2 flex items-start gap-2 px-3 py-2 text-[11px] leading-relaxed border ${
+                    className={`mt-2 flex items-start gap-2 rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${
                       currentStatus.state === 'ok'
-                        ? 'border-emerald-900/60 bg-emerald-950/20 text-emerald-400'
+                        ? 'border-violet-300/25 bg-violet-500/[.07] text-violet-300'
                         : currentStatus.state === 'error'
                           ? 'border-red-900/60 bg-red-950/20 text-red-400'
-                          : 'border-neutral-800 text-neutral-400'
+                          : 'border-white/[0.09] text-neutral-400'
                     }`}
                   >
                     {currentStatus.state === 'ok' ? (
@@ -304,7 +350,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   </div>
                 )}
 
-                <div className="mt-2 flex items-center justify-between">
+                <div className="mt-2 flex items-center justify-between gap-3">
                   <a
                     href={currentMeta.docsUrl}
                     target="_blank"
@@ -313,31 +359,35 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   >
                     Get API key <ExternalLink className="w-3 h-3" />
                   </a>
-                  {currentSavedKey && (
+                  {hasStoredKey && (
                     <button
                       type="button"
-                      onClick={() => onForgetKey(activeProvider)}
-                      className="text-[11px] text-neutral-600 hover:text-red-400 cursor-pointer"
+                      onClick={() => {
+                        if (!window.confirm(`Remove the saved ${currentMeta.label} key from this device?`)) return;
+                        onForgetKey(activeProvider);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border border-white/[0.09] px-2 py-1 text-[11px] text-neutral-400 transition-colors hover:border-red-500/40 hover:text-red-400 cursor-pointer"
                     >
-                      Remove key
+                      <Trash2 className="w-3 h-3" />
+                      Remove saved key
                     </button>
                   )}
                 </div>
               </section>
 
               {/* Shared Key Option */}
-              <section className="border border-neutral-900 p-3 bg-neutral-950/40">
+              <section className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3">
                 <label className="flex items-start gap-2 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={useShadRoxKey}
                     onChange={(event) => onUseShadRoxKeyChange(event.target.checked)}
-                    className="mt-0.5 accent-emerald-500"
+                    className="mt-0.5 accent-violet-400"
                   />
                   <span className="min-w-0">
                     <span className="flex items-center gap-2">
                       <span className="text-xs text-neutral-200 font-medium">Use ShadRox Shared Key</span>
-                      <span className="shrink-0 border border-amber-900/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-400">
+                      <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/[.08] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300">
                         Pro
                       </span>
                     </span>
@@ -350,10 +400,15 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   <button
                     type="button"
                     onClick={() => onPlanChange('pro')}
-                    className="mt-3 flex w-full items-center justify-center gap-1.5 border border-amber-900/60 py-2 text-[11px] text-amber-400 hover:bg-amber-950/30 transition-colors cursor-pointer font-medium"
+                    disabled={PLANS_LOCKED}
+                    className={`mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border py-2 text-[11px] font-medium transition-colors ${
+                      PLANS_LOCKED
+                        ? 'cursor-not-allowed border-white/10 bg-white/[.02] text-neutral-500'
+                        : 'cursor-pointer border-amber-500/30 text-amber-300 hover:bg-amber-500/[.08]'
+                    }`}
                   >
-                    <Zap className="w-3 h-3" />
-                    Upgrade to Pro (₹499/mo GST Included)
+                    {PLANS_LOCKED ? <Lock className="w-3 h-3" /> : <Zap className="w-3 h-3" />}
+                    {PLANS_LOCKED ? 'Pro is locked during beta' : 'Upgrade to Pro (₹499/mo GST Included)'}
                   </button>
                 )}
               </section>
@@ -368,18 +423,18 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     No models loaded. Validate your API key above to fetch compatible models.
                   </p>
                 ) : (
-                  <div className="mt-2 border border-neutral-900 divide-y divide-neutral-900 max-h-48 overflow-y-auto">
+                  <div className="mt-2 max-h-48 divide-y divide-white/[0.05] overflow-y-auto rounded-xl border border-white/[0.07]">
                     {models.map((model) => (
                       <button
                         key={model.id}
                         type="button"
                         onClick={() => onSelectModel(model.id)}
-                        className={`w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-neutral-900 cursor-pointer ${
-                          model.id === selectedModel ? 'bg-neutral-900 text-white font-medium' : 'text-neutral-400'
+                        className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs transition-colors hover:bg-white/[0.04] cursor-pointer ${
+                          model.id === selectedModel ? 'bg-violet-500/[.12] font-medium text-white' : 'text-neutral-400'
                         }`}
                       >
                         <span className="truncate">{model.label}</span>
-                        <span className={`px-1.5 py-0.5 border text-[9px] uppercase tracking-wider ${TIER_BADGE[model.tier]}`}>
+                        <span className={`rounded border px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${TIER_BADGE[model.tier]}`}>
                           {model.tier}
                         </span>
                       </button>
@@ -401,7 +456,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   step="0.05"
                   value={temperature}
                   onChange={(event) => onTemperatureChange(parseFloat(event.target.value))}
-                  className="mt-2 w-full accent-emerald-500 cursor-pointer"
+                  className="mt-2 w-full accent-violet-400 cursor-pointer"
                 />
                 <div className="mt-1 flex justify-between text-[10px] text-neutral-600">
                   <span>Deterministic (0.0)</span>
@@ -414,7 +469,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
           {activeTab === 'PLAN' && (
             <>
               {/* Monthly Quota Meter Card */}
-              <section className="border border-neutral-900 bg-neutral-950/70 p-4 space-y-3">
+              <section className="space-y-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] p-4">
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-[10px] uppercase font-bold tracking-wider text-neutral-500">
@@ -422,7 +477,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     </div>
                     <div className="text-sm font-semibold text-white mt-0.5 flex items-center gap-2">
                       <span>{currentPlan.label}</span>
-                      <span className="border border-emerald-900/60 bg-emerald-950/40 text-emerald-400 text-[10px] uppercase px-1.5 py-0.5 font-normal">
+                      <span className="rounded border border-violet-300/25 bg-violet-500/[.12] px-1.5 py-0.5 text-[10px] font-normal uppercase text-violet-300">
                         Active
                       </span>
                     </div>
@@ -437,28 +492,30 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     <span className="text-neutral-400">
                       Messages Used: <strong className="text-white">{usage.count}</strong> / {usage.isUnlimited ? 'Unlimited' : usage.limit}
                     </span>
-                    <span className={usage.isCapReached ? 'text-rose-400 font-bold' : 'text-emerald-400'}>
+                    <span className={usage.isCapReached ? 'text-rose-400 font-bold' : 'text-violet-300'}>
                       {usage.isUnlimited ? 'Unlimited' : usage.remaining} remaining
                     </span>
                   </div>
 
-                  <div className="h-2 w-full bg-neutral-900 overflow-hidden border border-neutral-800">
+                  <div className="h-2 w-full overflow-hidden rounded-full border border-white/[0.09] bg-white/[0.04]">
                     <div
-                      className={`h-full transition-all duration-300 ${
-                        usage.isCapReached
-                          ? 'bg-rose-500'
-                          : usage.percentage >= 70
-                            ? 'bg-amber-400'
-                            : 'bg-emerald-400'
+                      className={`h-full rounded-full transition-all duration-300 ${
+                        usage.isUnlimited
+                          ? 'bg-violet-500'
+                          : usage.isCapReached
+                            ? 'bg-rose-500'
+                            : usage.percentage >= 70
+                              ? 'bg-amber-400'
+                              : 'bg-violet-400'
                       }`}
-                      style={{ width: `${usage.percentage}%` }}
+                      style={{ width: usage.isUnlimited ? '100%' : `${usage.percentage}%` }}
                     />
                   </div>
                 </div>
 
-                <div className="pt-2 flex items-center justify-between text-[11px] text-neutral-500 border-t border-neutral-900/70">
+                <div className="pt-2 flex items-center justify-between text-[11px] text-neutral-500 border-t border-white/[0.05]">
                   <span className="flex items-center gap-1">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    <ShieldCheck className="w-3.5 h-3.5 text-violet-300" />
                     Quota tracked per calendar month
                   </span>
                   <button
@@ -474,8 +531,19 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
               </section>
 
               <p className="text-[11px] text-neutral-400 leading-relaxed">
-                Free plan includes 100 messages/month. Pro plan offers 250 messages and Advanced offers 500 messages with all GST included.
+                Free plan is unlimited BYOK — no message cap and ₹0 cost to you and ShadRox. Paid tiers are
+                locked during the beta; no upgrade or payment is processed yet.
               </p>
+
+              {PLANS_LOCKED && (
+                <div className="flex items-start gap-2 rounded-xl border border-violet-300/20 bg-violet-500/[.06] px-3 py-2.5 text-[11px] text-violet-200">
+                  <Lock className="mt-0.5 w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    Plans are locked for the beta. You stay on Free BYOK (unlimited messages with your own
+                    key) and cannot switch to a paid tier.
+                  </span>
+                </div>
+              )}
 
               {/* Plans Tier Cards */}
               <section className="space-y-3">
@@ -484,12 +552,12 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   return (
                     <div
                       key={entry.id}
-                      className={`border p-4 transition-colors ${
+                      className={`rounded-2xl border p-4 transition-colors ${
                         isCurrent
-                          ? 'border-white bg-neutral-950/60'
+                          ? 'border-violet-300/30 bg-violet-500/[.06]'
                           : entry.popular
-                            ? 'border-amber-900/60 bg-neutral-950/30'
-                            : 'border-neutral-900 bg-neutral-950/20'
+                            ? 'border-amber-500/25 bg-amber-500/[.04]'
+                            : 'border-white/[0.07] bg-white/[0.02]'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
@@ -497,17 +565,17 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-semibold text-white">{entry.label}</span>
                             {isCurrent && (
-                              <span className="border border-emerald-900/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-emerald-400">
+                              <span className="rounded border border-violet-300/25 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-violet-300">
                                 Current
                               </span>
                             )}
                             {entry.popular && !isCurrent && (
-                              <span className="border border-amber-900/60 bg-amber-950/30 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-amber-400 font-semibold">
+                              <span className="rounded border border-amber-500/30 bg-amber-500/[.08] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300">
                                 Popular
                               </span>
                             )}
                           </div>
-                          <div className="text-[11px] text-emerald-400 font-mono mt-0.5">
+                          <div className="text-[11px] text-violet-300 font-mono mt-0.5">
                             {entry.monthlyCap === Infinity ? 'Unlimited' : entry.monthlyCap} messages / month
                           </div>
                         </div>
@@ -523,7 +591,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                       <ul className="mt-3 space-y-1.5">
                         {entry.perks.map((perk) => (
                           <li key={perk} className="flex items-start gap-1.5 text-xs text-neutral-300">
-                            <Check className="mt-0.5 w-3.5 h-3.5 shrink-0 text-emerald-500" />
+                            <Check className="mt-0.5 w-3.5 h-3.5 shrink-0 text-violet-400" />
                             <span>{perk}</span>
                           </li>
                         ))}
@@ -532,16 +600,25 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                       <button
                         type="button"
                         onClick={() => onPlanChange(entry.id)}
-                        disabled={isCurrent}
-                        className={`mt-4 w-full py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                        disabled={isCurrent || PLANS_LOCKED}
+                        className={`mt-4 flex w-full items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
                           isCurrent
-                            ? 'border border-neutral-900 text-neutral-600 bg-black cursor-default'
-                            : entry.id === 'free'
-                              ? 'border border-neutral-800 text-neutral-300 hover:bg-neutral-900 cursor-pointer'
-                              : 'bg-white text-black hover:bg-neutral-200 cursor-pointer'
+                            ? 'border border-white/10 text-neutral-600 bg-white/[.02] cursor-default'
+                            : PLANS_LOCKED
+                              ? 'border border-white/10 text-neutral-500 bg-white/[.02] cursor-not-allowed'
+                              : entry.id === 'free'
+                                ? 'border border-white/10 text-neutral-300 hover:bg-white/[.06] cursor-pointer'
+                                : 'bg-violet-300 text-[#16121f] hover:bg-violet-200 cursor-pointer'
                         }`}
                       >
-                        {isCurrent ? 'Current Plan Active' : entry.id === 'free' ? 'Switch to Free (BYOK)' : `Upgrade to ${entry.label}`}
+                        {PLANS_LOCKED && !isCurrent && <Lock className="w-3 h-3" />}
+                        {isCurrent
+                          ? 'Current Plan Active'
+                          : PLANS_LOCKED
+                            ? 'Locked during beta'
+                            : entry.id === 'free'
+                              ? 'Switch to Free (BYOK)'
+                              : `Upgrade to ${entry.label}`}
                       </button>
                     </div>
                   );
@@ -564,22 +641,22 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     onChange={(event) => setGithubToken(event.target.value)}
                     placeholder="ghp_..."
                     autoComplete="off"
-                    className="flex-1 min-w-0 bg-black border border-neutral-800 focus:border-neutral-600 px-3 py-2 text-xs font-mono text-neutral-100 outline-none placeholder:text-neutral-700"
+                    className="flex-1 min-w-0 rounded-xl border border-white/[0.09] bg-white/[0.03] px-3 py-2 text-xs font-mono text-neutral-100 outline-none transition-colors placeholder:text-neutral-700 focus:border-violet-300/40"
                   />
                   <button
                     type="button"
                     onClick={handleGithubConnect}
                     disabled={!githubToken.trim() || isCheckingGithub}
-                    className="px-3 py-2 border border-neutral-700 text-xs text-white hover:bg-neutral-900 disabled:opacity-40 transition-colors cursor-pointer whitespace-nowrap"
+                    className="whitespace-nowrap rounded-xl border border-violet-300/25 bg-violet-500/[.08] px-3 py-2 text-xs text-violet-100 transition-colors hover:bg-violet-500/[.14] disabled:opacity-40 cursor-pointer"
                   >
                     {isCheckingGithub ? 'Connecting...' : 'Connect'}
                   </button>
                 </div>
                 {githubMessage && (
                   <div
-                    className={`mt-2 px-3 py-2 text-[11px] border ${
+                    className={`mt-2 rounded-lg border px-3 py-2 text-[11px] ${
                       githubMessage.type === 'ok'
-                        ? 'border-emerald-900/60 bg-emerald-950/20 text-emerald-400'
+                        ? 'border-violet-300/25 bg-violet-500/[.07] text-violet-300'
                         : 'border-red-900/60 bg-red-950/20 text-red-400'
                     }`}
                   >
@@ -590,7 +667,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
 
               {githubUser && (
                 <>
-                  <section className="flex items-center gap-3 border border-neutral-900 p-3 bg-neutral-950">
+                  <section className="flex items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] p-3">
                     <img src={githubUser.avatar_url} alt={githubUser.login} className="w-9 h-9 rounded-full" />
                     <div className="min-w-0">
                       <div className="text-xs text-white font-medium truncate">{githubUser.name}</div>
@@ -604,26 +681,42 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                       <select
                         value={targetRepo}
                         onChange={(event) => setTargetRepo(event.target.value)}
-                        className="w-full bg-black border border-neutral-800 px-3 py-2 text-xs text-neutral-200 outline-none cursor-pointer"
+                        className="w-full cursor-pointer rounded-xl border border-white/[0.09] bg-white/[0.03] px-3 py-2 text-xs text-neutral-200 outline-none transition-colors focus:border-violet-300/40"
                       >
                         <option value="">Select a repository</option>
                         {githubRepos.map((repo) => (
-                          <option key={repo.full_name} value={repo.name}>
+                          <option key={repo.full_name} value={repo.full_name}>
                             {repo.full_name} {repo.private ? '(private)' : ''}
                           </option>
                         ))}
                       </select>
-                      <input
-                        value={commitMessage}
-                        onChange={(event) => setCommitMessage(event.target.value)}
-                        placeholder="Commit message"
-                        className="w-full bg-black border border-neutral-800 px-3 py-2 text-xs text-neutral-200 outline-none"
-                      />
+                      <div className="flex items-stretch gap-2">
+                        <input
+                          value={commitMessage}
+                          onChange={(event) => setCommitMessage(event.target.value)}
+                          placeholder="Commit message"
+                          className="min-w-0 flex-1 rounded-xl border border-white/[0.09] bg-white/[0.03] px-3 py-2 text-xs text-neutral-200 outline-none transition-colors focus:border-violet-300/40"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void handleWriteCommitMessage()}
+                          disabled={isWritingCommitMessage || workspaceFiles.length === 0}
+                          title="Write a commit message from the current git diff (or unsaved files)"
+                          className="flex shrink-0 items-center gap-1 rounded-xl border border-violet-300/25 bg-violet-500/[.12] px-2.5 text-[11px] font-medium text-violet-200 transition-colors hover:bg-violet-500/20 disabled:opacity-40 cursor-pointer"
+                        >
+                          {isWritingCommitMessage ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Sparkles className="w-3.5 h-3.5" />
+                          )}
+                          {isWritingCommitMessage ? 'Writing' : 'AI message'}
+                        </button>
+                      </div>
                       <button
                         type="button"
                         onClick={handleGithubPush}
                         disabled={!targetRepo || workspaceFiles.length === 0 || isPushing}
-                        className="w-full py-2 bg-white text-black text-xs font-semibold hover:bg-neutral-200 disabled:opacity-40 transition-colors cursor-pointer"
+                        className="w-full rounded-xl bg-violet-300 py-2 text-xs font-semibold text-[#16121f] transition-colors hover:bg-violet-200 disabled:opacity-40 disabled:hover:bg-violet-300 cursor-pointer"
                       >
                         {isPushing ? 'Pushing...' : `Push ${workspaceFiles.length} file(s) to GitHub`}
                       </button>
@@ -637,13 +730,13 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
           {activeTab === 'SECRETS' && (
             <>
               {/* Direct Secret Linking Notice — No .env file */}
-              <section className="border border-emerald-900/60 bg-emerald-950/20 p-3 space-y-1.5">
-                <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              <section className="space-y-1.5 rounded-2xl border border-violet-300/25 bg-violet-500/[.07] p-3">
+                <div className="flex items-center gap-2 text-xs font-semibold text-violet-300">
+                  <ShieldCheck className="w-4 h-4 text-violet-300" />
                   ShadRox Secure Secrets Vault (Zero Disk Footprint)
                 </div>
                 <p className="text-[11px] text-neutral-300 leading-relaxed">
-                  No <code className="text-emerald-300 font-mono">.env</code> file is written to your disk or workspace. All secrets are linked directly into your active runtime and bundler (<code className="text-emerald-300 font-mono">process.env</code> and <code className="text-emerald-300 font-mono">import.meta.env</code>) and encrypted inside your browser session.
+                  No <code className="text-violet-200 font-mono">.env</code> file is written to your disk or workspace. All secrets are linked directly into your active runtime and bundler (<code className="text-violet-200 font-mono">process.env</code> and <code className="text-violet-200 font-mono">import.meta.env</code>) and encrypted inside your browser session.
                 </p>
               </section>
 
@@ -658,13 +751,13 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     value={newSecretKey}
                     onChange={(event) => setNewSecretKey(event.target.value.toUpperCase())}
                     placeholder="VARIABLE_NAME"
-                    className="w-2/5 bg-black border border-neutral-800 px-3 py-2 text-xs font-mono text-neutral-100 outline-none placeholder:text-neutral-700"
+                    className="w-2/5 rounded-xl border border-white/[0.09] bg-white/[0.03] px-3 py-2 text-xs font-mono text-neutral-100 outline-none transition-colors placeholder:text-neutral-700 focus:border-violet-300/40"
                   />
                   <input
                     value={newSecretValue}
                     onChange={(event) => setNewSecretValue(event.target.value)}
                     placeholder="Secret value"
-                    className="flex-1 min-w-0 bg-black border border-neutral-800 px-3 py-2 text-xs font-mono text-neutral-100 outline-none placeholder:text-neutral-700"
+                    className="flex-1 min-w-0 rounded-xl border border-white/[0.09] bg-white/[0.03] px-3 py-2 text-xs font-mono text-neutral-100 outline-none transition-colors placeholder:text-neutral-700 focus:border-violet-300/40"
                   />
                   <button
                     type="button"
@@ -677,7 +770,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                       setNewSecretKey('');
                       setNewSecretValue('');
                     }}
-                    className="px-3 py-2 bg-white text-black hover:bg-neutral-200 text-xs font-semibold transition-colors cursor-pointer"
+                    className="rounded-xl bg-violet-300 px-3 py-2 text-xs font-semibold text-[#16121f] transition-colors hover:bg-violet-200 cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
                   </button>
@@ -690,7 +783,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                       key={preset}
                       type="button"
                       onClick={() => setNewSecretKey(preset)}
-                      className="px-2 py-0.5 border border-neutral-800 hover:border-neutral-700 text-[10px] font-mono text-neutral-400 hover:text-neutral-200 transition-colors cursor-pointer"
+                      className="rounded-md border border-white/[0.09] px-2 py-0.5 text-[10px] font-mono text-neutral-400 transition-colors hover:border-violet-300/30 hover:text-violet-200 cursor-pointer"
                     >
                       + {preset}
                     </button>
@@ -698,13 +791,13 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 </div>
 
                 {/* Secret Items List */}
-                <div className="mt-4 border border-neutral-900 divide-y divide-neutral-900 bg-neutral-950">
+                <div className="mt-4 divide-y divide-white/[0.05] overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.02]">
                   {secrets.length === 0 ? (
                     <div className="px-3 py-3 text-[11px] text-neutral-600 italic">No secrets configured in vault.</div>
                   ) : (
                     secrets.map((secret) => (
                       <div key={secret.id} className="flex items-center gap-2 px-3 py-2">
-                        <span className="w-2/5 shrink-0 text-[11px] font-mono text-emerald-400 truncate">
+                        <span className="w-2/5 shrink-0 text-[11px] font-mono text-violet-300 truncate">
                           {secret.key}
                         </span>
                         <span className="flex-1 min-w-0 text-[11px] font-mono text-neutral-400 truncate">
