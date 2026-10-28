@@ -34,7 +34,6 @@ const CLOSED_STATE: AuthState = { status: 'loading', session: null, error: null,
 
 interface PendingPkce {
   verifier: string;
-  state: string;
 }
 
 function storePendingPkce(pending: PendingPkce): void {
@@ -51,7 +50,7 @@ function takePendingPkce(): PendingPkce | null {
     sessionStorage.removeItem(AUTH_VERIFIER_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PendingPkce;
-    return parsed && typeof parsed.verifier === 'string' && typeof parsed.state === 'string' ? parsed : null;
+    return parsed && typeof parsed.verifier === 'string' ? parsed : null;
   } catch {
     return null;
   }
@@ -125,15 +124,11 @@ export function useAuth() {
           if (!cancelled) fail('Sign-in session expired. Please try again.');
           return;
         }
-        const parsed = parseCallbackParams(
-          {
-            code: params.get('code') ?? undefined,
-            state: params.get('state') ?? undefined,
-            error: params.get('error') ?? undefined,
-            error_description: params.get('error_description') ?? undefined
-          },
-          pending.state
-        );
+        const parsed = parseCallbackParams({
+          code: params.get('code') ?? undefined,
+          error: params.get('error') ?? undefined,
+          error_description: params.get('error_description') ?? undefined
+        });
         if (!parsed.ok) {
           if (!cancelled) fail(parsed.message);
           return;
@@ -191,24 +186,19 @@ export function useAuth() {
     try {
       const verifier = randomToken(48);
       const challenge = await challengeForVerifier(verifier);
-      const stateToken = randomToken(24);
-      storePendingPkce({ verifier, state: stateToken });
+      storePendingPkce({ verifier });
 
       const bridge = getDesktopBridge();
       if (bridge) {
-        const authorizeUrl = buildAuthorizeUrl(config, LOOPBACK_REDIRECT, challenge, stateToken);
+        const authorizeUrl = buildAuthorizeUrl(config, LOOPBACK_REDIRECT, challenge);
         const result = await bridge.auth.startLoopback(authorizeUrl, LOOPBACK_REDIRECT);
         if (!result || result.error) throw new Error(result?.error || 'Sign-in was cancelled.');
         const params = result.params ?? {};
-        const parsed = parseCallbackParams(
-          {
-            code: params.code,
-            state: params.state,
-            error: params.error,
-            error_description: params.error_description
-          },
-          stateToken
-        );
+        const parsed = parseCallbackParams({
+          code: params.code,
+          error: params.error,
+          error_description: params.error_description
+        });
         if (!parsed.ok) throw new Error(parsed.message);
         const session = await exchangeCode(config, parsed.code, verifier);
         await applySession(config, session);
@@ -216,7 +206,7 @@ export function useAuth() {
       }
 
       const redirectTo = `${window.location.origin}${window.location.pathname}`;
-      const authorizeUrl = buildAuthorizeUrl(config, redirectTo, challenge, stateToken);
+      const authorizeUrl = buildAuthorizeUrl(config, redirectTo, challenge);
       window.location.assign(authorizeUrl);
     } catch (error) {
       fail(error instanceof Error ? error.message : 'Sign-in failed.');

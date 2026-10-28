@@ -20,6 +20,7 @@ export interface AuthSession {
 
 export interface CallbackParams {
   code?: string;
+  /** Supabase's own CSRF value; it does not echo the client's state. */
   state?: string;
   error?: string;
   error_description?: string;
@@ -72,29 +73,29 @@ export async function challengeForVerifier(verifier: string): Promise<string> {
   return base64Url(new Uint8Array(digest));
 }
 
-export function buildAuthorizeUrl(config: AuthConfig, redirectTo: string, challenge: string, state: string): string {
+export function buildAuthorizeUrl(config: AuthConfig, redirectTo: string, challenge: string): string {
   const params = new URLSearchParams({
     provider: 'google',
     redirect_to: redirectTo,
     code_challenge: challenge,
-    code_challenge_method: 's256',
-    state
+    code_challenge_method: 's256'
   });
   return `${config.url}/auth/v1/authorize?${params.toString()}`;
 }
 
-export type CallbackResult =
-  | { ok: true; code: string; state: string }
-  | { ok: false; message: string };
+export type CallbackResult = { ok: true; code: string } | { ok: false; message: string };
 
-export function parseCallbackParams(params: CallbackParams, expectedState: string): CallbackResult {
+/**
+ * Supabase replaces a caller-supplied `state` with its own value, so the code is
+ * validated with PKCE instead: only this client holds the verifier, and the
+ * loopback listener exists only for the duration of one sign-in.
+ */
+export function parseCallbackParams(params: CallbackParams): CallbackResult {
   const error = params.error_description || params.error;
   if (error) return { ok: false, message: error.replace(/\+/g, ' ') };
   const code = params.code ?? '';
-  const state = params.state ?? '';
   if (!code) return { ok: false, message: 'Google sign-in did not return a code.' };
-  if (!expectedState || state !== expectedState) return { ok: false, message: 'Sign-in state mismatch. Please try again.' };
-  return { ok: true, code, state };
+  return { ok: true, code };
 }
 
 export function toSession(body: unknown, now = Date.now()): AuthSession | null {

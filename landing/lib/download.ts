@@ -1,4 +1,4 @@
-export const APP_VERSION = '0.0.1'
+export const APP_VERSION = '0.0.2'
 
 export const GITHUB_REPO = 'https://github.com/iamsouravmourya-jpg/ShadRox'
 

@@ -773,7 +773,7 @@ const AUTH_CALLBACK_PATH = '/auth/callback';
 const AUTH_TIMEOUT_MS = 180_000;
 let pendingAuthSignIn = null;
 
-function authCallbackPage(heading) {
+function authCallbackPage(heading, detail) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>ShadRox</title>
 <style>
   body { margin: 0; height: 100vh; display: grid; place-items: center; background: #0b0b0f; color: #ececf1;
@@ -781,7 +781,22 @@ function authCallbackPage(heading) {
   main { text-align: center; padding: 24px; }
   h1 { margin: 0 0 8px; font-size: 20px; font-weight: 600; }
   p { margin: 0; color: #a1a1aa; font-size: 14px; }
-</style></head><body><main><h1>${heading}</h1><p>You can close this tab and return to ShadRox.</p></main></body></html>`;
+</style></head><body><main><h1>${heading}</h1><p>${detail}</p></main></body></html>`;
+}
+
+/** The browser owns the foreground after OAuth, so pull ShadRox back in front. */
+function bringMainWindowForward() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  app.focus({ steal: true });
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isVisible()) mainWindow.show();
+  if (process.platform === 'win32') {
+    mainWindow.setAlwaysOnTop(true);
+    mainWindow.focus();
+    mainWindow.setAlwaysOnTop(false);
+  } else {
+    mainWindow.focus();
+  }
 }
 
 /**
@@ -848,7 +863,13 @@ function registerAuthHandlers() {
         const params = Object.fromEntries(incoming.searchParams.entries());
         const failed = params.error_description || params.error;
         response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        response.end(authCallbackPage(failed ? 'Sign-in was not completed' : 'Signed in'));
+        response.end(
+          authCallbackPage(
+            failed ? 'Sign-in was not completed' : 'Signed in',
+            failed ? 'Return to ShadRox and try again.' : 'ShadRox is opening now. You can close this tab.'
+          )
+        );
+        bringMainWindowForward();
         finish(failed ? { error: String(failed).replace(/\+/g, ' ') } : { params });
       });
       server.on('error', (error) => {
