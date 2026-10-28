@@ -4,11 +4,12 @@ import { useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { Reveal } from './reveal'
 import { cn } from '@/lib/utils'
+import { APP_VERSION } from '@/lib/download'
 
 const faqs = [
   {
     q: 'Can I download ShadRox now?',
-    a: 'Yes. The Download for Windows button installs the latest beta (currently 0.0.1) on Windows 10 or 11, 64-bit. You do not need an account, form, or approval to download the installer. Windows may show a SmartScreen warning because the build is not code-signed yet: choose More and then Run anyway.',
+    a: `Yes. The Download for Windows button installs the latest beta (currently ${APP_VERSION}) on Windows 10 or 11, 64-bit. You do not need an account, form, or approval to download the installer. Windows may show a SmartScreen warning because the build is not code-signed yet: choose More and then Run anyway.`,
   },
   {
     q: 'Do I need a ShadRox account?',

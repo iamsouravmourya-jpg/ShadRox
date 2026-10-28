@@ -32,27 +32,24 @@ test('PKCE challenge matches the RFC 7636 reference vector', async () => {
 });
 
 test('authorize URL carries provider, redirect and PKCE parameters', () => {
-  const url = new URL(buildAuthorizeUrl(config, 'http://127.0.0.1:51789/auth/callback', 'challenge-value', 'state-value'));
+  const url = new URL(buildAuthorizeUrl(config, 'http://127.0.0.1:51789/auth/callback', 'challenge-value'));
   assert.equal(url.origin, 'https://demo.supabase.co');
   assert.equal(url.pathname, '/auth/v1/authorize');
   assert.equal(url.searchParams.get('provider'), 'google');
   assert.equal(url.searchParams.get('redirect_to'), 'http://127.0.0.1:51789/auth/callback');
   assert.equal(url.searchParams.get('code_challenge'), 'challenge-value');
   assert.equal(url.searchParams.get('code_challenge_method'), 's256');
-  assert.equal(url.searchParams.get('state'), 'state-value');
+  assert.equal(url.searchParams.get('state'), null);
 });
 
-test('callback parsing rejects state mismatches and provider errors', () => {
-  assert.deepEqual(parseCallbackParams({ code: 'abc', state: 's1' }, 's1'), { ok: true, code: 'abc', state: 's1' });
+test('callback parsing takes the code even though Supabase supplies its own state', () => {
+  assert.deepEqual(parseCallbackParams({ code: 'abc' }), { ok: true, code: 'abc' });
+  assert.deepEqual(parseCallbackParams({ code: 'abc', state: 'supabase-uuid' }), { ok: true, code: 'abc' });
   assert.match(
-    (parseCallbackParams({ code: 'abc', state: 'other' }, 's1') as { message: string }).message,
-    /state mismatch/i
-  );
-  assert.match(
-    (parseCallbackParams({ error: 'access_denied', error_description: 'User+denied' }, 's1') as { message: string }).message,
+    (parseCallbackParams({ error: 'access_denied', error_description: 'User+denied' }) as { message: string }).message,
     /User denied/
   );
-  assert.match((parseCallbackParams({ state: 's1' }, 's1') as { message: string }).message, /did not return a code/);
+  assert.match((parseCallbackParams({}) as { message: string }).message, /did not return a code/);
 });
 
 test('token responses become a session with user metadata and expiry', () => {

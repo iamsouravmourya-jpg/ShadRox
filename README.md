@@ -10,9 +10,9 @@ The application is built with React, TypeScript, Vite, and Electron. Project fil
 
 Sign-in is compulsory: the installed app does not show the workspace until a session exists. The first screen is a single **Continue with Google** button. Pressing it starts the standard OAuth 2.0 PKCE flow for native apps (RFC 8252):
 
-1. The renderer creates a PKCE verifier and an `state` value, then opens Supabase's `/auth/v1/authorize?provider=google` URL in the system browser through `shell.openExternal`.
+1. The renderer creates a PKCE verifier, then opens Supabase's `/auth/v1/authorize?provider=google` URL in the system browser through `shell.openExternal`.
 2. Electron starts a one-shot HTTP listener on `http://127.0.0.1:51789/auth/callback` before the browser opens.
-3. After Google sign-in, Supabase redirects to that loopback URL with `?code=…&state=…`. The main process checks the path and hands the query to the renderer, which verifies `state`, exchanges the code at `/auth/v1/token?grant_type=pkce`, and closes the listener.
+3. After Google sign-in, Supabase redirects to that loopback URL with `?code=…`. Supabase replaces any client-supplied `state` with its own CSRF value, so the callback is validated by PKCE: only this client holds the verifier. The renderer exchanges the code at `/auth/v1/token?grant_type=pkce`, closes the listener, and the main process brings the ShadRox window back to the foreground.
 4. The session (`shadrox.auth.session`) and the PKCE verifier are written to the OS-encrypted store (`safeStorage`/DPAPI on Windows), never to `localStorage`. Access tokens are refreshed before expiry; signing out revokes the refresh token and clears both keys.
 5. A best-effort profile upsert writes the account row to `public.profiles` with the user's own access token, so RLS (`auth.uid() = id`) applies.
 
@@ -67,7 +67,7 @@ The Windows build is one unsigned NSIS installer, `ShadRox-Setup.exe`. It instal
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-- The first screen blocks the workspace until a session exists. **Continue with Google** opens the system browser and returns through the loopback callback; a failed attempt shows the reason instead of a blank window.
+- The first screen blocks the workspace until a session exists. **Continue with Google** opens the system browser; when the callback arrives, ShadRox brings itself to the front and shows the hub. A failed attempt shows the reason instead of a blank window.
 - The account chip in the hub and workspace titlebar shows the avatar and email; **Sign out** in Settings or the hub clears the encrypted session and returns to this screen.
 - If the build has no `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`, the screen states that sign-in is not configured. That is a build-time problem, not something the user can fix.
 
@@ -198,7 +198,7 @@ The threat model is unusual for a desktop app: ShadRox opens an arbitrary folder
 - **Provider keys are never server-side.** BYOK requests pass the key straight through to the provider for that single call. The Vercel functions do not persist keys, and provider error text is sanitized before it reaches the renderer so a key or an outgoing URL cannot be echoed back.
 - **Shared-key spend is policy-gated — and switched off for the beta.** One module decides which key a request may spend. `SHADROX_ALLOW_SHARED_KEY=1` is the master gate: while it is unset, an unkeyed request is refused *before* the operator key is looked up, so neither the UI nor a hand-crafted `fetch` in devtools can spend it. Turning the gate back on restores the previous policy — the caller's key always wins, and the shared key serves Pro-tier models only. Prompt refinement uses the same gate rather than reading an environment key directly. A best-effort per-IP token bucket limits shared-key requests only — BYOK traffic is never throttled because it costs the operator nothing. The bucket is per warm serverless container and trusts `x-forwarded-for`, so it is a cost brake, not an entitlement system; that still needs accounts.
 - **Sandboxed renderer.** No Node integration, context isolation on, sandbox on, and navigation restricted to the app's own origin.
-- **Sign-in is PKCE and loopback-only.** The desktop OAuth flow uses an S256 PKCE challenge and a random `state`, opens the provider URL in the system browser, and accepts the callback only on `127.0.0.1:51789/auth/callback`. The main process validates the URL shape and rejects a second concurrent sign-in; the renderer refuses a callback whose `state` does not match the stored verifier. Session tokens live in the encrypted store, and the renderer never receives the Google secret or the Supabase service key.
+- **Sign-in is PKCE and loopback-only.** The desktop OAuth flow uses an S256 PKCE challenge, opens the provider URL in the system browser, and accepts the callback only on `127.0.0.1:51789/auth/callback`. The main process validates the URL shape and rejects a second concurrent sign-in. Validation is PKCE-only because Supabase supplies its own `state` and does not echo the client's; the verifier never leaves the app, and the loopback listener exists for one sign-in only. Session tokens live in the encrypted store, and the renderer never receives the Google secret or the Supabase service key.
 - **The profile API cannot read other users.** `public.profiles` has RLS with `auth.uid() = id` on select, insert, and update; the client uses only the public anon key with the signed-in user's access token.
 
 ## Architecture
@@ -318,6 +318,11 @@ The API routes currently mounted by the local server include:
 Shared keys are off by default and gated behind `SHADROX_ALLOW_SHARED_KEY=1` (see **Beta scope**). Their use is not a user authentication system, and this codebase does not currently enforce account entitlements or billing for the UI's plan labels.
 
 ## Release notes
+
+### 0.0.2 — sign-in finishes and brings the app forward
+
+- **No more "state mismatch".** Supabase replaces a client-supplied OAuth `state` with its own value, so the callback comparison could never match. The callback is now validated by PKCE only: the verifier stays in the app, and the loopback listener exists for a single sign-in. Signing in now completes and opens the hub.
+- **ShadRox pulls itself to the front.** As soon as the loopback callback arrives, the main process restores, shows, and focuses the app window; the browser tab says "ShadRox is opening now" and can be closed.
 
 ### 0.0.1 — accounts, Google sign-in, direct download
 
