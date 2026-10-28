@@ -471,9 +471,21 @@ export function ChatPanel({
                               )}
                               {patch.status === 'applied' && (
                                 <>
-                                  <span className="flex items-center gap-1 text-emerald-400">
+                                  <span
+                                    className={
+                                      patch.disk === 'saved'
+                                        ? 'flex items-center gap-1 text-emerald-400'
+                                        : 'flex items-center gap-1 text-amber-400'
+                                    }
+                                    title={
+                                      patch.disk === 'saved'
+                                        ? 'Written to your file on disk'
+                                        : patch.diskMessage ||
+                                          'Saved in the editor buffer — not yet written to disk'
+                                    }
+                                  >
                                     <Check className="w-3 h-3" />
-                                    Applied
+                                    {patch.disk === 'saved' ? 'Saved to disk' : 'Applied in editor'}
                                   </span>
                                   <button
                                     type="button"
@@ -486,7 +498,9 @@ export function ChatPanel({
                                 </>
                               )}
                               {patch.status === 'reverted' && (
-                                <span className="text-neutral-500">Reverted</span>
+                                <span className="text-neutral-500">
+                                  {patch.disk === 'saved' ? 'Reverted on disk' : 'Reverted in editor'}
+                                </span>
                               )}
                               {patch.status === 'rejected' && <span className="text-neutral-500">Skipped</span>}
                               {patch.status === 'failed' && (

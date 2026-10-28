@@ -112,3 +112,84 @@ test('upstream fetch retries a retryable status before streaming', async () => {
   assert.equal(calls, 2);
   assert.equal(deltas.join(''), 'ok');
 });
+
+/** A Groq free-tier rejection carries the violated limit in its message. */
+function groqLimitResponse(message: string): Response {
+  return new Response(JSON.stringify({ error: { message } }), {
+    status: 429,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+/** Responses are factories: a Response body can only be read once. */
+function captureGroqBodies(responses: Array<() => Response>): Array<Record<string, any>> {
+  const bodies: Array<Record<string, any>> = [];
+  let call = 0;
+  globalThis.fetch = (async (_url: unknown, init?: unknown) => {
+    bodies.push(JSON.parse(String((init as { body?: unknown })?.body ?? '{}')));
+    const make = responses[Math.min(call, responses.length - 1)];
+    call += 1;
+    return make();
+  }) as typeof fetch;
+  return bodies;
+}
+
+test('groq retries an OTPM rejection with an output ceiling the key allows', async () => {
+  const bodies = captureGroqBodies([
+    () =>
+      groqLimitResponse(
+        'Request too large for model `qwen/qwen3.8-27b` in organization org_x. OTPM: Limit 1000, Requested 2048'
+      ),
+    () => sseResponse([
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',
+      'data: [DONE]\n\n'
+    ])
+  ]);
+
+  const { deltas, sink } = collectors();
+  await streamGroq(request(), sink);
+
+  assert.equal(deltas.join(''), 'ok');
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0].max_tokens, undefined);
+  assert.ok(bodies[1].max_tokens <= 1000, `expected <=1000, got ${bodies[1].max_tokens}`);
+});
+
+test('groq retries a TPM rejection with a trimmed prompt', async () => {
+  const long = 'x'.repeat(12_000);
+  const bodies = captureGroqBodies([
+    () =>
+      groqLimitResponse(
+        'Request too large for model `qwen/qwen3.8-27b`. TPM: Limit 2000, Requested 6837'
+      ),
+    () => sseResponse([
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',
+      'data: [DONE]\n\n'
+    ])
+  ]);
+
+  const { deltas, sink } = collectors();
+  await streamGroq(
+    request({ messages: [{ role: 'user', content: `${long} final question` }] }),
+    sink
+  );
+
+  assert.equal(deltas.join(''), 'ok');
+  assert.equal(bodies.length, 2);
+  const firstChars = String(bodies[0].messages[0].content).length;
+  const secondChars = String(bodies[1].messages[0].content).length;
+  assert.ok(secondChars < firstChars, 'retry must send a smaller prompt');
+  assert.ok(secondChars <= 2000 * 4, `prompt still over the TPM budget: ${secondChars}`);
+  assert.ok(String(bodies[1].messages[0].content).endsWith('final question'));
+});
+
+test('groq reports an actionable message when the limit is still too small', async () => {
+  captureGroqBodies([
+    () => groqLimitResponse('Request too large for model `qwen/qwen3.8-27b`. TPM: Limit 2000, Requested 6837')
+  ]);
+
+  await assert.rejects(
+    () => streamGroq(request(), collectors().sink),
+    (error: Error) => /higher limit/.test(error.message) && /test-model/.test(error.message)
+  );
+});

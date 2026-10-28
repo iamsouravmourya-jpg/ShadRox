@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   applySearchReplaceBlocks,
+  assessRewriteRisk,
   extractUnifiedPatches,
   findBlockRange,
   formatApplyFailure,
@@ -281,4 +282,26 @@ test('an empty ORIGINAL never inserts at position zero', () => {
   const result = applySearchReplaceBlocks('const a = 1;\n', [{ original: '', updated: 'INJECTED' }]);
   assert.equal(result.content, 'const a = 1;\n');
   assert.equal(result.failures[0].reason, 'not-found');
+});
+
+// --- rewrite guard ---------------------------------------------------------
+
+test('a fragment rewrite of an existing file is refused', () => {
+  const original = Array.from({ length: 40 }, (_, index) => `<div class="row-${index}"></div>`).join('\n');
+  const warning = assessRewriteRisk('form.html', '<div>new</div>\n<script>submit()</script>', original);
+
+  assert.ok(warning, 'expected the guard to refuse a 2-line replacement for a 40-line file');
+  assert.match(warning!, /form\.html/);
+  assert.match(warning!, /2-line replacement for a 40-line file/);
+});
+
+test('a rewrite that keeps most of the file is allowed', () => {
+  const original = Array.from({ length: 20 }, (_, index) => `const value${index} = ${index};`).join('\n');
+  const updated = original.replace('const value3 = 3;', 'const value3 = 33;');
+  assert.equal(assessRewriteRisk('app.ts', updated, original), null);
+});
+
+test('rewrites of new or small files are never blocked', () => {
+  assert.equal(assessRewriteRisk('app.ts', 'const a = 1;', undefined), null);
+  assert.equal(assessRewriteRisk('app.ts', 'let a = 1;\nlet b = 2;', 'let a;\nlet b;'), null);
 });

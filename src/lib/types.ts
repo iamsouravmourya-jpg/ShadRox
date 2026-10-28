@@ -71,6 +71,12 @@ export interface ReviewPatch {
   failure?: string;
   /** File content captured before applying, so the change can be undone. */
   originalContent?: string;
+  /** Workspace-canonical name the buffer write landed on (patch paths may differ in case). */
+  landed?: string;
+  /** Whether the change reached the user's disk — the UI must not claim it did when it did not. */
+  disk?: 'saved' | 'buffer' | 'failed';
+  /** Why the disk write failed or was skipped. */
+  diskMessage?: string;
 }
 
 /** All file changes one assistant reply proposed, reviewed as one set. */
