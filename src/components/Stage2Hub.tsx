@@ -1,4 +1,4 @@
-import { Clock, FileCode, FolderOpen, KeyRound, X } from 'lucide-react';
+import { Clock, FileCode, FolderOpen, KeyRound, LogOut, X } from 'lucide-react';
 import type { RecentEntry } from '../lib/types';
 
 interface Stage2HubProps {
@@ -12,6 +12,8 @@ interface Stage2HubProps {
   onDroppedFiles: (files: FileList) => void;
   onReopen: (entry: RecentEntry) => void;
   onRemoveRecent: (id: string) => void;
+  account: { email: string; avatarUrl: string } | null;
+  onSignOut: () => void;
 }
 
 function formatRelativeTime(timestamp: number): string {
@@ -66,6 +68,8 @@ export function Stage2Hub({
   onDroppedFiles,
   onReopen,
   onRemoveRecent,
+  account,
+  onSignOut,
 }: Stage2HubProps) {
   return (
     <div
@@ -115,19 +119,48 @@ export function Stage2Hub({
       >
         <ShadRoxWordmark />
 
-        <div
-          className="flex items-center gap-2 rounded-full px-3 py-1.5 text-[11px] text-zinc-400"
-          style={{
-            border: '1px solid rgb(255 255 255 / .1)',
-            background: 'rgb(255 255 255 / .03)',
-            backdropFilter: 'blur(12px)',
-          }}
-        >
-          <span
-            className="inline-block w-1.5 h-1.5 rounded-full bg-violet-300"
-            style={{ boxShadow: '0 0 6px #c4b5fd' }}
-          />
-          Local — runs on this device
+        <div className="flex items-center gap-2">
+          <div
+            className="hidden md:flex items-center gap-2 rounded-full px-3 py-1.5 text-[11px] text-zinc-400"
+            style={{
+              border: '1px solid rgb(255 255 255 / .1)',
+              background: 'rgb(255 255 255 / .03)',
+              backdropFilter: 'blur(12px)',
+            }}
+          >
+            <span
+              className="inline-block w-1.5 h-1.5 rounded-full bg-violet-300"
+              style={{ boxShadow: '0 0 6px #c4b5fd' }}
+            />
+            Local — runs on this device
+          </div>
+
+          {account && (
+            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] py-1 pl-1 pr-1.5">
+              {account.avatarUrl ? (
+                <img
+                  src={account.avatarUrl}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  className="h-6 w-6 rounded-full object-cover"
+                />
+              ) : (
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-violet-500/15 text-[10px] font-semibold text-violet-300">
+                  {account.email.slice(0, 1).toUpperCase()}
+                </span>
+              )}
+              <span className="max-w-[170px] truncate text-[11px] text-zinc-300">{account.email}</span>
+              <button
+                type="button"
+                onClick={onSignOut}
+                title="Sign out"
+                aria-label="Sign out"
+                className="rounded-full p-1 text-zinc-500 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
         </div>
       </header>
 

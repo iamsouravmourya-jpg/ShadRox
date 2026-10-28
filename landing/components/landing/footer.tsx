@@ -13,7 +13,7 @@ export function Footer() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-5">
-          <a href="#beta" className="transition hover:text-zinc-300">Join the beta</a>
+          <a href="#download" className="transition hover:text-zinc-300">Download</a>
           <a href="#privacy" className="transition hover:text-zinc-300">Privacy &amp; data flow</a>
           <a href="#faq" className="transition hover:text-zinc-300">FAQ</a>
         </div>

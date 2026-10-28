@@ -1,6 +1,7 @@
 'use client'
 
-import { ArrowRight, Download, Mail } from 'lucide-react'
+import { ArrowUpRight, Download } from 'lucide-react'
+import { APP_VERSION, RELEASES_URL, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import { Reveal } from './reveal'
 
 export function BetaCta() {
@@ -14,32 +15,33 @@ export function BetaCta() {
               <Download className="size-5" />
             </div>
             <h2 className="text-3xl font-semibold tracking-[-0.04em] text-white sm:text-4xl">
-              The Windows installer is coming soon.
+              Download ShadRox for Windows.
             </h2>
-            <p className="mx-auto mt-4 max-w-md text-sm leading-6 text-zinc-400">
-              This is a preview button—not a live download. We are preparing the beta installer and
-              will share it with testers when it is ready.
+            <p className="mx-auto mt-4 max-w-lg text-sm leading-6 text-zinc-400">
+              Version {APP_VERSION} for Windows 10 or 11 (64-bit). The installer is free to download.
+              On first launch the app asks you to sign in with Google, then you connect your own
+              Gemini or Groq key.
             </p>
             <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <button
-                type="button"
-                disabled
-                className="inline-flex cursor-not-allowed items-center gap-2 rounded-full border border-white/10 bg-white/[.06] px-6 py-3 text-sm font-semibold text-zinc-500"
+              <a
+                href={WINDOWS_DOWNLOAD_URL}
+                className="inline-flex items-center gap-2 rounded-full bg-violet-300 px-6 py-3 text-sm font-semibold text-[#16121f] shadow-[0_0_30px_rgba(196,181,253,.18)] transition hover:bg-violet-200"
               >
                 <Download className="size-4" />
                 Download for Windows
-                <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wide">Coming soon</span>
-              </button>
+              </a>
               <a
-                href="mailto:hello@shadrox.app?subject=ShadRox%20beta%20access&body=Hi%2C%20I%27d%20like%20to%20request%20access%20to%20the%20ShadRox%20beta."
-                className="group inline-flex items-center rounded-full bg-white px-6 py-3 text-sm font-semibold text-black transition hover:bg-violet-100"
+                href={RELEASES_URL}
+                className="group inline-flex items-center rounded-full border border-white/15 px-6 py-3 text-sm font-semibold text-zinc-200 transition hover:border-white/30 hover:text-white"
               >
-                <Mail className="mr-2 size-4" />
-                Request beta access
-                <ArrowRight className="ml-1.5 size-4 transition-transform group-hover:translate-x-0.5" />
+                All releases
+                <ArrowUpRight className="ml-1.5 size-4 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
               </a>
             </div>
-            <p className="mt-4 text-xs text-zinc-500">Beta requests open an email draft. There is no online signup form yet.</p>
+            <p className="mt-4 text-xs text-zinc-500">
+              Windows may warn about an unsigned installer. More → Run anyway. New versions
+              download and install automatically.
+            </p>
           </div>
         </div>
       </Reveal>

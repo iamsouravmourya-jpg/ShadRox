@@ -9,6 +9,8 @@ import { QuickOpen } from './components/QuickOpen';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { useWorkspace } from './hooks/useWorkspace';
 import { useByok } from './hooks/useByok';
+import { useAuth } from './hooks/useAuth';
+import { AuthScreen } from './components/AuthScreen';
 import { usePreviewSync } from './hooks/usePreviewSync';
 import { getRefineMode, refinePrompt, streamChat, type ChatTurn, type RefineModeMeta } from './lib/ai';
 import { bundleDocument, bundleProject, canBundle, describeBundleError } from './lib/bundler';
@@ -84,6 +86,7 @@ export default function App() {
 
   const workspace = useWorkspace();
   const byok = useByok();
+  const auth = useAuth();
   const files = workspace.files;
   const assets = workspace.assets;
 
@@ -1418,6 +1421,17 @@ export default function App() {
 
   const hasKey = Boolean(byok.activeKey) || byok.useShadRoxKey;
 
+  if (auth.status !== 'signed-in') {
+    return (
+      <AuthScreen
+        status={auth.status}
+        busy={auth.busy}
+        error={auth.error}
+        onSignIn={() => void auth.signIn()}
+      />
+    );
+  }
+
   const settingsDrawer = (
     <SettingsDrawer
       isOpen={isSettingsOpen}
@@ -1445,6 +1459,12 @@ export default function App() {
       workspaceFiles={workspace.files}
       onGenerateCommitMessage={() => handleGenerateCommitMessage()}
       isWritingCommitMessage={isWritingCommitMessage}
+      accountEmail={auth.user?.email ?? null}
+      accountAvatarUrl={auth.user?.avatarUrl ?? null}
+      onSignOut={() => {
+        setIsSettingsOpen(false);
+        void auth.signOut();
+      }}
     />
   );
 
@@ -1462,6 +1482,8 @@ export default function App() {
           onDroppedFiles={workspace.openDropped}
           onReopen={handleReopenRecent}
           onRemoveRecent={workspace.removeRecent}
+          account={auth.user ? { email: auth.user.email, avatarUrl: auth.user.avatarUrl } : null}
+          onSignOut={() => void auth.signOut()}
         />
         {settingsDrawer}
       </>

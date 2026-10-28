@@ -22,13 +22,13 @@ export function Privacy() {
                 or Groq provider you selected.
               </p>
               <p className="mt-5 text-zinc-300">
-                You can use your own provider key. In the current beta, keys entered in the app are
-                stored in local browser storage on your device. ShadRox does not yet offer accounts or
-                cloud project sync.
+                You can use your own provider key. Keys entered in the app stay on your device in an
+                encrypted local store and are never sent to ShadRox. Signing in with Google creates a
+                ShadRox account that holds only your email, name, avatar URL, app version, and
+                platform. Project files stay on your disk.
               </p>
               <div className="mt-6 flex items-center gap-2 border-t border-white/8 pt-5 text-xs font-medium text-violet-200">
-                <Check className="size-4" /> Local files. Provider-powered AI. No ShadRox account
-                required.
+                <Check className="size-4" /> Local files. Provider-powered AI. Minimum account data.
               </div>
             </div>
           </div>
@@ -48,7 +48,7 @@ export function Privacy() {
                 </div>
                 <p className="text-xs font-medium text-zinc-200">Your computer</p>
                 <p className="flex items-center gap-1 text-[10px] text-zinc-500">
-                  <KeyRound className="size-3" /> provider key, local storage
+                  <KeyRound className="size-3" /> key encrypted on device
                 </p>
               </div>
 
@@ -88,7 +88,7 @@ export function Privacy() {
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 size-3.5 shrink-0 text-emerald-300" />
-                No ShadRox cloud sync or account in the current beta.
+                Signing in stores only your email, name, and basic app info.
               </li>
             </ul>
           </div>

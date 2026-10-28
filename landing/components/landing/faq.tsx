@@ -8,27 +8,31 @@ import { cn } from '@/lib/utils'
 const faqs = [
   {
     q: 'Can I download ShadRox now?',
-    a: 'Not yet. The Windows installer button on this page is a non-functional preview. We are preparing the beta build and will share it when it is ready.',
+    a: 'Yes. The Download for Windows button installs the latest beta (currently 0.0.1) on Windows 10 or 11, 64-bit. You do not need an account, form, or approval to download the installer. Windows may show a SmartScreen warning because the build is not code-signed yet: choose More and then Run anyway.',
   },
   {
-    q: 'How do I request beta access?',
-    a: 'Use the beta request button to open an email draft. There is no online signup form or automated waitlist yet.',
+    q: 'Do I need a ShadRox account?',
+    a: 'Yes. On first launch the app asks you to continue with Google. It opens your browser, you pick a Google account, and the app receives a session in return. ShadRox stores only your account row: email, name, avatar URL, app version, and platform. There is no password to create and no subscription.',
+  },
+  {
+    q: 'How do updates work?',
+    a: 'The app checks for a newer release when it starts and downloads it in the background. The update installs when you restart or quit the app, so testers never have to re-download the installer. The download link on this page always points at the latest release.',
   },
   {
     q: 'Does ShadRox store my project in the cloud?',
-    a: 'The desktop workspace opens and edits project files locally. There is no ShadRox cloud project sync today. AI requests send the prompt and the included project context to the selected AI provider.',
+    a: 'No. The desktop workspace opens and edits project files on your computer. There is no ShadRox cloud project sync. When you ask the AI for help, the prompt and the project context you include are sent to the Gemini or Groq provider you selected.',
+  },
+  {
+    q: 'Where is my AI provider key stored?',
+    a: 'Your Gemini or Groq key is saved only on your device in an encrypted local store, and requests go from your machine to the provider. ShadRox servers never receive your provider key. Your provider may charge for usage.',
   },
   {
     q: 'Which AI providers are supported?',
-    a: 'The current app supports Gemini and Groq. You provide your own provider key, and your provider may charge for usage. Prompts and the code context you include are sent to that provider.',
+    a: 'The current app supports Gemini and Groq with your own key. Model availability and limits depend on your provider account.',
   },
   {
     q: 'Can I preview any project?',
     a: 'Static sites and supported Node-based web projects are the current focus. Other backend runtimes are not supported yet, and some sites may block embedded previews.',
-  },
-  {
-    q: 'Do I need an account or subscription?',
-    a: 'No ShadRox account or subscription is required for the beta. AI features need your own Gemini or Groq provider key, and provider usage may cost extra.',
   },
 ]
 

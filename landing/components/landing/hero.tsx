@@ -1,6 +1,7 @@
 'use client'
 
 import { Check, Download } from 'lucide-react'
+import { APP_VERSION, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import { Reveal } from './reveal'
 import { WorkspaceMockup } from './workspace-mockup'
 
@@ -18,7 +19,7 @@ export function Hero() {
               <span className="absolute inline-flex size-full animate-ping rounded-full bg-violet-300/70" />
               <span className="relative inline-flex size-1.5 rounded-full bg-violet-300 shadow-[0_0_10px_#c4b5fd]" />
             </span>
-            Desktop beta · Windows installer coming soon
+            Desktop beta · Windows · v{APP_VERSION}
           </div>
         </Reveal>
 
@@ -40,23 +41,24 @@ export function Hero() {
         <Reveal delay={240}>
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <a
-              href="#download"
+              href={WINDOWS_DOWNLOAD_URL}
               className="group relative w-full overflow-hidden rounded-full bg-violet-300 px-6 py-3 text-sm font-semibold text-[#16121f] shadow-[0_0_30px_rgba(196,181,253,.18)] transition hover:bg-violet-200 sm:w-auto"
             >
               <span className="relative z-10 flex items-center justify-center">
                 <Download className="mr-2 size-4" />
                 Download for Windows
-                <span className="ml-2 rounded-full bg-black/10 px-2 py-0.5 text-[10px] uppercase tracking-wide">Soon</span>
               </span>
             </a>
             <a
-              href="#beta"
+              href="#flow"
               className="w-full rounded-full border border-white/15 px-6 py-3 text-sm font-medium text-zinc-300 transition hover:border-white/30 hover:text-white sm:w-auto"
             >
-              Request beta access
+              See how it works
             </a>
           </div>
-          <p className="mt-4 text-xs text-zinc-600">The installer is not available yet. Join the beta to follow progress.</p>
+          <p className="mt-4 text-xs text-zinc-600">
+            Windows 10 or 11 (64-bit) · Google sign-in at first launch · Updates install automatically.
+          </p>
         </Reveal>
       </div>
 
@@ -66,11 +68,11 @@ export function Hero() {
         <div className="absolute -bottom-4 left-1/2 hidden -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-[#11131a]/90 px-4 py-2 text-[10px] text-zinc-400 shadow-xl backdrop-blur sm:flex">
           <Check className="size-3 text-emerald-300" /> Local files
           <span className="text-zinc-700">•</span> Provider-powered AI
-          <span className="text-zinc-700">•</span> No account required
+          <span className="text-zinc-700">•</span> Google sign-in
         </div>
       </Reveal>
       <p className="mt-8 text-center text-xs text-zinc-600">
-        Product concept preview · Features and availability may change during beta.
+        Beta software · Features and availability may change.
       </p>
     </section>
   )
