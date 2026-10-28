@@ -36,7 +36,7 @@ function limitHint(model: string, limits: GroqLimits): string {
   if (limits.tokensPerMinute) parts.push(`${limits.tokensPerMinute} prompt tokens/min (TPM)`);
   if (limits.outputTokensPerMinute) parts.push(`${limits.outputTokensPerMinute} output tokens/min (OTPM)`);
   return parts.length
-    ? `Groq model \`${model}\` only allows ${parts.join(' and ')} on your key, which is too small for this request — even after shrinking it. Pick a model with a higher limit (for example \`llama-3.3-70b-versatile\` or \`gpt-oss-120b\`), or start a new chat so the history stops growing.`
+    ? `Groq model \`${model}\` only allows ${parts.join(' and ')} on your key, which is too small for this request — even after shrinking it. Pick a different model with a higher limit from the list (availability and limits are per key), or start a new chat so the history stops growing.`
     : `Groq rejected the request for \`${model}\` — its rate limit on your key is too small for this prompt. Try a model with a higher limit, or start a new chat.`;
 }
 
