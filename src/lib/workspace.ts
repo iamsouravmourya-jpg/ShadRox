@@ -21,6 +21,8 @@ export interface MountedDirectory {
   assets: AssetMap;
   /** Folder mounts keep the directory handle so new files can be created on disk. */
   directoryHandle?: any;
+  /** False when the user declined write access at folder-open time. */
+  writeGranted: boolean;
 }
 
 export interface PickedFiles {
@@ -106,18 +108,39 @@ export async function hydrateAssets(handles: HandleEntry[]): Promise<AssetMap> {
   return assets;
 }
 
+/**
+ * Ask for write access once, inside the gesture that opened the folder, so no
+ * later save interrupts the user. A stored handle is not a grant: after a
+ * reload this is the call that turns the folder back into a writable workspace,
+ * which is why reopened workspaces run it too.
+ */
+export async function ensureReadWrite(handle: any): Promise<boolean> {
+  if (!handle) return false;
+  const descriptor = { mode: 'readwrite' as const };
+  try {
+    if (typeof handle.queryPermission !== 'function') return true;
+    if ((await handle.queryPermission(descriptor)) === 'granted') return true;
+    if (typeof handle.requestPermission !== 'function') return false;
+    return (await handle.requestPermission(descriptor)) === 'granted';
+  } catch {
+    return false;
+  }
+}
+
 /** Opens the native folder picker. Returns null when the user cancels. */
 export async function pickDirectory(): Promise<MountedDirectory | null> {
   if (!supportsDirectoryPicker()) return null;
   // Asking for readwrite up front means later saves need one fewer prompt.
   const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' });
+  const writeGranted = await ensureReadWrite(handle);
   const scan = await readDirectoryRecursive(handle);
   return {
     name: handle.name,
     files: scan.files,
     handles: scan.handles,
     assets: scan.assets,
-    directoryHandle: handle
+    directoryHandle: handle,
+    writeGranted
   };
 }
 

@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AssetMap } from '../lib/assets';
 import { detectLanguage } from '../lib/languages';
 import type { FilePatch } from '../lib/markdown';
-import { loadHandles, pruneHandles, saveHandles } from '../lib/fileHandles';
+import { loadHandleRecord, pruneHandles, saveHandles } from '../lib/fileHandles';
 import { listCheckpoints, loadCheckpointFiles, saveCheckpoint, type CheckpointMeta } from '../lib/history';
 import { getSnapshot, pruneSnapshots, saveSnapshot } from '../lib/snapshots';
 import { getRecentWorkspaces, pushRecentWorkspace, removeRecentWorkspace } from '../lib/storage';
 import { getDesktopBridge, type DirectoryPage, type StagedTransaction, type WorkspaceChange } from '../lib/desktop';
 import {
+  ensureReadWrite,
   filesFromFileList,
   hydrateAssets,
   pickDirectory,
@@ -23,6 +24,14 @@ export interface ApplyPatchesResult {
   updated: string[];
   created: string[];
   unchanged: string[];
+}
+
+/** The honest result of a disk write-back: buffers are not files. */
+export interface SaveOutcome {
+  written: number;
+  failed: boolean;
+  /** Provider/best-effort reason when nothing was written. */
+  message: string | null;
 }
 
 interface MountOptions {
@@ -92,6 +101,12 @@ interface UseWorkspaceResult {
   autoSave: boolean;
   setAutoSave: (value: boolean) => void;
   saveAll: () => Promise<void>;
+  /**
+   * Writes the named files through to disk and reports what actually landed.
+   * The chat apply path needs the outcome: "applied" in the editor is not
+   * "saved", and the user must never be told a file changed when it did not.
+   */
+  saveFiles: (names: string[]) => Promise<SaveOutcome>;
 
   // --- restore timeline ----------------------------------------------------
   checkpoints: CheckpointMeta[];
@@ -210,7 +225,7 @@ export function useWorkspace(): UseWorkspaceResult {
         filePaths: options.filePaths
       }));
       void saveSnapshot({ path, name, kind, files: nextFiles });
-      if (handles.length > 0) void saveHandles(path, handles);
+      if (handles.length > 0 || options.directoryHandle) void saveHandles(path, handles, options.directoryHandle);
       void refreshCheckpoints(path);
     },
     [refreshCheckpoints]
@@ -251,6 +266,11 @@ export function useWorkspace(): UseWorkspaceResult {
       if (directory.files.length === 0) {
         setStatusMessage('No readable code files found in selected folder.');
         return;
+      }
+      if (!directory.writeGranted) {
+        setStatusMessage(
+          'Opened read-only — write access was declined, so ShadRox cannot save your files. Re-open the folder and allow editing.'
+        );
       }
       mount(directory.name, directory.name, 'folder', directory.files, {
         handles: directory.handles,
@@ -384,13 +404,22 @@ export function useWorkspace(): UseWorkspaceResult {
         const snapshot = await getSnapshot(entry.path);
         if (snapshot && snapshot.files.length > 0) {
           // Handles live in their own store, so a reopened workspace can still
-          // write to disk once the browser re-grants permission — and its
-          // images can be read back into the preview.
-          const handles = await loadHandles(entry.path);
+          // write to disk — and its images can be read back into the preview.
+          // Write access is asked for here, on the click that reopens the
+          // folder, so it is one prompt at open instead of one per save.
+          const stored = await loadHandleRecord(entry.path);
+          let writeGranted = true;
+          if (stored.directoryHandle) writeGranted = await ensureReadWrite(stored.directoryHandle);
           mount(snapshot.name, snapshot.path, snapshot.kind, snapshot.files, {
-            handles,
-            assets: await hydrateAssets(handles)
+            handles: stored.entries,
+            directoryHandle: stored.directoryHandle,
+            assets: await hydrateAssets(stored.entries)
           });
+          if (!writeGranted) {
+            setStatusMessage(
+              'Reopened read-only — the browser did not grant write access, so saves will not reach disk.'
+            );
+          }
           return;
         }
         // Entries saved before snapshots existed can only be restored by picking again.
@@ -628,31 +657,17 @@ export function useWorkspace(): UseWorkspaceResult {
   }, []);
 
   /**
-   * `requestPermission` only works inside a user gesture, so this can succeed
-   * from the Save button and fail silently from a debounced auto-save.
+   * Permission is normally already granted at folder-open time. `requestPermission`
+   * only works inside a user gesture, so a debounced auto-save that finds the
+   * grant expired cannot prompt — it reports the problem instead of blocking.
    */
-  const ensureWritePermission = useCallback(async (handle: any): Promise<boolean> => {
-    const descriptor = { mode: 'readwrite' as const };
-    try {
-      if (typeof handle.queryPermission === 'function' && (await handle.queryPermission(descriptor)) === 'granted') {
-        return true;
-      }
-      if (typeof handle.requestPermission === 'function' && (await handle.requestPermission(descriptor)) === 'granted') {
-        return true;
-      }
-    } catch (error) {
-      console.warn('[shadrox] write permission check failed', error);
-    }
-    return false;
-  }, []);
-
   const writeOne = useCallback(
     async (file: WorkspaceFile): Promise<boolean> => {
       const handle = await resolveHandle(file.name);
       if (!handle) return false;
 
-      if (!(await ensureWritePermission(handle))) {
-        setDiskMessage('Write permission denied by browser. Click "Save to disk" to grant write access.');
+      if (!(await ensureReadWrite(handle))) {
+        setDiskMessage('Write access expired for this folder. Re-open it from the hub to grant it again.');
         return false;
       }
 
@@ -662,15 +677,20 @@ export function useWorkspace(): UseWorkspaceResult {
       setDiskBaseline((previous) => ({ ...previous, [file.name]: file.content }));
       return true;
     },
-    [resolveHandle, ensureWritePermission]
+    [resolveHandle]
   );
 
   const saveFilesToDisk = useCallback(
-    async (names: string[]): Promise<void> => {
-      if (!canWriteRef.current || names.length === 0 || savingRef.current) return;
+    async (names: string[]): Promise<SaveOutcome> => {
+      const skipped = (message: string | null): SaveOutcome => ({ written: 0, failed: true, message });
+      if (!canWriteRef.current) {
+        return skipped('This workspace has no writable files, so nothing could be saved.');
+      }
+      if (names.length === 0) return { written: 0, failed: false, message: null };
+      if (savingRef.current) return skipped('A save is already running — try again in a moment.');
       if (names.some((name) => conflictRef.current.includes(name))) {
         setDiskMessage('Resolve external file changes before saving. No files were written.');
-        return;
+        return skipped('Resolve the external file changes first — no files were written.');
       }
       savingRef.current = true;
       setIsSaving(true);
@@ -688,28 +708,31 @@ export function useWorkspace(): UseWorkspaceResult {
           const result = await desktop.saveFiles(nativeWorkspaceId, requested.map((file) => ({
             name: file.name, content: file.content, expectedVersion: file.version ?? null
           })));
-          if (desktopWorkspaceIdRef.current !== nativeWorkspaceId) return;
-          const savedFiles = new Set(result.saved);
+          if (desktopWorkspaceIdRef.current !== nativeWorkspaceId) {
+            return skipped('The workspace changed while saving — no confirmation available.');
+          }
           written = result.saved.length;
           failed = result.errors.length > 0;
+          const savedFiles = new Set(result.saved);
           if (savedFiles.size > 0) {
             const saved = snapshot.filter((file) => savedFiles.has(file.name));
             const versions = new Map(await Promise.all(saved.map(async (file) => [file.name, await contentVersion(file.content)] as const)));
-            if (desktopWorkspaceIdRef.current !== nativeWorkspaceId) return;
+            if (desktopWorkspaceIdRef.current !== nativeWorkspaceId) {
+              return { written, failed: true, message: 'The workspace changed while saving.' };
+            }
             baselineRef.current = { ...baselineRef.current, ...Object.fromEntries(saved.map((file) => [file.name, file.content])) };
             setDiskBaseline(baselineRef.current);
             setWorkspace((previous) => previous ? { ...previous, files: previous.files.map((file) => versions.has(file.name) ? { ...file, version: versions.get(file.name) } : file) } : previous);
           }
+          const errorText = result.errors
+            .map((error) => `${error.name || 'File'}: ${error.message}`)
+            .join(' ');
           if (result.errors.length > 0) {
-            setDiskMessage(
-              `${written} file${written === 1 ? '' : 's'} saved. ${result.errors
-                .map((error) => `${error.name || 'File'}: ${error.message}`)
-                .join(' ')}`
-            );
+            setDiskMessage(`${written} file${written === 1 ? '' : 's'} saved. ${errorText}`);
           } else if (written > 0) {
             setDiskMessage(`${written} file${written > 1 ? 's' : ''} saved to disk.`);
           }
-          return;
+          return { written, failed, message: result.errors.length ? errorText : null };
         }
 
         for (const name of names) {
@@ -721,11 +744,14 @@ export function useWorkspace(): UseWorkspaceResult {
         if (written > 0) setDiskMessage(`${written} file${written > 1 ? 's' : ''} saved to disk.`);
         else if (failed) setDiskMessage('Save failed — missing file handle or permission.');
       } catch (error) {
-        setDiskMessage(error instanceof Error ? `Save failed: ${error.message}` : 'Save failed.');
+        const message = error instanceof Error ? `Save failed: ${error.message}` : 'Save failed.';
+        setDiskMessage(message);
+        return { written: 0, failed: true, message };
       } finally {
         savingRef.current = false;
         setIsSaving(false);
       }
+      return { written, failed, message: failed && written === 0 ? 'Save failed — missing file handle or permission.' : null };
     },
     [writeOne]
   );
@@ -1050,6 +1076,7 @@ export function useWorkspace(): UseWorkspaceResult {
       autoSave,
       setAutoSave,
       saveAll,
+      saveFiles: saveFilesToDisk,
       checkpoints,
       markCheckpoint,
       restoreCheckpoint
@@ -1095,6 +1122,7 @@ export function useWorkspace(): UseWorkspaceResult {
       diskMessage,
       autoSave,
       saveAll,
+      saveFilesToDisk,
       checkpoints,
       markCheckpoint,
       restoreCheckpoint

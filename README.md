@@ -4,7 +4,7 @@ ShadRox is a desktop coding workspace for opening a local project, browsing and 
 
 The application is built with React, TypeScript, Vite, and Electron. Project files are opened from the user's computer and the desktop app writes accepted edits back to that folder. AI chat is optional and requires a Gemini or Groq provider key that the user brings (BYOK). The shared operator key exists in the code but is switched off for the beta; see **Beta scope**.
 
-> **Project status:** ShadRox is an early beta/development project. The local development app and core workflows have been exercised, but a distributable installer has not yet been verified end-to-end for release. There is no ShadRox account system, Supabase integration, or billing enforcement today. Do not treat the plan labels in the UI as active subscriptions.
+> **Project status:** ShadRox is an early beta/development project. The Windows installer (0.3.8) is built from this repository and installed on tester machines; the app updates itself from GitHub Releases from the next release onward. There is no ShadRox account system, Supabase integration, or billing enforcement today. Do not treat the plan labels in the UI as active subscriptions.
 
 ## Beta landing page
 
@@ -18,6 +18,74 @@ npm run dev:landing
 The landing page opens at `http://localhost:3001`; the existing desktop-app development server continues to use port `3000`. The Windows download button is intentionally disabled and labeled as coming soon until an installer is ready. The beta request button opens an email draft; there is no hosted waitlist yet.
 
 Vercel deploys the static export from `landing/out` using the root `vercel.json`, while keeping the existing `api/` functions available. Keep the Vercel project connected to this repository's `main` branch and use the repository root as its Root Directory; the deployment config selects the landing build instead of the desktop Vite app.
+
+## What the installed app looks like
+
+The Windows build is one unsigned NSIS installer (`ShadRox Setup 0.3.8.exe`). It installs per-user, so there is no admin prompt, and it adds a Start-menu shortcut. Launching it does not drop you into an empty editor — the app always opens on the Workspace Hub.
+
+### Screen 1 — Workspace Hub
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  ◆ ShadRox                              Desktop beta · Windows   │
+│                                                                  │
+│                          ●  BETA                                 │
+│                                                                  │
+│                   Open a project. Start building.                │
+│        Your project stays on this device. AI chat sends only     │
+│        the prompt and code context you choose to your provider.  │
+│                                                                  │
+│            [ Add your API key to start chatting ]                │
+│                                                                  │
+│      ┌────────────────────┐      ┌────────────────────┐          │
+│      │    Open Folder     │      │    Open Files      │          │
+│      │  Mount workspace   │      │ Any file formats   │          │
+│      └────────────────────┘      └────────────────────┘          │
+│                                                                  │
+│  Recently opened                                  Click to reopen│
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  my-app        folder   42 files                     ×     │  │
+│  │  scratch.html  file      3 files                     ×     │  │
+│  └────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+- **Add your API key** opens Settings → Models & Keys. Until a Gemini or Groq key is saved, chat refuses to spend; the app never falls back to a ShadRox key during the beta.
+- **Open Folder** is the normal path: the folder is mounted, read recursively (with size, binary, traversal and symlink guards), and every later save writes back into that same folder.
+- **Open Files** mounts individual files without a project root.
+- **Recently opened** reopens a workspace from its local snapshot in one click. In the browser build this is also where write permission is re-granted; in the desktop app the folder is re-opened directly.
+
+### Screen 2 — Workspace
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│ ‹  ◆ my-app   42 files   2 unsaved     Save  Auto-save off   Code Preview ⚙│
+├───────────────────────────────┬────────────────────────────────────────────┤
+│  CHAT            Gemini ▾  ⚡ │ EXPLORER            ⌕ filter       + New    │
+│  ╭ Code │ Plan │ Complex ╮    │ ▾ src                                      │
+│  │                         │  │   ▾ components                             │
+│  │ user: add validation    │  │     ChatPanel.tsx                          │
+│  │ assistant: …            │  │     CodeEditor.tsx                         │
+│  │ ┌─────────────────────┐ │  │   App.tsx                                  │
+│  │ │ form.html  2 s/r    │ │  ├────────────────────────────────────────────┤
+│  │ │ [Accept] [Skip]     │ │  │ App.tsx ×  ChatPanel.tsx ×                 │
+│  │ └─────────────────────┘ │  ├────────────────────────────────────────────┤
+│  │                         │  │  1  export function App() {                │
+│  │ [ ask ShadRox…      ➤ ] │  │  2    const workspace = useWorkspace();    │
+│  ╰─────────────────────────╯  │  …                                         │
+│                               ├────────────────────────────────────────────┤
+│                               │ TERMINAL  my-app  ▾   (collapsible)        │
+└───────────────────────────────┴────────────────────────────────────────────┘
+```
+
+- **Titlebar** shows the back arrow to the hub, the workspace name, file count, an amber "unsaved" badge, **Save**, **Auto-save**, the **Code / Preview** switch and Settings. The window uses a custom titlebar, so the native frame does not double up with it.
+- **Left pane (35%) — chat.** Model picker, Code / Plan / Complex mode, streamed replies with reasoning, resume after a dropped stream, checkpoint restore, and the patch-review cards. Accepted edits are written straight to disk and the card says **Saved to disk**; if a write cannot happen it says **Applied in editor** and tells you why.
+- **Right pane — editor.** The Explorer sidebar lists the folder tree and can filter or create files; open files become tabs; the CodeMirror editor carries dirty markers, quick open and inline AI.
+- **Preview** replaces the editor with the `shadrox-preview://` pane for static sites and supported Node projects, including a device-size selector and live logs.
+- **Terminal** docks under the editor and runs inside the workspace folder; each command asks once for approval.
+- **Settings** is a right-side drawer: plan, BYOK keys, model list, automatic-update card, GitHub, appearance.
+
+Keyboard: `Ctrl/⌘+S` save, `Ctrl/⌘+P` quick open, `Ctrl/⌘+Shift+F` search inside files, `Ctrl/⌘+K` inline AI edit on the selection.
 
 ## What it can do
 
@@ -110,7 +178,9 @@ Native dependencies such as `node-pty` may need platform build tools during inst
 
 ## Get started
 
-From the repository root:
+Beta testers: run `ShadRox Setup 0.3.8.exe`, accept the SmartScreen prompt ("More info" → "Run anyway"), launch ShadRox, open a folder, and paste a Gemini or Groq key in Settings → Models & Keys. Nothing else is required — no `.env`, no account.
+
+From the repository root, for development:
 
 ```sh
 npm install
@@ -133,7 +203,7 @@ Copy `.env.example` to `.env` only if you are developing the gated operator path
 | `npm run dev:desktop` | Start the server and Electron desktop shell together. |
 | `npm run build` | Build the renderer into `dist/`; this does not create an installer. |
 | `npm run typecheck` | Run TypeScript type checking. |
-| `npm test` | Run the Node test suite (147 tests): workspace, preview and preview-runtime modules, desktop trust and git-hardening predicates, the updater lifecycle, SSE decoding, context budgeting and system-context degradation, the patch engine, the stream-snapshot lifecycle, FIM postprocessing and cache behavior, quick edit, commit context, AI access policy including the shared-key lockdown, and the provider adapters. |
+| `npm test` | Run the Node test suite (153 tests): workspace, preview and preview-runtime modules, desktop trust and git-hardening predicates, the updater lifecycle, SSE decoding, context budgeting and system-context degradation, the patch engine including the whole-file rewrite guard, the stream-snapshot lifecycle, FIM postprocessing and cache behavior, quick edit, commit context, AI access policy including the shared-key lockdown, the provider adapters including Groq's OTPM/TPM retry path, and every desktop/preload boundary. |
 | `npm run build:desktop` | Build and package the desktop app through the staging script. |
 | `npm run dist:win` | Request a Windows NSIS installer (no publishing). |
 | `npm run release:win` | Build the Windows installer and publish it plus `latest.yml` to GitHub Releases, which is what the in-app updater reads. Needs `GH_TOKEN` with `repo` scope. |
@@ -178,15 +248,27 @@ The API routes currently mounted by the local server include:
 
 Shared keys are off by default and gated behind `SHADROX_ALLOW_SHARED_KEY=1` (see **Beta scope**). Their use is not a user authentication system, and this codebase does not currently enforce account entitlements or billing for the UI's plan labels.
 
+## Release notes
+
+### 0.3.8 — chat actually edits your files
+
+Four defects found on real testers' machines:
+
+- **AI edits now reach disk.** Accepted/applied patches used to stop at the editor buffer; disk write-back was a separate opt-in auto-save, so a reply could be marked applied while the file never changed. Every apply and undo now flushes through `workspace.saveFiles()` and the review card reports **Saved to disk** or **Applied in editor** with the reason.
+- **No more whole-file wipes.** The edit prompt used to demand the complete file, which small free models answered with a four-line fragment that replaced (and deleted) the rest. The prompt now requires SEARCH/REPLACE for existing files, and auto-apply refuses a rewrite that drops most of a file (`assessRewriteRisk`) — an explicit Accept still overrides it.
+- **One permission prompt, at folder-open time.** The browser build now requests read-write access in the same gesture that opens or reopens the folder, and stores the folder handle, so saves never prompt mid-chat. In the desktop app, edits are saved immediately, which also removes the mid-session "unsaved changes" dialogs.
+- **Groq free-tier limits are handled.** `Request too large … OTPM: Limit 1000, Requested 2048` and `TPM: Limit 2000, Requested 6837` came from Groq billing a model's default 2048-token output ceiling against a small per-minute quota. The adapter now reads the limit from the error, retries once with a smaller output ceiling and a trimmed prompt, and otherwise explains which model to pick instead of showing a raw upstream string.
+
 ## Current limitations and beta checklist
 
 - No ShadRox sign-in, Supabase, cloud sync, subscription billing, or entitlement enforcement. The Free tier is unlimited BYOK; the Pro/Adv/Enterprise message caps are client-side only and not enforced against the API.
 - Browser mode has no OS credential store, so provider keys there sit in `localStorage`. The desktop build keeps them in the encrypted store and in memory only.
 - AI features need internet access and send the request context to the chosen external provider.
+- Free provider tiers (especially Groq) enforce per-minute token limits well below the model's context window; 0.3.8 shrinks and retries, but a very small limit can still refuse a long conversation.
 - Preview support is limited to static sites and detected Node scripts; embedded-app restrictions can still prevent rendering.
 - Interactive terminal commands run with the operating-system user's permissions.
-- Desktop installer packaging and clean-machine installation have not yet been confirmed as release-ready.
-- Before inviting external testers, build installers on each target OS, test install/launch/uninstall on a clean machine, confirm terminal and preview permissions, check provider-key handling, and provide a channel for bug reports.
+- The installer is unsigned, so Windows SmartScreen shows "More info → Run anyway" on first launch.
+- Before inviting external testers, test install/launch/uninstall on a clean machine, confirm terminal and preview permissions, check provider-key handling, and provide a channel for bug reports.
 
 ## License
 

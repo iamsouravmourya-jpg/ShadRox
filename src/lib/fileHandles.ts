@@ -15,6 +15,13 @@ const STORE = 'handles';
 interface HandleRecord {
   workspacePath: string;
   entries: HandleEntry[];
+  /**
+   * The folder the handles came from. Without it a reopened workspace can only
+   * overwrite known files, and every new file or write re-prompts the browser
+   * for permission — which is exactly what users expect to answer once, at
+   * folder-open time.
+   */
+  directoryHandle?: any;
   savedAt: number;
 }
 
@@ -41,15 +48,35 @@ function openDb(): Promise<IDBDatabase | null> {
   return dbPromise;
 }
 
-export async function saveHandles(workspacePath: string, entries: HandleEntry[]): Promise<void> {
-  if (entries.length === 0) return;
+export async function saveHandles(
+  workspacePath: string,
+  entries: HandleEntry[],
+  directoryHandle?: any
+): Promise<void> {
+  if (entries.length === 0 && !directoryHandle) return;
   const db = await openDb();
   if (!db) return;
   await new Promise<void>((resolve) => {
     const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put({ workspacePath, entries, savedAt: Date.now() } satisfies HandleRecord);
+    tx.objectStore(STORE).put({ workspacePath, entries, directoryHandle, savedAt: Date.now() } satisfies HandleRecord);
     tx.oncomplete = () => resolve();
     tx.onerror = () => resolve();
+  });
+}
+
+/** The full stored record: per-file handles plus the folder handle, if known. */
+export async function loadHandleRecord(
+  workspacePath: string
+): Promise<{ entries: HandleEntry[]; directoryHandle: any | null }> {
+  const db = await openDb();
+  if (!db) return { entries: [], directoryHandle: null };
+  return new Promise((resolve) => {
+    const request = db.transaction(STORE, 'readonly').objectStore(STORE).get(workspacePath);
+    request.onsuccess = () => {
+      const record = request.result as HandleRecord | undefined;
+      resolve({ entries: record?.entries ?? [], directoryHandle: record?.directoryHandle ?? null });
+    };
+    request.onerror = () => resolve({ entries: [], directoryHandle: null });
   });
 }
 

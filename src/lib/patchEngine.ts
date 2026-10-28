@@ -372,6 +372,37 @@ export function resolvePatchContent(
   return { content: result.content, failures: result.failures };
 }
 
+/**
+ * Whole-file rewrites are the one patch kind that can silently delete a user's
+ * code: a small model asked to "fix the form" often returns the four lines it
+ * touched, and the old behaviour replaced the whole 142-line file with them.
+ *
+ * Auto-apply therefore refuses a rewrite that would erase most of an existing
+ * file. An explicit Accept in the review UI overrides it — the user may really
+ * want to rewrite the file — but nothing destructive happens without either a
+ * click or a warning.
+ */
+export function assessRewriteRisk(
+  path: string,
+  newContent: string,
+  currentContent: string | undefined
+): string | null {
+  if (currentContent === undefined) return null;
+
+  const nonBlankLines = (value: string) => value.split('\n').filter((line) => line.trim()).length;
+  const before = nonBlankLines(currentContent);
+  const after = nonBlankLines(newContent);
+  if (before < 12) return null;
+
+  const kept = currentContent
+    .split('\n')
+    .filter((line) => line.trim() && newContent.includes(line.trim()))
+    .length;
+  if (kept / before >= 0.4) return null;
+  if (after >= before * 0.4) return null;
+
+  return `${path}: the model returned a ${after}-line replacement for a ${before}-line file and reused almost none of it. Auto-apply refused this whole-file rewrite — click Accept to confirm it, or ask for targeted SEARCH/REPLACE edits ("only change the submit handler").`;
+}
 /** Convenience alias so callers keep using the existing rewrite shape. */
 export function toRewritePatch(patch: UnifiedPatch, newContent: string): FilePatch {
   return { path: patch.path, content: newContent };

@@ -20,7 +20,7 @@ import {
   type PreviewProjectCandidate
 } from './lib/desktop';
 import { extractFilePatches } from './lib/markdown';
-import { extractUnifiedPatches, formatApplyFailure, resolvePatchContent } from './lib/patchEngine';
+import { assessRewriteRisk, extractUnifiedPatches, formatApplyFailure, resolvePatchContent } from './lib/patchEngine';
 import { collectCommitContext, generateCommitMessage } from './lib/commitMessage';
 import {
   contextFitNotice,
@@ -522,22 +522,22 @@ export default function App() {
         core.push(
           'FILE EDIT PROTOCOL:',
           '- Decide which file to change from the user request and the real file names listed below. Never invent a path.',
-          '- To change a file, output a fenced code block whose info line names that exact file, and put the COMPLETE new file content in the body:',
-          '```tsx path=src/App.tsx',
-          '// full file contents, nothing omitted',
-          '```',
-          '- Always write the file name in the fence line exactly as shown above. This is how changes reach the editor.',
-          '- One block per file, with the exact file name from the workspace.',
-          '- Never write partial snippets or placeholders inside a path= block.',
-          '- For files longer than ~400 lines, do NOT rewrite the whole file. Output SEARCH/REPLACE blocks instead:',
+          '- EDITING A FILE THAT EXISTS: use SEARCH/REPLACE blocks. Never restate the whole file — a partial restatement deletes the rest of it:',
           '```path=src/App.tsx',
           '<<<<<<< ORIGINAL',
-          '// the exact lines being replaced, copied verbatim',
+          '// the exact lines being replaced, copied verbatim from the file',
           '=======',
           '// the replacement lines',
           '>>>>>>> UPDATED',
           '```',
-          '- Each ORIGINAL must match the file exactly (same whitespace), stay unique, and be as small as possible. Blocks that match several places are rejected, so include enough surrounding lines.',
+          '- Each ORIGINAL must match the file exactly (same whitespace) and must be unique. Blocks that match several places are rejected, so include enough surrounding lines.',
+          '- Several blocks are allowed per file; put them in one fenced block in file order.',
+          '- CREATING A NEW FILE (or the user explicitly asks to rewrite it): output a fenced block whose info line names the exact path, with the COMPLETE file content in the body:',
+          '```tsx path=src/App.tsx',
+          '// full file contents, nothing omitted',
+          '```',
+          '- Never write partial snippets, comments like "// rest unchanged", or placeholders inside a path= block.',
+          '- Always write the file name in the fence line. This is how changes reach the editor and the disk.',
           '- Briefly explain changes before outputting code blocks.'
         );
       } else {
@@ -719,17 +719,23 @@ export default function App() {
   ]);
 
   /** Resolves one patch against the live workspace and writes it. Pure-ish:
-   *  the file write is idempotent, so double invocation (StrictMode) is safe. */
+   *  the file write is idempotent, so double invocation (StrictMode) is safe.
+   *  Buffers only — `persistPatches` is what puts the change on the user's disk. */
   const computeApply = useCallback(
-    (patch: ReviewPatch): ReviewPatch => {
+    (patch: ReviewPatch, options?: { allowDestructive?: boolean }): ReviewPatch => {
       const current = workspace.files.find(
         (file) => file.name.toLowerCase() === patch.path.toLowerCase()
       );
 
       if (patch.kind === 'rewrite') {
+        if (!options?.allowDestructive) {
+          const guard = assessRewriteRisk(patch.path, patch.content ?? '', current?.content);
+          if (guard) return { ...patch, status: 'failed', failure: guard };
+        }
         const result = workspace.applyFilePatches([{ path: patch.path, content: patch.content ?? '' }]);
-        if (result.updated.length === 0 && result.created.length === 0) return patch;
-        return { ...patch, status: 'applied', originalContent: current?.content ?? '' };
+        const landed = result.updated[0] ?? result.created[0];
+        if (!landed) return patch;
+        return { ...patch, status: 'applied', originalContent: current?.content ?? '', landed };
       }
 
       if (!current) {
@@ -746,10 +752,59 @@ export default function App() {
       }
 
       const result = workspace.applyFilePatches([{ path: patch.path, content: resolved.content }]);
-      if (result.updated.length === 0 && result.created.length === 0) return patch;
-      return { ...patch, status: 'applied', originalContent: current.content };
+      const landed = result.updated[0] ?? result.created[0];
+      if (!landed) return patch;
+      return { ...patch, status: 'applied', originalContent: current.content, landed };
     },
     [workspace]
+  );
+
+  const announce = useCallback((message: string, ms = 4500) => {
+    setToast(message);
+    window.setTimeout(() => setToast(null), ms);
+  }, []);
+
+  /**
+   * Writes the files a patch touched straight to disk. An earlier build stopped
+   * at the editor buffer, so a reply could say "form.html updated" while the
+   * user's file never changed — the whole point of the app. Every apply (and
+   * every undo) now flushes through the workspace save path and reports whether
+   * the bytes landed.
+   */
+  const persistPatches = useCallback(
+    async (messageId: string, patches: ReviewPatch[]) => {
+      const touched = patches.filter(
+        (patch) => patch.status === 'applied' || patch.status === 'reverted'
+      );
+      const names = [...new Set(touched.map((patch) => patch.landed).filter((name): name is string => Boolean(name)))];
+      if (names.length === 0) return;
+
+      const outcome = await workspace.saveFiles(names);
+      const disk = outcome.written > 0 ? ('saved' as const) : ('failed' as const);
+      setPatchSets((previous) =>
+        previous.map((set) =>
+          set.messageId !== messageId
+            ? set
+            : {
+                ...set,
+                patches: set.patches.map((candidate) =>
+                  candidate.landed && names.includes(candidate.landed)
+                    ? { ...candidate, disk, diskMessage: outcome.message ?? undefined }
+                    : candidate
+                )
+              }
+        )
+      );
+      if (outcome.written > 0) {
+        announce(
+          `${outcome.written} file${outcome.written === 1 ? '' : 's'} saved to disk.`,
+          3500
+        );
+      } else {
+        announce(outcome.message ?? 'Applied in the editor only — the files were not saved to disk.');
+      }
+    },
+    [workspace, setPatchSets, announce]
   );
 
   const acceptPatch = useCallback(
@@ -757,7 +812,7 @@ export default function App() {
       const set = patchSets.find((entry) => entry.messageId === messageId);
       const patch = set?.patches[patchIndex];
       if (!patch || patch.status === 'applied' || patch.status === 'rejected') return;
-      const updated = computeApply(patch);
+      const updated = computeApply(patch, { allowDestructive: true });
       setPatchSets((previous) =>
         previous.map((entry) =>
           entry.messageId !== messageId
@@ -766,11 +821,12 @@ export default function App() {
         )
       );
       if (updated.status === 'failed') {
-        setToast(`${patch.path}: ${updated.failure}`);
-        window.setTimeout(() => setToast(null), 5000);
+        announce(`${patch.path}: ${updated.failure}`, 5000);
+        return;
       }
+      if (updated.status === 'applied') void persistPatches(messageId, [updated]);
     },
-    [patchSets, computeApply]
+    [patchSets, computeApply, persistPatches, announce]
   );
 
   const acceptAllPatches = useCallback(
@@ -778,13 +834,14 @@ export default function App() {
       const set = patchSets.find((entry) => entry.messageId === messageId);
       if (!set) return;
       const computed = set.patches.map((patch) =>
-        patch.status === 'applied' || patch.status === 'rejected' ? patch : computeApply(patch)
+        patch.status === 'applied' || patch.status === 'rejected' ? patch : computeApply(patch, { allowDestructive: true })
       );
       setPatchSets((previous) =>
         previous.map((entry) => (entry.messageId !== messageId ? entry : { ...entry, patches: computed }))
       );
+      void persistPatches(messageId, computed);
     },
-    [patchSets, computeApply]
+    [patchSets, computeApply, persistPatches]
   );
 
   const rejectPatch = useCallback((messageId: string, patchIndex: number) => {
@@ -807,7 +864,9 @@ export default function App() {
       const set = patchSets.find((entry) => entry.messageId === messageId);
       const patch = set?.patches[patchIndex];
       if (!patch || patch.status !== 'applied' || patch.originalContent === undefined) return;
-      workspace.applyFilePatches([{ path: patch.path, content: patch.originalContent }]);
+      const result = workspace.applyFilePatches([{ path: patch.path, content: patch.originalContent }]);
+      const landed = result.updated[0] ?? result.created[0] ?? patch.landed;
+      const reverted = { ...patch, status: 'reverted' as const, landed };
       setPatchSets((previous) =>
         previous.map((entry) =>
           entry.messageId !== messageId
@@ -815,13 +874,14 @@ export default function App() {
             : {
                 ...entry,
                 patches: entry.patches.map((candidate, index) =>
-                  index === patchIndex ? { ...candidate, status: 'reverted' as const } : candidate
+                  index === patchIndex ? reverted : candidate
                 )
               }
         )
       );
+      void persistPatches(messageId, [reverted]);
     },
-    [patchSets, workspace]
+    [patchSets, workspace, persistPatches]
   );
 
   /**
@@ -867,18 +927,21 @@ export default function App() {
       setPatchSets((previous) =>
         previous.map((set) => (set.messageId === messageId ? { ...set, patches: computed } : set))
       );
-      const appliedCount = computed.filter((patch) => patch.status === 'applied').length;
+      const applied = computed.filter((patch) => patch.status === 'applied');
       const failedCount = computed.filter((patch) => patch.status === 'failed').length;
-      if (appliedCount > 0 || failedCount > 0) {
+      if (applied.length > 0 || failedCount > 0) {
+        // The save is what makes the claim true, so the toast is only the
+        // headline — `persistPatches` reports the real disk outcome.
         setToast(
           failedCount > 0
-            ? `${appliedCount} change(s) applied • ${failedCount} failed`
-            : `${appliedCount} file(s) updated`
+            ? `${applied.length} change(s) applied • ${failedCount} failed`
+            : `Applying ${applied.length} file(s)…`
         );
         window.setTimeout(() => setToast(null), 4000);
+        void persistPatches(messageId, computed);
       }
     },
-    [patchSets, workspace, autoApplyChanges, computeApply]
+    [patchSets, workspace, autoApplyChanges, computeApply, persistPatches]
   );
 
   const handleSend = useCallback(async (rawText?: string, historyOverride?: ChatTurn[]) => {
