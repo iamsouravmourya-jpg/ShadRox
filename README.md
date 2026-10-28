@@ -21,8 +21,8 @@ What is stored server-side: Supabase's `auth.users` row (email, provider identit
 ### Supabase project setup
 
 1. Create a Supabase project and copy the project URL and **anon** public key (Project Settings → API). Never put the `service_role` key in the desktop app or the landing page.
-2. Authentication → Providers → Google: enable it and paste a Google Cloud OAuth client ID/secret. In Google Cloud Console create an OAuth client of type **Web application** with authorized redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`. While the Google consent screen is in **Testing**, add every tester's Google address as a test user (or publish the app); an address that is not listed cannot sign in.
-3. Authentication → URL Configuration: set the Site URL to `https://shadrox.cyou`. Add `http://127.0.0.1:51789/auth/callback` to the redirect allow list. Both the exact port and path are required; the desktop listener is bound to that address.
+2. Authentication → Providers → Google: enable it and paste a Google Cloud OAuth client ID/secret. In Google Cloud Console create an OAuth client of type **Web application** with authorized redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`. The loopback URL (`http://127.0.0.1:51789/auth/callback`) belongs only in Supabase's redirect allow list, never in the Google console. While the Google consent screen is in **Testing**, add every tester's Google address as a test user (or publish the app); an address that is not listed cannot sign in.
+3. Authentication → URL Configuration: set the Site URL to `https://shadrox.cyou`. Add `http://127.0.0.1:51789/auth/callback` to the redirect allow list. Both the exact port and path are required; the desktop listener is bound to that address. The Google client ID/secret go in the Supabase Google provider, not in Vercel.
 4. Run [`supabase/schema.sql`](supabase/schema.sql) in the SQL editor. It creates `public.profiles`, owner-only RLS policies, the `handle_new_user` trigger, and the `updated_at` trigger, and is safe to re-run.
 5. Confirm a test Google sign-in fills `auth.users` and `public.profiles`.
 
