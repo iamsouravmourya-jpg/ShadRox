@@ -52,7 +52,7 @@ The Windows build is one unsigned NSIS installer, `ShadRox-Setup.exe`. It instal
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  ◆ ShadRox                                           0.0.1       │
+│  ◆ ShadRox                              Desktop beta · Windows   │
 │                                                                  │
 │                    One account. One workspace.                   │
 │        Continue with Google to start. Your project files         │
