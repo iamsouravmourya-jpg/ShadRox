@@ -12,7 +12,7 @@ const KEY_PREFIX = 'shadrox.';
  * Only provider API keys are secrets, and they are the only values that must
  * never be mirrored into plaintext.
  */
-const SECRET_KEY_PREFIXES = ['shadrox.byok.'];
+const SECRET_KEY_PREFIXES = ['shadrox.byok.', 'shadrox.auth.'];
 
 export function isSecretKey(key: string): boolean {
   return SECRET_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));

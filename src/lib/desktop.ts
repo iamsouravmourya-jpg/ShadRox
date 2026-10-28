@@ -130,6 +130,11 @@ export type UpdaterStatus =
   | { state: 'ready'; version: string }
   | { state: 'error'; message: string };
 
+export interface DesktopAuthResult {
+  params?: Record<string, string>;
+  error?: string;
+}
+
 export interface ShadRoxDesktopAPI {
   platform: string;
   openFolder: () => Promise<DesktopWorkspace | null>;
@@ -164,6 +169,11 @@ export interface ShadRoxDesktopAPI {
     getAll: () => Promise<Record<string, string>>;
     set: (key: string, value: string) => Promise<boolean>;
     delete: (key: string) => Promise<boolean>;
+  };
+  auth: {
+    /** Opens the system browser and resolves with the loopback callback's query params. */
+    startLoopback: (authorizeUrl: string, redirectUri: string) => Promise<DesktopAuthResult>;
+    appVersion: () => Promise<string>;
   };
 }
 

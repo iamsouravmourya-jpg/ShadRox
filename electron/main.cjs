@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, protocol, safeStorage, session, shell } = require('electron');
 const { exec, execFile } = require('node:child_process');
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
@@ -768,6 +769,103 @@ function registerSecureStoreHandlers() {
   });
 }
 
+const AUTH_CALLBACK_PATH = '/auth/callback';
+const AUTH_TIMEOUT_MS = 180_000;
+let pendingAuthSignIn = null;
+
+function authCallbackPage(heading) {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>ShadRox</title>
+<style>
+  body { margin: 0; height: 100vh; display: grid; place-items: center; background: #0b0b0f; color: #ececf1;
+         font-family: "Segoe UI", system-ui, sans-serif; }
+  main { text-align: center; padding: 24px; }
+  h1 { margin: 0 0 8px; font-size: 20px; font-weight: 600; }
+  p { margin: 0; color: #a1a1aa; font-size: 14px; }
+</style></head><body><main><h1>${heading}</h1><p>You can close this tab and return to ShadRox.</p></main></body></html>`;
+}
+
+/**
+ * Google sign-in runs in the user's real browser, so the app needs a loopback
+ * listener to receive the redirect (RFC 8252). The renderer owns PKCE and the
+ * token exchange; this handler only opens the URL and hands back query params.
+ */
+function registerAuthHandlers() {
+  ipcMain.handle('app:version', (event) => {
+    assertTrustedRenderer(event);
+    return app.getVersion();
+  });
+
+  ipcMain.handle('auth:start-loopback', async (event, authorizeUrl, redirectUri) => {
+    assertTrustedRenderer(event);
+    if (typeof authorizeUrl !== 'string' || typeof redirectUri !== 'string') {
+      throw new Error('Invalid sign-in request.');
+    }
+    let authorize;
+    let redirect;
+    try {
+      authorize = new URL(authorizeUrl);
+      redirect = new URL(redirectUri);
+    } catch {
+      throw new Error('Invalid sign-in request.');
+    }
+    if (authorize.protocol !== 'https:') throw new Error('Sign-in must use an https URL.');
+    const port = Number(redirect.port);
+    if (
+      redirect.protocol !== 'http:' ||
+      redirect.hostname !== '127.0.0.1' ||
+      redirect.pathname !== AUTH_CALLBACK_PATH ||
+      !Number.isInteger(port) ||
+      port < 1024 ||
+      port > 65535
+    ) {
+      throw new Error('Invalid sign-in redirect.');
+    }
+    if (pendingAuthSignIn) throw new Error('A sign-in is already in progress.');
+
+    return await new Promise((resolve) => {
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        pendingAuthSignIn = null;
+        server.close();
+        resolve(result);
+      };
+      const timer = setTimeout(() => finish({ error: 'Sign-in timed out. Please try again.' }), AUTH_TIMEOUT_MS);
+      const server = http.createServer((request, response) => {
+        let incoming = null;
+        try {
+          incoming = new URL(request.url || '/', `http://127.0.0.1:${port}`);
+        } catch {
+          incoming = null;
+        }
+        if (!incoming || incoming.pathname !== AUTH_CALLBACK_PATH) {
+          response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+          response.end('Not found');
+          return;
+        }
+        const params = Object.fromEntries(incoming.searchParams.entries());
+        const failed = params.error_description || params.error;
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        response.end(authCallbackPage(failed ? 'Sign-in was not completed' : 'Signed in'));
+        finish(failed ? { error: String(failed).replace(/\+/g, ' ') } : { params });
+      });
+      server.on('error', (error) => {
+        finish({
+          error: error && error.code === 'EADDRINUSE'
+            ? `Port ${port} is already in use. Close the other sign-in window and try again.`
+            : 'Could not start the local sign-in listener.'
+        });
+      });
+      server.listen(port, '127.0.0.1', () => {
+        pendingAuthSignIn = { port };
+        shell.openExternal(authorizeUrl).catch(() => finish({ error: 'Could not open your browser for sign-in.' }));
+      });
+    });
+  });
+}
+
 /**
  * Replaces the active folder workspace. One path backs the folder picker, the
  * 1-click recent reopen and a second launch's command-line folder.
@@ -1275,6 +1373,7 @@ app.whenReady().then(async () => {
   locateGitExecutable();
   registerIpcHandlers();
   registerSecureStoreHandlers();
+  registerAuthHandlers();
   await createWindow();
   updater = createUpdater({
     app,

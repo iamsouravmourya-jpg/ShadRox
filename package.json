@@ -1,7 +1,7 @@
 {
   "name": "shadrox",
   "private": true,
-  "version": "0.3.8",
+  "version": "0.0.1",
   "description": "Native desktop AI engineering workspace with BYOK and live project preview.",
   "author": "Sourav Maurya",
   "license": "UNLICENSED",
@@ -18,7 +18,7 @@
     "dist:mac": "node scripts/package-desktop.js --mac dmg",
     "start": "tsx server.ts",
     "preview": "vite preview",
-    "test": "node --import tsx --test electron/workspace.test.cjs electron/preview.test.mjs electron/preview-runtime.test.cjs electron/desktop-security.test.cjs electron/updater.test.cjs src/lib/sse.test.ts src/lib/contextBudget.test.ts src/lib/patchEngine.test.ts src/lib/ai.test.ts src/lib/fim.test.ts src/lib/quickEdit.test.ts src/lib/commitMessage.test.ts tests/ai-adapters.test.ts tests/ai-access-policy.test.ts",
+    "test": "node --import tsx --test electron/workspace.test.cjs electron/preview.test.mjs electron/preview-runtime.test.cjs electron/desktop-security.test.cjs electron/updater.test.cjs src/lib/sse.test.ts src/lib/contextBudget.test.ts src/lib/patchEngine.test.ts src/lib/authCore.test.ts src/lib/ai.test.ts src/lib/fim.test.ts src/lib/quickEdit.test.ts src/lib/commitMessage.test.ts tests/ai-adapters.test.ts tests/ai-access-policy.test.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
@@ -69,6 +69,7 @@
     "appId": "com.shadrox.desktop",
     "productName": "ShadRox",
     "icon": "assets/icon.png",
+    "artifactName": "ShadRox-Setup.${ext}",
     "asar": true,
     "asarUnpack": [
       "node_modules/@esbuild/**/*"

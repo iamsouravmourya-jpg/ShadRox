@@ -5,7 +5,7 @@ POSITIONING
 -----------
 ShadRox is a desktop coding workspace for people who want their project files, editor, AI chat, local preview, and terminal together in one app.
 
-Keep the promise grounded: projects are worked on locally, while prompts and the selected code context are sent to the AI provider when the user asks for AI help. Do not claim that code is never uploaded, that ShadRox has cloud sync, or that accounts/subscriptions are available.
+Keep the promise grounded: projects are worked on locally, while prompts and the selected code context are sent to the AI provider when the user asks for AI help. Do not claim that code is never uploaded or that ShadRox has cloud project sync. A Google account is required to use the app; there is no paid plan yet.
 
 
 HERO
@@ -20,13 +20,13 @@ Supporting copy:
 ShadRox brings a focused code editor, AI-assisted changes, local project previews, and an interactive terminal into one desktop workspace. Open a folder on your computer and keep building from there.
 
 Primary CTA:
-Download for Windows — Coming soon (preview only; not a working download)
+Download for Windows — direct link to the latest installer (ShadRox-Setup.exe on the latest GitHub release)
 
 Secondary CTA:
-Request beta access
+See how it works
 
 CTA note:
-The Windows download button is disabled until a current installer has been built and verified. Beta access opens an email draft; it is not a hosted waitlist or automatic signup.
+Windows 10 or 11 (64-bit). Google sign-in is required at first launch. Updates install automatically. Windows may warn about an unsigned installer; More → Run anyway.
 
 
 FEATURE SECTION
@@ -68,10 +68,10 @@ Section heading:
 Local project workflow, clear AI data flow.
 
 Copy:
-Your project folder is opened and edited on your computer. When you send a message to AI, the prompt and the project context included with that request are sent to the Gemini or Groq provider you selected. You can use your own provider key. In the current beta, keys entered in the app are stored in local browser storage on your device. ShadRox does not yet offer accounts or cloud project sync.
+Your project folder is opened and edited on your computer. When you send a message to AI, the prompt and the project context included with that request are sent to the Gemini or Groq provider you selected. You can use your own provider key; it stays on your device in an encrypted local store and is never sent to ShadRox. Signing in with Google creates an account that holds only email, name, avatar URL, app version, and platform. Project files are never uploaded to ShadRox.
 
 Short callout:
-Local files. Provider-powered AI. No ShadRox account required in the current beta.
+Local files. Provider-powered AI. Minimum account data.
 
 Do not shorten this to “your code never leaves your device” or “zero data upload.” Those statements would be inaccurate when AI features are used.
 
@@ -88,13 +88,19 @@ ShadRox can serve static sites and launch detected Node-based web projects with 
 BETA STATUS / FAQ
 -----------------
 Can I download ShadRox now?
-Not yet. The Windows installer button is a non-functional preview until a beta installer is ready.
+Yes. The Download for Windows button installs the latest beta (currently 0.0.1) on Windows 10 or 11, 64-bit. No form or approval is needed. Windows may show a SmartScreen warning because the build is unsigned: choose More → Run anyway.
 
-How do I request beta access?
-The beta request button opens an email draft. There is no online signup form or automated waitlist yet.
+Do I need a ShadRox account?
+Yes. On first launch the app asks you to continue with Google, opens the browser, and receives a session. Only email, name, avatar URL, app version, and platform are stored. There is no password and no subscription.
+
+How do updates work?
+The app checks for a newer release at startup and downloads it in the background; the update installs on restart or quit. The page's download link always points at the latest release.
 
 Does ShadRox store my project in the cloud?
-The desktop workspace opens and edits project files locally. There is no ShadRox cloud project sync today. AI requests send the prompt and included project context to the selected AI provider.
+The desktop workspace opens and edits project files locally. There is no ShadRox cloud project sync. AI requests send the prompt and included project context to the selected AI provider.
+
+Where is my AI provider key stored?
+On your device, in an encrypted local store. ShadRox servers never receive it. The provider may charge for usage.
 
 Which AI providers are supported?
 The current app supports Gemini and Groq. Provider availability, model access, and usage charges depend on your provider account and key.
@@ -102,11 +108,11 @@ The current app supports Gemini and Groq. Provider availability, model access, a
 Can I preview any project?
 Static sites and supported Node-based web projects are the current focus. Other backend runtimes are not supported yet, and some sites may block embedded previews.
 
-Are accounts or paid plans available?
-ShadRox does not currently have account sign-in, Supabase, billing, or enforced subscriptions. Do not publish pricing or subscription claims until those systems exist and have been tested.
+Are paid plans available?
+No. The beta is free; AI usage is billed by your provider under your own key.
 
 Is the installer production-ready?
-Only claim a platform is ready after its latest installer has been built and tested on a clean machine. The current repository status is beta/development; a renderer build is not the same as a verified installer.
+It is a beta build. It is not code-signed, so Windows may warn. Only claim a platform is ready after its latest installer has been built and tested on a clean machine.
 
 
 FOOTER
@@ -114,11 +120,10 @@ FOOTER
 ShadRox — a desktop workspace for building with your local projects.
 
 Suggested links (only publish working destinations):
-- Join the beta
-- Documentation
+- Download
 - Privacy
-- Terms
-- GitHub / contact
+- FAQ
+- GitHub / releases
 
 
 VISUAL / BRAND DIRECTION

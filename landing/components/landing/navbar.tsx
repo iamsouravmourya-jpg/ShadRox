@@ -1,8 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { ArrowRight, Download, Menu, X } from 'lucide-react'
+import { Download, Menu, X } from 'lucide-react'
 import { useScrolled } from '@/hooks/use-scrolled'
+import { APP_VERSION, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import { cn } from '@/lib/utils'
 
 const links = [
@@ -68,14 +69,9 @@ export function Navbar() {
         </div>
 
         <div className="flex items-center gap-3">
+          <span className="hidden text-xs text-zinc-500 sm:block">v{APP_VERSION} · Windows</span>
           <a
-            href="#beta"
-            className="hidden text-sm text-zinc-300 transition hover:text-white sm:block"
-          >
-            Request beta access
-          </a>
-          <a
-            href="#download"
+            href={WINDOWS_DOWNLOAD_URL}
             className="group relative overflow-hidden rounded-full bg-white px-4 py-2 text-xs font-semibold text-black transition hover:bg-violet-100"
           >
             <span className="relative z-10">Download</span>

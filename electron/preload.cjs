@@ -38,6 +38,10 @@ const shadroxDesktop = Object.freeze({
     getAll: () => ipcRenderer.invoke('secure:get-all'),
     set: (key, value) => ipcRenderer.invoke('secure:set', key, value),
     delete: (key) => ipcRenderer.invoke('secure:delete', key)
+  }),
+  auth: Object.freeze({
+    startLoopback: (authorizeUrl, redirectUri) => ipcRenderer.invoke('auth:start-loopback', authorizeUrl, redirectUri),
+    appVersion: () => ipcRenderer.invoke('app:version')
   })
 });
 

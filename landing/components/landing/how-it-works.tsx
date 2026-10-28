@@ -1,9 +1,14 @@
 'use client'
 
-import { FolderOpen, MousePointerClick, Play } from 'lucide-react'
+import { FolderOpen, LogIn, MousePointerClick, Play } from 'lucide-react'
 import { Reveal } from './reveal'
 
 const steps = [
+  {
+    icon: LogIn,
+    title: 'Sign in with Google',
+    text: 'The first screen asks you to continue with Google. Your browser handles the sign-in and returns you to the app.',
+  },
   {
     icon: FolderOpen,
     title: 'Open a folder',
@@ -32,7 +37,7 @@ export function HowItWorks() {
               Open a project and get into the flow.
             </h2>
             <p className="mt-5 max-w-sm text-sm leading-6 text-zinc-500">
-              Three steps from an empty workspace to a running preview.
+              Four steps from install to a running preview.
             </p>
           </div>
         </Reveal>
