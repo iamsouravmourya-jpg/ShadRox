@@ -88,7 +88,7 @@ ShadRox can serve static sites and launch detected Node-based web projects with 
 BETA STATUS / FAQ
 -----------------
 Can I download ShadRox now?
-Yes. The Download for Windows button installs the latest beta (currently 0.0.2) on Windows 10 or 11, 64-bit. No form or approval is needed. Windows may show a SmartScreen warning because the build is unsigned: choose More → Run anyway.
+Yes. The Download for Windows button installs the latest beta (currently 0.0.1) on Windows 10 or 11, 64-bit. No form or approval is needed. Windows may show a SmartScreen warning because the build is unsigned: choose More → Run anyway.
 
 Do I need a ShadRox account?
 Yes. On first launch the app asks you to continue with Google, opens the browser, and receives a session. Only email, name, avatar URL, app version, and platform are stored. There is no password and no subscription.
