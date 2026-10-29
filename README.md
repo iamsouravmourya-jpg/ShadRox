@@ -286,6 +286,8 @@ How a new version reaches testers without them downloading anything again:
 
 The version reset is safe because no 0.3.x release was ever published. electron-updater refuses to downgrade, so a machine that had installed a published 0.3.8 could not move to 0.0.1; testers are installing 0.0.1 fresh. From 0.0.1 onward, normal increments apply.
 
+Replacing an asset in place is the exception, not the update path. The 0.0.1 installer was rebuilt on 2026-10-29 and uploaded over the same release to fix the sign-in failure, so the version did not change. electron-updater only moves to a *higher* version, so a copy installed from the earlier upload stays on the broken build until it is reinstalled from `ShadRox-Setup.exe`. Fixes that must reach existing installs need a version bump; an in-place replacement only helps new downloads.
+
 ## Configuration
 
 ### Environment variables
