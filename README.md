@@ -319,11 +319,6 @@ Shared keys are off by default and gated behind `SHADROX_ALLOW_SHARED_KEY=1` (se
 
 ## Release notes
 
-### 0.0.2 — sign-in finishes and brings the app forward
-
-- **No more "state mismatch".** Supabase replaces a client-supplied OAuth `state` with its own value, so the callback comparison could never match. The callback is now validated by PKCE only: the verifier stays in the app, and the loopback listener exists for a single sign-in. Signing in now completes and opens the hub.
-- **ShadRox pulls itself to the front.** As soon as the loopback callback arrives, the main process restores, shows, and focuses the app window; the browser tab says "ShadRox is opening now" and can be closed.
-
 ### 0.0.1 — accounts, Google sign-in, direct download
 
 The beta now starts with an account and a real download link. Versioning restarts here as 0.0.1; every later release increments the last number.
@@ -334,6 +329,8 @@ The beta now starts with an account and a real download link. Versioning restart
 - **Account UI.** The hub and Settings show the signed-in email/avatar with a sign-out action, so switching accounts does not require reinstalling.
 - **Direct download.** `shadrox.cyou` now links to the latest GitHub release asset, `ShadRox-Setup.exe`, with no form or approval. The asset name is version-free, so the link is stable across releases.
 - **Automatic updates from 0.0.1.** Every release publishes `latest.yml`; installed copies update in the background and apply on restart.
+- **Sign-in is validated by PKCE, not `state`.** Supabase replaces a client-supplied OAuth `state` with its own value, so a callback comparison could never match. Validation is PKCE-only: the verifier stays in the app, and the loopback listener exists for a single sign-in.
+- **The app takes the foreground after sign-in.** As soon as the loopback callback arrives, the main process restores, shows, and focuses the window; the browser tab says "ShadRox is opening now" and can be closed.
 
 ### 0.3.8 — chat actually edits your files
 
