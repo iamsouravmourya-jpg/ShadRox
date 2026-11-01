@@ -1,14 +1,15 @@
 export type Stage = 'STAGE_2' | 'STAGE_3';
 
-export type TabType = 'CODE' | 'PREVIEW';
+export type TabType = 'CODE' | 'PREVIEW' | 'PLAN' | 'PLUGINS' | 'AGENTS' | 'AUTOMATIONS';
 
 export type SettingsTab = 'CHAT' | 'PLAN' | 'GITHUB' | 'SECRETS';
 
 /**
  * UI-only plan ladder. Nothing is wired to billing yet — there is no database,
  * so the upgrade buttons just preview a tier locally.
+ * Paid tiers are metered in credits, not messages.
  */
-export type PlanTier = 'free' | 'pro' | 'adv' | 'enterprise';
+export type PlanTier = 'free' | 'starter' | 'pro';
 
 export type ViewportSize = 'desktop' | 'tablet' | 'mobile';
 
@@ -25,6 +26,13 @@ export interface WorkspaceFile {
   version?: string;
 }
 
+/** A file that exists in the workspace, described without reading its contents. */
+export interface WorkspaceFileEntry {
+  path: string;
+  /** Size in bytes; 0 when it could not be stat'ed. */
+  size: number;
+}
+
 export interface WorkspaceFolder {
   id: string;
   name: string;
@@ -32,6 +40,15 @@ export interface WorkspaceFolder {
   kind: 'folder' | 'file';
   nativeWorkspaceId?: string;
   files: WorkspaceFile[];
+  /** Files on disk (folder workspaces), independent of the open editor tabs. */
+  diskFileCount?: number;
+  diskFileCountTruncated?: boolean;
+  /**
+   * Every explorer-visible path in the folder with its size, read at open.
+   * Contents are not included; this is what the repo map and the context
+   * candidate picker work from when the user has no tabs open.
+   */
+  diskFileTree?: WorkspaceFileEntry[];
 }
 
 export interface RefinedPromptMeta {

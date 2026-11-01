@@ -72,6 +72,13 @@ export async function startServer(options: {
   mount('post', '/api/github/push', githubPush);
 
   const mode = options.mode ?? 'development';
+  // Reaching this function means the API is running as a local process: the
+  // desktop app starts it in-process on 127.0.0.1 and `npm run dev` starts it
+  // here. The Vercel deployment mounts `api/**` functions directly and never
+  // calls `startServer`, so the flag is what separates "the user's own machine
+  // is making this request" from "we are an open proxy" for the BYOK custom
+  // endpoint. See api/ai/_endpoint.ts.
+  process.env.SHADROX_LOCAL_BACKEND = '1';
   let vite: ViteDevServer | null = null;
 
   if (mode === 'development') {

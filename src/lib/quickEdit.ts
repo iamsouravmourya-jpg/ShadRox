@@ -19,6 +19,8 @@ export interface QuickEditContext {
 
 export interface QuickEditAiOptions {
   provider: ProviderId;
+  /** Base URL of a BYOK custom endpoint. */
+  baseUrl?: string;
   model: string;
   apiKey?: string;
   /** The user's chat temperature. Clamped down — see `clampInlineTemperature`. */
@@ -119,6 +121,7 @@ export async function runQuickEdit(
   await streamChat(
     {
       provider: ai.provider,
+      baseUrl: ai.baseUrl,
       model: ai.model,
       apiKey: ai.apiKey,
       messages: [{ role: 'user', content: prompt }],

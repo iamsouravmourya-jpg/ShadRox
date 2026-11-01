@@ -61,6 +61,8 @@ export interface StreamChatOptions {
   provider: ProviderId;
   model: string;
   apiKey?: string;
+  /** Only for provider `custom`: the OpenAI-compatible endpoint to call. */
+  baseUrl?: string;
   messages: ChatTurn[];
   systemInstruction?: string;
   temperature?: number;
@@ -98,7 +100,11 @@ async function readJson(response: Response): Promise<any> {
 }
 
 /** Validates a BYOK key and returns every chat model that key can actually use. */
-export async function validateProviderKey(provider: ProviderId, apiKey: string): Promise<ValidateKeyResult> {
+export async function validateProviderKey(
+  provider: ProviderId,
+  apiKey: string,
+  baseUrl?: string
+): Promise<ValidateKeyResult> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 20000);
 
@@ -108,7 +114,7 @@ export async function validateProviderKey(provider: ProviderId, apiKey: string):
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
-      body: JSON.stringify({ provider, apiKey })
+      body: JSON.stringify({ provider, apiKey, baseUrl: baseUrl || undefined })
     });
   } catch (error) {
     throw new Error(
@@ -143,7 +149,7 @@ export async function validateProviderKey(provider: ProviderId, apiKey: string):
     contextWindows
   );
 
-  if (models.length === 0) {
+  if (models.length === 0 && provider !== 'custom') {
     throw new Error('Key is valid, but no compatible chat models were returned.');
   }
 
@@ -183,6 +189,7 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
     provider,
     model,
     apiKey,
+    baseUrl,
     messages,
     systemInstruction,
     temperature,
@@ -201,6 +208,7 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
         provider,
         model,
         apiKey,
+        baseUrl: provider === 'custom' ? baseUrl : undefined,
         messages,
         systemInstruction,
         temperature,
@@ -315,6 +323,10 @@ export async function refinePrompt(options: {
   rawPrompt: string;
   geminiKey?: string;
   groqKey?: string;
+  customKey?: string;
+  baseUrl?: string;
+  /** Needed when `provider` is custom — this route has no model of its own there. */
+  model?: string;
   provider: ProviderId;
   contextInfo: string;
   mode?: RefineMode;
@@ -327,7 +339,13 @@ export async function refinePrompt(options: {
       provider: options.provider,
       contextInfo: options.contextInfo,
       mode: options.mode,
-      apiKeyByProvider: { gemini: options.geminiKey, groq: options.groqKey }
+      model: options.model,
+      baseUrl: options.provider === 'custom' ? options.baseUrl : undefined,
+      apiKeyByProvider: {
+        gemini: options.geminiKey,
+        groq: options.groqKey,
+        custom: options.customKey
+      }
     })
   });
 

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import type { ViewportSize } from '../lib/types';
 import type { PreviewDocument } from '../lib/preview';
+import { parseRevealMessage, type RevealSourceTarget } from '../lib/previewSource';
 import type { DesktopPreviewOutput, DesktopPreviewState, PreviewProjectCandidate } from '../lib/desktop';
 
 interface PreviewPaneProps {
@@ -44,6 +45,11 @@ interface PreviewPaneProps {
   autoReload?: boolean;
   onToggleAutoReload?: () => void;
   lastReloadAt?: number | null;
+  /**
+   * Called when a click inside the static preview maps to an element in the
+   * served HTML file, so the host can open it and reveal the line.
+   */
+  onRevealSource?: (target: RevealSourceTarget) => void;
 }
 
 interface ConsoleEntry {
@@ -94,7 +100,8 @@ export function PreviewPane({
   reloadKey = 0,
   autoReload = true,
   onToggleAutoReload,
-  lastReloadAt = null
+  lastReloadAt = null,
+  onRevealSource
 }: PreviewPaneProps) {
   const [manualReloadKey, setManualReloadKey] = useState(0);
   const effectiveReloadKey = `${reloadKey}:${manualReloadKey}`;
@@ -140,6 +147,13 @@ export function PreviewPane({
         data.source !== 'shadrox-preview' ||
         typeof data.type !== 'string'
       ) return;
+      if (data.type === 'reveal-source') {
+        // Static-preview click-to-source: validate the payload shape/path here
+        // and let the host resolve it against the open workspace.
+        const target = parseRevealMessage(data);
+        if (target) onRevealSource?.(target);
+        return;
+      }
       const time = new Date().toLocaleTimeString('en-US', { hour12: false });
       if (data.type === 'console-log' || data.type === 'console-info') {
         const message = typeof data.message === 'string' ? data.message : String(data.message ?? '');
@@ -156,7 +170,7 @@ export function PreviewPane({
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [onRuntimeError]);
+  }, [onRuntimeError, onRevealSource]);
 
   // Percentages can go stale in Electron when the panel resizes or loses a
   // scrollbar, so mirror the panel's content box onto the active preview frame.

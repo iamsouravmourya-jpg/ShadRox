@@ -36,9 +36,33 @@ const GROQ_CAPABILITIES: CapabilityPattern[] = [
   { pattern: /./, contextWindow: 32_768 }
 ];
 
+/**
+ * A custom endpoint can serve any model in existence, and most gateways do not
+ * report a context window, so this matches the families people actually point
+ * ShadRox at. Anything unknown keeps the conservative default: guessing too
+ * high overflows the real window, guessing too low only trims history.
+ */
+const CUSTOM_CAPABILITIES: CapabilityPattern[] = [
+  { pattern: /gemini.*(?:flash|thinking)/, contextWindow: 1_000_000 },
+  { pattern: /gemini/, contextWindow: 131_072 },
+  { pattern: /claude|anthropic/, contextWindow: 200_000 },
+  { pattern: /gpt-4o|gpt-4\.1|o3|o4|chatgpt-|gpt-5/, contextWindow: 128_000 },
+  { pattern: /gpt-4-turbo|gpt-4-0613|gpt-4-32k/, contextWindow: 32_768 },
+  { pattern: /gpt-3\.5/, contextWindow: 16_385 },
+  { pattern: /deepseek-r1|deepseek-reasoner/, contextWindow: 64_000 },
+  { pattern: /deepseek/, contextWindow: 128_000 },
+  { pattern: /qwen3|qwen2\.5|qwq/, contextWindow: 131_072 },
+  { pattern: /llama-3\.1|llama-3\.2|llama-4/, contextWindow: 131_072 },
+  { pattern: /mistral-large|mistral-small|devstral|mistral-nemo/, contextWindow: 131_072 },
+  { pattern: /kimi|moonshot/, contextWindow: 131_072 },
+  { pattern: /grok/, contextWindow: 131_072 },
+  { pattern: /minimax|glm|kimi/, contextWindow: 131_072 }
+];
+
 const CAPABILITIES: Record<ProviderId, CapabilityPattern[]> = {
   gemini: GEMINI_CAPABILITIES,
-  groq: GROQ_CAPABILITIES
+  groq: GROQ_CAPABILITIES,
+  custom: CUSTOM_CAPABILITIES
 };
 
 const DEFAULT_CONTEXT_WINDOW = 32_000;

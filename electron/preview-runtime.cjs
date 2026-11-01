@@ -30,15 +30,31 @@ const MIME_TYPES = {
   '.woff2': 'font/woff2'
 };
 
-function getPackageManager(manifest, root) {
+/**
+ * A lockfile only records what the project was installed with; it says nothing
+ * about whether that manager exists on this machine. Preview used to trust the
+ * lockfile and then die with `'bun.cmd' is not recognized`, so every candidate
+ * is now checked against PATH and falls back to the next one.
+ */
+function isCommandAvailable(command) {
+  const entries = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const extensions = process.platform === 'win32'
+    ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+    : [''];
+  return entries.some((directory) =>
+    extensions.some((extension) => require('node:fs').existsSync(path.join(directory, command + extension)))
+  );
+}
+
+function getPackageManager(manifest, root, isAvailable = isCommandAvailable) {
   const declared = typeof manifest.packageManager === 'string'
     ? manifest.packageManager.split('@')[0]
     : '';
-  if (PACKAGE_MANAGERS[declared]) return declared;
-  if (require('node:fs').existsSync(path.join(root, 'pnpm-lock.yaml'))) return 'pnpm';
-  if (require('node:fs').existsSync(path.join(root, 'yarn.lock'))) return 'yarn';
-  if (require('node:fs').existsSync(path.join(root, 'bun.lockb')) ||
-      require('node:fs').existsSync(path.join(root, 'bun.lock'))) return 'bun';
+  if (PACKAGE_MANAGERS[declared] && isAvailable(declared)) return declared;
+  if (require('node:fs').existsSync(path.join(root, 'pnpm-lock.yaml')) && isAvailable('pnpm')) return 'pnpm';
+  if (require('node:fs').existsSync(path.join(root, 'yarn.lock')) && isAvailable('yarn')) return 'yarn';
+  if ((require('node:fs').existsSync(path.join(root, 'bun.lockb')) ||
+      require('node:fs').existsSync(path.join(root, 'bun.lock'))) && isAvailable('bun')) return 'bun';
   return 'npm';
 }
 
@@ -260,7 +276,16 @@ function createPreviewRuntime({
     });
   }
 
+  function assertManagerAvailable(manager) {
+    if (isCommandAvailable(manager)) return;
+    throw new Error(
+      `${manager} was not found on PATH, so the preview cannot install or start dependencies. ` +
+      'Install Node.js (it includes npm), then retry. You can also open the System terminal tab and install a package manager there.'
+    );
+  }
+
   async function installDependencies(manager, root, workspaceId) {
+    assertManagerAvailable(manager);
     const child = spawnCommand(manager, PACKAGE_MANAGERS[manager].installArgs, root);
     processes.set(workspaceId, { child, url: null, rejectReady: null });
     try {
@@ -404,6 +429,7 @@ function createPreviewRuntime({
     const script = getPreviewScript(manifest);
 
     const manager = getPackageManager(manifest, root);
+    assertManagerAvailable(manager);
     const missingDependencies = await findMissingDependencies(manifest, root);
     if (missingDependencies.length > 0) {
       emit(workspaceId, 'status', `Installing ${missingDependencies.length} missing project dependencies...`);

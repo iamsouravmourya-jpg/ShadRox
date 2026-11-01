@@ -12,6 +12,7 @@ import {
 import {
   BODY_LIMITS,
   FIELD_LIMITS,
+  RequestRejectedError,
   chatMessages,
   clampedNumber,
   enumValue,
@@ -19,8 +20,9 @@ import {
   optionalKey,
   optionalString
 } from '../_validate.js';
-import { ADAPTERS, resolveKeyAccess } from './_access.js';
+import { ADAPTERS, parseProviderId, resolveKeyAccess } from './_access.js';
 import { budgetRequest } from './_budget.js';
+import { resolveCustomEndpoint } from './_endpoint.js';
 import {
   checkSharedKeySpend,
   clientIp,
@@ -32,7 +34,8 @@ import type { ChatMessage, ChatRequestBody, ProviderId } from './_types.js';
 
 const PROVIDER_LABEL: Record<ProviderId, string> = {
   gemini: 'Google Gemini',
-  groq: 'Groq'
+  groq: 'Groq',
+  custom: 'your custom endpoint'
 };
 
 export const config = { maxDuration: 60 };
@@ -72,14 +75,24 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   let thinking: ChatRequestBody['thinking'];
   let apiKey: string | undefined;
   let provider: ProviderId;
+  let baseUrl: string | undefined;
   let model: string;
 
   try {
     const raw = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.chat });
-    provider = enumValue<ProviderId>(raw, 'provider', ['gemini', 'groq'], 'gemini');
+    provider = parseProviderId(raw);
     const adapter = ADAPTERS[provider];
     model = optionalString(raw, 'model', FIELD_LIMITS.modelChars).trim() || adapter.defaultModel;
     apiKey = optionalKey(raw);
+    if (provider === 'custom') {
+      baseUrl = resolveCustomEndpoint(raw.baseUrl);
+      if (!model) {
+        throw new RequestRejectedError(
+          400,
+          'Custom endpoint par model id chahiye. Settings → Models & Keys me endpoint verify karo ya “Model ids” me id daalo.'
+        );
+      }
+    }
 
     // Length + per-element caps happen before anything can spend a key.
     rawMessages = chatMessages(raw).filter((message) => message.content.trim().length > 0);
@@ -124,7 +137,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   // Shared-key traffic only: a best-effort, in-process per-IP brake. BYOK calls
   // cost the operator nothing, so they never pass through this gate.
   const decision = checkSharedKeySpend('chat', clientIp(req), byok);
-  if (!decision.allowed) {
+  if ('retryAfterSeconds' in decision) {
     res.setHeader('Retry-After', String(decision.retryAfterSeconds));
     sendError(res, 429, rateLimitedMessage(decision.retryAfterSeconds));
     return;
@@ -203,6 +216,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         provider,
         model,
         apiKey: spendKey,
+        baseUrl,
         messages: budget.messages,
         systemInstruction: budget.systemInstruction,
         temperature,

@@ -129,7 +129,7 @@ export function useAuth() {
           error: params.get('error') ?? undefined,
           error_description: params.get('error_description') ?? undefined
         });
-        if (!parsed.ok) {
+        if ('message' in parsed) {
           if (!cancelled) fail(parsed.message);
           return;
         }
@@ -199,7 +199,7 @@ export function useAuth() {
           error: params.error,
           error_description: params.error_description
         });
-        if (!parsed.ok) throw new Error(parsed.message);
+        if ('message' in parsed) throw new Error(parsed.message);
         const session = await exchangeCode(config, parsed.code, verifier);
         await applySession(config, session);
         return;

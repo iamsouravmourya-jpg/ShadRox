@@ -6,6 +6,8 @@ export interface CompletionRequest {
   adapter: ProviderAdapter;
   model: string;
   apiKey: string;
+  /** Validated base URL for the custom endpoint adapter. */
+  baseUrl?: string;
   prompt: string;
   systemInstruction?: string;
   temperature?: number;
@@ -25,7 +27,7 @@ export interface CompletionResult {
  * routes that need a whole answer at once: tab completion and commit messages.
  */
 export async function completeOnce(request: CompletionRequest): Promise<CompletionResult> {
-  const { adapter, model, apiKey, prompt, temperature, thinking, signal } = request;
+  const { adapter, model, apiKey, baseUrl, prompt, temperature, thinking, signal } = request;
   const maxChars = request.maxChars ?? 4_000;
 
   let messages: ChatMessage[] = [{ role: 'user', content: prompt }];
@@ -48,6 +50,7 @@ export async function completeOnce(request: CompletionRequest): Promise<Completi
         provider: adapter.id,
         model,
         apiKey,
+        baseUrl,
         messages,
         systemInstruction,
         temperature: temperature ?? 0.2,

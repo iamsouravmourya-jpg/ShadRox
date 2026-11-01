@@ -29,6 +29,12 @@ const {
   getPreviewScript
 } = require('./preview-runtime.cjs');
 const { createUpdater } = require('./updater.cjs');
+const { createTypeScriptService } = require('./ts-service.cjs');
+const { verifyChangeSet } = require('./change-verify.cjs');
+const { injectSourceBridge, shouldInject } = require('./preview-source.cjs');
+const { stripContentSecurityPolicyMeta, isHtmlDocument } = require('./csp-strip.cjs');
+const { listUnmergedPaths } = require('./git-conflicts.cjs');
+const { resolveTerminalPlan } = require('./terminal-modes.cjs');
 
 const PREVIEW_SCHEME = 'shadrox-preview';
 const APP_BACKGROUND = '#090a0d';
@@ -73,6 +79,9 @@ let gitEnvironment = null;
 let gitSafetyCache = { root: null, context: null };
 const previewRuntime = createPreviewRuntime({
   onOutput: (output) => mainWindow?.webContents.send('preview:output', output)
+});
+const typeScriptService = createTypeScriptService({
+  getWorkspace: (id) => workspaceAccess.getWorkspace(id)
 });
 
 const PREVIEW_ENTRY_CANDIDATES = [
@@ -341,7 +350,7 @@ function parseByteRange(value, size) {
   return { start, end };
 }
 
-function createPreviewFileResponse(request, url, file) {
+async function createPreviewFileResponse(request, url, file, root) {
   const headers = {
     'Accept-Ranges': 'bytes',
     'Cache-Control': 'no-store',
@@ -374,6 +383,28 @@ function createPreviewFileResponse(request, url, file) {
 
   if ((request.method || 'GET').toUpperCase() === 'HEAD' || file.stat.size === 0) {
     return new Response(null, { status, headers });
+  }
+
+  // Static HTML gets the click-to-source bridge. Ranged or oversized responses
+  // keep streaming: rewriting a slice would corrupt the body.
+  const relativePath = path.relative(root, file.filePath).split(path.sep).join('/');
+  if (
+    !range &&
+    (request.method || 'GET').toUpperCase() === 'GET' &&
+    file.stat.size <= 2 * 1024 * 1024 &&
+    shouldInject(relativePath, headers['Content-Type'])
+  ) {
+    try {
+      const html = await fs.promises.readFile(file.filePath, 'utf8');
+      const served = isHtmlDocument(relativePath, headers['Content-Type'])
+        ? stripContentSecurityPolicyMeta(html)
+        : html;
+      const body = injectSourceBridge(served, { fileName: relativePath });
+      headers['Content-Length'] = String(Buffer.byteLength(body, 'utf8'));
+      return new Response(body, { status, headers });
+    } catch (error) {
+      console.error(`[desktop] Preview source bridge failed for ${file.filePath}:`, error);
+    }
   }
 
   const stream = fs.createReadStream(
@@ -453,16 +484,16 @@ async function servePreviewRequest(request) {
       });
     }
     const indexFile = await resolvePreviewFile(root, [...segments, 'index.html'].join('/'));
-    if (indexFile) return createPreviewFileResponse(request, url, indexFile);
+    if (indexFile) return createPreviewFileResponse(request, url, indexFile, root);
   }
 
   const file = await resolvePreviewCandidate(root, segments);
-  if (file) return createPreviewFileResponse(request, url, file);
+  if (file) return createPreviewFileResponse(request, url, file, root);
 
   const acceptsHtml = (request.headers.get('accept') || '').includes('text/html');
   if (acceptsHtml) {
     const entry = await findStaticPreviewFile(root);
-    if (entry) return createPreviewFileResponse(request, url, entry);
+    if (entry) return createPreviewFileResponse(request, url, entry, root);
   }
 
   if (path.posix.basename(url.pathname) === 'favicon.ico') {
@@ -522,7 +553,18 @@ function assertTrustedRenderer(event) {
   }
 }
 
+function terminalDescriptor(sessionId, sessionInfo, workspace) {
+  return {
+    sessionId,
+    mode: sessionInfo.mode,
+    label: sessionInfo.label,
+    title: path.basename(workspace.root),
+    cwd: workspace.root
+  };
+}
+
 function stopWorkspaceServices(workspaceId) {
+  typeScriptService.closeWorkspace(workspaceId);
   const watcher = workspaceWatchers.get(workspaceId);
   if (watcher) {
     workspaceWatchers.delete(workspaceId);
@@ -630,7 +672,10 @@ function executeCommand(command, cwd) {
       cwd,
       timeout: 120_000,
       maxBuffer: 2 * 1024 * 1024,
-      windowsHide: true
+      windowsHide: true,
+      // Same credential-scrubbed environment the AI terminal tab runs in, so a
+      // command the assistant types can never read a stored key out of `$env`.
+      env: resolveTerminalPlan({ mode: 'agent' }).env
     }, (error, stdout, stderr) => {
       resolve({
         stdout: String(stdout || ''),
@@ -1031,27 +1076,40 @@ function registerIpcHandlers() {
     workspaceAccess.discardTransaction(workspaceId, transactionId);
   });
 
-  ipcMain.handle('terminal:create', async (event, workspaceId, cols = 100, rows = 30) => {
+  ipcMain.handle('workspace:verify-change-set', async (event, workspaceId, files) => {
+    assertTrustedRenderer(event);
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    // A file-only workspace is rooted at its containing directory and saveFiles
+    // already refuses paths outside it, so the same root is a valid boundary here.
+    if (!workspace?.root) {
+      throw new Error('Change verification requires an opened workspace.');
+    }
+    return verifyChangeSet({ root: workspace.root, files });
+  });
+
+  ipcMain.handle('terminal:create', async (event, workspaceId, cols = 100, rows = 30, mode = 'system') => {
     assertTrustedRenderer(event);
     if (!pty) throw new Error('Interactive terminal support is unavailable. Reinstall the desktop dependencies and restart ShadRox.');
     const workspace = workspaceAccess.getWorkspace(workspaceId);
-    if (!workspace || workspace.mode !== 'folder') throw new Error('Terminal sessions require an opened folder workspace.');
+    if (!workspace) throw new Error('The terminal needs an opened workspace.');
+    const requestedMode = mode === 'agent' ? 'agent' : 'system';
+    const existing = [...terminalSessions].find(([, info]) => info.workspaceId === workspaceId && info.mode === requestedMode);
+    if (existing) return terminalDescriptor(existing[0], existing[1], workspace);
+    const plan = resolveTerminalPlan({ env: process.env, mode: requestedMode });
     const sessionId = randomUUID();
-    const shellPath = process.platform === 'win32' ? (process.env.ComSpec || 'powershell.exe') : (process.env.SHELL || '/bin/zsh');
-    const shellArgs = process.platform === 'win32' && /powershell/i.test(shellPath) ? ['-NoLogo'] : [];
-    const terminal = pty.spawn(shellPath, shellArgs, {
+    const terminal = pty.spawn(plan.shellPath, plan.shellArgs, {
       name: 'xterm-256color', cols: Math.max(20, Math.min(400, Number(cols) || 100)), rows: Math.max(5, Math.min(200, Number(rows) || 30)),
-      cwd: workspace.root, env: { ...process.env, TERM: 'xterm-256color' }, useConpty: process.platform === 'win32',
+      cwd: workspace.root, env: { ...plan.env, TERM: 'xterm-256color' }, useConpty: process.platform === 'win32',
       windowsHide: true
     });
-    const sessionInfo = { workspaceId, terminal };
+    const sessionInfo = { workspaceId, mode: plan.mode, label: plan.label, terminal };
     terminalSessions.set(sessionId, sessionInfo);
     terminal.onData((data) => mainWindow?.webContents.send('terminal:output', { workspaceId, sessionId, type: 'data', data }));
     terminal.onExit(({ exitCode }) => {
       terminalSessions.delete(sessionId);
       mainWindow?.webContents.send('terminal:output', { workspaceId, sessionId, type: 'exit', exitCode });
     });
-    return { sessionId, title: path.basename(workspace.root) };
+    return terminalDescriptor(sessionId, sessionInfo, workspace);
   });
 
   ipcMain.handle('terminal:write', async (event, workspaceId, sessionId, data) => {
@@ -1220,6 +1278,51 @@ function registerIpcHandlers() {
       log: truncateText(log.stdout, 2_000),
       dirty: status.stdout.split('\n').filter((line) => line && !line.startsWith('##')).length
     };
+  });
+
+  ipcMain.handle('git:conflicts', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    if (!workspace || workspace.mode !== 'folder') return { isRepo: false, paths: [] };
+    if (!gitExecutable || isPathInsideDirectory(workspace.root, gitExecutable)) return { isRepo: false, paths: [] };
+
+    const context = await gitSafetyContext(workspace.root);
+    const probe = await runGit(workspace.root, context.probeArgs);
+    if (!probe.ok || probe.stdout.trim() !== 'true') return { isRepo: false, paths: [] };
+
+    // Index-only reads: no working-tree conversion, so no filter drivers apply.
+    const runIndex = (argv) =>
+      runGit(workspace.root, buildGitArgv(argv, { safeDirectories: [workspace.root] }));
+    try {
+      return { isRepo: true, paths: await listUnmergedPaths(runIndex) };
+    } catch {
+      return { isRepo: true, paths: [] };
+    }
+  });
+
+  ipcMain.handle('ts:diagnostics', async (event, workspaceId, overrides) => {
+    assertTrustedRenderer(event);
+    return typeScriptService.diagnostics(workspaceId, overrides);
+  });
+
+  ipcMain.handle('ts:definition', async (event, workspaceId, relativePath, line, character, overrides) => {
+    assertTrustedRenderer(event);
+    return typeScriptService.definition(workspaceId, relativePath, line, character, overrides);
+  });
+
+  ipcMain.handle('ts:references', async (event, workspaceId, relativePath, line, character, overrides) => {
+    assertTrustedRenderer(event);
+    return typeScriptService.references(workspaceId, relativePath, line, character, overrides);
+  });
+
+  ipcMain.handle('ts:outline', async (event, workspaceId, relativePath, overrides) => {
+    assertTrustedRenderer(event);
+    return typeScriptService.outline(workspaceId, relativePath, overrides);
+  });
+
+  ipcMain.handle('ts:workspace-symbols', async (event, workspaceId, query, overrides) => {
+    assertTrustedRenderer(event);
+    return typeScriptService.symbols(workspaceId, query, overrides);
   });
 
   ipcMain.handle('updater:check', async (event) => {

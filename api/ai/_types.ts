@@ -1,4 +1,4 @@
-export type ProviderId = 'gemini' | 'groq';
+export type ProviderId = 'gemini' | 'groq' | 'custom';
 
 export type ChatRole = 'user' | 'assistant' | 'system';
 
@@ -18,6 +18,8 @@ export interface ChatRequestBody {
   provider?: ProviderId;
   model?: string;
   apiKey?: string;
+  /** Caller-supplied base URL for `provider: 'custom'`; ignored by the others. */
+  baseUrl?: string;
   messages?: ChatMessageInput[];
   systemInstruction?: string;
   temperature?: number;
@@ -31,6 +33,8 @@ export interface StreamRequest {
   provider: ProviderId;
   model: string;
   apiKey: string;
+  /** Validated base URL; only set for `provider: 'custom'`. */
+  baseUrl?: string;
   messages: ChatMessage[];
   systemInstruction?: string;
   temperature: number;

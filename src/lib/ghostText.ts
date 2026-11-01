@@ -29,6 +29,8 @@ export interface GhostTextOptions extends FimRequestContext {
   /** Disables the feature without tearing the extension down. */
   enabled?: boolean;
   debounceMs?: number;
+  /** Called once for every suggestion the user accepts, so it can be billed. */
+  onAccepted?: () => void;
   /**
    * NOTE: there is deliberately no `temperature` here, and the chat
    * temperature must never be forwarded to a completion request. Tab
@@ -134,13 +136,10 @@ class GhostController {
     const controller = new AbortController();
     this.controller = controller;
     try {
+      // Passed whole: hand-listing these fields is how a custom endpoint's
+      // baseUrl once went missing and every keystroke came back as a 400.
       const result = await requestFimCompletion(
-        {
-          provider: this.options.provider,
-          model: this.options.model,
-          apiKey: this.options.apiKey,
-          language: this.options.language
-        },
+        this.options,
         prefix,
         suffix,
         controller.signal
@@ -171,6 +170,7 @@ class GhostController {
       userEvent: 'input.complete'
     });
     this.view.focus();
+    this.options.onAccepted?.();
     return true;
   }
 

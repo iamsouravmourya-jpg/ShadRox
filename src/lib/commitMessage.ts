@@ -8,6 +8,8 @@ import type { ProviderId } from './providers';
 
 export interface CommitAiOptions {
   provider: ProviderId;
+  /** Base URL of a BYOK custom endpoint. */
+  baseUrl?: string;
   model: string;
   apiKey?: string;
 }
