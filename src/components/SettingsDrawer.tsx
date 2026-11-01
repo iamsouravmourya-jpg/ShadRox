@@ -19,8 +19,8 @@ import {
   X,
   Zap
 } from 'lucide-react';
-import { PROVIDERS, getProviderMeta, type ModelInfo, type ModelTier, type ProviderId } from '../lib/providers';
-import { PLANS, PLANS_LOCKED, getPlanMeta } from '../lib/plans';
+import { PROVIDERS, ENDPOINT_PRESETS, findEndpointPreset, getProviderMeta, normalizeBaseUrl, type ModelInfo, type ModelTier, type ProviderId } from '../lib/providers';
+import { CREDIT_RATES, PLANS, PLANS_LOCKED, getPlanMeta } from '../lib/plans';
 import { SHARED_KEY_ENABLED } from '../lib/sharedKeyPolicy';
 import { UpdateCard } from './UpdateCard';
 import { getMonthlyUsage, resetMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
@@ -47,6 +47,12 @@ interface SettingsDrawerProps {
   keyStatus: Record<ProviderId, KeyStatus>;
   onValidateKey: (provider: ProviderId) => void;
   onForgetKey: (provider: ProviderId) => void;
+
+  /** Custom endpoint configuration. Only rendered when the provider is `custom`. */
+  baseUrl: string;
+  onBaseUrlChange: (value: string) => void;
+  extraModels: string[];
+  onExtraModelsChange: (modelIds: string[]) => void;
 
   models: ModelInfo[];
   selectedModel: string;
@@ -81,6 +87,7 @@ const TABS: Array<{ id: SettingsTab; label: string }> = [
 
 const TIER_BADGE: Record<ModelTier, string> = {
   free: 'text-violet-300 border-violet-300/25',
+  own: 'text-sky-300 border-sky-300/25',
   pro: 'text-amber-400 border-amber-900/60'
 };
 
@@ -108,6 +115,10 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     keyStatus,
     onValidateKey,
     onForgetKey,
+    baseUrl,
+    onBaseUrlChange,
+    extraModels,
+    onExtraModelsChange,
     models,
     selectedModel,
     onSelectModel,
@@ -140,6 +151,8 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
   const [newSecretValue, setNewSecretValue] = useState('');
 
   const [usage, setUsage] = useState<UsageState>(() => getMonthlyUsage(plan));
+  const [baseUrlDraft, setBaseUrlDraft] = useState(baseUrl);
+  const [extraModelsDraft, setExtraModelsDraft] = useState(extraModels.join(', '));
 
   useEffect(() => {
     setUsage(getMonthlyUsage(plan));
@@ -161,10 +174,16 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
 
   const currentMeta = getProviderMeta(activeProvider);
   const currentDraft = apiKeyDraft[activeProvider] ?? '';
+  const docsHref =
+    activeProvider === 'custom'
+      ? findEndpointPreset(baseUrlDraft)?.docsUrl ?? currentMeta.docsUrl
+      : currentMeta.docsUrl;
+  const keyDestination = activeProvider === 'custom' ? 'your endpoint' : currentMeta.label;
   const currentStatus = keyStatus[activeProvider];
   const currentSavedKey = currentStatus && currentStatus.state === 'ok';
   const hasStoredKey = currentDraft.trim().length > 0 || currentSavedKey;
   const currentPlan = getPlanMeta(plan);
+  const starterPlan = getPlanMeta('starter');
 
   const handleGithubConnect = async () => {
     if (!githubToken.trim()) return;
@@ -310,7 +329,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
               {/* Provider Selection */}
               <section>
                 <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">AI Provider</h3>
-                <div className="mt-2 grid grid-cols-2 gap-2">
+                <div className="mt-2 grid grid-cols-3 gap-2">
                   {PROVIDERS.map((provider) => (
                     <button
                       key={provider.id}
@@ -328,13 +347,85 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 </div>
               </section>
 
+              {currentMeta.needsBaseUrl && (
+                <section>
+                  <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">Endpoint</h3>
+                  <p className="mt-1 text-[11px] text-neutral-400">
+                    Any OpenAI-compatible server. Choose a preset or paste your own base URL — ShadRox calls
+                    /models and /chat/completions on it.
+                  </p>
+                  <select
+                    value={findEndpointPreset(baseUrlDraft)?.id ?? 'custom'}
+                    onChange={(event) => {
+                      const preset = ENDPOINT_PRESETS.find((entry) => entry.id === event.target.value);
+                      if (preset) {
+                        setBaseUrlDraft(preset.baseUrl);
+                        onBaseUrlChange(preset.baseUrl);
+                      }
+                    }}
+                    className="mt-2 w-full rounded-xl border border-white/[0.09] bg-ink-900 px-3 py-2 text-xs text-neutral-100 outline-none focus:border-violet-300/40"
+                  >
+                    {ENDPOINT_PRESETS.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label}
+                      </option>
+                    ))}
+                    <option value="custom">Custom / other gateway</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={baseUrlDraft}
+                    onChange={(event) => setBaseUrlDraft(event.target.value)}
+                    onBlur={() => {
+                      // Commit the normalised form so what is stored is what the
+                      // server will call (scheme added, trailing slash dropped).
+                      const committed = normalizeBaseUrl(baseUrlDraft);
+                      setBaseUrlDraft(committed);
+                      onBaseUrlChange(committed);
+                    }}
+                    placeholder="https://your-gateway.example.com/v1"
+                    spellCheck={false}
+                    autoComplete="off"
+                    className="mt-2 w-full rounded-xl border border-white/[0.09] bg-white/[0.03] px-3 py-2 text-xs font-mono text-neutral-100 outline-none transition-colors placeholder:text-neutral-700 focus:border-violet-300/40"
+                  />
+                  <p className="mt-1 text-[11px] text-neutral-500">
+                    Local servers (Ollama, LM Studio) work over http on your own machine. The URL is saved in
+                    plain settings — it is not a secret. Your key still goes to the encrypted store.
+                  </p>
+                  <label className="mt-3 block text-[11px] uppercase tracking-wider text-neutral-500">
+                    Model ids (optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={extraModelsDraft}
+                    onChange={(event) => setExtraModelsDraft(event.target.value)}
+                    onBlur={() =>
+                      onExtraModelsChange(
+                        extraModelsDraft
+                          .split(',')
+                          .map((entry) => entry.trim())
+                          .filter(Boolean)
+                      )
+                    }
+                    placeholder="meta-llama/Llama-3.3-70B, deepseek-v3"
+                    spellCheck={false}
+                    autoComplete="off"
+                    className="mt-1 w-full rounded-xl border border-white/[0.09] bg-white/[0.03] px-3 py-2 text-xs font-mono text-neutral-100 outline-none transition-colors placeholder:text-neutral-700 focus:border-violet-300/40"
+                  />
+                  <p className="mt-1 text-[11px] text-neutral-500">
+                    Comma-separated. Needed only when the endpoint does not list models; these ids are added to
+                    the picker.
+                  </p>
+                </section>
+              )}
+
               {/* API Key Input */}
               <section>
                 <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">
                   {currentMeta.label} API Key (BYOK)
                 </h3>
                 <p className="mt-1 text-[11px] text-neutral-400">
-                  {currentMeta.keyHint}. Keys are encrypted on this device (Windows DPAPI) and only sent to {currentMeta.label}.
+                  {currentMeta.keyHint}. Keys are encrypted on this device (Windows DPAPI) and only sent to {keyDestination}.
                 </p>
                 <div className="mt-2 flex gap-2">
                   <input
@@ -385,7 +476,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
 
                 <div className="mt-2 flex items-center justify-between gap-3">
                   <a
-                    href={currentMeta.docsUrl}
+                    href={docsHref}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1 text-[11px] text-neutral-500 hover:text-white"
@@ -423,7 +514,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                       <span className="text-xs text-neutral-200 font-medium">Use ShadRox Shared Key</span>
                       {SHARED_KEY_ENABLED ? (
                         <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/[.08] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300">
-                          Pro
+                          Paid plan
                         </span>
                       ) : (
                         <span className="shrink-0 flex items-center gap-1 rounded border border-white/10 bg-white/[.04] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-neutral-400">
@@ -434,15 +525,15 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     </span>
                     <span className="block text-[11px] text-neutral-400 mt-1">
                       {SHARED_KEY_ENABLED
-                        ? 'Run directly without bringing your own API key. Requests flow through our secure proxy for Pro-tier models.'
-                        : 'Beta me sirf apni key chalti hai (BYOK). Apni Gemini ya Groq key upar add karo — ShadRox ka shared key launch ke waqt chalu hoga.'}
+                        ? 'Run directly without bringing your own API key. Requests flow through our secure proxy, billed in plan credits.'
+                        : 'Beta me sirf apni key chalti hai (BYOK). Apni Gemini, Groq, ya koi bhi OpenAI-compatible endpoint key upar add karo — ShadRox ka shared key launch ke waqt chalu hoga.'}
                     </span>
                   </span>
                 </label>
                 {plan === 'free' && (
                   <button
                     type="button"
-                    onClick={() => onPlanChange('pro')}
+                    onClick={() => onPlanChange('starter')}
                     disabled={PLANS_LOCKED}
                     className={`mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border py-2 text-[11px] font-medium transition-colors ${
                       PLANS_LOCKED
@@ -451,7 +542,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     }`}
                   >
                     {PLANS_LOCKED ? <Lock className="w-3 h-3" /> : <Zap className="w-3 h-3" />}
-                    {PLANS_LOCKED ? 'Pro is locked during beta' : 'Upgrade to Pro (₹499/mo GST Included)'}
+                    {PLANS_LOCKED ? 'Starter is locked during beta' : `Upgrade to Starter (${starterPlan.price} — ${starterPlan.creditsPerMonth} credits)`}
                   </button>
                 )}
               </section>
@@ -535,10 +626,10 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 <div className="space-y-1.5 pt-1">
                   <div className="flex items-center justify-between text-xs font-mono">
                     <span className="text-neutral-400">
-                      Messages Used: <strong className="text-white">{usage.count}</strong> / {usage.isUnlimited ? 'Unlimited' : usage.limit}
+                      Credits used: <strong className="text-white">{Math.round(usage.used)}</strong> / {usage.isUnlimited ? 'Unlimited' : Math.round(usage.limit)}
                     </span>
                     <span className={usage.isCapReached ? 'text-rose-400 font-bold' : 'text-violet-300'}>
-                      {usage.isUnlimited ? 'Unlimited' : usage.remaining} remaining
+                      {usage.isUnlimited ? 'Unlimited' : Math.floor(usage.remaining)} remaining
                     </span>
                   </div>
 
@@ -566,7 +657,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   <button
                     type="button"
                     onClick={() => resetMonthlyUsage()}
-                    title="Reset message counter for testing"
+                    title="Reset credit counter for testing"
                     className="flex items-center gap-1 text-[10px] text-neutral-500 hover:text-white transition-colors cursor-pointer"
                   >
                     <RotateCcw className="w-3 h-3" />
@@ -575,17 +666,30 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 </div>
               </section>
 
+              <section className="rounded-xl border border-white/[0.07] bg-white/[.02] p-3">
+                <h3 className="text-[10px] uppercase tracking-wider text-neutral-500">What one credit buys</h3>
+                <ul className="mt-2 space-y-1 text-[11px] text-neutral-400">
+                  <li className="flex justify-between gap-2"><span>Chat, explain, plan</span><span className="font-mono text-neutral-300">{CREDIT_RATES.chatter} credit</span></li>
+                  <li className="flex justify-between gap-2"><span>A change applied to a file</span><span className="font-mono text-neutral-300">{CREDIT_RATES.codeEdit} credit</span></li>
+                  <li className="flex justify-between gap-2"><span>Premium-model refactor</span><span className="font-mono text-neutral-300">{CREDIT_RATES.premiumRefactor} credits</span></li>
+                  <li className="flex justify-between gap-2"><span>Accepted Tab completion</span><span className="font-mono text-neutral-300">{CREDIT_RATES.tabCompletion} credit</span></li>
+                </ul>
+                <p className="mt-2 text-[11px] text-neutral-500">
+                  Failed requests are never billed — a change only costs credit once it actually lands.
+                </p>
+              </section>
+
               <p className="text-[11px] text-neutral-400 leading-relaxed">
-                Free plan is unlimited BYOK — no message cap and ₹0 cost to you and ShadRox. Paid tiers are
-                locked during the beta; no upgrade or payment is processed yet.
+                Free plan is BYOK and unmetered — Gemini, Groq and your own local or remote endpoints have no
+                cap and cost ₹0 from ShadRox. Paid tiers bill credits for the ShadRox shared key only.
               </p>
 
               {PLANS_LOCKED && (
                 <div className="flex items-start gap-2 rounded-xl border border-violet-300/20 bg-violet-500/[.06] px-3 py-2.5 text-[11px] text-violet-200">
                   <Lock className="mt-0.5 w-3.5 h-3.5 shrink-0" />
                   <span>
-                    Plans are locked for the beta. You stay on Free BYOK (unlimited messages with your own
-                    key) and cannot switch to a paid tier.
+                    Plans are locked for the beta. You stay on Free BYOK (no cap, your own key) and cannot
+                    switch to a paid tier.
                   </span>
                 </div>
               )}
@@ -621,7 +725,9 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                             )}
                           </div>
                           <div className="text-[11px] text-violet-300 font-mono mt-0.5">
-                            {entry.monthlyCap === Infinity ? 'Unlimited' : entry.monthlyCap} messages / month
+                            {Number.isFinite(entry.creditsPerMonth)
+                              ? `${entry.creditsPerMonth.toLocaleString('en-IN')} credits / month`
+                              : 'Unlimited — BYOK, unmetered'}
                           </div>
                         </div>
 

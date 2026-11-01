@@ -1,4 +1,6 @@
-import type { WorkspaceFile } from './types';
+import { cosineSimilarity, mergeHybridScores } from './localEmbeddings';
+import type { LocalEmbedder } from './localEmbeddings';
+import type { WorkspaceFile, WorkspaceFileEntry } from './types';
 
 /**
  * Codebase retrieval.
@@ -20,6 +22,10 @@ const BM25_K1 = 1.4;
 const BM25_B = 0.75;
 /** A file whose name appears in the query is almost always the right answer. */
 const FILENAME_BOOST = 3;
+
+/** Semantic re-ranking only earns its latency over a shortlist, not the whole repo. */
+const SEMANTIC_CANDIDATE_LIMIT = 24;
+const HYBRID_WEIGHTS = { lexical: 1, semantic: 1 };
 
 const SYMBOL_PATTERN =
   /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:public\s+|private\s+|static\s+)?(function|class|interface|type|enum|const|let|var|def|fn|struct|impl|trait|func)\s+([A-Za-z_$][\w$]*)/;
@@ -145,6 +151,33 @@ function signatureOf(files: WorkspaceFile[]): string {
   return `${files.length}:${total}`;
 }
 
+export interface ChunkPiece {
+  path: string;
+  startLine: number;
+  endLine: number;
+  content: string;
+}
+
+/**
+ * The chunks BM25 sees, with their file attached and in stable index order.
+ * Hybrid retrieval embeds these, so both halves of the ranker must agree on
+ * exactly where a chunk begins and ends.
+ */
+export function buildChunksForTesting(files: WorkspaceFile[]): ChunkPiece[] {
+  const chunks: ChunkPiece[] = [];
+  files.forEach((file) => {
+    chunkFile(file).forEach((piece) => {
+      chunks.push({
+        path: file.name,
+        startLine: piece.startLine,
+        endLine: piece.endLine,
+        content: piece.content
+      });
+    });
+  });
+  return chunks;
+}
+
 let cachedIndex: CodeIndex | null = null;
 
 function buildIndex(files: WorkspaceFile[]): CodeIndex {
@@ -177,6 +210,67 @@ function buildIndex(files: WorkspaceFile[]): CodeIndex {
 
   cachedIndex = { signature, chunks, documentFrequency, averageLength };
   return cachedIndex;
+}
+
+export interface EmbeddingIndex {
+  signature: string;
+  chunks: ChunkPiece[];
+  vectors: number[][];
+  dimension: number;
+}
+
+let cachedEmbeddingIndex: EmbeddingIndex | null = null;
+
+/** Drops the vector cache. Only tests need this; retrieval reuses it by signature. */
+export function resetEmbeddingCache(): void {
+  cachedEmbeddingIndex = null;
+}
+
+function isValidVectorList(vectors: unknown, expected: number): boolean {
+  if (!Array.isArray(vectors) || vectors.length !== expected) return false;
+
+  let dimension = -1;
+  for (const vector of vectors) {
+    if (!Array.isArray(vector) || vector.length === 0) return false;
+    if (dimension === -1) dimension = vector.length;
+    else if (vector.length !== dimension) return false;
+    for (const value of vector) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return false;
+    }
+  }
+  return dimension > 0;
+}
+
+/**
+ * Embeds every chunk once per workspace signature.
+ *
+ * Embedding a repo is the expensive part of hybrid retrieval, so the vectors
+ * live in memory and are only rebuilt when the file set changes or a different
+ * embedder asks for them. A `null` embedder yields an empty index rather than
+ * an error — the caller simply has nothing semantic to rank with.
+ */
+export async function buildEmbeddingIndex(
+  files: WorkspaceFile[],
+  embedder: LocalEmbedder | null
+): Promise<EmbeddingIndex> {
+  const chunks = buildChunksForTesting(files);
+  const signature = `${signatureOf(files)}|${embedder ? embedder.id : 'none'}`;
+
+  if (cachedEmbeddingIndex && cachedEmbeddingIndex.signature === signature) return cachedEmbeddingIndex;
+  if (!embedder || chunks.length === 0) return { signature, chunks, vectors: [], dimension: 0 };
+
+  const vectors = await embedder.embed(chunks.map((chunk) => `${chunk.path}\n${chunk.content}`));
+  if (!isValidVectorList(vectors, chunks.length)) {
+    throw new Error('Embedding index failed: the embedder returned malformed vectors.');
+  }
+
+  cachedEmbeddingIndex = {
+    signature,
+    chunks,
+    vectors: vectors as number[][],
+    dimension: (vectors as number[][])[0].length
+  };
+  return cachedEmbeddingIndex;
 }
 
 function scoreChunk(chunk: CodeChunk, queryTerms: string[], index: CodeIndex): number {
@@ -218,6 +312,103 @@ export function buildRepoMap(files: WorkspaceFile[], maxChars = REPO_MAP_MAX_CHA
   return lines.join('\n');
 }
 
+const TREE_MAP_MAX_CHARS = 9_000;
+
+/**
+ * The same inventory without any file contents: every path the folder has,
+ * grouped by directory. A folder workspace loads no buffers until a tab is
+ * opened, so the content-based map above would be empty exactly when the model
+ * needs to know what exists. Directory grouping is what lets 200+ paths fit in
+ * a small budget, and one directory per line means a truncated list still
+ * shows which sub-projects exist.
+ */
+export function buildFileTreeMap(
+  entries: readonly WorkspaceFileEntry[],
+  maxChars = TREE_MAP_MAX_CHARS
+): string {
+  if (entries.length === 0) return '';
+
+  const directories: Array<{ dir: string; names: string[] }> = [];
+  const indexOfDirectory = new Map<string, number>();
+  for (const entry of entries) {
+    const clean = entry.path.replace(/\\/g, '/');
+    const slash = clean.lastIndexOf('/');
+    const dir = slash < 0 ? '' : clean.slice(0, slash);
+    const name = slash < 0 ? clean : clean.slice(slash + 1);
+    const index = indexOfDirectory.get(dir) ?? directories.length;
+    if (indexOfDirectory.get(dir) === undefined) indexOfDirectory.set(dir, index);
+    (directories[index] ??= { dir, names: [] }).names.push(name);
+  }
+
+  // Directories are listed shallow-first: the root and the top-level folders
+  // describe the project, so if the budget runs out it should cost the deep
+  // leaves rather than `src/`. Sorting by depth then name keeps the output
+  // byte-identical between requests, which is what makes prompt caching work.
+  directories.sort((a, b) => depthOf(a.dir) - depthOf(b.dir) || a.dir.localeCompare(b.dir));
+
+  // One line per directory with a capped number of names, so no single folder
+  // can fill the budget before an untouched folder is ever mentioned. Breadth
+  // first is what keeps a truncated list useful: the model still sees every
+  // part of the project and knows how many files it is not seeing.
+  // The cap grows shallower: the root holds the manifests, entry points and
+  // config that describe the whole project, and a model that cannot see a root
+  // file name has no way to ask for it. Deep leaf directories keep the small
+  // cap because their names repeat what their parent already says.
+  const namesPerDirectory = (depth: number) => (depth === 0 ? 48 : depth === 1 ? 16 : 8);
+  // Room kept for the header line and a possible truncation notice, so the
+  // returned string is always within `maxChars`.
+  const RESERVE_CHARS = 150;
+  const budget = Math.max(0, maxChars - RESERVE_CHARS);
+
+  const lines: string[] = [];
+  let used = 0;
+  let shownPaths = 0;
+  let droppedDirectories = 0;
+  let droppedFiles = 0;
+
+  for (let index = 0; index < directories.length; index += 1) {
+    const directory = directories[index];
+    const limit = namesPerDirectory(depthOf(directory.dir));
+    const shown = directory.names.slice(0, limit);
+    const rest = directory.names.length - shown.length;
+    const line = `${directory.dir ? `${directory.dir}/` : '(root)'} — ${shown.join(', ')}${rest > 0 ? `, … +${rest} more` : ''}`;
+    if (used + line.length + 1 > budget) {
+      for (const remaining of directories.slice(index)) {
+        droppedDirectories += 1;
+        droppedFiles += remaining.names.length;
+      }
+      break;
+    }
+    used += line.length + 1;
+    shownPaths += shown.length;
+    lines.push(line);
+  }
+
+  const notice = droppedDirectories > 0
+    ? `… ${droppedDirectories} more director(ies) with ${droppedFiles} file(s) not listed (path list truncated at this budget)`
+    : '';
+  const body = notice ? [...lines, notice] : lines;
+  const header = notice
+    ? `${shownPaths} of ${entries.length} file(s) listed by path; contents not included unless shown below:`
+    : `${entries.length} file(s), contents not included unless shown below:`;
+  return `${header}\n${body.join('\n')}`;
+}
+
+/** How many path segments deep a directory is, with the workspace root at 0. */
+function depthOf(directory: string): number {
+  return directory ? directory.split('/').length : 0;
+}
+
+/** The exact text a snippet costs against the context budget. */
+function formatSnippetBlock(snippet: {
+  path: string;
+  startLine: number;
+  endLine: number;
+  content: string;
+}): string {
+  return `### ${snippet.path}:${snippet.startLine}-${snippet.endLine}\n\`\`\`\n${snippet.content}\n\`\`\``;
+}
+
 /**
  * Picks the most relevant code for a prompt, inside a character budget.
  *
@@ -245,7 +436,7 @@ export function retrieveContext(files: WorkspaceFile[], query: string, budgetCha
     // One snippet per file is enough; the whole point is breadth.
     if (coveredPaths.has(chunk.path)) continue;
 
-    const block = `### ${chunk.path}:${chunk.startLine}-${chunk.endLine}\n\`\`\`\n${chunk.content}\n\`\`\``;
+    const block = formatSnippetBlock(chunk);
     if (used + block.length > budgetChars) continue;
 
     coveredPaths.add(chunk.path);
@@ -260,6 +451,72 @@ export function retrieveContext(files: WorkspaceFile[], query: string, budgetCha
   }
 
   return { repoMap, snippets, totalChars: used + repoMap.length };
+}
+
+/** Unique id for a snippet inside one retrieval pass. */
+function snippetKey(snippet: RetrievedSnippet, index: number): string {
+  return `${snippet.path}:${snippet.startLine}-${snippet.endLine}#${index}`;
+}
+
+/**
+ * Hybrid retrieval: BM25 shortlist, then a local embedding re-rank.
+ *
+ * Lexical recall stays in charge of *what* is fetched — embeddings only decide
+ * the order of the top candidates, so a workspace with 900 files never gets
+ * fully embedded to answer one question. The repo map always comes from the
+ * lexical pass.
+ *
+ * Every semantic failure path (no embedder, thrown import, wrong-shaped
+ * vectors) returns the lexical result untouched. That is the whole fallback
+ * contract: the caller never has to branch on availability.
+ */
+export async function retrieveContextSemantic(
+  files: WorkspaceFile[],
+  query: string,
+  budgetChars: number,
+  embedder: LocalEmbedder | null
+): Promise<RetrievalResult> {
+  const lexical = retrieveContext(files, query, budgetChars);
+  if (!embedder || lexical.snippets.length === 0) return lexical;
+
+  const candidates = lexical.snippets.slice(0, SEMANTIC_CANDIDATE_LIMIT);
+
+  try {
+    const vectors = await embedder.embed([query, ...candidates.map((snippet) => snippet.content)]);
+    if (!isValidVectorList(vectors, candidates.length + 1)) return lexical;
+
+    const queryVector = vectors[0];
+    const lexicalScores = candidates.map((snippet, index) => ({
+      id: snippetKey(snippet, index),
+      score: snippet.score
+    }));
+    const semanticScores = candidates.map((snippet, index) => ({
+      id: snippetKey(snippet, index),
+      score: cosineSimilarity(vectors[index + 1], queryVector)
+    }));
+
+    const byKey = new Map<string, RetrievedSnippet>();
+    candidates.forEach((snippet, index) => byKey.set(snippetKey(snippet, index), snippet));
+
+    const reordered: RetrievedSnippet[] = [];
+    let used = 0;
+
+    for (const entry of mergeHybridScores(lexicalScores, semanticScores, HYBRID_WEIGHTS)) {
+      const snippet = byKey.get(entry.id);
+      if (!snippet) continue;
+      const block = formatSnippetBlock(snippet);
+      // Re-ordering can only cost budget if a bigger block moves ahead of a
+      // smaller one; skipping it keeps the same invariant as the lexical pass.
+      if (used + block.length > budgetChars) continue;
+      used += block.length;
+      reordered.push({ ...snippet, score: entry.score });
+    }
+
+    if (reordered.length === 0) return lexical;
+    return { repoMap: lexical.repoMap, snippets: reordered, totalChars: used + lexical.repoMap.length };
+  } catch {
+    return lexical;
+  }
 }
 
 /** The retrieved snippets as standalone blocks, strongest match first. */

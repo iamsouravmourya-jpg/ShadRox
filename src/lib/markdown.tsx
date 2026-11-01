@@ -1,91 +1,252 @@
 import React from 'react';
 
 /**
- * Minimal dependency-free markdown renderer used for chat replies and .md previews.
- * Handles headings, bullet lists, fenced code blocks and plain paragraphs.
+ * Chat replies come back as markdown, and a model asked for a report answers in
+ * tables, bold verdicts and numbered steps. Rendering only whole lines left the
+ * user reading `**risk:**` and `|---|---|` as literal text — the answer looked
+ * like noise, which reads as the model being bad even when it is right. So this
+ * renderer covers the inline marks and tables, and nothing else: no HTML is
+ * ever emitted, and a link is only a link when it starts with http(s).
  */
-export function renderMarkdownContent(content: string): React.ReactNode {
+
+export type InlineToken =
+  | { kind: 'text'; value: string }
+  | { kind: 'code'; value: string }
+  | { kind: 'bold'; value: string }
+  | { kind: 'link'; label: string; href: string };
+
+/**
+ * `*italic*` is deliberately absent: `*` is also the bullet marker, and
+ * `_…_` would italicise the underscores inside every snake_case path.
+ */
+const INLINE_PATTERN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\))/g;
+
+/** Splits one line into styled runs, keeping the plain text between them. */
+export function parseInline(line: string): InlineToken[] {
+  const tokens: InlineToken[] = [];
+  let cursor = 0;
+  for (const match of line.matchAll(INLINE_PATTERN)) {
+    const start = match.index ?? 0;
+    if (start > cursor) tokens.push({ kind: 'text', value: line.slice(cursor, start) });
+    const raw = match[0];
+    if (raw.startsWith('`')) tokens.push({ kind: 'code', value: raw.slice(1, -1) });
+    else if (raw.startsWith('**')) tokens.push({ kind: 'bold', value: raw.slice(2, -2) });
+    else {
+      const close = raw.indexOf('](');
+      tokens.push({ kind: 'link', label: raw.slice(1, close), href: raw.slice(close + 2, -1) });
+    }
+    cursor = start + raw.length;
+  }
+  if (cursor < line.length) tokens.push({ kind: 'text', value: line.slice(cursor) });
+  return tokens;
+}
+
+export type MarkdownBlock =
+  | { kind: 'heading'; level: 1 | 2 | 3; text: string }
+  | { kind: 'bullet'; text: string }
+  | { kind: 'ordered'; index: number; text: string }
+  | { kind: 'table'; header: string[]; rows: string[][] }
+  | { kind: 'code'; lines: string[] }
+  | { kind: 'space' }
+  | { kind: 'paragraph'; text: string };
+
+function splitTableRow(line: string): string[] {
+  return line.replace(/^\||\|$/g, '').split('|').map((cell) => cell.trim());
+}
+
+/** True for the `|---|:--:|` line that separates a table header from its rows. */
+function isTableDivider(line: string): boolean {
+  return /^\s*\|?[\s:|-]+\|?\s*$/.test(line) && line.includes('-');
+}
+
+export function parseMarkdownBlocks(content: string): MarkdownBlock[] {
   const lines = content.split('\n');
-  const blocks: React.ReactNode[] = [];
-  let codeBuffer: string[] = [];
-  let inCodeBlock = false;
+  const blocks: MarkdownBlock[] = [];
+  let index = 0;
 
-  const flushCode = (key: string) => {
-    if (codeBuffer.length === 0) return;
-    blocks.push(
-      <pre
-        key={key}
-        className="bg-neutral-950 border border-neutral-800 rounded-lg p-3 overflow-x-auto text-[11px] leading-relaxed text-neutral-200 font-mono"
-      >
-        <code>{codeBuffer.join('\n')}</code>
-      </pre>
-    );
-    codeBuffer = [];
-  };
-
-  lines.forEach((line, idx) => {
+  while (index < lines.length) {
+    const line = lines[index];
     const trimmed = line.trim();
 
     if (trimmed.startsWith('```')) {
-      if (inCodeBlock) {
-        flushCode(`code-${idx}`);
-        inCodeBlock = false;
-      } else {
-        inCodeBlock = true;
+      const code: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith('```')) {
+        code.push(lines[index]);
+        index += 1;
       }
-      return;
+      index += 1;
+      if (code.length > 0) blocks.push({ kind: 'code', lines: code });
+      continue;
     }
 
-    if (inCodeBlock) {
-      codeBuffer.push(line);
-      return;
+    const heading = /^(#{1,3}) (.*)$/.exec(trimmed);
+    if (heading) {
+      blocks.push({ kind: 'heading', level: heading[1].length as 1 | 2 | 3, text: heading[2] });
+      index += 1;
+      continue;
     }
 
-    if (trimmed.startsWith('# ')) {
-      blocks.push(
-        <h1 key={idx} className="text-base font-bold text-white border-b border-neutral-800 pb-1">
-          {trimmed.slice(2)}
-        </h1>
-      );
-      return;
+    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      blocks.push({ kind: 'bullet', text: trimmed.slice(2) });
+      index += 1;
+      continue;
     }
-    if (trimmed.startsWith('## ')) {
-      blocks.push(
-        <h2 key={idx} className="text-sm font-semibold text-violet-300">
-          {trimmed.slice(3)}
-        </h2>
-      );
-      return;
+
+    const ordered = /^(\d{1,3})[.)] (.*)$/.exec(trimmed);
+    if (ordered) {
+      blocks.push({ kind: 'ordered', index: Number(ordered[1]), text: ordered[2] });
+      index += 1;
+      continue;
     }
-    if (trimmed.startsWith('### ')) {
-      blocks.push(
+
+    // A table is a `|` row followed by a divider row; anything else that starts
+    // with a pipe is prose and stays a paragraph.
+    if (trimmed.startsWith('|') && index + 1 < lines.length && isTableDivider(lines[index + 1])) {
+      const header = splitTableRow(trimmed);
+      const rows: string[][] = [];
+      index += 2;
+      while (index < lines.length && lines[index].trim().startsWith('|')) {
+        rows.push(splitTableRow(lines[index].trim()));
+        index += 1;
+      }
+      blocks.push({ kind: 'table', header, rows });
+      continue;
+    }
+
+    if (!trimmed) {
+      blocks.push({ kind: 'space' });
+      index += 1;
+      continue;
+    }
+
+    blocks.push({ kind: 'paragraph', text: line });
+    index += 1;
+  }
+
+  return blocks;
+}
+
+function inlineNodes(tokens: InlineToken[], keyPrefix: string): React.ReactNode[] {
+  return tokens.map((token, position) => {
+    const key = `${keyPrefix}-${position}`;
+    if (token.kind === 'code') {
+      return (
+        <code key={key} className="bg-neutral-800 text-violet-200 rounded px-1 py-px font-mono text-[11px]">
+          {token.value}
+        </code>
+      );
+    }
+    if (token.kind === 'bold') {
+      return (
+        <strong key={key} className="font-semibold text-neutral-100">
+          {token.value}
+        </strong>
+      );
+    }
+    if (token.kind === 'link') {
+      return (
+        <a key={key} href={token.href} target="_blank" rel="noreferrer" className="text-violet-300 underline">
+          {token.label}
+        </a>
+      );
+    }
+    return <React.Fragment key={key}>{token.value}</React.Fragment>;
+  });
+}
+
+/** Handles headings, bullet and numbered lists, tables, fenced code and inline marks. */
+export function renderMarkdownContent(content: string): React.ReactNode {
+  const blocks = parseMarkdownBlocks(content).map((block, idx) => {
+    if (block.kind === 'space') return <div key={idx} className="h-1" />;
+
+    if (block.kind === 'code') {
+      return (
+        <pre
+          key={idx}
+          className="bg-neutral-950 border border-neutral-800 rounded-lg p-3 overflow-x-auto text-[11px] leading-relaxed text-neutral-200 font-mono"
+        >
+          <code>{block.lines.join('\n')}</code>
+        </pre>
+      );
+    }
+
+    if (block.kind === 'heading') {
+      const text = inlineNodes(parseInline(block.text), `h-${idx}`);
+      if (block.level === 1) {
+        return (
+          <h1 key={idx} className="text-base font-bold text-white border-b border-neutral-800 pb-1">
+            {text}
+          </h1>
+        );
+      }
+      if (block.level === 2) {
+        return (
+          <h2 key={idx} className="text-sm font-semibold text-violet-300">
+            {text}
+          </h2>
+        );
+      }
+      return (
         <h3 key={idx} className="text-xs font-semibold text-neutral-200">
-          {trimmed.slice(4)}
+          {text}
         </h3>
       );
-      return;
     }
-    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-      blocks.push(
+
+    if (block.kind === 'bullet') {
+      return (
         <div key={idx} className="flex items-start gap-2 pl-1 text-neutral-300">
           <span className="text-violet-300 font-bold">•</span>
-          <span>{trimmed.slice(2)}</span>
+          <span>{inlineNodes(parseInline(block.text), `b-${idx}`)}</span>
         </div>
       );
-      return;
     }
-    if (!trimmed) {
-      blocks.push(<div key={idx} className="h-1" />);
-      return;
+
+    if (block.kind === 'ordered') {
+      return (
+        <div key={idx} className="flex items-start gap-2 pl-1 text-neutral-300">
+          <span className="text-violet-300 font-mono text-[11px] tabular-nums pt-px">{block.index}.</span>
+          <span>{inlineNodes(parseInline(block.text), `o-${idx}`)}</span>
+        </div>
+      );
     }
-    blocks.push(
+
+    if (block.kind === 'table') {
+      return (
+        <div key={idx} className="overflow-x-auto border border-neutral-800 rounded-lg">
+          <table className="w-full text-[11px] leading-relaxed border-collapse">
+            <thead>
+              <tr className="bg-neutral-900 text-neutral-200">
+                {block.header.map((cell, column) => (
+                  <th key={column} className="text-left font-semibold px-2 py-1 border-b border-neutral-800">
+                    {inlineNodes(parseInline(cell), `th-${idx}-${column}`)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, rowIdx) => (
+                <tr key={rowIdx} className="text-neutral-300">
+                  {row.map((cell, column) => (
+                    <td key={column} className="px-2 py-1 align-top border-b border-neutral-900">
+                      {inlineNodes(parseInline(cell), `td-${idx}-${rowIdx}-${column}`)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    return (
       <p key={idx} className="text-neutral-300 leading-relaxed">
-        {line}
+        {inlineNodes(parseInline(block.text), `p-${idx}`)}
       </p>
     );
   });
-
-  flushCode('code-final');
 
   return <div className="space-y-1.5 font-sans text-xs break-words">{blocks}</div>;
 }

@@ -93,7 +93,7 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
             <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-400/70" />
             <span>
               Sign-in creates only your account row (email and name). ShadRox never receives your code, your project files, or your
-              Gemini/Groq key.
+              BYOK key (Gemini, Groq, or your own endpoint).
             </span>
           </div>
         </div>

@@ -10,6 +10,7 @@ import {
   FileCode2,
   FileDiff,
   FileText,
+  History as HistoryIcon,
   Loader2,
   MessageSquarePlus,
   Mic,
@@ -28,6 +29,7 @@ import {
   Zap
 } from 'lucide-react';
 import { maskFileWrites, renderMarkdownContent } from '../lib/markdown';
+import { TimelineSlider } from './TimelineSlider';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 import { getRefineMode, REFINE_MODES } from '../lib/ai';
 import { getProviderMeta, type ModelInfo, type ModelTier } from '../lib/providers';
@@ -79,6 +81,9 @@ interface ChatPanelProps {
   onRejectPatch: (messageId: string, patchIndex: number) => void;
   onAcceptAllPatches: (messageId: string) => void;
   onUndoPatch: (messageId: string, patchIndex: number) => void;
+  /** Type errors the applied change set introduced, keyed by assistant message. */
+  typeFixCounts?: Record<string, number>;
+  onFixTypeErrors?: (messageId: string) => void;
   onResume: (messageId: string) => void;
   /** One-line notice when a request had to be degraded to fit the context window. */
   contextNotice?: string | null;
@@ -87,7 +92,14 @@ interface ChatPanelProps {
 
 const TIER_STYLES: Record<ModelTier, string> = {
   free: 'text-violet-300 border-violet-300/25 bg-violet-500/10',
+  own: 'text-sky-300 border-sky-300/25 bg-sky-500/10',
   pro: 'text-amber-400 border-amber-900/60 bg-amber-950/30'
+};
+
+const TIER_GROUP_LABEL: Record<ModelTier, string> = {
+  free: 'Free tier models',
+  own: 'Your endpoint',
+  pro: 'Pro tier models'
 };
 
 const MODE_ICONS: Record<RefineMode, typeof Code2> = {
@@ -137,6 +149,8 @@ export function ChatPanel({
   onRejectPatch,
   onAcceptAllPatches,
   onUndoPatch,
+  typeFixCounts,
+  onFixTypeErrors,
   onResume,
   contextNotice = null,
   onDismissContextNotice
@@ -146,6 +160,8 @@ export function ChatPanel({
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [isTimelineOpen, setIsTimelineOpen] = useState(false);
+  const [timelineSelectedId, setTimelineSelectedId] = useState<string | null>(null);
   const speech = useSpeechRecognition('en-US');
   const activeMode = getRefineMode(refineMode);
 
@@ -196,10 +212,11 @@ export function ChatPanel({
           icon: 'text-violet-300'
         };
 
-  const proPlan = getPlanMeta('pro');
+  const starterPlan = getPlanMeta('starter');
 
   const groupedModels: Record<ModelTier, ModelInfo[]> = {
     free: models.filter((model) => model.tier === 'free'),
+    own: models.filter((model) => model.tier === 'own'),
     pro: models.filter((model) => model.tier === 'pro')
   };
 
@@ -231,25 +248,43 @@ export function ChatPanel({
             onClick={() => onOpenSettings('PLAN')}
             title={
               usage.isUnlimited
-                ? `Monthly chat quota: unlimited (${usage.count} messages used this month)`
-                : `Monthly chat quota: ${usage.count}/${usage.limit} messages used (${usage.remaining} remaining this month)`
+                ? `Bring your own key — no cap (${Math.round(usage.used)} credits used this month)`
+                : `Credits: ${Math.round(usage.used)}/${Math.round(usage.limit)} used this month (${Math.floor(usage.remaining)} left)`
             }
             className={`flex items-center gap-1 rounded-full px-2 py-1 border text-[10px] tracking-wide transition-colors cursor-pointer ${quotaTone.pill}`}
           >
             <Zap className={`w-3 h-3 ${quotaTone.icon}`} />
-            <span className="font-mono">{usage.count}/{usage.isUnlimited ? '∞' : usage.limit}</span>
+            <span className="font-mono">{Math.round(usage.used)}/{usage.isUnlimited ? '∞' : Math.round(usage.limit)}</span>
           </button>
 
           {plan === 'free' && !PLANS_LOCKED && (
             <button
               type="button"
               onClick={() => onOpenSettings('PLAN')}
-              title={`Pro plan: ${proPlan.price} (GST included) — ${proPlan.monthlyCap} messages & shared key`}
+              title={`Starter plan: ${starterPlan.price} — ${starterPlan.creditsPerMonth} credits & shared key`}
               className="hidden sm:flex items-center gap-1 px-2 py-1 border border-amber-900/60 text-amber-400 text-[10px] uppercase tracking-wide hover:bg-amber-950/30 transition-colors cursor-pointer"
             >
               Upgrade
             </button>
           )}
+
+          <button
+            type="button"
+            onClick={() => {
+              setIsTimelineOpen((open) => !open);
+              setTimelineSelectedId(checkpoints[0]?.id ?? null);
+            }}
+            disabled={checkpoints.length === 0}
+            title={checkpoints.length === 0 ? 'Checkpoints appear after the first assistant reply' : 'Checkpoint timeline'}
+            className={`relative p-1.5 transition-colors cursor-pointer disabled:opacity-30 ${isTimelineOpen ? 'text-emerald-300' : 'text-neutral-500 hover:text-white'}`}
+          >
+            <HistoryIcon className="w-3.5 h-3.5" />
+            {checkpoints.length > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 rounded-full bg-emerald-500/80 px-1 text-[8px] font-mono text-black">
+                {checkpoints.length}
+              </span>
+            )}
+          </button>
 
           <button
             type="button"
@@ -284,14 +319,14 @@ export function ChatPanel({
               }}
               className="w-full px-3 py-4 text-left text-xs text-neutral-400 hover:text-white cursor-pointer"
             >
-              No models available. Add your API key in Settings.
+              No models available. Add your API key — and for a custom endpoint its URL and model ids — in Settings.
             </button>
           ) : (
-            (['free', 'pro'] as ModelTier[]).map((tier) =>
+            (['free', 'own', 'pro'] as ModelTier[]).map((tier) =>
               groupedModels[tier].length === 0 ? null : (
                 <div key={tier}>
                   <div className="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-neutral-600">
-                    {tier === 'free' ? 'Free tier models' : 'Pro tier models'}
+                    {TIER_GROUP_LABEL[tier]}
                   </div>
                   {groupedModels[tier].map((model) => (
                     <button
@@ -318,6 +353,18 @@ export function ChatPanel({
             )
           )}
         </div>
+      )}
+
+      {/* Checkpoint timeline */}
+      {isTimelineOpen && (
+        <TimelineSlider
+          checkpoints={checkpoints}
+          selectedId={timelineSelectedId}
+          onSelect={setTimelineSelectedId}
+          onRestore={onRestoreCheckpoint}
+          restoringId={restoringCheckpointId}
+          onClose={() => setIsTimelineOpen(false)}
+        />
       )}
 
       {/* Messages Scroll Area */}
@@ -413,6 +460,16 @@ export function ChatPanel({
                             />
                             Auto-apply
                           </label>
+                          {typeFixCounts?.[message.id] ? (
+                            <button
+                              type="button"
+                              onClick={() => onFixTypeErrors?.(message.id)}
+                              title="Ask the model to fix only the type errors this apply introduced"
+                              className="rounded-md border border-amber-700/50 bg-amber-950/40 px-2 py-0.5 text-[10px] font-semibold text-amber-200 transition-colors hover:bg-amber-900/40 cursor-pointer"
+                            >
+                              Fix {typeFixCounts[message.id]} type error{typeFixCounts[message.id] === 1 ? '' : 's'}
+                            </button>
+                          ) : null}
                           {pendingCount > 0 && (
                             <button
                               type="button"
@@ -705,7 +762,7 @@ export function ChatPanel({
           <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-rose-500/25 bg-rose-500/[.07] p-2 text-[11px] text-rose-300">
             <div className="flex items-center gap-1.5 min-w-0">
               <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-              <span className="truncate">Monthly cap reached ({usage.limit}/{usage.limit} msgs)</span>
+              <span className="truncate">Out of credits this month ({Math.round(usage.limit)}/{Math.round(usage.limit)})</span>
             </div>
             <button
               type="button"

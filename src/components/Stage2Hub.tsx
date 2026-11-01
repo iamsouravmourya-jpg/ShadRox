@@ -379,7 +379,9 @@ export function Stage2Hub({
                           </span>
                         </span>
                         <span className="text-[11px] shrink-0" style={{ color: '#3f3f46' }}>
-                          {entry.fileCount} files
+                          {entry.kind === 'folder'
+                            ? entry.fileCount > 0 ? `${entry.fileCount} files` : 'Folder'
+                            : `${entry.fileCount} file${entry.fileCount === 1 ? '' : 's'}`}
                         </span>
                       </span>
                       <span className="text-[11px] shrink-0 ml-4" style={{ color: '#3f3f46' }}>
@@ -402,7 +404,7 @@ export function Stage2Hub({
 
           {/* Bottom tagline */}
           <p className="mt-10 text-[11px]" style={{ color: '#3f3f46' }}>
-            Free &amp; BYOK — unlimited messages, ₹0 · Paid plans locked during beta
+            Free &amp; BYOK — no cap, ₹0 · Starter ₹399 + GST and Pro ₹999 + GST locked during beta
           </p>
         </div>
       </main>

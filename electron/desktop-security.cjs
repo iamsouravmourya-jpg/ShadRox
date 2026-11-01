@@ -524,5 +524,6 @@ module.exports = {
   isTrustedRendererEvent,
   nullDevice,
   parseGitConfig,
+  readEnvValue,
   resolveGitExecutable
 };

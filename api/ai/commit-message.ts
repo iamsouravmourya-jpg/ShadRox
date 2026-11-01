@@ -10,11 +10,12 @@ import {
 import {
   BODY_LIMITS,
   FIELD_LIMITS,
-  enumValue,
+  RequestRejectedError,
   optionalKey,
   optionalString
 } from '../_validate.js';
-import { ADAPTERS, resolveKeyAccess } from './_access.js';
+import { ADAPTERS, parseProviderId, resolveKeyAccess } from './_access.js';
+import { resolveCustomEndpoint } from './_endpoint.js';
 import { completeOnce } from './_completion.js';
 import { checkSharedKeySpend, clientIp, outputCeiling, rateLimitedMessage } from './_spendGuard.js';
 import type { ProviderId } from './_types.js';
@@ -44,15 +45,23 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   let provider: ProviderId;
   let model: string;
   let apiKey: string | undefined;
+  let baseUrl: string | undefined;
   let status: string;
   let diff: string;
   let log: string;
 
   try {
     const body = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.commitMessage });
-    provider = enumValue<ProviderId>(body, 'provider', ['gemini', 'groq'], 'gemini');
-    model = optionalString(body, 'model', FIELD_LIMITS.modelChars).trim() || ADAPTERS[provider].defaultModel;
+    provider = parseProviderId(body);
+    model = optionalString(body, 'model', FIELD_LIMITS.modelChars).trim();
     apiKey = optionalKey(body);
+    if (provider === 'custom') {
+      baseUrl = resolveCustomEndpoint(body.baseUrl);
+      // Unlike tab completion, this is a deliberate click: say what is missing.
+      if (!model) throw new RequestRejectedError(400, 'Custom endpoint par model id chahiye — Settings → Models & Keys me endpoint verify karo ya “Model ids” me id daalo.');
+    } else {
+      model = model || ADAPTERS[provider].defaultModel;
+    }
     status = optionalString(body, 'status', FIELD_LIMITS.commitStatusChars);
     diff = optionalString(body, 'diff', FIELD_LIMITS.commitDiffChars);
     log = optionalString(body, 'log', FIELD_LIMITS.commitLogChars);
@@ -71,7 +80,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   const { apiKey: spendKey, byok } = resolved.access;
 
   const decision = checkSharedKeySpend('completion', clientIp(req), byok);
-  if (!decision.allowed) {
+  if ('retryAfterSeconds' in decision) {
     res.setHeader('Retry-After', String(decision.retryAfterSeconds));
     sendError(res, 429, rateLimitedMessage(decision.retryAfterSeconds));
     return;
@@ -98,6 +107,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       adapter,
       model,
       apiKey: spendKey,
+      baseUrl,
       prompt,
       systemInstruction: SYSTEM_INSTRUCTION,
       temperature: 0.3,

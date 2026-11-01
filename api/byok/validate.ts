@@ -10,9 +10,10 @@ import {
 import {
   BODY_LIMITS,
   FIELD_LIMITS,
-  RequestRejectedError,
   requiredString
 } from '../_validate.js';
+import { parseProviderId } from '../ai/_access.js';
+import { resolveCustomEndpoint } from '../ai/_endpoint.js';
 import type { ProviderId } from '../ai/_types.js';
 
 interface RawModel {
@@ -107,8 +108,61 @@ async function listGroqModels(apiKey: string): Promise<RawModel[]> {
 }
 
 /**
+ * OpenAI-compatible `/models` listing for a user-supplied endpoint.
+ *
+ * Gateways differ: some return `{data: []}`, others `{models: []}`, and a few
+ * (mostly local runners) do not implement the route at all. A missing listing
+ * is not a failed key, so 404/405/501 come back as an empty list — Settings
+ * then asks the user to type the model ids instead of refusing the endpoint.
+ */
+export async function listCustomModels(baseUrl: string, apiKey: string): Promise<RawModel[]> {
+  const response = await fetch(`${baseUrl}/models`, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: 'application/json'
+    }
+  });
+
+  if (response.status === 404 || response.status === 405 || response.status === 501) {
+    return [];
+  }
+
+  const text = await response.text();
+  let data: {
+    data?: Array<{ id?: string; context_window?: number; supports?: { chat?: boolean } }>;
+    models?: Array<{ id?: string; name?: string; context_window?: number }>;
+    error?: { message?: string };
+  };
+  try {
+    data = JSON.parse(text) as typeof data;
+  } catch {
+    throw new Error('Endpoint ne /models par JSON nahi bheja. Model id manually daalo.');
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      sanitizeErrorMessage(
+        data?.error?.message || 'Endpoint ne is API key ko reject kar diya.',
+        'Endpoint ne is API key ko reject kar diya.'
+      )
+    );
+  }
+
+  const rows = data?.data || data?.models || [];
+  const models: RawModel[] = [];
+  for (const model of rows) {
+    const id = (model.id || (model as { name?: string }).name || '').trim();
+    if (!id) continue;
+    if ((model as { supports?: { chat?: boolean } }).supports?.chat === false) continue;
+    models.push({ id, contextWindow: model.context_window });
+    if (models.length === MAX_LISTED_MODELS) break;
+  }
+  return models;
+}
+
+/**
  * POST /api/byok/validate
- * Body: { provider: 'gemini' | 'groq', apiKey: string }
+ * Body: { provider, apiKey, baseUrl? }
  * Returns: { ok, provider, latencyMs, models }
  *
  * The key is used in-memory for a single upstream call. It is never logged
@@ -124,14 +178,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   let provider: ProviderId;
   let key: string;
+  // Empty unless the provider is custom, in which case resolveCustomEndpoint
+  // guarantees a vetted URL before any fetch happens.
+  let endpoint = '';
 
   try {
     const body = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.byokValidate });
-    if (body.provider !== 'gemini' && body.provider !== 'groq') {
-      throw new RequestRejectedError(400, 'Provider `gemini` ya `groq` hona chahiye.');
-    }
-    provider = body.provider;
+    provider = parseProviderId(body);
     key = requiredString(body, 'apiKey', FIELD_LIMITS.apiKeyChars, 'API key required hai.');
+    // A custom endpoint's URL is vetted before anything is fetched from it.
+    endpoint = provider === 'custom' ? resolveCustomEndpoint(body.baseUrl) : '';
   } catch (error) {
     if (sendIfRejected(res, error)) return;
     throw error;
@@ -140,9 +196,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   const startedAt = Date.now();
 
   try {
-    const models = provider === 'gemini' ? await listGeminiModels(key) : await listGroqModels(key);
+    const models =
+      provider === 'gemini'
+        ? await listGeminiModels(key)
+        : provider === 'groq'
+          ? await listGroqModels(key)
+          : await listCustomModels(endpoint, key);
 
-    if (models.length === 0) {
+    // Only Gemini and Groq promise a listing. A gateway that returns no models
+    // is still a working key — the user types the model ids in Settings.
+    if (models.length === 0 && provider !== 'custom') {
       sendError(res, 422, 'Key valid hai par is par koi chat model available nahi mila.');
       return;
     }

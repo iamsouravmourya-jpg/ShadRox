@@ -6,7 +6,13 @@ import { fileURLToPath } from 'node:url';
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectDirectory = path.resolve(scriptDirectory, '..');
 const stagingDirectory = path.join(projectDirectory, 'dist_staging');
-const outputDirectory = path.join(projectDirectory, 'dist_desktop');
+// This project lives inside OneDrive, and OneDrive can hold an open handle on a
+// build artifact long after electron-builder exits — the failure is a stale
+// `win-unpacked.tmp` that cannot be unlinked, which aborts the next packaging
+// run. Point the output somewhere unsynced when that happens.
+const outputDirectory = process.env.SHADROX_OUTPUT_DIR
+  ? path.resolve(projectDirectory, process.env.SHADROX_OUTPUT_DIR)
+  : path.join(projectDirectory, 'dist_desktop');
 const heapLimit = '--max-old-space-size=12288';
 const env = { ...process.env, NODE_OPTIONS: heapLimit };
 const isWindows = process.platform === 'win32';

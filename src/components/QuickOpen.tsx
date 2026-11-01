@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { FileCode2, Loader2, Search, X } from 'lucide-react';
-import type { DirectoryPage, ShadRoxDesktopAPI, WorkspaceSearchHit } from '../lib/desktop';
+import type {
+  DirectoryPage,
+  OutlineSymbol,
+  ShadRoxDesktopAPI,
+  TsFileOverride,
+  WorkspaceSearchHit,
+  WorkspaceSymbol
+} from '../lib/desktop';
+import { normalizeSlashes, relativeToRoot } from '../lib/diagnostics';
 import type { WorkspaceFile } from '../lib/types';
 
 interface QuickOpenProps {
@@ -9,6 +17,12 @@ interface QuickOpenProps {
   directoryPages?: Record<string, DirectoryPage>;
   desktop: ShadRoxDesktopAPI | null;
   nativeWorkspaceId: string | null;
+  /** Workspace-relative path of the active file, used by the `@` mode. */
+  activeFilePath?: string | null;
+  /** Absolute workspace root, used to display workspace symbols relatively. */
+  workspaceRootPath?: string | null;
+  /** Unsaved buffers sent with symbol requests. */
+  overrides?: TsFileOverride[];
   onOpenFile: (index: number) => void;
   onOpenPath: (path: string, line?: number, column?: number) => void;
   onClose: () => void;
@@ -17,6 +31,32 @@ interface QuickOpenProps {
 interface FileCandidate {
   path: string;
   index: number;
+}
+
+type PanelMode = 'files' | 'content' | 'outline' | 'symbols';
+
+const NO_OVERRIDES: TsFileOverride[] = [];
+
+const SYMBOL_KIND_LABELS: Record<string, string> = {
+  class: 'C',
+  interface: 'I',
+  function: 'ƒ',
+  method: 'm',
+  property: 'p',
+  const: 'k',
+  let: 'v',
+  var: 'v',
+  variable: 'v',
+  enum: 'E',
+  type: 'T',
+  module: 'M',
+  namespace: 'N',
+  constructor: 'c',
+  field: 'f'
+};
+
+function kindLabel(kind: string): string {
+  return SYMBOL_KIND_LABELS[kind?.toLowerCase()] ?? '·';
 }
 
 function score(text: string, query: string): number {
@@ -34,12 +74,20 @@ function score(text: string, query: string): number {
   return 500;
 }
 
+/**
+ * Ctrl+P quick open. File search behaves exactly as before; a leading `@`
+ * switches to the active file's outline and `#` to workspace symbol search,
+ * both backed by the main-process TypeScript service.
+ */
 export function QuickOpen({
   mode,
   files,
   directoryPages,
   desktop,
   nativeWorkspaceId,
+  activeFilePath,
+  workspaceRootPath,
+  overrides = NO_OVERRIDES,
   onOpenFile,
   onOpenPath,
   onClose
@@ -49,11 +97,24 @@ export function QuickOpen({
   const [hits, setHits] = useState<WorkspaceSearchHit[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [outlineSymbols, setOutlineSymbols] = useState<OutlineSymbol[]>([]);
+  const [symbolHits, setSymbolHits] = useState<WorkspaceSymbol[]>([]);
+  const [isLoadingSymbols, setIsLoadingSymbols] = useState(false);
+  const [symbolError, setSymbolError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const outlineRequestRef = useRef(0);
+  const symbolsRequestRef = useRef(0);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, [mode]);
+
+  // `@`/`#` only take over in file mode so content search keeps its exact
+  // existing semantics (a query may legitimately start with `#`).
+  const prefix = mode === 'files' && query.length > 0 ? query[0] : '';
+  const panelMode: PanelMode =
+    mode === 'content' ? 'content' : prefix === '@' ? 'outline' : prefix === '#' ? 'symbols' : 'files';
+  const filterText = panelMode === 'outline' || panelMode === 'symbols' ? query.slice(1) : query;
 
   const candidates = useMemo(() => {
     const seen = new Map<string, FileCandidate>();
@@ -132,17 +193,127 @@ export function QuickOpen({
     };
   }, [mode, query, desktop, nativeWorkspaceId, localHits]);
 
-  const resultCount = mode === 'content' ? hits.length : candidates.length;
+  // `@` — outline of the active file.
+  useEffect(() => {
+    if (panelMode !== 'outline') {
+      outlineRequestRef.current += 1;
+      setOutlineSymbols([]);
+      setSymbolError(null);
+      setIsLoadingSymbols(false);
+      return;
+    }
+    if (!desktop || !nativeWorkspaceId || !activeFilePath) {
+      setOutlineSymbols([]);
+      setIsLoadingSymbols(false);
+      return;
+    }
+    let cancelled = false;
+    const id = ++outlineRequestRef.current;
+    setIsLoadingSymbols(true);
+    setSymbolError(null);
+    const timer = window.setTimeout(() => {
+      void desktop.outline(nativeWorkspaceId, activeFilePath, overrides)
+        .then((symbols) => {
+          if (cancelled || id !== outlineRequestRef.current) return;
+          setOutlineSymbols(symbols ?? []);
+          setSymbolError(null);
+        })
+        .catch((error) => {
+          if (cancelled || id !== outlineRequestRef.current) return;
+          setOutlineSymbols([]);
+          setSymbolError(error instanceof Error ? error.message : String(error));
+        })
+        .finally(() => {
+          if (!cancelled && id === outlineRequestRef.current) setIsLoadingSymbols(false);
+        });
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [panelMode, desktop, nativeWorkspaceId, activeFilePath, overrides]);
+
+  // `#` — workspace symbols, debounced 200 ms.
+  useEffect(() => {
+    if (panelMode !== 'symbols') {
+      symbolsRequestRef.current += 1;
+      setSymbolHits([]);
+      setSymbolError(null);
+      return;
+    }
+    const needle = filterText.trim();
+    if (!desktop || !nativeWorkspaceId || !needle) {
+      setSymbolHits([]);
+      setSymbolError(null);
+      setIsLoadingSymbols(false);
+      return;
+    }
+    let cancelled = false;
+    const id = ++symbolsRequestRef.current;
+    setIsLoadingSymbols(true);
+    setSymbolError(null);
+    const timer = window.setTimeout(() => {
+      void desktop.workspaceSymbols(nativeWorkspaceId, needle, overrides)
+        .then((symbols) => {
+          if (cancelled || id !== symbolsRequestRef.current) return;
+          setSymbolHits(symbols ?? []);
+          setSymbolError(null);
+        })
+        .catch((error) => {
+          if (cancelled || id !== symbolsRequestRef.current) return;
+          setSymbolHits([]);
+          setSymbolError(error instanceof Error ? error.message : String(error));
+        })
+        .finally(() => {
+          if (!cancelled && id === symbolsRequestRef.current) setIsLoadingSymbols(false);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [panelMode, filterText, desktop, nativeWorkspaceId, overrides]);
+
+  const filteredOutline = useMemo(() => {
+    const needle = filterText.trim().toLowerCase();
+    if (!needle) return outlineSymbols;
+    return outlineSymbols.filter(
+      (symbol) =>
+        symbol.name.toLowerCase().includes(needle) || symbol.kind.toLowerCase().includes(needle)
+    );
+  }, [outlineSymbols, filterText]);
+
+  const resultCount =
+    panelMode === 'content'
+      ? hits.length
+      : panelMode === 'outline'
+        ? filteredOutline.length
+        : panelMode === 'symbols'
+          ? symbolHits.length
+          : candidates.length;
 
   useEffect(() => {
     setActiveIndex(0);
   }, [query, mode]);
 
   const choose = (index: number) => {
-    if (mode === 'content') {
+    if (panelMode === 'content') {
       const hit = hits[index];
       if (!hit) return;
       onOpenPath(hit.name, hit.line, hit.column);
+      return;
+    }
+    if (panelMode === 'outline') {
+      const symbol = filteredOutline[index];
+      if (!symbol || !activeFilePath) return;
+      onOpenPath(activeFilePath, symbol.line + 1, symbol.character + 1);
+      return;
+    }
+    if (panelMode === 'symbols') {
+      const symbol = symbolHits[index];
+      if (!symbol) return;
+      const relative = relativeToRoot(workspaceRootPath ?? null, symbol.file) ?? normalizeSlashes(symbol.file);
+      onOpenPath(relative, symbol.line + 1, symbol.character + 1);
       return;
     }
     const candidate = candidates[index];
@@ -173,12 +344,39 @@ export function QuickOpen({
     }
   };
 
+  const placeholder =
+    panelMode === 'content'
+      ? 'Search text across the workspace…'
+      : panelMode === 'outline'
+        ? 'Filter symbols in the current file…'
+        : panelMode === 'symbols'
+          ? 'Search workspace symbols…'
+          : 'Search files by name… (@ symbols, # workspace)';
+
+  const ariaLabel =
+    panelMode === 'content'
+      ? 'Search workspace text'
+      : panelMode === 'outline'
+        ? 'Search symbols in the current file'
+        : panelMode === 'symbols'
+          ? 'Search workspace symbols'
+          : 'Quick open file';
+
+  const footerLabel =
+    panelMode === 'content'
+      ? 'Workspace content search'
+      : panelMode === 'outline'
+        ? 'Symbols in current file'
+        : panelMode === 'symbols'
+          ? 'Workspace symbols'
+          : 'Quick open';
+
   return (
     <div
       className="fixed inset-0 z-[60] flex items-start justify-center bg-black/50 px-4 pt-20 backdrop-blur-sm"
       onMouseDown={onClose}
       role="dialog"
-      aria-label={mode === 'content' ? 'Search workspace text' : 'Quick open file'}
+      aria-label={ariaLabel}
     >
       <div
         className="w-full max-w-xl overflow-hidden rounded-xl border border-white/[0.1] bg-ink-950 shadow-2xl"
@@ -191,11 +389,11 @@ export function QuickOpen({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onKeyDown}
-            placeholder={mode === 'content' ? 'Search text across the workspace…' : 'Search files by name…'}
+            placeholder={placeholder}
             spellCheck={false}
             className="min-w-0 flex-1 bg-transparent text-xs text-neutral-100 outline-none placeholder:text-neutral-600"
           />
-          {isSearching && <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-300" />}
+          {(isSearching || isLoadingSymbols) && <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-300" />}
           <kbd className="hidden rounded border border-white/[0.1] px-1.5 py-0.5 text-[10px] font-mono text-neutral-500 sm:inline">
             Esc
           </kbd>
@@ -211,21 +409,42 @@ export function QuickOpen({
         </div>
 
         <div className="max-h-80 overflow-y-auto py-1">
-          {mode === 'content' && query.trim().length > 0 && query.trim().length < 2 && (
+          {panelMode === 'content' && query.trim().length > 0 && query.trim().length < 2 && (
             <p className="px-4 py-6 text-center text-[11px] text-neutral-500">Type at least 2 characters.</p>
           )}
           {searchError && (
             <p className="px-4 py-6 text-center text-[11px] text-amber-300">{searchError}</p>
           )}
-          {!searchError && resultCount === 0 && (
+          {symbolError && (
+            <p className="px-4 py-6 text-center text-[11px] text-amber-300">{symbolError}</p>
+          )}
+          {!searchError && !symbolError && resultCount === 0 && (
             <p className="px-4 py-6 text-center text-[11px] text-neutral-500">
-              {mode === 'content'
+              {panelMode === 'content'
                 ? (isSearching ? 'Searching…' : 'No matches found.')
-                : (query.trim() ? 'No files match that name.' : 'No files in this workspace yet.')}
+                : panelMode === 'outline'
+                  ? (!activeFilePath
+                    ? 'Open a file to list its symbols.'
+                    : !desktop || !nativeWorkspaceId
+                      ? 'Symbol search needs the desktop app.'
+                      : isLoadingSymbols
+                        ? 'Reading symbols…'
+                        : filterText.trim()
+                          ? 'No symbols match that filter.'
+                          : 'No symbols in this file.')
+                  : panelMode === 'symbols'
+                    ? (!desktop || !nativeWorkspaceId
+                      ? 'Symbol search needs the desktop app.'
+                      : !filterText.trim()
+                        ? 'Type a symbol name after #.'
+                        : isLoadingSymbols
+                          ? 'Searching…'
+                          : 'No workspace symbols match.')
+                    : (query.trim() ? 'No files match that name.' : 'No files in this workspace yet.')}
             </p>
           )}
 
-          {mode === 'files' && candidates.map((candidate, index) => (
+          {panelMode === 'files' && candidates.map((candidate, index) => (
             <button
               key={candidate.path}
               type="button"
@@ -243,7 +462,7 @@ export function QuickOpen({
             </button>
           ))}
 
-          {mode === 'content' && hits.map((hit, index) => (
+          {panelMode === 'content' && hits.map((hit, index) => (
             <button
               key={`${hit.name}-${hit.line}-${index}`}
               type="button"
@@ -260,10 +479,54 @@ export function QuickOpen({
               <span className="truncate text-[11px] text-neutral-300">{hit.preview || '(empty line)'}</span>
             </button>
           ))}
+
+          {panelMode === 'outline' && filteredOutline.map((symbol, index) => (
+            <button
+              key={`${symbol.name}-${symbol.line}-${symbol.character}-${index}`}
+              type="button"
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => choose(index)}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer ${
+                index === activeIndex ? 'bg-violet-500/[.14] text-white' : 'text-neutral-300 hover:bg-white/[0.04]'
+              }`}
+              style={{ paddingLeft: `${12 + Math.max(0, symbol.depth) * 12}px` }}
+            >
+              <span className="w-3 shrink-0 font-mono text-[10px] text-violet-300/80">{kindLabel(symbol.kind)}</span>
+              <span className="truncate font-mono text-[11px]">{symbol.name}</span>
+              <span className="ml-auto shrink-0 font-mono text-[10px] text-neutral-600">
+                {symbol.kind} · {symbol.line + 1}
+              </span>
+            </button>
+          ))}
+
+          {panelMode === 'symbols' && symbolHits.map((symbol, index) => {
+            const relative = relativeToRoot(workspaceRootPath ?? null, symbol.file) ?? normalizeSlashes(symbol.file);
+            return (
+              <button
+                key={`${relative}-${symbol.line}-${symbol.character}-${index}`}
+                type="button"
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => choose(index)}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer ${
+                  index === activeIndex ? 'bg-violet-500/[.14] text-white' : 'text-neutral-300 hover:bg-white/[0.04]'
+                }`}
+              >
+                <span className="w-3 shrink-0 font-mono text-[10px] text-violet-300/80">{kindLabel(symbol.kind)}</span>
+                <span className="shrink-0 font-mono text-[11px]">{symbol.name}</span>
+                {symbol.container && (
+                  <span className="truncate text-[10px] text-neutral-500">{symbol.container}</span>
+                )}
+                <span className="ml-auto truncate font-mono text-[10px] text-neutral-600">{relative}</span>
+              </button>
+            );
+          })}
         </div>
 
         <div className="flex items-center justify-between border-t border-white/[0.07] px-3 py-1.5 text-[10px] text-neutral-600">
-          <span>{mode === 'content' ? 'Workspace content search' : 'Quick open'} · ↑↓ to move, Enter to open</span>
+          <span>
+            {footerLabel} · ↑↓ to move, Enter to open
+            {mode === 'files' && ' · @ symbols · # workspace'}
+          </span>
           <span className="font-mono">{mode === 'content' ? 'Ctrl+Shift+F' : 'Ctrl+P'}</span>
         </div>
       </div>

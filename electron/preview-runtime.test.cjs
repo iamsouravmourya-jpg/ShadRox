@@ -22,9 +22,15 @@ test('selects package manager and local preview script deterministically', async
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-manager-'));
   context.after(() => fs.rm(root, { recursive: true, force: true }));
 
-  assert.equal(getPackageManager({ packageManager: 'pnpm@9.12.0' }, root), 'pnpm');
+  const available = () => true;
+  assert.equal(getPackageManager({ packageManager: 'pnpm@9.12.0' }, root, available), 'pnpm');
   await fs.writeFile(path.join(root, 'yarn.lock'), '');
-  assert.equal(getPackageManager({}, root), 'yarn');
+  assert.equal(getPackageManager({}, root, available), 'yarn');
+
+  // A lockfile for a manager that is not installed must fall back, not spawn it.
+  await fs.writeFile(path.join(root, 'bun.lock'), '');
+  assert.equal(getPackageManager({ packageManager: 'bun@1.1.0' }, root, (name) => name !== 'bun'), 'yarn');
+  assert.equal(getPackageManager({ packageManager: 'bun@1.1.0' }, root, () => false), 'npm');
   assert.deepEqual(getPreviewScript({ scripts: { start: 'vite preview', dev: 'vite' } }), {
     name: 'dev',
     command: 'vite'

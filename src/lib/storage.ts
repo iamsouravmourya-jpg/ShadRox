@@ -15,8 +15,14 @@ const STORE_KEYS = {
   activeProvider: 'shadrox.provider.active',
   useSharedKey: 'shadrox.key.shared',
   plan: 'shadrox.plan',
-  recents: 'shadrox.recents'
+  recents: 'shadrox.recents',
+  /** The custom endpoint's base URL. Not a credential, so it stays in plain storage. */
+  customBaseUrl: 'shadrox.endpoint.custom.baseurl',
+  /** Model ids the user typed for an endpoint that does not list /models. */
+  customExtraModels: 'shadrox.endpoint.custom.models'
 } as const;
+
+const PROVIDER_IDS: ProviderId[] = ['gemini', 'groq', 'custom'];
 
 const MAX_RECENTS = 8;
 
@@ -70,11 +76,40 @@ export function setApiKey(provider: ProviderId, apiKey: string): void {
 
 export function getActiveProvider(): ProviderId {
   const val = safeGet(STORE_KEYS.activeProvider);
-  return val === 'groq' ? 'groq' : 'gemini';
+  // Any id the app no longer knows about falls back to the default; a saved
+  // value must never be silently rewritten into a different provider.
+  return PROVIDER_IDS.includes(val as ProviderId) ? (val as ProviderId) : 'gemini';
 }
 
 export function setActiveProvider(provider: ProviderId): void {
   safeSet(STORE_KEYS.activeProvider, provider);
+}
+
+/** Base URL for the BYOK custom endpoint. Empty string means "not configured". */
+export function getCustomBaseUrl(): string {
+  return safeGet(STORE_KEYS.customBaseUrl) || '';
+}
+
+export function setCustomBaseUrl(baseUrl: string): void {
+  const value = baseUrl.trim();
+  if (value) safeSet(STORE_KEYS.customBaseUrl, value);
+  else safeRemove(STORE_KEYS.customBaseUrl);
+}
+
+/** Comma-separated model ids the user declared for an endpoint without /models. */
+export function getCustomExtraModels(): string[] {
+  const raw = safeGet(STORE_KEYS.customExtraModels);
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+export function setCustomExtraModels(modelIds: string[]): void {
+  const value = modelIds.map((entry) => entry.trim()).filter(Boolean).join(',');
+  if (value) safeSet(STORE_KEYS.customExtraModels, value);
+  else safeRemove(STORE_KEYS.customExtraModels);
 }
 
 export function getSelectedModel(provider: ProviderId): string {
@@ -95,9 +130,21 @@ export function setUseSharedKey(value: boolean): void {
   else safeRemove(STORE_KEYS.useSharedKey);
 }
 
+/**
+ * The old ladder had tiers this one no longer has. Reading them maps the user
+ * to their nearest successor instead of silently dropping them to Free; a
+ * stored 'pro' is the one ambiguous value and resolves to the new Pro, which
+ * grants more than the old tier did rather than less.
+ */
+const LEGACY_PLAN_MIGRATION: Record<string, PlanTier> = {
+  adv: 'pro',
+  enterprise: 'pro'
+};
+
 export function getPlan(): PlanTier {
   const raw = safeGet(STORE_KEYS.plan);
-  return raw === 'pro' || raw === 'adv' || raw === 'enterprise' ? raw : 'free';
+  if (raw === 'free' || raw === 'starter' || raw === 'pro') return raw;
+  return LEGACY_PLAN_MIGRATION[raw ?? ''] ?? 'free';
 }
 
 export function setPlan(plan: PlanTier): void {

@@ -1,5 +1,5 @@
 import type { AssetMap } from './assets';
-import type { WorkspaceFile } from './types';
+import type { WorkspaceFile, WorkspaceFileEntry } from './types';
 
 export interface DesktopWorkspace {
   workspaceId: string;
@@ -10,6 +10,11 @@ export interface DesktopWorkspace {
   name: string;
   kind: 'folder' | 'file';
   files: Array<{ name: string; content: string; version?: string }>;
+  /** Explorer-visible file count for folder workspaces (capped at 5000). */
+  fileCount?: number;
+  fileCountTruncated?: boolean;
+  /** Paths + sizes for every explorer-visible file; contents are not read. */
+  fileTree?: WorkspaceFileEntry[];
   assets: AssetMap;
   warnings: string[];
 }
@@ -51,6 +56,31 @@ export interface StagedTransaction {
 export interface DesktopSaveResult {
   saved: string[];
   errors: Array<{ name: string; message: string }>;
+  /** A partially written transaction was restored to its pre-commit contents. */
+  rolledBack?: boolean;
+  rollbackErrors?: Array<{ name: string; message: string }>;
+}
+
+export interface VerifyChangeFile {
+  path: string;
+  content: string;
+}
+
+export interface VerifyChangeIssue {
+  path: string;
+  /** 0-based, matching editor diagnostics. */
+  line: number;
+  character: number;
+  severity: 'error' | 'warning';
+  code: string;
+  message: string;
+}
+
+export interface VerifyChangeResult {
+  ok: boolean;
+  checked: number;
+  issues: VerifyChangeIssue[];
+  skipped: string[];
 }
 
 export interface DesktopCommandResult {
@@ -66,6 +96,82 @@ export interface GitReadResult {
   diff: string;
   log: string;
   dirty: number;
+}
+
+/** One open editor buffer, sent with every language-service request. `path` is workspace-relative. */
+export interface TsFileOverride {
+  path: string;
+  content: string;
+}
+
+/** 0-based line/character positions, matching CodeMirror. `file` is absolute. */
+export interface DesktopDiagnostic {
+  file: string;
+  line: number;
+  character: number;
+  endLine: number;
+  endCharacter: number;
+  severity: 'error' | 'warning' | 'info';
+  code: string;
+  message: string;
+}
+
+export interface DiagnosticsResult {
+  diagnostics: DesktopDiagnostic[];
+  truncated: boolean;
+  projectFiles: number;
+  configPath: string | null;
+}
+
+export interface DefinitionLocation {
+  file: string;
+  name: string;
+  kind: string;
+  line: number;
+  character: number;
+  endLine: number;
+  endCharacter: number;
+}
+
+export interface ReferenceLocation {
+  file: string;
+  isDefinition: boolean;
+  line: number;
+  character: number;
+  endLine: number;
+  endCharacter: number;
+}
+
+export interface OutlineSymbol {
+  name: string;
+  kind: string;
+  depth: number;
+  line: number;
+  character: number;
+}
+
+export interface WorkspaceSymbol {
+  file: string;
+  name: string;
+  kind: string;
+  container: string;
+  line: number;
+  character: number;
+}
+
+/**
+ * `system` is the user's own shell with the full environment. `agent` is the
+ * shell the assistant drives; the desktop scrubs credential variables from it.
+ */
+export type TerminalMode = 'agent' | 'system';
+
+export interface TerminalSessionInfo {
+  sessionId: string;
+  mode: TerminalMode;
+  /** Human-readable shell name chosen by the desktop, e.g. `PowerShell`. */
+  label: string;
+  title: string;
+  cwd: string;
 }
 
 export interface TerminalOutput {
@@ -151,10 +257,44 @@ export interface ShadRoxDesktopAPI {
   stageFiles: (workspaceId: string, files: DesktopWrite[]) => Promise<StagedTransaction>;
   commitTransaction: (workspaceId: string, transactionId: string) => Promise<DesktopSaveResult>;
   discardTransaction: (workspaceId: string, transactionId: string) => Promise<void>;
+  /** Static pre-apply check of proposed file contents (syntax, JSON, markup). */
+  verifyChangeSet: (workspaceId: string, files: VerifyChangeFile[]) => Promise<VerifyChangeResult>;
   runCommand: (workspaceId: string, command: string) => Promise<DesktopCommandResult>;
   /** Read-only git status/diff/log for AI commit messages. */
   gitRead: (workspaceId: string) => Promise<GitReadResult>;
-  createTerminal: (workspaceId: string, cols?: number, rows?: number) => Promise<{ sessionId: string; title: string }>;
+  /** Unmerged index paths, read-only, for the conflict banner. */
+  gitConflicts: (workspaceId: string) => Promise<{ isRepo: boolean; paths: string[] }>;
+  /** TypeScript project diagnostics for every file in the workspace. */
+  diagnostics: (workspaceId: string, overrides?: TsFileOverride[]) => Promise<DiagnosticsResult>;
+  /** Definitions at a 0-based position in a workspace-relative file. */
+  definition: (
+    workspaceId: string,
+    path: string,
+    line: number,
+    character: number,
+    overrides?: TsFileOverride[]
+  ) => Promise<DefinitionLocation[]>;
+  references: (
+    workspaceId: string,
+    path: string,
+    line: number,
+    character: number,
+    overrides?: TsFileOverride[]
+  ) => Promise<ReferenceLocation[]>;
+  /** Document outline for one file, in document order. */
+  outline: (workspaceId: string, path: string, overrides?: TsFileOverride[]) => Promise<OutlineSymbol[]>;
+  /** Project-wide symbol search for the quick-open `#` mode. */
+  workspaceSymbols: (
+    workspaceId: string,
+    query: string,
+    overrides?: TsFileOverride[]
+  ) => Promise<WorkspaceSymbol[]>;
+  createTerminal: (
+    workspaceId: string,
+    cols?: number,
+    rows?: number,
+    mode?: TerminalMode
+  ) => Promise<TerminalSessionInfo>;
   writeTerminal: (workspaceId: string, sessionId: string, data: string) => Promise<void>;
   resizeTerminal: (workspaceId: string, sessionId: string, cols: number, rows: number) => Promise<void>;
   closeTerminal: (workspaceId: string, sessionId: string) => Promise<void>;

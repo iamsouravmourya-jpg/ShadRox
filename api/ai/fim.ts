@@ -10,12 +10,12 @@ import {
 import {
   BODY_LIMITS,
   FIELD_LIMITS,
-  enumValue,
   optionalKey,
   optionalString
 } from '../_validate.js';
 import { buildFimMessages, postprocessFimCompletion } from '../../src/lib/fim.js';
-import { ADAPTERS, resolveKeyAccess } from './_access.js';
+import { ADAPTERS, parseProviderId, resolveKeyAccess } from './_access.js';
+import { resolveCustomEndpoint } from './_endpoint.js';
 import { completeOnce } from './_completion.js';
 import { checkSharedKeySpend, clientIp, outputCeiling, rateLimitedMessage } from './_spendGuard.js';
 import type { ProviderId } from './_types.js';
@@ -40,15 +40,17 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   let provider: ProviderId;
   let model: string;
   let apiKey: string | undefined;
+  let baseUrl: string | undefined;
   let prefix: string;
   let suffix: string;
   let language: string;
 
   try {
     const body = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.fim });
-    provider = enumValue<ProviderId>(body, 'provider', ['gemini', 'groq'], 'gemini');
+    provider = parseProviderId(body);
     model = optionalString(body, 'model', FIELD_LIMITS.modelChars).trim() || ADAPTERS[provider].defaultModel;
     apiKey = optionalKey(body);
+    baseUrl = provider === 'custom' ? resolveCustomEndpoint(body.baseUrl) : undefined;
     prefix = optionalString(body, 'prefix', FIELD_LIMITS.fimContextChars);
     suffix = optionalString(body, 'suffix', FIELD_LIMITS.fimContextChars);
     language = optionalString(body, 'language', FIELD_LIMITS.languageChars) || 'code';
@@ -62,6 +64,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     return;
   }
 
+  // Inline completion is a background keystroke path. A custom endpoint with no
+  // model id cannot answer, and failing quietly beats spending a request.
+  if (provider === 'custom' && !model) {
+    sendJson(res, 200, { text: '', tokens: 0 });
+    return;
+  }
+
   const resolved = resolveKeyAccess(provider, model, apiKey);
   if ('error' in resolved) {
     sendError(res, 400, resolved.error);
@@ -70,7 +79,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   const { apiKey: spendKey, byok } = resolved.access;
 
   const decision = checkSharedKeySpend('completion', clientIp(req), byok);
-  if (!decision.allowed) {
+  if ('retryAfterSeconds' in decision) {
     res.setHeader('Retry-After', String(decision.retryAfterSeconds));
     sendError(res, 429, rateLimitedMessage(decision.retryAfterSeconds));
     return;
@@ -88,6 +97,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       adapter: ADAPTERS[provider],
       model,
       apiKey: spendKey,
+      baseUrl,
       prompt,
       systemInstruction,
       temperature: 0.1,

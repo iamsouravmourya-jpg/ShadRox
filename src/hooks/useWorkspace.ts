@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AssetMap } from '../lib/assets';
+import { resolveActiveFileIndex } from '../lib/activeFile';
 import { detectLanguage } from '../lib/languages';
 import type { FilePatch } from '../lib/markdown';
 import { loadHandleRecord, pruneHandles, saveHandles } from '../lib/fileHandles';
@@ -17,7 +18,7 @@ import {
   supportsFilePicker,
   type HandleEntry
 } from '../lib/workspace';
-import type { RecentEntry, WorkspaceFile, WorkspaceFolder } from '../lib/types';
+import type { RecentEntry, WorkspaceFile, WorkspaceFileEntry, WorkspaceFolder } from '../lib/types';
 
 /** What happened to each file the assistant tried to write. */
 export interface ApplyPatchesResult {
@@ -42,6 +43,11 @@ interface MountOptions {
   filePaths?: string[];
   /** Binary assets (images, fonts) served to the preview as data URLs. */
   assets?: AssetMap;
+  /** Explorer-visible file count reported by the desktop bridge for a folder. */
+  diskFileCount?: number;
+  diskFileCountTruncated?: boolean;
+  /** Explorer-visible paths + sizes reported by the desktop bridge. */
+  diskFileTree?: WorkspaceFileEntry[];
 }
 
 export interface PatchProposal extends StagedTransaction {
@@ -107,6 +113,11 @@ interface UseWorkspaceResult {
    * "saved", and the user must never be told a file changed when it did not.
    */
   saveFiles: (names: string[]) => Promise<SaveOutcome>;
+  /**
+   * Saves a review set as one disk transaction: every file lands or none do.
+   * Falls back to `saveFiles` (and says so) when the batch cannot be staged.
+   */
+  saveFilesAtomic: (names: string[]) => Promise<SaveOutcome>;
 
   // --- restore timeline ----------------------------------------------------
   checkpoints: CheckpointMeta[];
@@ -125,7 +136,7 @@ async function contentVersion(content: string): Promise<string> {
 export function useWorkspace(): UseWorkspaceResult {
   const [workspace, setWorkspace] = useState<WorkspaceFolder | null>(null);
   // Nothing is selected on mount: the user sees the file list first and picks.
-  const [activeFileIndex, setActiveFileIndex] = useState(-1);
+  const [selectedFileIndex, setSelectedFileIndex] = useState(-1);
   const [assets, setAssets] = useState<AssetMap>({});
   const [recents, setRecents] = useState<RecentEntry[]>(() => getRecentWorkspaces());
   const [isBusy, setIsBusy] = useState(false);
@@ -139,6 +150,11 @@ export function useWorkspace(): UseWorkspaceResult {
   const [checkpoints, setCheckpoints] = useState<CheckpointMeta[]>([]);
 
   const files = workspace?.files ?? EMPTY_FILES;
+  // CodeEditor renders `files[activeFileIndex] ?? files[0]`, so a document is on
+  // screen even while no index is selected. Keystrokes must land in that same
+  // file, otherwise the edit lives only in the CodeMirror doc. Both sides use
+  // resolveActiveFileIndex so they cannot drift apart again.
+  const activeFileIndex = resolveActiveFileIndex(selectedFileIndex, files.length);
   const activeFile = files[activeFileIndex] ?? null;
 
   const filesRef = useRef<WorkspaceFile[]>(files);
@@ -213,14 +229,19 @@ export function useWorkspace(): UseWorkspaceResult {
         path,
         kind,
         nativeWorkspaceId: options.nativeWorkspaceId,
-        files: nextFiles
+        files: nextFiles,
+        diskFileCount: options.diskFileCount,
+        diskFileCountTruncated: options.diskFileCountTruncated,
+        diskFileTree: options.diskFileTree
       });
-      setActiveFileIndex(-1);
+      setSelectedFileIndex(-1);
       setStatusMessage(null);
       setRecents(pushRecentWorkspace({
         name,
         path,
-        fileCount: nextFiles.length,
+        // A folder's buffers are empty until a tab is opened; the recent card
+        // must show the folder's file count, not the tab count.
+        fileCount: kind === 'folder' ? options.diskFileCount ?? nextFiles.length : nextFiles.length,
         kind,
         filePaths: options.filePaths
       }));
@@ -244,7 +265,10 @@ export function useWorkspace(): UseWorkspaceResult {
         })), {
           assets: opened.assets,
           nativeWorkspaceId: opened.workspaceId,
-          filePaths: opened.filePaths
+          filePaths: opened.filePaths,
+          diskFileCount: opened.fileCount,
+          diskFileCountTruncated: opened.fileCountTruncated,
+          diskFileTree: opened.fileTree
         });
         if (opened.warnings.length > 0) setStatusMessage(opened.warnings.join(' '));
       } catch (error) {
@@ -377,7 +401,10 @@ export function useWorkspace(): UseWorkspaceResult {
             })), {
               assets: opened.assets,
               nativeWorkspaceId: opened.workspaceId,
-              filePaths: opened.filePaths
+              filePaths: opened.filePaths,
+              diskFileCount: opened.fileCount,
+              diskFileCountTruncated: opened.fileCountTruncated,
+              diskFileTree: opened.fileTree
             });
             if (opened.warnings.length > 0) setStatusMessage(opened.warnings.join(' '));
             return;
@@ -473,7 +500,7 @@ export function useWorkspace(): UseWorkspaceResult {
     if (!desktop || !id) return;
     const request = ++fileRequest.current;
     const existing = filesRef.current.findIndex((file) => file.name === name);
-    if (existing >= 0) { setActiveFileIndex(existing); return; }
+    if (existing >= 0) { setSelectedFileIndex(existing); return; }
     try {
       const loaded = await desktop.readFile(id, name);
       if (desktopWorkspaceIdRef.current !== id) return;
@@ -487,7 +514,7 @@ export function useWorkspace(): UseWorkspaceResult {
       baselineRef.current = { ...baselineRef.current, [name]: loaded.content };
       setDiskBaseline(baselineRef.current);
       setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
-      if (request === fileRequest.current) setActiveFileIndex(next.findIndex((file) => file.name === name));
+      if (request === fileRequest.current) setSelectedFileIndex(next.findIndex((file) => file.name === name));
     } catch (error) {
       if (desktopWorkspaceIdRef.current === id) setStatusMessage(`Could not open ${name}: ${String(error)}`);
     }
@@ -501,7 +528,7 @@ export function useWorkspace(): UseWorkspaceResult {
     const next = current.filter((_, i) => i !== index);
     filesRef.current = next;
     setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
-    setActiveFileIndex((active) => active === index ? Math.min(index, next.length - 1) : active > index ? active - 1 : active);
+    setSelectedFileIndex((active) => active === index ? Math.min(index, next.length - 1) : active > index ? active - 1 : active);
     setConflicts((previous) => previous.filter((name) => name !== file.name));
   }, []);
 
@@ -542,7 +569,7 @@ export function useWorkspace(): UseWorkspaceResult {
       delete baselineRef.current[name];
       setDiskBaseline({ ...baselineRef.current });
       setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
-      setActiveFileIndex(-1);
+      setSelectedFileIndex(-1);
       setConflicts((previous) => previous.filter((path) => path !== name));
       deletedPaths.current.delete(name);
       return;
@@ -587,9 +614,9 @@ export function useWorkspace(): UseWorkspaceResult {
     return () => { disposed = true; clearTimeout(timer); unsubscribe(); };
   }, [workspace?.nativeWorkspaceId, loadDirectory, refreshDiskFile]);
 
-  const selectFile = useCallback((index: number) => { fileRequest.current += 1; setActiveFileIndex(index); }, []);
+  const selectFile = useCallback((index: number) => { fileRequest.current += 1; setSelectedFileIndex(index); }, []);
 
-  const closeFile = useCallback(() => setActiveFileIndex(-1), []);
+  const closeFile = useCallback(() => setSelectedFileIndex(-1), []);
 
   const updateActiveContent = useCallback(
     (content: string) => {
@@ -626,7 +653,7 @@ export function useWorkspace(): UseWorkspaceResult {
     if (result.updated.length || result.created.length) {
       filesRef.current = next;
       setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
-      setActiveFileIndex(next.findIndex((file) => file.name === result.updated[0] || file.name === result.created[0]));
+      setSelectedFileIndex(next.findIndex((file) => file.name === result.updated[0] || file.name === result.created[0]));
     }
     return result;
   }, [workspace]);
@@ -763,6 +790,85 @@ export function useWorkspace(): UseWorkspaceResult {
     );
   }, [saveFilesToDisk]);
 
+  /**
+   * One disk transaction for a whole review set. A batch can only be staged
+   * when every file already exists on disk (baseline) and none is conflicted;
+   * anything else — browsers, freshly created files — falls back to per-file
+   * writes and reports that the save was not transactional.
+   */
+  const saveFilesAtomic = useCallback(
+    async (names: string[]): Promise<SaveOutcome> => {
+      const requested = [...new Set(names)];
+      if (requested.length === 0) return { written: 0, failed: false, message: null };
+      if (savingRef.current) return { written: 0, failed: true, message: 'A save is already running — try again in a moment.' };
+
+      const desktop = getDesktopBridge();
+      const id = desktopWorkspaceIdRef.current;
+      const snapshot = filesRef.current.filter((file) => requested.includes(file.name));
+      const stageable = Boolean(desktop && id)
+        && snapshot.length === requested.length
+        && !requested.some((name) => conflictRef.current.includes(name));
+
+      if (!desktop || !id || !stageable) {
+        const reason = !desktop
+          ? 'Saves are not transactional in browser mode — files are written one at a time.'
+          : 'This batch could not be staged for a transactional save — files were written one at a time.';
+        const outcome = await saveFilesToDisk(requested);
+        return {
+          written: outcome.written,
+          failed: outcome.failed,
+          message: [outcome.message, reason].filter(Boolean).join(' ')
+        };
+      }
+
+      savingRef.current = true;
+      setIsSaving(true);
+      setDiskMessage(null);
+      let transactionId: string | null = null;
+      try {
+        const staged = await desktop.stageFiles(id, snapshot.map((file) => ({
+          name: file.name,
+          content: file.content,
+          // Unknown baseline (a brand-new buffer) skips the stage-time comparison;
+          // the staged transaction still pins the on-disk version at commit time.
+          expectedVersion: baselineRef.current[file.name] !== undefined ? file.version ?? null : undefined
+        })));
+        transactionId = staged.transactionId;
+        const result = await desktop.commitTransaction(id, staged.transactionId);
+        const errorText = result.errors.map((error) => `${error.name || 'File'}: ${error.message}`).join(' ');
+        if (result.errors.length > 0 || result.saved.length !== requested.length) {
+          await desktop.discardTransaction(id, staged.transactionId).catch(() => {});
+          transactionId = null;
+          const rollbackText = result.rollbackErrors?.length
+            ? ` Some files could not be restored: ${result.rollbackErrors.map((error) => error.name).join(', ')}.`
+            : result.rolledBack ? ' The change set was rolled back.' : '';
+          const message = `${errorText || 'The transaction was not committed completely.'}${rollbackText}`;
+          setDiskMessage(`Atomic save failed: ${message}`);
+          return { written: 0, failed: true, message };
+        }
+        transactionId = null;
+        if (desktopWorkspaceIdRef.current !== id) {
+          return { written: 0, failed: true, message: 'The workspace changed while saving — no confirmation available.' };
+        }
+        const versions = new Map(await Promise.all(snapshot.map(async (file) => [file.name, await contentVersion(file.content)] as const)));
+        baselineRef.current = { ...baselineRef.current, ...Object.fromEntries(snapshot.map((file) => [file.name, file.content])) };
+        setDiskBaseline(baselineRef.current);
+        setWorkspace((previous) => previous ? { ...previous, files: previous.files.map((file) => versions.has(file.name) ? { ...file, version: versions.get(file.name) } : file) } : previous);
+        setDiskMessage(`${requested.length} file${requested.length === 1 ? '' : 's'} saved to disk as one transaction.`);
+        return { written: requested.length, failed: false, message: null };
+      } catch (error) {
+        if (transactionId) await desktop.discardTransaction(id, transactionId).catch(() => {});
+        const message = error instanceof Error ? error.message : 'Unknown write error.';
+        setDiskMessage(`Atomic save failed: ${message}`);
+        return { written: 0, failed: true, message };
+      } finally {
+        savingRef.current = false;
+        setIsSaving(false);
+      }
+    },
+    [saveFilesToDisk]
+  );
+
   // --- assistant edits -------------------------------------------------------
 
   const discardProposal = useCallback(async () => {
@@ -836,7 +942,7 @@ export function useWorkspace(): UseWorkspaceResult {
       filesRef.current = next;
       setDiskBaseline(baselineRef.current);
       setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
-      setActiveFileIndex(next.findIndex((file) => file.name === proposal.files[0]?.name));
+      setSelectedFileIndex(next.findIndex((file) => file.name === proposal.files[0]?.name));
       proposalRef.current = null;
       setPendingProposal(null);
       setDiskMessage(desktop && id ? `${proposal.files.length} staged files applied to disk.` : 'Proposal applied to editor buffers. Save to disk separately; browser saves are not transactional.');
@@ -857,7 +963,7 @@ export function useWorkspace(): UseWorkspaceResult {
       const nextFiles = previous?.files ?? [];
       if (nextFiles.some((file) => file.name === cleanName)) return previous;
       const created: WorkspaceFile = { name: cleanName, content, language: detectLanguage(cleanName) };
-      setActiveFileIndex(nextFiles.length);
+      setSelectedFileIndex(nextFiles.length);
       return {
         id: previous?.id ?? `file-${cleanName}`,
         name: previous?.name ?? cleanName,
@@ -874,7 +980,7 @@ export function useWorkspace(): UseWorkspaceResult {
       if (!previous || previous.files.length <= 1) return previous;
       const nextFiles = previous.files.filter((_, fileIndex) => fileIndex !== index);
       // -1 means the user is on the file list — deleting must not force a file open.
-      setActiveFileIndex((current) => (current === -1 ? -1 : Math.max(0, Math.min(current, nextFiles.length - 1))));
+      setSelectedFileIndex((current) => (current === -1 ? -1 : Math.max(0, Math.min(current, nextFiles.length - 1))));
       return { ...previous, files: nextFiles };
     });
   }, []);
@@ -943,7 +1049,7 @@ export function useWorkspace(): UseWorkspaceResult {
     const currentId = desktopWorkspaceIdRef.current;
     if (desktop && currentId) void desktop.closeWorkspace(currentId);
     setWorkspace(null);
-    setActiveFileIndex(-1);
+    setSelectedFileIndex(-1);
     workspaceIdentityRef.current = null;
     filesRef.current = [];
     baselineRef.current = {};
@@ -993,7 +1099,7 @@ export function useWorkspace(): UseWorkspaceResult {
         previous ? { ...previous, files: restored } : previous
       );
       const nextIndex = restored.findIndex((file) => file.name === activeName);
-      setActiveFileIndex(nextIndex);
+      setSelectedFileIndex(nextIndex);
       setDiskMessage('Previous version restored. Click "Save to disk" to persist changes to disk.');
       return true;
     },
@@ -1077,6 +1183,7 @@ export function useWorkspace(): UseWorkspaceResult {
       setAutoSave,
       saveAll,
       saveFiles: saveFilesToDisk,
+      saveFilesAtomic,
       checkpoints,
       markCheckpoint,
       restoreCheckpoint
@@ -1123,6 +1230,7 @@ export function useWorkspace(): UseWorkspaceResult {
       autoSave,
       saveAll,
       saveFilesToDisk,
+      saveFilesAtomic,
       checkpoints,
       markCheckpoint,
       restoreCheckpoint

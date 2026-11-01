@@ -25,6 +25,13 @@ test('loads a folder and writes existing and new files only inside that workspac
   const access = createWorkspaceAccess();
   const opened = await access.openFolder(root);
   assert.deepEqual(opened.files, [], 'Opening a folder should not eagerly read all files.');
+  assert.equal(opened.fileCount, 1, 'the folder count should match what the explorer shows (node_modules is skipped)');
+  assert.equal(opened.fileCountTruncated, false);
+  assert.deepEqual(
+    opened.fileTree.map((entry) => [entry.path, entry.size]),
+    [['src/App.tsx', 'export default 1;'.length]],
+    'the prompt needs paths + sizes for every file even when no buffer is loaded'
+  );
   const rootPage = await access.listDirectory(opened.workspaceId);
   assert.deepEqual(rootPage.entries.map(({ name, kind }) => [name, kind]), [['src', 'directory']]);
   const sourcePage = await access.listDirectory(opened.workspaceId, 'src');

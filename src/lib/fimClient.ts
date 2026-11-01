@@ -2,7 +2,7 @@
  * Client side of tab completion: LRU-cached fetch of /api/ai/fim.
  * Kept separate from the CodeMirror extension so the cache can be tested.
  *
- * Two rules this module exists to enforce:
+ * Three rules this module exists to enforce:
  *
  * 1. A cached completion belongs to the credential and model that produced it.
  *    The key therefore carries a one-way fingerprint of the API key — never the
@@ -11,10 +11,17 @@
  * 2. Failures are not answers. A 401 used to be cached as an empty completion,
  *    which made Tab silently stop working for those contexts forever; now a
  *    failed request is not cached, and the failures are surfaced to the editor.
+ *    A refusal that arrives wearing a 200 (the route's `warning` field) is the
+ *    same thing.
+ * 3. An endpoint that keeps refusing gets a growing pause instead of one request
+ *    per keystroke. The pause belongs to the endpoint that earned it, so
+ *    switching provider, base URL, model or key starts clean.
  */
 
 export interface FimRequestContext {
   provider: string;
+  /** Base URL of a BYOK custom endpoint; ignored by the built-in providers. */
+  baseUrl?: string;
   model: string;
   apiKey?: string;
   language?: string;
@@ -31,11 +38,16 @@ export interface FimHealth {
   /** Consecutive failed requests since the last success (or cache reset). */
   consecutiveFailures: number;
   lastFailure: FimFailureKind | null;
+  /** Wall-clock ms until which requests are withheld, or 0 when not paused. */
+  cooldownUntil: number;
 }
 
 const CACHE_LIMIT = 64;
 /** After this many failures in a row the editor stops being quiet about it. */
 export const FIM_FAILURE_HINT_THRESHOLD = 3;
+/** First pause after a failure streak, and the ceiling it grows to. */
+export const FIM_COOLDOWN_BASE_MS = 30_000;
+export const FIM_COOLDOWN_MAX_MS = 600_000;
 
 const EMPTY: FimResult = { text: '', tokens: 0 };
 
@@ -57,9 +69,9 @@ export function fingerprintSecret(value: string | undefined): string {
   return hash.toString(16).padStart(8, '0');
 }
 
-/** Identity that changes the answer: provider + model + credential. */
+/** Identity that changes the answer: provider + endpoint + model + credential. */
 export function fimIdentity(context: FimRequestContext): string {
-  return `${context.provider}|${context.model}|${fingerprintSecret(context.apiKey)}`;
+  return `${context.provider}|${context.baseUrl || ''}|${context.model}|${fingerprintSecret(context.apiKey)}`;
 }
 
 export function fimCacheKey(context: FimRequestContext, prefix: string, suffix: string): string {
@@ -75,11 +87,23 @@ function remember(key: string, value: FimResult): FimResult {
   return value;
 }
 
-let health: FimHealth = { consecutiveFailures: 0, lastFailure: null };
+let health: FimHealth = { consecutiveFailures: 0, lastFailure: null, cooldownUntil: 0 };
 const healthListeners = new Set<() => void>();
 
+/**
+ * Which endpoint the current failure streak belongs to. A pause is a statement
+ * about one host, not about tab completion in general: it would be wrong to
+ * withhold Gemini requests because a custom gateway answered 404, and the
+ * streak would be meaningless the moment the user repointed Settings.
+ */
+let streakIdentity = '';
+
 function setHealth(next: FimHealth): void {
-  if (next.consecutiveFailures === health.consecutiveFailures && next.lastFailure === health.lastFailure) return;
+  if (
+    next.consecutiveFailures === health.consecutiveFailures &&
+    next.lastFailure === health.lastFailure &&
+    next.cooldownUntil === health.cooldownUntil
+  ) return;
   health = next;
   healthListeners.forEach((listener) => listener());
 }
@@ -95,7 +119,7 @@ export function subscribeFimHealth(listener: () => void): () => void {
 }
 
 export function clearFimHealth(): void {
-  setHealth({ consecutiveFailures: 0, lastFailure: null });
+  setHealth({ consecutiveFailures: 0, lastFailure: null, cooldownUntil: 0 });
 }
 
 /**
@@ -106,6 +130,7 @@ export function clearFimHealth(): void {
 export function clearFimCache(): void {
   cache.clear();
   inFlight.clear();
+  streakIdentity = '';
   clearFimHealth();
 }
 
@@ -115,7 +140,20 @@ export function fimCacheSize(): number {
 }
 
 function recordFailure(kind: FimFailureKind): void {
-  setHealth({ consecutiveFailures: health.consecutiveFailures + 1, lastFailure: kind });
+  const consecutiveFailures = health.consecutiveFailures + 1;
+  // A streak long enough to tell the user about is also long enough to stop
+  // asking: each further failure was a keystroke spent against an endpoint that
+  // already said no. The pause doubles per failure, capped.
+  const cooling = consecutiveFailures >= FIM_FAILURE_HINT_THRESHOLD;
+  const pause = cooling
+    ? Math.min(FIM_COOLDOWN_BASE_MS * 2 ** (consecutiveFailures - FIM_FAILURE_HINT_THRESHOLD), FIM_COOLDOWN_MAX_MS)
+    : 0;
+  setHealth({ consecutiveFailures, lastFailure: kind, cooldownUntil: cooling ? Date.now() + pause : 0 });
+}
+
+/** True while failures have put tab completion on pause. */
+export function isFimCoolingDown(now = Date.now()): boolean {
+  return health.cooldownUntil > now;
 }
 
 /**
@@ -134,6 +172,17 @@ export async function requestFimCompletion(
   const hit = cache.get(key);
   if (hit) return hit;
 
+  // A new provider / endpoint / model / key is a different endpoint as far as
+  // this module is concerned, so it starts with a clean sheet: no inherited
+  // pause and no inherited streak. The streak is about one host refusing.
+  const identity = fimIdentity(context);
+  if (identity !== streakIdentity) {
+    streakIdentity = identity;
+    clearFimHealth();
+  }
+
+  if (isFimCoolingDown()) return EMPTY;
+
   const pending = inFlight.get(key);
   if (pending) return pending;
 
@@ -145,6 +194,7 @@ export async function requestFimCompletion(
         signal,
         body: JSON.stringify({
           provider: context.provider,
+          baseUrl: context.baseUrl || undefined,
           model: context.model,
           apiKey: context.apiKey,
           language: context.language,
@@ -159,8 +209,18 @@ export async function requestFimCompletion(
         return EMPTY;
       }
       const data = await response.json();
+      // The route reports an upstream refusal as a 200 with a `warning`,
+      // because a keystroke path must never throw at the editor. It is still a
+      // refusal: counting it as a success is how a host that answers 404 to
+      // every request kept getting one per keystroke — the streak reset, the
+      // pause never armed, and the empty body cached as if the model had
+      // genuinely had nothing to add.
+      if (typeof data?.warning === 'string' && data.warning) {
+        recordFailure('request-failed');
+        return EMPTY;
+      }
       const text = typeof data?.text === 'string' ? data.text : '';
-      setHealth({ consecutiveFailures: 0, lastFailure: null });
+      setHealth({ consecutiveFailures: 0, lastFailure: null, cooldownUntil: 0 });
       return remember(key, { text, tokens: typeof data?.tokens === 'number' ? data.tokens : 0 });
     } catch {
       if (!signal?.aborted) recordFailure('request-failed');

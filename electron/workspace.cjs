@@ -8,7 +8,7 @@ const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_ASSET_BYTES = 4 * 1024 * 1024;
 const DIRECTORY_PAGE_SIZE = 200;
 const IGNORED_DIRECTORIES = new Set([
-  'node_modules', '.git', 'dist', 'build', '.next', 'out', 'coverage',
+  'node_modules', '.git', 'dist', 'dist_staging', 'dist_desktop', 'build', '.next', 'out', 'coverage',
   '.cache', '.vercel', '.turbo', 'vendor', '__pycache__'
 ]);
 const BINARY_EXTENSIONS = new Set([
@@ -150,12 +150,65 @@ async function readAssetFile(absolutePath, relativePath, assets) {
   assets[relativePath] = `data:${ASSET_MIME_TYPES[extension]};base64,${encoded}`;
 }
 
+const MAX_TREE_FILES = 5000;
+
+/**
+ * Walks the files the explorer will actually show — hidden, generated, binary
+ * and asset files are skipped exactly like `listDirectory` — and returns their
+ * workspace-relative paths with byte sizes. No contents are read; this is what
+ * lets a 219-file folder still tell the prompt which files exist. The walk
+ * stops at `MAX_TREE_FILES`; `truncated` tells the UI to render "5000+".
+ *
+ * Paths are sorted so the repo map is byte-identical between requests, which
+ * is what makes provider prompt caching possible.
+ */
+async function listWorkspaceFiles(root, limit = MAX_TREE_FILES) {
+  const files = [];
+  let truncated = false;
+  const queue = [{ directory: root, prefix: '' }];
+  while (queue.length > 0) {
+    if (files.length >= limit) { truncated = true; break; }
+    const { directory, prefix } = queue.pop();
+    let entries;
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (!IGNORED_DIRECTORIES.has(entry.name)) {
+          queue.push({
+            directory: path.join(directory, entry.name),
+            prefix: prefix ? `${prefix}/${entry.name}` : entry.name
+          });
+        }
+        continue;
+      }
+      if (!entry.isFile() || isIgnoredFile(entry.name) || isPreviewAsset(entry.name)) continue;
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      let size = 0;
+      try {
+        size = (await fs.stat(path.join(directory, entry.name))).size;
+      } catch {
+        size = 0;
+      }
+      files.push({ path: relativePath, size });
+      if (files.length >= limit) { truncated = true; break; }
+    }
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return { files, truncated };
+}
+
 function createWorkspaceAccess() {
   const workspaces = new Map();
 
   async function openFolder(folderPath) {
     const root = await fs.realpath(folderPath);
     const fileMap = new Map();
+    const { files: fileTree, truncated } = await listWorkspaceFiles(root);
 
     const workspaceId = randomUUID();
     workspaces.set(workspaceId, { root, fileMap, mode: 'folder' });
@@ -165,6 +218,9 @@ function createWorkspaceAccess() {
       name: path.basename(root),
       kind: 'folder',
       files: [],
+      fileTree,
+      fileCount: fileTree.length,
+      fileCountTruncated: truncated,
       assets: {},
       warnings: []
     };
@@ -455,8 +511,33 @@ function createWorkspaceAccess() {
       if ((current === null ? null : hashContent(current)) !== file.expectedVersion) throw new Error(`${file.name} changed after the proposal was prepared. Generate it again.`);
       files.push({ name: file.name, content: file.after, expectedVersion: file.expectedVersion });
     }
+
     const result = await saveFiles(workspaceId, files);
-    if (result.errors.length) return result;
+    if (result.errors.length) {
+      // A partial write leaves the folder in a state no single reply described,
+      // so every file that landed is put back to its staged "before" content.
+      const rollbackErrors = [];
+      const saved = new Set(result.saved);
+      for (const file of transaction) {
+        if (!saved.has(file.name)) continue;
+        try {
+          if (file.before === null) {
+            const parts = file.name.split('/');
+            const target = path.join(await resolveWorkspaceDirectory(workspace, parts.slice(0, -1).join('/')), parts.at(-1));
+            await fs.rm(target, { force: true });
+            workspace.fileMap.delete(file.name);
+          } else {
+            const restored = await saveFiles(workspaceId, [{ name: file.name, content: file.before }]);
+            if (restored.errors.length) throw new Error(restored.errors[0].message);
+          }
+        } catch (error) {
+          rollbackErrors.push({ name: file.name, message: error instanceof Error ? error.message : 'Rollback failed.' });
+        }
+      }
+      result.rolledBack = true;
+      result.rollbackErrors = rollbackErrors;
+      return result;
+    }
     workspace.transactions.delete(transactionId);
     return result;
   }

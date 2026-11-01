@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import CodeMirror, { type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { EditorView } from '@codemirror/view';
-import type { Extension } from '@codemirror/state';
+import type { Extension, Text } from '@codemirror/state';
+import { forceLinting, lintGutter, linter, type Diagnostic as LintDiagnostic } from '@codemirror/lint';
 import {
   closeSearchPanel,
   findNext,
@@ -23,6 +24,7 @@ import {
   FolderOpen,
   FolderTree,
   Loader2,
+  ListTree,
   Pencil,
   Save,
   Search,
@@ -33,6 +35,7 @@ import {
   Zap
 } from 'lucide-react';
 import { copyToClipboard, downloadFile, downloadWorkspaceZip, estimateTokens, formatCode } from '../lib/toolUtils';
+import { resolveActiveFileIndex } from '../lib/activeFile';
 import { getLanguageExtension } from '../lib/languages';
 import { ghostText } from '../lib/ghostText';
 import {
@@ -44,7 +47,9 @@ import {
 import { runQuickEdit, sliceQuickEditContext } from '../lib/quickEdit';
 import type { ProviderId } from '../lib/providers';
 import type { WorkspaceFile } from '../lib/types';
-import type { DirectoryPage } from '../lib/desktop';
+import type { DesktopDiagnostic, DirectoryPage, OutlineSymbol } from '../lib/desktop';
+import { formatDiagnosticMessage } from '../lib/diagnostics';
+import { OutlinePanel } from './OutlinePanel';
 
 interface CodeEditorProps {
   files: WorkspaceFile[];
@@ -61,22 +66,59 @@ interface CodeEditorProps {
   onSaveAll: () => void;
   onRenameFile: (from: string, to: string) => void;
   onRevertFile: () => void;
-  revealTarget?: { name: string; line: number; column?: number; nonce: number } | null;
+  revealTarget?: {
+    name: string;
+    line: number;
+    column?: number;
+    /** Optional 1-based end of the range to select (definition navigation). */
+    endLine?: number;
+    endColumn?: number;
+    nonce: number;
+  } | null;
   workspaceName?: string;
+  /**
+   * 'file' means the workspace is a set of loose files picked from disk, not a
+   * directory. The explorer then draws them flat: labelling the root with the
+   * workspace name would show `form.html` inside a folder called `form.html`,
+   * because a single-file mount names the workspace after its only file.
+   */
+  workspaceKind?: 'folder' | 'file';
   nativeDirectoryPages?: Record<string, DirectoryPage>;
   loadingDirectories?: string[];
   onLoadDirectory?: (path: string, cursor?: number) => void;
   onOpenPath?: (path: string) => void;
   editorAi?: EditorAiConfig | null;
+  /** Language-service diagnostics for the active file (absolute paths resolved by App). */
+  diagnostics?: DesktopDiagnostic[];
+  /** F12 / Ctrl+Click target, 0-based. Resolves when the target is in this file. */
+  onDefinitionRequest?: (line: number, character: number) => Promise<DefinitionNavigation | null>;
+  outlineSymbols?: OutlineSymbol[];
+  isOutlineLoading?: boolean;
+  outlineError?: string | null;
+  /** False for non-script files or when the desktop bridge is absent. */
+  outlineAvailable?: boolean;
+  onSelectOutlineSymbol?: (symbol: OutlineSymbol) => void;
+}
+
+/** A definition range inside the file that is already open. */
+export interface DefinitionNavigation {
+  line: number;
+  character: number;
+  endLine: number;
+  endCharacter: number;
 }
 
 /** BYOK settings the editor spends on inline AI work (tab completion, Ctrl+K). */
 export interface EditorAiConfig {
   provider: ProviderId;
+  /** Base URL of a BYOK custom endpoint; ignored by the built-in providers. */
+  baseUrl?: string;
   model: string;
   apiKey?: string;
   completionEnabled: boolean;
   onToggleCompletion: () => void;
+  /** Fires when the user accepts a ghost suggestion, so it can be billed. */
+  onCompletionAccepted?: () => void;
   /**
    * The user's chat temperature, forwarded to Ctrl+K and clamped there —
    * inline edits have a tighter safe band than chat (see clampInlineTemperature).
@@ -143,6 +185,54 @@ function buildExplorerTree(files: WorkspaceFile[], filter: string): ExplorerFold
   return root;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+/**
+ * Bridge diagnostics are 0-based line/character (same as CodeMirror). Positions
+ * are clamped to the current document so a response computed against an older
+ * buffer can never throw; zero-length ranges are widened because the lint
+ * extension only paints ranges with `from < to`.
+ */
+function toLintDiagnostics(list: DesktopDiagnostic[], doc: Text): LintDiagnostic[] {
+  if (list.length === 0 || doc.length === 0) return [];
+  const result: LintDiagnostic[] = [];
+  for (const item of list) {
+    const startLineNumber = clamp(item.line + 1, 1, doc.lines);
+    const startLine = doc.line(startLineNumber);
+    let from = clamp(startLine.from + Math.max(0, item.character), startLine.from, startLine.to);
+
+    const rawEndLine = Math.max(item.line, item.endLine ?? item.line);
+    const endLineNumber = clamp(rawEndLine + 1, startLineNumber, doc.lines);
+    const endLine = doc.line(endLineNumber);
+    const rawEndCharacter = item.endCharacter ?? item.character;
+    let to = clamp(endLine.from + Math.max(0, rawEndCharacter), endLine.from, endLine.to);
+
+    if (to <= from) {
+      if (from < doc.length) {
+        to = from + 1;
+      } else if (from > 0) {
+        from -= 1;
+        to = from + 1;
+      } else {
+        continue;
+      }
+    }
+
+    const severity: LintDiagnostic['severity'] =
+      item.severity === 'error' ? 'error' : item.severity === 'warning' ? 'warning' : 'info';
+    result.push({
+      from,
+      to,
+      severity,
+      message: formatDiagnosticMessage(item),
+      source: 'TypeScript'
+    });
+  }
+  return result;
+}
+
 export function CodeEditor({
   files,
   activeFileIndex,
@@ -160,17 +250,26 @@ export function CodeEditor({
   onRevertFile,
   revealTarget,
   workspaceName,
+  workspaceKind = 'folder',
   nativeDirectoryPages,
   loadingDirectories = [],
   onLoadDirectory,
   onOpenPath,
-  editorAi
+  editorAi,
+  diagnostics,
+  onDefinitionRequest,
+  outlineSymbols,
+  isOutlineLoading = false,
+  outlineError,
+  outlineAvailable = false,
+  onSelectOutlineSymbol
 }: CodeEditorProps) {
-  const activeFile = files[activeFileIndex] ?? files[0] ?? null;
+  const activeFile = files[resolveActiveFileIndex(activeFileIndex, files.length)] ?? null;
   const editorRef = useRef<ReactCodeMirrorRef>(null);
   const [fileFilter, setFileFilter] = useState('');
   const [findQuery, setFindQuery] = useState('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isOutlineOpen, setIsOutlineOpen] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set(['']));
   const [hasCopied, setHasCopied] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -188,6 +287,78 @@ export function CodeEditor({
   const explorerTree = useMemo(() => buildExplorerTree(files, fileFilter), [files, fileFilter]);
   const allFoldersExpanded = fileFilter.trim().length > 0;
 
+  // Lint reads the latest diagnostics through a ref so the extension itself
+  // stays stable (reconfiguring CodeMirror on every diagnostic response would
+  // reset its scroll/selection state).
+  const diagnosticsRef = useRef<DesktopDiagnostic[]>([]);
+  diagnosticsRef.current = activeFile ? diagnostics ?? [] : [];
+  const lintSource = useCallback(
+    (view: EditorView) => toLintDiagnostics(diagnosticsRef.current, view.state.doc),
+    []
+  );
+  const lintExtensions = useMemo(
+    () => [linter(lintSource, { delay: 0 }), lintGutter()],
+    [lintSource]
+  );
+
+  // Go-to-definition is installed even when inline AI is not configured.
+  const definitionRequestRef = useRef<CodeEditorProps['onDefinitionRequest']>(undefined);
+  definitionRequestRef.current = onDefinitionRequest;
+
+  const requestDefinition = useCallback((view: EditorView, position: number) => {
+    const handler = definitionRequestRef.current;
+    if (!handler) return;
+    const doc = view.state.doc;
+    const clamped = clamp(position, 0, doc.length);
+    const line = doc.lineAt(clamped);
+    const character = clamped - line.from;
+    void handler(line.number - 1, character)
+      .then((target) => {
+        if (!target) return;
+        const current = view.state.doc;
+        const targetLineNumber = clamp(target.line + 1, 1, current.lines);
+        const targetLine = current.line(targetLineNumber);
+        const anchor = clamp(targetLine.from + Math.max(0, target.character), targetLine.from, targetLine.to);
+        view.dispatch({
+          selection: { anchor, head: anchor },
+          effects: EditorView.scrollIntoView(anchor, { y: 'center' })
+        });
+        view.focus();
+      })
+      .catch(() => {
+        // Navigation failures are a silent no-op; the service already logged.
+      });
+  }, []);
+
+  const definitionExtensions = useMemo(
+    () => [
+      EditorView.domEventHandlers({
+        keydown: (event, view) => {
+          if (event.key !== 'F12' || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
+          event.preventDefault();
+          requestDefinition(view, view.state.selection.main.head);
+          return true;
+        },
+        mousedown: (event, view) => {
+          if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey || event.button !== 0) return false;
+          const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
+          if (position === null) return false;
+          event.preventDefault();
+          requestDefinition(view, position);
+          return true;
+        }
+      })
+    ],
+    [requestDefinition]
+  );
+
+  // Repaint squiggles as soon as a new language-service response lands.
+  useEffect(() => {
+    const view = editorRef.current?.view;
+    if (!view) return;
+    forceLinting(view);
+  }, [diagnostics, activeFile?.name]);
+
   useEffect(() => {
     const firstLevel = new Set(['', ...files
       .map((file) => file.name.split('/').filter(Boolean).slice(0, 1)[0])
@@ -196,7 +367,7 @@ export function CodeEditor({
   }, [workspaceName, filePathSignature]);
 
   const extensions = useMemo(() => {
-    const list: Extension[] = [search({ top: true })];
+    const list: Extension[] = [search({ top: true }), ...lintExtensions, ...definitionExtensions];
     if (activeFile) {
       const ext = getLanguageExtension(activeFile.name, activeFile.language);
       if (ext) list.push(ext);
@@ -205,9 +376,11 @@ export function CodeEditor({
       list.push(
         ghostText({
           provider: editorAi.provider,
+          baseUrl: editorAi.baseUrl,
           model: editorAi.model,
           apiKey: editorAi.apiKey,
-          language: activeFile?.language
+          language: activeFile?.language,
+          onAccepted: editorAi.onCompletionAccepted
           // editorAi.temperature is deliberately NOT forwarded: completions are
           // continuations of existing code and must stay near-deterministic.
         })
@@ -236,7 +409,7 @@ export function CodeEditor({
       );
     }
     return list;
-  }, [activeFile?.name, activeFile?.language, editorAi]);
+  }, [activeFile?.name, activeFile?.language, editorAi, lintExtensions, definitionExtensions]);
 
   // Ctrl+K edits are scoped to the open buffer; switching files drops the bubble.
   useEffect(() => {
@@ -283,6 +456,7 @@ export function CodeEditor({
         context,
         {
           provider: editorAi.provider,
+          baseUrl: editorAi.baseUrl,
           model: editorAi.model,
           apiKey: editorAi.apiKey,
           // The user's chat temperature, clamped inside runQuickEdit to the
@@ -327,7 +501,7 @@ export function CodeEditor({
     if (fimHealth.consecutiveFailures >= FIM_FAILURE_HINT_THRESHOLD) {
       return {
         id: `failing-${editorAi.model}-${fimHealth.consecutiveFailures}`,
-        text: `Tab completion has failed ${fimHealth.consecutiveFailures} times in a row — check the key and model in Settings, then turn "Tab complete" off and on to retry.`
+        text: `Tab completion has failed ${fimHealth.consecutiveFailures} times in a row — check the key and model in Settings → Models & Keys. ShadRox is pausing those requests and will retry on its own.`
       };
     }
     return null;
@@ -417,11 +591,21 @@ export function CodeEditor({
     const frame = requestAnimationFrame(() => {
       const view = editorRef.current?.view;
       if (!view) return;
-      const lineNumber = Math.min(Math.max(1, revealTarget.line), view.state.doc.lines);
-      const line = view.state.doc.line(lineNumber);
+      const doc = view.state.doc;
+      const lineNumber = Math.min(Math.max(1, revealTarget.line), doc.lines);
+      const line = doc.line(lineNumber);
       const position = Math.min(line.from + Math.max(0, (revealTarget.column ?? 1) - 1), line.to);
+      let head = position;
+      if (typeof revealTarget.endLine === 'number') {
+        const endLineNumber = Math.min(Math.max(lineNumber, revealTarget.endLine), doc.lines);
+        const endLine = doc.line(endLineNumber);
+        head = Math.min(
+          Math.max(position, endLine.from + Math.max(0, (revealTarget.endColumn ?? 1) - 1)),
+          endLine.to
+        );
+      }
       view.dispatch({
-        selection: { anchor: position, head: position },
+        selection: { anchor: position, head },
         effects: EditorView.scrollIntoView(position, { y: 'center' })
       });
       view.focus();
@@ -466,6 +650,19 @@ export function CodeEditor({
             <span className="text-neutral-600 font-normal">({files.length})</span>
           </span>
           <div className="flex items-center gap-1">
+            {outlineAvailable && (
+              <button
+                type="button"
+                onClick={() => setIsOutlineOpen((open) => !open)}
+                aria-pressed={isOutlineOpen}
+                title={isOutlineOpen ? 'Hide document outline' : 'Show document outline'}
+                className={`p-1 transition-colors cursor-pointer ${
+                  isOutlineOpen ? 'text-violet-300' : 'text-neutral-400 hover:text-white'
+                }`}
+              >
+                <ListTree className="w-3.5 h-3.5" />
+              </button>
+            )}
             <button
               type="button"
               onClick={onNewFile}
@@ -510,18 +707,29 @@ export function CodeEditor({
 
         {/* Hierarchical workspace tree */}
         <div className="flex-1 overflow-y-auto py-1">
-          {files.length === 0 && !nativeDirectoryPages ? (
+          {nativeDirectoryPages ? (
+            renderNativeFolder('', 0, workspaceName || 'Workspace')
+          ) : files.length === 0 ? (
             <div className="p-4 text-center text-[11px] text-neutral-600 italic">
               No files in workspace
             </div>
+          ) : explorerTree.files.length + explorerTree.folders.length === 0 ? (
+            <div className="p-4 text-center text-[11px] text-neutral-600 italic">No matching files</div>
+          ) : workspaceKind === 'file' ? (
+            renderLooseRootFiles(explorerTree)
           ) : (
-            explorerTree.files.length + explorerTree.folders.length === 0
-              ? <div className="p-4 text-center text-[11px] text-neutral-600 italic">No matching files</div>
-              : nativeDirectoryPages
-                ? renderNativeFolder('', 0, workspaceName || 'Workspace')
-                : renderFolder(explorerTree, 0, workspaceName || 'Workspace')
+            renderFolder(explorerTree, 0, workspaceName || 'Workspace')
           )}
         </div>
+
+        {outlineAvailable && isOutlineOpen && (
+          <OutlinePanel
+            symbols={outlineSymbols ?? []}
+            isLoading={isOutlineLoading}
+            error={outlineError}
+            onSelect={(symbol) => onSelectOutlineSymbol?.(symbol)}
+          />
+        )}
       </div>
 
       {/* Sidebar Toggle Tab */}
@@ -844,50 +1052,67 @@ export function CodeEditor({
     </div>
   );
 
+  /**
+   * Loose files picked from disk have no parent folder of their own, so the
+   * explorer must not invent one: render the root's children without its
+   * header row. Files sit at the left edge; any real subfolder keeps its own
+   * expander.
+   */
+  function renderLooseRootFiles(folder: ExplorerFolder): ReactNode {
+    return (
+      <div key="loose-root">
+        {folder.files.map(({ file, index }) => renderExplorerFile({ file, index }, -1))}
+        {folder.folders.map((child) => renderFolder(child, 0))}
+      </div>
+    );
+  }
+
+  function renderExplorerFile({ file, index }: ExplorerFile, depth: number): ReactNode {
+    const isActive = index === activeFileIndex;
+    const hasUnsaved = dirty.has(file.name);
+    return (
+      <div key={`${file.name}-${index}`} className="group flex items-center min-w-0 pr-2">
+        <button
+          type="button"
+          onClick={() => onSelectFile(index)}
+          title={file.name}
+          className={`flex flex-1 min-w-0 items-center gap-1.5 rounded-md py-1 text-left transition-colors cursor-pointer ${
+            isActive ? 'bg-violet-500/[.12] text-white' : 'text-neutral-400 hover:bg-white/[0.04]'
+          }`}
+          style={{ paddingLeft: `${8 + (depth + 1) * 14}px` }}
+        >
+          <FileCode2
+            className={`w-3 h-3 shrink-0 ${
+              isActive ? 'text-violet-300' : 'text-neutral-500 group-hover:text-neutral-300'
+            }`}
+          />
+          <span className="font-mono text-[11px] truncate">{file.name.split('/').pop()}</span>
+          {hasUnsaved && (
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved changes" />
+          )}
+        </button>
+        <div className="flex items-center shrink-0">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDeleteFile(index);
+            }}
+            title="Delete file"
+            className="opacity-0 group-hover:opacity-100 p-0.5 text-neutral-600 hover:text-red-400 transition-opacity cursor-pointer"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   function renderFolder(folder: ExplorerFolder, depth: number, label?: string): ReactNode {
     const isExpanded = allFoldersExpanded || expandedFolders.has(folder.path);
     const folderLabel = label ?? folder.name;
     const isRoot = folder.path === '';
-    const folderFiles = folder.files.map(({ file, index }) => {
-      const isActive = index === activeFileIndex;
-      const hasUnsaved = dirty.has(file.name);
-      return (
-        <div key={`${file.name}-${index}`} className="group flex items-center min-w-0 pr-2">
-          <button
-            type="button"
-            onClick={() => onSelectFile(index)}
-            title={file.name}
-            className={`flex flex-1 min-w-0 items-center gap-1.5 rounded-md py-1 text-left transition-colors cursor-pointer ${
-              isActive ? 'bg-violet-500/[.12] text-white' : 'text-neutral-400 hover:bg-white/[0.04]'
-            }`}
-            style={{ paddingLeft: `${8 + (depth + 1) * 14}px` }}
-          >
-            <FileCode2
-              className={`w-3 h-3 shrink-0 ${
-                isActive ? 'text-violet-300' : 'text-neutral-500 group-hover:text-neutral-300'
-              }`}
-            />
-            <span className="font-mono text-[11px] truncate">{file.name.split('/').pop()}</span>
-            {hasUnsaved && (
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved changes" />
-            )}
-          </button>
-          <div className="flex items-center shrink-0">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDeleteFile(index);
-              }}
-              title="Delete file"
-              className="opacity-0 group-hover:opacity-100 p-0.5 text-neutral-600 hover:text-red-400 transition-opacity cursor-pointer"
-            >
-              <Trash2 className="w-3 h-3" />
-            </button>
-          </div>
-        </div>
-      );
-    });
+    const folderFiles = folder.files.map(({ file, index }) => renderExplorerFile({ file, index }, depth));
     const childItems = isExpanded
       ? [
           ...folder.folders.map((child) => renderFolder(child, depth + 1)),

@@ -1,8 +1,9 @@
-import { getPlanMeta } from './plans';
+import { CREDIT_RATES, getPlanMeta, type CreditRate } from './plans';
 import type { PlanTier } from './types';
 
 export interface UsageState {
-  count: number;
+  /** Credits spent this month. */
+  used: number;
   limit: number;
   remaining: number;
   percentage: number;
@@ -26,27 +27,25 @@ function getMonthLabel(): string {
   return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 }
 
-export function getUsageCount(): number {
+export function getUsageCredits(): number {
   try {
-    const key = getMonthKey();
-    const val = localStorage.getItem(key);
-    return val ? Math.max(0, parseInt(val, 10) || 0) : 0;
+    const val = localStorage.getItem(getMonthKey());
+    return val ? Math.max(0, parseFloat(val) || 0) : 0;
   } catch {
     return 0;
   }
 }
 
 export function getMonthlyUsage(plan: PlanTier): UsageState {
-  const count = getUsageCount();
-  const meta = getPlanMeta(plan);
-  const limit = meta.monthlyCap;
+  const used = getUsageCredits();
+  const limit = getPlanMeta(plan).creditsPerMonth;
   const isUnlimited = !Number.isFinite(limit);
-  const remaining = isUnlimited ? Infinity : Math.max(0, limit - count);
-  const percentage = isUnlimited ? 0 : Math.min(100, Math.round((count / limit) * 100));
-  const isCapReached = !isUnlimited && count >= limit;
+  const remaining = isUnlimited ? Infinity : Math.max(0, limit - used);
+  const percentage = isUnlimited ? 0 : Math.min(100, Math.round((used / limit) * 100));
+  const isCapReached = !isUnlimited && used >= limit;
 
   return {
-    count,
+    used,
     limit,
     remaining,
     percentage,
@@ -57,12 +56,10 @@ export function getMonthlyUsage(plan: PlanTier): UsageState {
   };
 }
 
-export function recordMessageSent(): number {
+export function addCreditSpend(credits: number): number {
   try {
-    const key = getMonthKey();
-    const current = getUsageCount();
-    const next = current + 1;
-    localStorage.setItem(key, String(next));
+    const next = Math.round((getUsageCredits() + credits) * 100) / 100;
+    localStorage.setItem(getMonthKey(), String(next));
     window.dispatchEvent(new CustomEvent(QUOTA_EVENT, { detail: next }));
     return next;
   } catch {
@@ -70,10 +67,18 @@ export function recordMessageSent(): number {
   }
 }
 
+/**
+ * Free/BYOK has no meter — the user pays their own provider, so nothing is
+ * counted and nothing can run out.
+ */
+export function recordCreditSpend(plan: PlanTier, rate: CreditRate): number {
+  if (!Number.isFinite(getPlanMeta(plan).creditsPerMonth)) return 0;
+  return addCreditSpend(CREDIT_RATES[rate]);
+}
+
 export function resetMonthlyUsage(): void {
   try {
-    const key = getMonthKey();
-    localStorage.setItem(key, '0');
+    localStorage.setItem(getMonthKey(), '0');
     window.dispatchEvent(new CustomEvent(QUOTA_EVENT, { detail: 0 }));
   } catch {
     /* ignore */
