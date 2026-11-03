@@ -2498,6 +2498,7 @@ export default function App() {
       const applyPlan = planAtomicApply(targets, buffersForPlan, {
         allowDestructive: options.allowDestructive
       });
+      let changeSetVerdict: { ok: boolean; checked: number; issues: Array<{ code: string }>; skipped: string[] } | null = null;
 
       if (!('failures' in applyPlan)) {
         if (options.verify !== false && desktop && nativeWorkspaceId) {
@@ -2506,6 +2507,7 @@ export default function App() {
               nativeWorkspaceId,
               applyPlan.jobs.map((job) => ({ path: job.path, content: job.content }))
             );
+            changeSetVerdict = verdict;
             if (!verdict.ok) {
               const first = verdict.issues.find((issue) => issue.severity === 'error') ?? verdict.issues[0];
               commit(failedWith('Blocked by pre-apply verification'));
@@ -2582,20 +2584,44 @@ export default function App() {
           : outcome.message ?? 'Applied in the editor only — the files were not saved to disk.',
         outcome.written > 0 ? 3500 : 6000
       );
-      if (outcome.written > 0) {
+      if (applied.length > 0) {
+        const staticChecksPassed = changeSetVerdict?.ok === true;
+        const boundariesPassed = changeSetVerdict !== null &&
+          !changeSetVerdict.issues.some((issue) => issue.code === 'PATH_OUTSIDE_WORKSPACE');
+        const diskSavePassed = !outcome.failed && outcome.written === applied.length;
+        const checks = [
+          {
+            name: 'Static syntax validation',
+            ok: staticChecksPassed,
+            details: changeSetVerdict
+              ? `${changeSetVerdict.checked} supported file(s) checked; ${changeSetVerdict.skipped.length} skipped`
+              : 'Not run'
+          },
+          {
+            name: 'Workspace boundary check',
+            ok: boundariesPassed,
+            details: changeSetVerdict ? 'No path escaped the opened workspace' : 'Not run'
+          },
+          {
+            name: 'Disk persistence',
+            ok: diskSavePassed,
+            details: diskSavePassed
+              ? `${outcome.written} file(s) confirmed saved`
+              : `${outcome.written} of ${applied.length} file(s) saved${outcome.message ? `: ${outcome.message}` : ''}`
+          }
+        ];
+        const passed = checks.every((check) => check.ok);
         setMessages((prev) =>
           prev.map((msg) =>
             msg.id === messageId
               ? {
                   ...msg,
                   verificationResult: {
-                    passed: true,
-                    checks: [
-                      { name: 'AST Syntax Validation', ok: true },
-                      { name: 'Safe Boundary Check', ok: true },
-                      { name: 'Disk Persistence Hook', ok: true, details: `${outcome.written} file(s) written safely` }
-                    ],
-                    summary: `${outcome.written} file(s) saved and verified`
+                    passed,
+                    checks,
+                    summary: passed
+                      ? `${outcome.written} file(s) saved and checked`
+                      : 'Some checks did not pass or were not run'
                   }
                 }
               : msg
@@ -2650,7 +2676,7 @@ export default function App() {
         )
       );
       acceptAllPatches(messageId);
-      announce('Plan approved. Changes accepted.', 4000);
+      announce('Proposed plan changes accepted.', 4000);
     },
     [acceptAllPatches, announce]
   );
@@ -2681,7 +2707,7 @@ export default function App() {
             : entry
         )
       );
-      announce('Plan rejected. Pending changes skipped.', 4000);
+      announce('Proposed plan changes rejected. Pending changes skipped.', 4000);
     },
     [announce]
   );

@@ -510,12 +510,12 @@ function TaskPlanView({ plan, streaming, approval, onApprove, onReject }: TaskPl
         ))}
       </ul>
 
-      {/* Plan Approval Gate Banner */}
+      {/* Plan review is separate from execution approval; file changes remain reviewable below. */}
       {approval && (approval.status === 'pending' || approval.status === 'required') && (
         <div className="mt-3 rounded-lg border border-violet-400/30 bg-violet-950/20 p-2.5">
           <div className="flex items-center gap-1.5 text-violet-200 font-medium text-xs mb-1">
             <Sparkles className="w-3.5 h-3.5 text-violet-300" />
-            <span>Plan proposal requires user approval</span>
+            <span>Review proposed plan changes</span>
           </div>
           {approval.planSummary && (
             <p className="text-[11px] text-neutral-300 mb-2 leading-relaxed">
@@ -538,7 +538,7 @@ function TaskPlanView({ plan, streaming, approval, onApprove, onReject }: TaskPl
               className="flex items-center gap-1.5 rounded-md bg-violet-600 px-3 py-1 text-xs font-semibold text-white shadow hover:bg-violet-500 transition-colors cursor-pointer"
             >
               <Check className="w-3.5 h-3.5" />
-              Approve & Execute Plan
+              Accept proposed changes
             </button>
             <button
               type="button"
@@ -546,7 +546,7 @@ function TaskPlanView({ plan, streaming, approval, onApprove, onReject }: TaskPl
               className="flex items-center gap-1 rounded-md border border-white/10 px-2.5 py-1 text-xs text-neutral-400 hover:text-white hover:bg-white/[0.05] transition-colors cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
-              Reject Plan
+              Reject proposed changes
             </button>
           </div>
         </div>
@@ -555,7 +555,7 @@ function TaskPlanView({ plan, streaming, approval, onApprove, onReject }: TaskPl
       {approval && approval.status === 'approved' && (
         <div className="mt-2.5 flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-950/20 px-2.5 py-1.5 text-[11px] text-emerald-300">
           <Check className="w-3.5 h-3.5 text-emerald-400" />
-          <span>Plan approved by user · Executing autonomously</span>
+          <span>Proposed changes accepted</span>
         </div>
       )}
     </div>
