@@ -1659,6 +1659,27 @@ export function CodeEditor({
           </div>
         )}
 
+        {/* Sticky File Path Breadcrumb Bar */}
+        {activeFile && (
+          <div className="flex h-6 shrink-0 items-center gap-1.5 border-b border-white/[0.04] bg-ink-950/70 px-3 text-[10px] font-mono text-neutral-400">
+            <span className="flex items-center gap-1 text-neutral-500">
+              <Folder className="h-3 w-3 text-neutral-500" />
+              {activeFile.name.split('/').slice(0, -1).join(' / ') || '.'}
+            </span>
+            <span className="text-neutral-600">/</span>
+            <span className="text-neutral-200 font-semibold flex items-center gap-1">
+              <FileCode2 className="h-3 w-3 text-violet-300" />
+              {activeFile.name.split('/').pop()}
+            </span>
+            {diagnostics && diagnostics.length > 0 && (
+              <span className="ml-auto text-[9.5px] font-mono text-amber-400 flex items-center gap-1">
+                <span className="size-1.5 rounded-full bg-amber-400" />
+                {diagnostics.length} diagnostic{diagnostics.length === 1 ? '' : 's'}
+              </span>
+            )}
+          </div>
+        )}
+
         {/* One-line, dismissible inline-AI notice. Non-blocking by design. */}
         {completionHint && dismissedCompletionHint !== completionHint.id && (
           <div

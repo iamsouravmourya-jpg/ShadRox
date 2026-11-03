@@ -77,11 +77,34 @@ export interface ChatMessage {
   attachedImage?: string;
   streaming?: boolean;
   /** Read-only tool calls this turn ran against the opened folder. */
-  toolActivity?: Array<{ name: string; label: string; ok: boolean; error?: string }>;
+  toolActivity?: Array<{
+    name: string;
+    label: string;
+    ok: boolean;
+    error?: string;
+    input?: Record<string, unknown> | string;
+    output?: string;
+    durationMs?: number;
+    stage?: 'reading' | 'planning' | 'editing' | 'checking' | 'completed' | 'failed';
+  }>;
+  /** Live status during execution (e.g. "Reading src/App.tsx...", "Running checks..."). */
+  activeStatus?: string;
+  /** Plan approval gate for multi-file or architectural tasks. */
+  planApproval?: {
+    status: 'required' | 'approved' | 'rejected' | 'pending';
+    planSummary?: string;
+    targetFiles?: string[];
+  };
+  /** Verification report showing passing/failing checks. */
+  verificationResult?: {
+    passed: boolean;
+    checks: Array<{ name: string; ok: boolean; details?: string }>;
+    summary: string;
+  };
   /** Model turns spent on tool rounds before the answer. */
   toolRounds?: number;
   /** The step list the model tracked for itself during this turn. */
-  taskPlan?: Array<{ id: string; subject: string; status: 'pending' | 'doing' | 'done' | 'blocked' }>;
+  taskPlan?: Array<{ id: string; subject: string; status: 'pending' | 'doing' | 'done' | 'blocked'; evidence?: string; files?: string[] }>;
   /** Set when the turn ended with the finish tool; `blocked` says why it is unfinished. */
   finishedWith?: { summary: string; blocked: string | null };
   /** Provider reasoning stream (Gemini thoughts / Groq reasoning models). */
@@ -116,6 +139,17 @@ export interface ChatMessage {
     progress?: string[];
     /** One-line outcome: milestones/tasks passed, files changed, or the error. */
     detail?: string;
+    /** Structured executive summary report generated upon team or autonomous run completion. */
+    summaryReport?: {
+      overview: string;
+      filesModified: string[];
+      tasksCompleted: number;
+      totalTasks: number;
+      testsPassed?: number;
+      testsRun?: number;
+      durationMs?: number;
+      openIssues?: string[];
+    };
   };
 }
 

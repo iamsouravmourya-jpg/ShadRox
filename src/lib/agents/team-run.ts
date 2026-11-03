@@ -268,6 +268,26 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
       state.error = `${unverified.length} file-changing task(s) finished without a check that could prove them — ${unverified.join('; ')}.`;
     }
   }
+
+  const touchedFiles = Array.from(new Set(state.tasks.flatMap((t) => t.touchedFiles ?? [])));
+  const completedTasks = state.tasks.filter((t) => t.status === 'passed' || t.status === 'unverified').length;
+  const testsPassed = state.tasks.filter((t) => t.assignee === 'tests' && t.status === 'passed').length;
+  const testsRun = state.tasks.filter((t) => t.assignee === 'tests').length;
+  const openIssues = state.tasks.filter((t) => t.status === 'failed' || t.status === 'blocked').map((t) => `${t.assignee}: ${t.title}`);
+
+  state.summaryReport = {
+    overview: state.status === 'done'
+      ? `Agent team successfully completed goal: "${state.goal}".`
+      : `Agent team concluded with status "${state.status}": ${state.error ?? 'Review individual task reports.'}`,
+    filesModified: touchedFiles,
+    tasksCompleted: completedTasks,
+    totalTasks: state.tasks.length,
+    testsPassed,
+    testsRun,
+    durationMs: Math.max(0, deps.now() - state.startedAt),
+    openIssues: openIssues.length > 0 ? openIssues : undefined
+  };
+
   deps.persist(state);
   deps.ports.onEvent({ type: 'team:done', status: state.status });
   return state;

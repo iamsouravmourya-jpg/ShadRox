@@ -127,6 +127,17 @@ export interface TeamState {
   conflicts?: string[];
   /** True once the pre-write checkpoint was taken, so a resume does not take a second one. */
   checkpointed?: boolean;
+  /** Structured executive summary report generated upon team run completion. */
+  summaryReport?: {
+    overview: string;
+    filesModified: string[];
+    tasksCompleted: number;
+    totalTasks: number;
+    testsPassed?: number;
+    testsRun?: number;
+    durationMs?: number;
+    openIssues?: string[];
+  };
 }
 
 export type TeamEvent =
