@@ -19,7 +19,9 @@ import {
   ChevronRight,
   Columns2,
   Copy,
+  Code2,
   Download,
+  Eye,
   FileCode2,
   FileDiff,
   FilePlus,
@@ -71,6 +73,7 @@ import type {
 import { formatDiagnosticMessage } from '../lib/diagnostics';
 import { OutlinePanel } from './OutlinePanel';
 import { ReferencesPanel } from './ReferencesPanel';
+import { renderMarkdownContent } from '../lib/markdown';
 
 interface CodeEditorProps {
   files: WorkspaceFile[];
@@ -444,6 +447,7 @@ export function CodeEditor({
   const editorRef = useRef<ReactCodeMirrorRef>(null);
   const [fileFilter, setFileFilter] = useState('');
   const [findQuery, setFindQuery] = useState('');
+  const [markdownPreviewPath, setMarkdownPreviewPath] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isOutlineOpen, setIsOutlineOpen] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set(['']));
@@ -1191,6 +1195,9 @@ export function CodeEditor({
   const charCount = activeFile ? activeFile.content.length : 0;
   const tokenEst = activeFile ? estimateTokens(activeFile.content) : 0;
   const isDirty = activeFile ? dirty.has(activeFile.name) : false;
+  const isMarkdownFile = (name: string, language?: string) =>
+    (language ?? detectLanguage(name)).toLowerCase() === 'markdown';
+  const isMarkdownPreview = Boolean(activeFile && markdownPreviewPath === activeFile.name);
 
   return (
     <div
@@ -1362,6 +1369,22 @@ export function CodeEditor({
                 <span className="hidden md:inline text-[10px] text-neutral-500 uppercase font-mono">
                   {activeFile.language}
                 </span>
+                {isMarkdownFile(activeFile.name, activeFile.language) && (
+                  <button
+                    type="button"
+                    onClick={() => setMarkdownPreviewPath(isMarkdownPreview ? null : activeFile.name)}
+                    aria-pressed={isMarkdownPreview}
+                    title={isMarkdownPreview ? 'Show Markdown source' : 'Preview Markdown'}
+                    className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] transition-colors cursor-pointer ${
+                      isMarkdownPreview
+                        ? 'border-violet-300/30 bg-violet-500/10 text-violet-200'
+                        : 'border-white/[0.09] text-neutral-400 hover:border-white/[0.14] hover:text-white'
+                    }`}
+                  >
+                    {isMarkdownPreview ? <Code2 className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                    {isMarkdownPreview ? 'Source' : 'Preview'}
+                  </button>
+                )}
               </>
             ) : (
               <span className="text-xs text-neutral-500">No file selected</span>
@@ -1916,7 +1939,13 @@ export function CodeEditor({
               )}
             </div>
           )}
-          {activeFile ? (
+          {activeFile && isMarkdownPreview ? (
+            <div className="h-full overflow-auto bg-ink-950 px-5 py-4 sm:px-8">
+              <article className="mx-auto max-w-4xl rounded-xl border border-white/[0.07] bg-ink-900/60 p-5 sm:p-8">
+                {renderMarkdownContent(activeFile.content)}
+              </article>
+            </div>
+          ) : activeFile ? (
             <CodeMirror
               ref={editorRef}
               value={activeFile.content}
@@ -1987,6 +2016,7 @@ export function CodeEditor({
   function renderExplorerFile({ file, index }: ExplorerFile, depth: number): ReactNode {
     const isActive = index === activeFileIndex;
     const hasUnsaved = dirty.has(file.name);
+    const isMarkdown = isMarkdownFile(file.name, file.language);
     return (
       <div
         key={`${file.name}-${index}`}
@@ -2013,6 +2043,21 @@ export function CodeEditor({
           )}
         </button>
         <div className="flex items-center shrink-0">
+          {isMarkdown && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setMarkdownPreviewPath(file.name);
+                onSelectFile(index);
+              }}
+              title={`Preview ${file.name}`}
+              aria-label={`Preview ${file.name}`}
+              className="rounded p-0.5 text-neutral-500 opacity-0 transition-opacity hover:text-violet-200 group-hover:opacity-100 focus:opacity-100 cursor-pointer"
+            >
+              <Eye className="h-3 w-3" />
+            </button>
+          )}
           <button
             type="button"
             onClick={(e) => {
@@ -2115,6 +2160,7 @@ export function CodeEditor({
           const index = files.findIndex((file) => file.name === entry.path);
           const isActive = index >= 0 && index === activeFileIndex;
           const isDirty = dirty.has(entry.path);
+          const isMarkdown = isMarkdownFile(entry.path);
           return (
             <div key={entry.path} className="group flex items-center min-w-0 pr-2">
               <button
@@ -2132,6 +2178,22 @@ export function CodeEditor({
                 <span className="font-mono text-[11px] truncate">{entry.name}</span>
                 {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />}
               </button>
+              {isMarkdown && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setMarkdownPreviewPath(entry.path);
+                    if (index >= 0) onSelectFile(index);
+                    else onOpenPath?.(entry.path);
+                  }}
+                  title={`Preview ${entry.path}`}
+                  aria-label={`Preview ${entry.path}`}
+                  className="rounded p-0.5 text-neutral-500 opacity-0 transition-opacity hover:text-violet-200 group-hover:opacity-100 focus:opacity-100 cursor-pointer"
+                >
+                  <Eye className="h-3 w-3" />
+                </button>
+              )}
               {canWriteToDisk && onDeleteEntry && (
                 <button
                   type="button"

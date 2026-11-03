@@ -32,9 +32,9 @@ export function Hero() {
 
         <Reveal delay={160}>
           <p className="mx-auto mt-6 max-w-2xl text-pretty text-base leading-7 text-zinc-400 sm:text-lg">
-            Open a project folder and work with its files, code editor, Gemini or Groq AI chat, supported
-            web previews, and terminal together in a desktop app. Your project stays local; AI only gets
-            the prompt and code context you choose to send.
+            Open a project folder and work with its files, code editor, Markdown preview, queued AI chat,
+            supported web previews, Git tools, and terminal together in a desktop app. Your project stays
+            local; AI only gets the prompt and code context you choose to send.
           </p>
         </Reveal>
 

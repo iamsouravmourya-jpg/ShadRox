@@ -3,8 +3,8 @@
 import { Check, Play } from 'lucide-react'
 import { Reveal } from './reveal'
 
-const supported = ['Static sites', 'Vite', 'Next.js', 'Node-based web projects']
-const notSupported = ['Python', 'Go', 'PHP', 'Java', '.NET backends']
+const supported = ['Static sites', 'Vite & Next.js', 'Node-based web projects', 'Python · Go · PHP · Java · .NET backends']
+const caveats = ['The backend runtime must be installed on your machine', 'External sites that block embedded previews', 'Click-to-source works for pages served by ShadRox']
 
 export function PreviewSupport() {
   return (
@@ -21,9 +21,9 @@ export function PreviewSupport() {
                 Preview the web projects you are working on.
               </h2>
               <p className="mt-4 max-w-xl text-sm leading-6 text-zinc-400">
-                ShadRox can serve static sites and launch detected Node-based web projects with supported
-                package scripts. It is not yet a universal runtime for Python, Go, PHP, Java, or .NET
-                backends. Some apps also restrict embedding in previews.
+                ShadRox can serve static sites, launch detected Node-based web projects with supported
+                package scripts, and run detected Python, Go, PHP, Java, and .NET backends through the
+                runtime installed on your machine. Some apps also restrict embedding in previews.
               </p>
 
               <div className="mt-7 flex flex-col gap-4 sm:flex-row sm:items-start">
@@ -44,10 +44,10 @@ export function PreviewSupport() {
                 </div>
                 <div className="flex-1">
                   <p className="mb-2 text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500">
-                    Not yet
+                    Good to know
                   </p>
                   <div className="flex flex-wrap gap-1.5">
-                    {notSupported.map((s) => (
+                    {caveats.map((s) => (
                       <span
                         key={s}
                         className="inline-flex items-center rounded-full border border-white/8 bg-white/[.03] px-2.5 py-1 text-[11px] text-zinc-500"

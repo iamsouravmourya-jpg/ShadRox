@@ -20,7 +20,7 @@ export function BetaCta() {
             <p className="mx-auto mt-4 max-w-lg text-sm leading-6 text-zinc-400">
               Version {APP_VERSION} for Windows 10 or 11 (64-bit). The installer is free to download.
               On first launch the app asks you to sign in with Google, then you connect your own
-              Gemini or Groq key.
+              Gemini, Groq, or compatible provider key.
             </p>
             <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <a
