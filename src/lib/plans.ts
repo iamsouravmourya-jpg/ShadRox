@@ -93,8 +93,50 @@ export const PLANS: PlanMeta[] = [
 
 export const DEFAULT_PLAN: PlanTier = 'free';
 
-/** Beta-phase switch: paid tiers are visible but cannot be selected yet. */
-export const PLANS_LOCKED = true;
+/**
+ * Beta-phase unlock list: the paid tiers the developer has opened for selection.
+ * Free is always selectable; every other tier needs a name in this array. Empty
+ * it to lock the whole ladder, add 'pro' to open Pro too.
+ */
+export const BETA_UNLOCKED_PLANS: PlanTier[] = ['starter'];
+
+export function isPlanSelectable(plan: PlanTier): boolean {
+  return plan === 'free' || BETA_UNLOCKED_PLANS.includes(plan);
+}
+
+/** Tiers still withheld, so the UI only says "locked" when something really is. */
+export function getLockedPlanIds(): PlanTier[] {
+  return PLANS.map((entry) => entry.id).filter((id) => !isPlanSelectable(id));
+}
+
+/**
+ * What the UI may honestly claim a plan gives you, in one line.
+ *
+ * Credits buy the shared-key path, and that path only runs when the operator
+ * enables it server-side (api/ai/_access.ts: SHADROX_ALLOW_SHARED_KEY=1 plus the
+ * provider key in that process). quota.ts meters by plan, not by key, so the
+ * local counter moves even when the user's own key answered — say all of that
+ * instead of advertising server-run AI this build cannot deliver.
+ */
+export function getPlanEntitlementNote(plan: PlanTier, sharedKeyEligible: boolean): string {
+  const meta = getPlanMeta(plan);
+  if (!Number.isFinite(meta.creditsPerMonth)) {
+    return 'Nothing is metered on this plan — your own key pays the provider, so ShadRox bills no credits.';
+  }
+  const allotment = `${meta.creditsPerMonth.toLocaleString('en-IN')} credits a month`;
+  const meter =
+    'The counter on this device moves for any paid plan, even when your own key ran the request, and the server does not enforce it yet.';
+  return sharedKeyEligible
+    ? `${allotment} pay for requests run on the ShadRox shared key. That key answers only while the operator has it enabled on the server; on a plain beta install your own BYOK key still carries every request. ${meter}`
+    : `${allotment} pay for requests run on the ShadRox shared key, and this beta does not open that path for ${meta.label}. ${meter}`;
+}
+
+/**
+ * No payment integration exists in this repo, so a plan switch is an entitlement
+ * flip on this device only. Every upgrade control has to admit that.
+ */
+export const BETA_UPGRADE_NOTE =
+  'Beta: nothing is charged and no payment is taken yet — this only flips your plan on this device.';
 
 export function getPlanMeta(plan: PlanTier): PlanMeta {
   return PLANS.find((entry) => entry.id === plan) || PLANS[0];

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
 import { AlertTriangle, History, Loader2, RotateCcw, X } from 'lucide-react';
+import type { CheckpointDiff } from '../lib/checkpointDiff';
+import { describeCheckpointDiff } from '../lib/checkpointDiff';
 import type { CheckpointMeta } from '../lib/history';
 import {
   buildTimeline,
@@ -18,10 +20,20 @@ export interface TimelineSliderProps {
   restoringId?: string | null;
   onClose?: () => void;
   disabled?: boolean;
+  /** What restoring the selected checkpoint would do, computed by the host. */
+  diff?: CheckpointDiff | null;
+  diffLoading?: boolean;
 }
 
 const CONFIRM_WINDOW_MS = 4000;
 const RAIL_NODE_SPACING = 26;
+const DIFF_ROWS = 6;
+
+const KIND_GLYPH: Record<string, { mark: string; tone: string; word: string }> = {
+  edit: { mark: '~', tone: 'text-amber-300', word: 'edited' },
+  restore: { mark: '+', tone: 'text-emerald-300', word: 'comes back' },
+  delete: { mark: '−', tone: 'text-rose-300', word: 'deleted' }
+};
 
 /**
  * Compact visual history rail. Nodes run oldest -> newest left to right, the
@@ -35,7 +47,9 @@ export function TimelineSlider({
   onRestore,
   restoringId,
   onClose,
-  disabled
+  disabled,
+  diff,
+  diffLoading
 }: TimelineSliderProps) {
   const [internalId, setInternalId] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -213,6 +227,52 @@ export function TimelineSlider({
             <p className="mt-1 truncate text-[10px] text-neutral-500" title={summary}>
               {summary}
             </p>
+          </div>
+
+          <div className="min-h-0 flex-1 px-3 pb-1 pt-2">
+            {diffLoading ? (
+              <p className="flex items-center gap-1.5 font-mono text-[10px] text-neutral-500">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Comparing files
+              </p>
+            ) : diff ? (
+              <>
+                <p className="truncate text-[10px] text-neutral-400" title={describeCheckpointDiff(diff)}>
+                  {describeCheckpointDiff(diff)}
+                </p>
+                {diff.changes.length > 0 && (
+                  <ul className="mt-1 space-y-0.5">
+                    {diff.changes.slice(0, DIFF_ROWS).map((change) => {
+                      const glyph = KIND_GLYPH[change.kind];
+                      return (
+                        <li key={change.path} className="flex min-w-0 items-center gap-1.5 font-mono text-[10px]">
+                          <span className={`${glyph.tone} w-2 shrink-0`}>{glyph.mark}</span>
+                          <span className="truncate text-neutral-300" title={`${change.path} · ${glyph.word}`}>
+                            {change.path}
+                          </span>
+                          {!change.approximate && (change.added || change.removed) > 0 && (
+                            <span className="ml-auto shrink-0 text-neutral-600">
+                              {change.added > 0 && <span className="text-emerald-400/70">+{change.added}</span>}
+                              {change.removed > 0 && <span className="text-rose-400/70"> −{change.removed}</span>}
+                            </span>
+                          )}
+                        </li>
+                      );
+                    })}
+                    {diff.changes.length > DIFF_ROWS && (() => {
+                      const more = diff.edited + diff.restored + diff.deleted - DIFF_ROWS;
+                      return (
+                        <li className="font-mono text-[10px] text-neutral-600">
+                          and {more} more file{more === 1 ? '' : 's'}
+                        </li>
+                      );
+                    })()}
+                  </ul>
+                )}
+              </>
+            ) : (
+              <p className="text-[10px] text-neutral-600">File comparison unavailable for this checkpoint.</p>
+            )}
           </div>
 
           <div className="mt-auto flex shrink-0 items-center gap-2 border-t border-white/[0.07] px-3 py-2">

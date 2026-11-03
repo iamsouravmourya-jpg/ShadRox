@@ -1,6 +1,7 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
 import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
-import { UpstreamError, type StreamRequest, type StreamResult, type StreamSink } from './_types.js';
+import { UpstreamError, mergeGeminiUsage, usageFields, type StreamRequest, type StreamResult, type StreamSink, type TokenUsage, type ToolCallEntry } from './_types.js';
+import { rejectsNativeTools } from './_toolCalls.js';
 import { fetchUpstream } from './_upstream.js';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -32,7 +33,7 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
   const contents = buildContents(request);
   const systemText = buildSystemInstruction(request);
 
-  const send = (generationConfig: Record<string, unknown>) =>
+  const send = (generationConfig: Record<string, unknown>, withTools: boolean) =>
     fetchUpstream(
       url,
       {
@@ -44,7 +45,19 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
         body: JSON.stringify({
           contents,
           ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
-          generationConfig
+          generationConfig,
+          ...(withTools && request.toolDefinitions?.length
+            ? {
+                tools: [{
+                  functionDeclarations: request.toolDefinitions.map((tool) => ({
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: tool.parameters
+                  }))
+                }],
+                toolConfig: { functionCallingConfig: { mode: 'AUTO' } }
+              }
+            : {})
         })
       },
       signal
@@ -57,23 +70,32 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
     baseConfig.thinkingConfig = { thinkingBudget: thinking === 'high' ? 8192 : 0 };
   }
 
-  let response = await send(baseConfig);
+  let withTools = Boolean(request.toolDefinitions?.length);
+  let response = await send(baseConfig, withTools);
+  let payload = response.ok ? '' : await readErrorPayload(response);
+
+  if (!response.ok && withTools && rejectsNativeTools(payload)) {
+    withTools = false;
+    response = await send(baseConfig, withTools);
+    payload = response.ok ? '' : await readErrorPayload(response);
+  }
 
   if (!response.ok && thinking) {
-    const payload = await readErrorPayload(response);
     if (!/thinking|generation_config|Unknown name/i.test(payload)) {
       throw new UpstreamError(payload, response.status);
     }
-    response = await send({ temperature });
+    response = await send({ temperature }, withTools);
+    payload = response.ok ? '' : await readErrorPayload(response);
   }
 
   if (!response.ok) {
-    throw new UpstreamError(await readErrorPayload(response), response.status);
+    throw new UpstreamError(payload, response.status);
   }
 
   let fullText = '';
-  let totalTokens = 0;
+  let usage: TokenUsage = {};
   let finishReason: string | null = null;
+  const toolCalls: ToolCallEntry[] = [];
 
   const decoder = createSseDecoder(({ data }) => {
     if (!data || data === '[DONE]') return;
@@ -94,6 +116,17 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
     const parts = candidate?.content?.parts;
     if (Array.isArray(parts)) {
       for (const part of parts) {
+        const functionCall = part?.functionCall;
+        if (typeof functionCall?.name === 'string' && functionCall.name) {
+          const args = functionCall.args && typeof functionCall.args === 'object' && !Array.isArray(functionCall.args)
+            ? JSON.stringify(functionCall.args)
+            : '{}';
+          toolCalls.push({
+            id: `gemini_${toolCalls.length}`,
+            name: functionCall.name,
+            arguments: args
+          });
+        }
         if (typeof part?.text !== 'string' || !part.text) continue;
         if (part.thought === true) sink.reasoning(part.text);
         else {
@@ -104,9 +137,7 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
     }
 
     if (typeof candidate?.finishReason === 'string') finishReason = candidate.finishReason;
-    if (typeof parsed?.usageMetadata?.totalTokenCount === 'number') {
-      totalTokens = parsed.usageMetadata.totalTokenCount;
-    }
+    usage = mergeGeminiUsage(usage, parsed?.usageMetadata);
   });
 
   try {
@@ -126,10 +157,12 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
     throw new Error(sanitizeErrorMessage(error, 'Gemini stream failed.'));
   }
 
-  if (!fullText.trim()) {
+  if (toolCalls.length > 0) sink.toolCalls(toolCalls);
+
+  if (!fullText.trim() && toolCalls.length === 0) {
     if (finishReason === 'SAFETY') throw new UpstreamError('Model ne response safety filter se block kar diya.', 400);
     throw new Error('Model returned an empty response.');
   }
 
-  return { tokens: totalTokens || estimateTokens(fullText), finishReason };
+  return { tokens: usage.total || estimateTokens(fullText), ...usageFields(usage), finishReason };
 }

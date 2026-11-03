@@ -26,7 +26,8 @@ const {
   findPreviewProjects,
   findStaticPreviewProjects,
   getPackageManager,
-  getPreviewScript
+  getPreviewScript,
+  resolveExecutable
 } = require('./preview-runtime.cjs');
 const { createUpdater } = require('./updater.cjs');
 const { createTypeScriptService } = require('./ts-service.cjs');
@@ -34,7 +35,17 @@ const { verifyChangeSet } = require('./change-verify.cjs');
 const { injectSourceBridge, shouldInject } = require('./preview-source.cjs');
 const { stripContentSecurityPolicyMeta, isHtmlDocument } = require('./csp-strip.cjs');
 const { listUnmergedPaths } = require('./git-conflicts.cjs');
-const { resolveTerminalPlan } = require('./terminal-modes.cjs');
+const {
+  parseGitBranches,
+  parseGitStatus,
+  sanitizeCommitMessage,
+  validateBranchName,
+  validateGitPaths
+} = require('./git-scm.cjs');
+const { resolveTerminalPlan, clampTerminalSize, normalizeTerminalSessionKey, isSafeExternalUrl } = require('./terminal-modes.cjs');
+const { createMcpClient, validateServerConfig, isSafeHttpUrl } = require('./mcp-client.cjs');
+const { detectRuntime, planDualPreview } = require('./runtime-adapters.cjs');
+const { createAutomationWebhook } = require('./automation-webhook.cjs');
 
 const PREVIEW_SCHEME = 'shadrox-preview';
 const APP_BACKGROUND = '#090a0d';
@@ -77,8 +88,13 @@ let rendererOrigin = null;
 let gitExecutable = null;
 let gitEnvironment = null;
 let gitSafetyCache = { root: null, context: null };
+let automationWebhook = null;
+let automationWebhookWorkspaceId = null;
+const mcpClients = new Map();
+const previewStartGenerations = new Map();
 const previewRuntime = createPreviewRuntime({
-  onOutput: (output) => mainWindow?.webContents.send('preview:output', output)
+  onOutput: (output) => mainWindow?.webContents.send('preview:output', output),
+  onBackendOutput: (output) => mainWindow?.webContents.send('preview:backend-output', output)
 });
 const typeScriptService = createTypeScriptService({
   getWorkspace: (id) => workspaceAccess.getWorkspace(id)
@@ -673,8 +689,8 @@ function executeCommand(command, cwd) {
       timeout: 120_000,
       maxBuffer: 2 * 1024 * 1024,
       windowsHide: true,
-      // Same credential-scrubbed environment the AI terminal tab runs in, so a
-      // command the assistant types can never read a stored key out of `$env`.
+      // Same credential-scrubbed agent environment the assistant's shell mode uses,
+      // so a one-shot command can never read a stored key out of `$env`.
       env: resolveTerminalPlan({ mode: 'agent' }).env
     }, (error, stdout, stderr) => {
       resolve({
@@ -746,6 +762,7 @@ async function gitSafetyContext(workspaceRoot) {
 
   const context = {
     complete,
+    filterDrivers: drivers,
     probeArgs: buildGitArgv(['rev-parse', '--is-inside-work-tree'], options),
     statusArgs: buildGitArgv(['status', '--porcelain=v1', '--branch'], { ...options, filterDrivers: drivers }),
     diffArgs: buildGitArgv(['diff', '--no-color', '--unified=2', 'HEAD'], { ...options, filterDrivers: drivers }),
@@ -753,6 +770,26 @@ async function gitSafetyContext(workspaceRoot) {
   };
   gitSafetyCache = { root: workspaceRoot, context };
   return context;
+}
+
+async function requireGitWorkspace(workspaceId) {
+  const workspace = workspaceAccess.getWorkspace(workspaceId);
+  if (!workspace || workspace.mode !== 'folder') {
+    throw new Error('Source control is available only for an opened folder workspace.');
+  }
+  if (!gitExecutable || isPathInsideDirectory(workspace.root, gitExecutable)) {
+    throw new Error('A trusted Git executable is unavailable.');
+  }
+  const context = await gitSafetyContext(workspace.root);
+  const probe = await runGit(workspace.root, context.probeArgs);
+  if (!probe.ok || probe.stdout.trim() !== 'true') throw new Error('The opened folder is not a Git repository.');
+  return { workspace, context };
+}
+
+async function runGitOrThrow(cwd, args) {
+  const result = await runGit(cwd, args);
+  if (!result.ok) throw new Error(result.stderr.trim().slice(0, 2000) || 'Git operation failed.');
+  return result.stdout;
 }
 
 function truncateText(text, max) {
@@ -814,8 +851,480 @@ function registerSecureStoreHandlers() {
   });
 }
 
-const AUTH_CALLBACK_PATH = '/auth/callback';
-const AUTH_TIMEOUT_MS = 180_000;
+const MCP_MAX_SERVERS = 20;
+const MCP_NAME_MAX = 120;
+const MCP_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MCP_ARGS_PREVIEW_MAX = 1500;
+
+function mcpServersPath() {
+  return path.join(app.getPath('userData'), 'mcp-servers.json');
+}
+
+function readMcpServerRecords() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(mcpServersPath(), 'utf8'));
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((record) => record && typeof record === 'object' && !Array.isArray(record) && typeof record.id === 'string')
+      .slice(0, MCP_MAX_SERVERS);
+  } catch {
+    return [];
+  }
+}
+
+function writeMcpServerRecords(records) {
+  const file = mcpServersPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(records.slice(0, MCP_MAX_SERVERS)), { encoding: 'utf8', mode: 0o600 });
+}
+
+/** Secret values are only ever decrypted to hand back to the trusted renderer. */
+function decryptMcpValue(entry) {
+  if (typeof entry === 'string') return entry;
+  if (!entry || typeof entry !== 'object' || typeof entry.cipher !== 'string') return '';
+  if (!safeStorage.isEncryptionAvailable()) return '';
+  try {
+    return safeStorage.decryptString(Buffer.from(entry.cipher, 'base64'));
+  } catch {
+    // A value encrypted under another OS profile cannot be recovered.
+    return '';
+  }
+}
+
+function decryptMcpMap(value) {
+  const result = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+  for (const [key, entry] of Object.entries(value)) result[key] = decryptMcpValue(entry);
+  return result;
+}
+
+/**
+ * Env/header values are the only secret material in an MCP config. When OS
+ * encryption is unavailable callers have already refused non-empty values, so
+ * empty strings can be stored as-is without weakening anything.
+ */
+function encryptMcpMap(value) {
+  const result = {};
+  const available = safeStorage.isEncryptionAvailable();
+  for (const [key, entry] of Object.entries(value || {})) {
+    result[key] = available && entry
+      ? { cipher: safeStorage.encryptString(entry).toString('base64') }
+      : '';
+  }
+  return result;
+}
+
+/**
+ * The renderer only needs key names to edit a server; secret values never
+ * leave the main process. `includeSecrets` is reserved for the client factory.
+ */
+function mcpRecordToConfig(record, index, includeSecrets = false) {
+  const transport = record.transport === 'http' ? 'http' : 'stdio';
+  const config = {
+    id: typeof record.id === 'string' ? record.id : `server-${index}`,
+    name: typeof record.name === 'string' ? record.name.slice(0, MCP_NAME_MAX) : '',
+    transport,
+    enabled: record.enabled !== false
+  };
+  if (transport === 'stdio') {
+    config.command = typeof record.command === 'string' ? record.command : '';
+    config.args = Array.isArray(record.args) ? record.args.filter((arg) => typeof arg === 'string') : [];
+    const env = includeSecrets ? decryptMcpMap(record.env) : {};
+    if (!includeSecrets) {
+      for (const key of Object.keys(record.env || {})) env[key] = '';
+    }
+    config.env = env;
+  } else {
+    config.url = typeof record.url === 'string' ? record.url : '';
+    const headers = includeSecrets ? decryptMcpMap(record.headers) : {};
+    if (!includeSecrets) {
+      for (const key of Object.keys(record.headers || {})) headers[key] = '';
+    }
+    config.headers = headers;
+  }
+  return config;
+}
+
+function listMcpServerConfigs() {
+  return readMcpServerRecords().map((record, index) => mcpRecordToConfig(record, index));
+}
+
+function findMcpServerConfig(id) {
+  if (typeof id !== 'string') return null;
+  const records = readMcpServerRecords();
+  const index = records.findIndex((record) => record.id === id);
+  if (index < 0) return null;
+  return mcpRecordToConfig(records[index], index, true);
+}
+
+function saveMcpServerConfig(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('An MCP server configuration is required.');
+  }
+  const id = typeof input.id === 'string' ? input.id.trim() : '';
+  if (!MCP_ID_PATTERN.test(id)) {
+    throw new Error('MCP server ids must be 1-64 characters of letters, digits, dots, dashes, or underscores, starting with a letter or digit.');
+  }
+  const name = typeof input.name === 'string' ? input.name.trim() : '';
+  if (!name || name.length > MCP_NAME_MAX) {
+    throw new Error(`MCP server names must be between 1 and ${MCP_NAME_MAX} characters.`);
+  }
+  if (input.enabled !== undefined && typeof input.enabled !== 'boolean') {
+    throw new Error('MCP server enabled must be a boolean.');
+  }
+  if (input.transport !== 'stdio' && input.transport !== 'http') {
+    throw new Error('MCP server transport must be "stdio" or "http".');
+  }
+  if (input.transport === 'http' && !isSafeHttpUrl(input.url)) {
+    throw new Error('MCP HTTP servers need an absolute http(s) URL without embedded credentials.');
+  }
+
+  const records = readMcpServerRecords();
+  const existingIndex = records.findIndex((record) => record.id === id);
+  const previous = existingIndex >= 0 ? records[existingIndex] : null;
+
+  // The renderer never receives stored secret values, so a blank field means
+  // "keep what is already saved"; removing the key is how a secret is deleted.
+  const mergeSecrets = (values, encrypted) => {
+    const merged = { ...(values || {}) };
+    for (const [key, value] of Object.entries(merged)) {
+      if (value === '' && encrypted && encrypted[key]) {
+        const stored = decryptMcpValue(encrypted[key]);
+        if (stored) merged[key] = stored;
+      }
+    }
+    return merged;
+  };
+
+  const normalized = validateServerConfig({
+    name,
+    transport: input.transport,
+    command: input.command,
+    args: input.args,
+    env: mergeSecrets(input.env, previous?.env),
+    url: input.url,
+    headers: mergeSecrets(input.headers, previous?.headers)
+  });
+  const secretValues = normalized.transport === 'stdio'
+    ? Object.values(normalized.env).filter(Boolean)
+    : Object.values(normalized.headers).filter(Boolean);
+  if (secretValues.length > 0 && !safeStorage.isEncryptionAvailable()) {
+    throw new Error(
+      'Secure storage is unavailable on this system, so ShadRox cannot save MCP environment variables or header ' +
+      'values. Remove them and save the server again once OS encryption is available.'
+    );
+  }
+
+  if (existingIndex === -1 && records.length >= MCP_MAX_SERVERS) {
+    throw new Error(`ShadRox supports at most ${MCP_MAX_SERVERS} MCP servers. Delete one before adding another.`);
+  }
+
+  const record = { id, name: normalized.name || name, transport: normalized.transport, enabled: input.enabled !== false };
+  if (normalized.transport === 'stdio') {
+    record.command = normalized.command;
+    record.args = normalized.args;
+    record.env = encryptMcpMap(normalized.env);
+  } else {
+    record.url = normalized.url;
+    record.headers = encryptMcpMap(normalized.headers);
+  }
+  if (existingIndex === -1) records.push(record);
+  else records[existingIndex] = record;
+  writeMcpServerRecords(records);
+
+  // A changed configuration must not keep the previous session alive.
+  void closeMcpClient(id);
+  return listMcpServerConfigs();
+}
+
+function closeMcpClient(id) {
+  const client = mcpClients.get(id);
+  if (!client) return Promise.resolve(false);
+  mcpClients.delete(id);
+  return client.close().then(() => true, () => false);
+}
+
+function stringifyToolArguments(toolArguments) {
+  let text;
+  try {
+    text = JSON.stringify(toolArguments ?? {}, null, 2);
+  } catch {
+    text = String(toolArguments);
+  }
+  return truncateText(text || '{}', MCP_ARGS_PREVIEW_MAX);
+}
+
+async function approveMcpToolCall(server, toolName, toolArguments) {
+  // Main owns this approval: the renderer can request a call but cannot answer
+  // the prompt on the user's behalf.
+  const detail = truncateText([
+    `Server: ${server.name} (${server.id})`,
+    `Tool: ${toolName}`,
+    `Arguments: ${stringifyToolArguments(toolArguments)}`,
+    'MCP tools run with the permissions of the configured server and can read workspace data or perform actions.'
+  ].join('\n\n'), 2200);
+  const confirmation = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: 'Allow MCP tool call?',
+    message: `Allow "${toolName}" on ${server.name}?`,
+    detail,
+    buttons: ['Cancel', 'Allow tool call'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true
+  });
+  return confirmation.response === 1;
+}
+
+function getMcpClient(server) {
+  const existing = mcpClients.get(server.id);
+  if (existing) return existing;
+  const client = createMcpClient({
+    name: server.name,
+    transport: server.transport,
+    command: server.command,
+    args: server.args,
+    env: server.env,
+    url: server.url,
+    headers: server.headers,
+    onApproveTool: ({ name, arguments: toolArguments }) => approveMcpToolCall(server, name, toolArguments),
+    // Server stderr can contain tokens; it is never logged or forwarded.
+    onStderr: () => {}
+  });
+  mcpClients.set(server.id, client);
+  return client;
+}
+
+async function listMcpToolsFor(serverId) {
+  const server = findMcpServerConfig(serverId);
+  if (!server) throw new Error('That MCP server is not configured.');
+  if (!server.enabled) throw new Error('That MCP server is disabled. Enable it in Settings first.');
+  const client = getMcpClient(server);
+  try {
+    const tools = await client.listTools();
+    return tools.map((tool) => ({
+      serverId: server.id,
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema
+    }));
+  } catch (error) {
+    // A failed handshake should not leave a half-open client in the map.
+    await closeMcpClient(server.id);
+    throw error;
+  }
+}
+
+function mcpToolResultText(result, toolName) {
+  const items = Array.isArray(result.content) ? result.content : [];
+  const texts = items
+    .filter((item) => item && typeof item === 'object' && item.type === 'text' && typeof item.text === 'string')
+    .map((item) => item.text);
+  if (texts.length > 0) return texts.join('\n');
+  if (result.structuredContent !== undefined) {
+    try {
+      return JSON.stringify(result.structuredContent, null, 2);
+    } catch {
+      return '';
+    }
+  }
+  return result.isError ? `The MCP tool "${toolName}" reported an error without text.` : '';
+}
+
+const PLUGIN_SCAN_MAX_FILES = 50;
+const PLUGIN_MANIFEST_MAX_BYTES = 256 * 1024;
+
+/**
+ * Reads only `<root>/.shadrox/plugins/<folder>/plugin.json`. The folder list is
+ * never walked recursively and every resolved manifest must stay inside both
+ * the workspace and the plugins directory, so a symlinked folder or file
+ * cannot leak content from outside the project.
+ */
+async function scanWorkspacePlugins(workspace) {
+  const files = [];
+  const errors = [];
+  if (!workspace?.root) {
+    errors.push('Plugins require an opened workspace.');
+    return { files, errors };
+  }
+  const root = workspace.root;
+  const pluginsRoot = path.join(root, '.shadrox', 'plugins');
+
+  let realPluginsRoot;
+  try {
+    realPluginsRoot = await fs.promises.realpath(pluginsRoot);
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return { files, errors };
+    errors.push(`The plugins folder could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    return { files, errors };
+  }
+  if (!isPathInsideDirectory(root, realPluginsRoot)) {
+    errors.push('The plugins folder resolves outside the opened workspace.');
+    return { files, errors };
+  }
+
+  let entries;
+  try {
+    entries = await fs.promises.readdir(realPluginsRoot, { withFileTypes: true });
+  } catch (error) {
+    errors.push(`The plugins folder could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    return { files, errors };
+  }
+
+  const directories = entries
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  if (directories.length > PLUGIN_SCAN_MAX_FILES) {
+    errors.push(`Only the first ${PLUGIN_SCAN_MAX_FILES} plugin folders were scanned.`);
+  }
+
+  for (const entry of directories.slice(0, PLUGIN_SCAN_MAX_FILES)) {
+    const manifestPath = path.join(realPluginsRoot, entry.name, 'plugin.json');
+    const relative = path.relative(root, manifestPath).split(path.sep).join('/');
+    try {
+      const realManifest = await fs.promises.realpath(manifestPath);
+      if (!isPathInsideDirectory(root, realManifest) || !isPathInsideDirectory(realPluginsRoot, realManifest)) {
+        errors.push(`${relative}: resolves outside the workspace plugins folder.`);
+        continue;
+      }
+      const stat = await fs.promises.stat(realManifest);
+      if (!stat.isFile()) {
+        errors.push(`${relative}: plugin.json is not a file.`);
+        continue;
+      }
+      if (stat.size > PLUGIN_MANIFEST_MAX_BYTES) {
+        errors.push(`${relative}: plugin.json exceeds the 256 KB limit.`);
+        continue;
+      }
+      files.push({ path: relative, content: await fs.promises.readFile(realManifest, 'utf8') });
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue;
+      errors.push(`${relative}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  return { files, errors };
+}
+
+const RUNTIME_MANIFEST_NAMES = new Set([
+  'package.json',
+  'pom.xml',
+  'pyproject.toml',
+  'requirements.txt',
+  'build.gradle',
+  'build.gradle.kts',
+  'go.mod',
+  'composer.json'
+]);
+const RUNTIME_WALK_IGNORES = new Set([
+  '.git', 'node_modules', 'dist', 'dist_staging', 'dist_desktop', 'build', 'out', '.next', 'coverage',
+  '.cache', '.vercel', '.turbo', 'vendor', '__pycache__', '.shadrox'
+]);
+const RUNTIME_MAX_FILES = 5000;
+const RUNTIME_MAX_DIRECTORIES = 2000;
+const RUNTIME_MAX_DEPTH = 4;
+const RUNTIME_MANIFEST_MAX_BYTES = 256 * 1024;
+
+/**
+ * Bounded workspace walk used only to feed the pure runtime adapters. Manifests
+ * are read here (in main) so the adapters never touch the disk, and the result
+ * is capped at depth 4 / 5000 files.
+ */
+async function collectRuntimeWorkspace(root) {
+  const files = [];
+  const manifests = new Map();
+  const errors = [];
+  let realRoot;
+  try {
+    realRoot = await fs.promises.realpath(root);
+  } catch (error) {
+    errors.push(`Workspace root could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    return { files, manifests, errors };
+  }
+
+  const queue = [{ directory: realRoot, depth: 0 }];
+  let fileCount = 0;
+  let directoryCount = 0;
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    let entries;
+    try {
+      entries = await fs.promises.readdir(current.directory, { withFileTypes: true });
+    } catch {
+      errors.push(`Could not scan ${path.relative(realRoot, current.directory).split(path.sep).join('/') || '.'}.`);
+      continue;
+    }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || entry.name.startsWith('.')) continue;
+      const absolute = path.join(current.directory, entry.name);
+      if (entry.isDirectory()) {
+        if (RUNTIME_WALK_IGNORES.has(entry.name.toLowerCase())) continue;
+        if (current.depth >= RUNTIME_MAX_DEPTH) continue;
+        if (directoryCount >= RUNTIME_MAX_DIRECTORIES) continue;
+        directoryCount += 1;
+        queue.push({ directory: absolute, depth: current.depth + 1 });
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (fileCount >= RUNTIME_MAX_FILES) break;
+      fileCount += 1;
+      const relative = path.relative(realRoot, absolute).split(path.sep).join('/');
+      files.push(relative);
+      if (!RUNTIME_MANIFEST_NAMES.has(entry.name.toLowerCase())) continue;
+      try {
+        const stat = await fs.promises.stat(absolute);
+        if (stat.size > RUNTIME_MANIFEST_MAX_BYTES) {
+          errors.push(`${relative} exceeds the 256 KB manifest limit and was skipped.`);
+          continue;
+        }
+        manifests.set(relative, await fs.promises.readFile(absolute, 'utf8'));
+      } catch (error) {
+        errors.push(`${relative} could not be read: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (fileCount >= RUNTIME_MAX_FILES) break;
+  }
+  if (fileCount >= RUNTIME_MAX_FILES) {
+    errors.push(`Runtime detection stopped after scanning ${RUNTIME_MAX_FILES} files. Open the intended project subfolder directly.`);
+  }
+
+  return { files, manifests, errors };
+}
+
+async function detectWorkspaceRuntimes(workspace) {
+  const collected = await collectRuntimeWorkspace(workspace.root);
+  const planned = planDualPreview({
+    rootFiles: collected.files,
+    manifests: collected.manifests
+  });
+  return {
+    plans: planned.previews,
+    errors: [...collected.errors, ...planned.errors]
+  };
+}
+
+function getAutomationWebhook() {
+  if (!automationWebhook) {
+    automationWebhook = createAutomationWebhook({
+      getRoot: () => {
+        const workspace = automationWebhookWorkspaceId
+          ? workspaceAccess.getWorkspace(automationWebhookWorkspaceId)
+          : null;
+        return workspace?.root ?? null;
+      },
+      onTrigger: (trigger) => {
+        // Main never runs the action; the renderer applies its normal gates.
+        mainWindow?.webContents.send('automation:trigger', trigger);
+      }
+    });
+  }
+  return automationWebhook;
+}
+
+const AUTH_CALLBACK_PATH = '/auth/callback';const AUTH_TIMEOUT_MS = 180_000;
 let pendingAuthSignIn = null;
 
 function authCallbackPage(heading, detail) {
@@ -1046,14 +1555,39 @@ function registerIpcHandlers() {
     return workspaceAccess.readFile(workspaceId, relativePath);
   });
 
+  ipcMain.handle('workspace:load-files', async (event, workspaceId, relativePaths, options) => {
+    assertTrustedRenderer(event);
+    return workspaceAccess.loadFiles(workspaceId, relativePaths, options);
+  });
+
+  ipcMain.handle('workspace:project-docs', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    return workspaceAccess.projectDocs(workspaceId);
+  });
+
   ipcMain.handle('workspace:rename-file', async (event, workspaceId, fromPath, toPath) => {
     assertTrustedRenderer(event);
     return workspaceAccess.renameFile(workspaceId, fromPath, toPath);
   });
 
+  ipcMain.handle('workspace:create-directory', async (event, workspaceId, relativePath) => {
+    assertTrustedRenderer(event);
+    return workspaceAccess.createDirectory(workspaceId, relativePath);
+  });
+
+  ipcMain.handle('workspace:delete-path', async (event, workspaceId, relativePath) => {
+    assertTrustedRenderer(event);
+    return workspaceAccess.deletePath(workspaceId, relativePath);
+  });
+
   ipcMain.handle('workspace:search-files', async (event, workspaceId, query, limit) => {
     assertTrustedRenderer(event);
     return workspaceAccess.searchFiles(workspaceId, query, limit);
+  });
+
+  ipcMain.handle('workspace:search-content', async (event, workspaceId, options) => {
+    assertTrustedRenderer(event);
+    return workspaceAccess.searchContent(workspaceId, options);
   });
 
   ipcMain.handle('workspace:save-files', async (event, workspaceId, files) => {
@@ -1087,18 +1621,42 @@ function registerIpcHandlers() {
     return verifyChangeSet({ root: workspace.root, files });
   });
 
-  ipcMain.handle('terminal:create', async (event, workspaceId, cols = 100, rows = 30, mode = 'system') => {
+  // The dock can hold several tabs per workspace, so main no longer decides how
+  // many shells exist; the renderer's tab key is the map key. The cap is only a
+  // process-count guard against a runaway renderer.
+  const maxTerminalSessionsPerWorkspace = 12;
+
+  ipcMain.handle('terminal:create', async (event, workspaceId, cols = 100, rows = 30, mode = 'system', sessionKey) => {
     assertTrustedRenderer(event);
     if (!pty) throw new Error('Interactive terminal support is unavailable. Reinstall the desktop dependencies and restart ShadRox.');
     const workspace = workspaceAccess.getWorkspace(workspaceId);
     if (!workspace) throw new Error('The terminal needs an opened workspace.');
     const requestedMode = mode === 'agent' ? 'agent' : 'system';
-    const existing = [...terminalSessions].find(([, info]) => info.workspaceId === workspaceId && info.mode === requestedMode);
-    if (existing) return terminalDescriptor(existing[0], existing[1], workspace);
+
+    const requestedKey = normalizeTerminalSessionKey(sessionKey);
+    if (requestedKey) {
+      const owned = terminalSessions.get(requestedKey);
+      // Re-mounting a tab reattaches to its shell instead of spawning a second one.
+      if (owned) {
+        if (owned.workspaceId !== workspaceId) throw new Error('That terminal session belongs to another workspace.');
+        if (owned.mode !== requestedMode) throw new Error('That terminal session already runs in another mode.');
+        return terminalDescriptor(requestedKey, owned, workspace);
+      }
+    } else {
+      const existing = [...terminalSessions].find(([, info]) => info.workspaceId === workspaceId && info.mode === requestedMode);
+      if (existing) return terminalDescriptor(existing[0], existing[1], workspace);
+    }
+
+    const ownedCount = [...terminalSessions.values()].filter((info) => info.workspaceId === workspaceId).length;
+    if (ownedCount >= maxTerminalSessionsPerWorkspace) {
+      throw new Error(`A workspace can hold ${maxTerminalSessionsPerWorkspace} terminal sessions. Close a tab first.`);
+    }
+
     const plan = resolveTerminalPlan({ env: process.env, mode: requestedMode });
-    const sessionId = randomUUID();
+    const sessionId = requestedKey ?? randomUUID();
+    const size = clampTerminalSize(cols, rows);
     const terminal = pty.spawn(plan.shellPath, plan.shellArgs, {
-      name: 'xterm-256color', cols: Math.max(20, Math.min(400, Number(cols) || 100)), rows: Math.max(5, Math.min(200, Number(rows) || 30)),
+      name: 'xterm-256color', cols: size.cols, rows: size.rows,
       cwd: workspace.root, env: { ...plan.env, TERM: 'xterm-256color' }, useConpty: process.platform === 'win32',
       windowsHide: true
     });
@@ -1123,7 +1681,8 @@ function registerIpcHandlers() {
     assertTrustedRenderer(event);
     const sessionInfo = terminalSessions.get(sessionId);
     if (!sessionInfo || sessionInfo.workspaceId !== workspaceId) throw new Error('Invalid terminal session.');
-    sessionInfo.terminal.resize(Math.max(20, Math.min(400, Number(cols) || 100)), Math.max(5, Math.min(200, Number(rows) || 30)));
+    const size = clampTerminalSize(cols, rows);
+    sessionInfo.terminal.resize(size.cols, size.rows);
   });
 
   ipcMain.handle('terminal:close', async (event, workspaceId, sessionId) => {
@@ -1134,12 +1693,44 @@ function registerIpcHandlers() {
     sessionInfo.terminal.kill();
   });
 
+  ipcMain.handle('terminal:list-sessions', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    const sessions = [];
+    for (const [sessionId, sessionInfo] of terminalSessions) {
+      if (sessionInfo.workspaceId !== workspaceId) continue;
+      sessions.push(
+        workspace
+          ? terminalDescriptor(sessionId, sessionInfo, workspace)
+          : { sessionId, mode: sessionInfo.mode, label: sessionInfo.label }
+      );
+    }
+    return sessions;
+  });
+
+  // A terminal log line is the one place a URL is clicked, and it comes from
+  // whatever a command printed, so this is the only path to shell.openExternal
+  // from the terminal and it accepts a bare http(s) URL.
+  ipcMain.handle('terminal:open-link', async (event, url) => {
+    assertTrustedRenderer(event);
+    if (!isSafeExternalUrl(url)) throw new Error('Only an http or https link can be opened externally.');
+    await shell.openExternal(url);
+    return true;
+  });
+
   ipcMain.handle('preview:start', async (event, workspaceId, approval = {}) => {
     assertTrustedRenderer(event);
     const workspace = workspaceAccess.getWorkspace(workspaceId);
     if (!workspace || workspace.mode !== 'folder') {
       throw new Error('Local project preview requires an opened folder workspace.');
     }
+    const generation = (previewStartGenerations.get(workspaceId) ?? 0) + 1;
+    previewStartGenerations.set(workspaceId, generation);
+    const assertCurrentStart = () => {
+      if (previewStartGenerations.get(workspaceId) !== generation) {
+        throw new Error('Local preview startup was cancelled.');
+      }
+    };
 
     const reportStatus = (message) => {
       mainWindow?.webContents.send('preview:output', { workspaceId, type: 'status', message });
@@ -1147,12 +1738,16 @@ function registerIpcHandlers() {
     reportStatus(`Checking ${path.basename(workspace.root)} for a runnable web project...`);
 
     const projects = await findPreviewProjects(workspace.root);
+    assertCurrentStart();
     if (projects.length === 0) {
       const staticProjects = await findStaticPreviewProjects(workspace.root);
+      assertCurrentStart();
       if (approval.projectKind === 'static' && approval.projectPath) {
         const selected = staticProjects.find((candidate) => candidate.relativePath === approval.projectPath);
         if (!selected) throw new Error('The selected static folder no longer contains an index.html file. Scan the workspace again.');
-        return startProtocolPreview(workspaceId, workspace.root, reportStatus, selected.root);
+        const result = await startProtocolPreview(workspaceId, workspace.root, reportStatus, selected.root);
+        assertCurrentStart();
+        return result;
       }
       if (approval.projectPath || approval.approved) throw new Error('The selected project no longer has a supported preview entry. Scan the workspace again before previewing.');
       if (staticProjects.length > 1) {
@@ -1161,10 +1756,14 @@ function registerIpcHandlers() {
       }
       if (staticProjects.length === 1) {
         reportStatus('No runnable package script found. Streaming the detected static website through shadrox-preview...');
-        return startProtocolPreview(workspaceId, workspace.root, reportStatus, staticProjects[0].root);
+        const result = await startProtocolPreview(workspaceId, workspace.root, reportStatus, staticProjects[0].root);
+        assertCurrentStart();
+        return result;
       }
       reportStatus('No runnable package script or nested index.html found. Checking supported static entry folders...');
-      return startProtocolPreview(workspaceId, workspace.root, reportStatus);
+      const result = await startProtocolPreview(workspaceId, workspace.root, reportStatus);
+      assertCurrentStart();
+      return result;
     }
     if (approval.projectKind === 'static') throw new Error('The selected static folder is no longer available. Scan the workspace again before previewing.');
     let project = null;
@@ -1183,6 +1782,7 @@ function registerIpcHandlers() {
         scriptCommand: candidate.script.command,
         missingDependencies: await findMissingDependencies(candidate.manifest, candidate.root)
       })));
+      assertCurrentStart();
       reportStatus(`Found ${choices.length} runnable web project folders. Choose which one to preview.`);
       return { status: 'selection-required', projects: choices };
     }
@@ -1191,6 +1791,7 @@ function registerIpcHandlers() {
 
     const manager = getPackageManager(manifest, project.root);
     const missingDependencies = await findMissingDependencies(manifest, project.root);
+    assertCurrentStart();
     const installNotice = missingDependencies.length > 0
       ? `ShadRox will install ${missingDependencies.length} missing package(s) with "${manager} install" before starting the project: ${missingDependencies.slice(0, 12).join(', ')}${missingDependencies.length > 12 ? ', ...' : ''}.`
       : 'Existing project dependencies will be used.';
@@ -1207,7 +1808,7 @@ function registerIpcHandlers() {
       };
       reportStatus(
         `Detected ${relativeProjectPath}: "${manager} run ${script.name}" (${script.command}). ` +
-        `${installNotice} Waiting for your approval in chat.`
+        `${installNotice} Starting automatically.`
       );
       return { status: 'approval-required', approval: request };
     }
@@ -1216,14 +1817,59 @@ function registerIpcHandlers() {
     }
     reportStatus(
       `Detected a runnable project in ${path.relative(workspace.root, project.root) || '.'}. ` +
-      `Approved: "${manager} run ${script.name}". ${installNotice}`
+      `Starting "${manager} run ${script.name}". ${installNotice}`
     );
     return previewRuntime.start(workspaceId, project.root, project.manifestHash);
   });
 
   ipcMain.handle('preview:stop', async (event, workspaceId) => {
     assertTrustedRenderer(event);
+    previewStartGenerations.set(workspaceId, (previewStartGenerations.get(workspaceId) ?? 0) + 1);
     return previewRuntime.stop(workspaceId);
+  });
+
+  // The preview is an iframe in this window, so a screenshot is a pixel grab of
+  // the region the renderer measured. An omitted rect means "the whole frame as
+  // it is visible", which is what the toolbar button asks for.
+  ipcMain.handle('preview:capture-page', async (event, rect) => {
+    assertTrustedRenderer(event);
+    const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+    if (!win) return { ok: false, error: 'No ShadRox window is open.' };
+    let bounds = null;
+    if (rect && Number.isFinite(rect.x) && Number.isFinite(rect.y) && Number.isFinite(rect.width) && Number.isFinite(rect.height)) {
+      bounds = {
+        x: Math.max(0, Math.round(rect.x)),
+        y: Math.max(0, Math.round(rect.y)),
+        width: Math.min(8192, Math.max(1, Math.round(rect.width))),
+        height: Math.min(8192, Math.max(1, Math.round(rect.height)))
+      };
+    }
+    try {
+      const image = bounds ? await win.capturePage(bounds) : await win.capturePage();
+      if (image.isEmpty()) return { ok: false, error: 'Nothing is painting in that area yet.' };
+      return { ok: true, dataUrl: image.toDataURL() };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  ipcMain.handle('preview:save-screenshot', async (event, dataUrl) => {
+    assertTrustedRenderer(event);
+    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png;base64,')) {
+      throw new Error('Only a PNG data URL can be saved.');
+    }
+    const buffer = Buffer.from(dataUrl.slice('data:image/png;base64,'.length), 'base64');
+    if (buffer.length === 0 || buffer.length > 32 * 1024 * 1024) throw new Error('That screenshot is not savable.');
+    const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+    const choice = await dialog.showSaveDialog({
+      window: win ?? undefined,
+      title: 'Save preview screenshot',
+      defaultPath: `shadrox-preview-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`,
+      filters: [{ name: 'PNG image', extensions: ['png'] }]
+    });
+    if (choice.canceled || !choice.filePath) return { ok: false, canceled: true };
+    await fs.promises.writeFile(choice.filePath, buffer);
+    return { ok: true, path: choice.filePath };
   });
 
   ipcMain.handle('terminal:run-command', async (event, workspaceId, command) => {
@@ -1236,18 +1882,19 @@ function registerIpcHandlers() {
       throw new Error('Enter a command between 1 and 5000 characters.');
     }
 
-    const confirmation = await dialog.showMessageBox(mainWindow, {
-      type: 'warning',
-      title: 'Confirm terminal command',
-      message: 'Allow ShadRox to run this command?',
-      detail: `${command}\n\nWorking directory: ${workspace.root}\n\nCommands can modify or delete files and access the network.`,
-      buttons: ['Cancel', 'Run command'],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true
+    // The renderer asks before this is ever reached: a command from the assistant
+    // or a plugin shows an inline Run control in the dock, and a second native
+    // dialog on top of that choice only gets dismissed.
+    const started = Date.now();
+    const run = await executeCommand(command, workspace.root);
+    mainWindow?.webContents.send('terminal:run', {
+      workspaceId,
+      command,
+      ...run,
+      exitCode: run.exitCode,
+      durationMs: Date.now() - started
     });
-    if (confirmation.response !== 1) throw new Error('Terminal command cancelled.');
-    return executeCommand(command, workspace.root);
+    return run;
   });
 
   ipcMain.handle('git:read', async (event, workspaceId) => {
@@ -1300,9 +1947,108 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('ts:diagnostics', async (event, workspaceId, overrides) => {
+  ipcMain.handle('git:scm-read', async (event, workspaceId) => {
     assertTrustedRenderer(event);
-    return typeScriptService.diagnostics(workspaceId, overrides);
+    const { workspace, context } = await requireGitWorkspace(workspaceId);
+    if (!context.complete) {
+      throw new Error('Git filter configuration could not be verified, so working-tree status is unavailable.');
+    }
+    const options = { filterDrivers: context.filterDrivers, safeDirectories: [workspace.root] };
+    const [status, branches] = await Promise.all([
+      runGitOrThrow(workspace.root, buildGitArgv(
+        ['status', '--porcelain=v1', '-z', '--branch', '--untracked-files=all'],
+        { filterDrivers: options.filterDrivers, safeDirectories: options.safeDirectories }
+      )),
+      runGitOrThrow(workspace.root, buildGitArgv(
+        ['branch', '-v', '--no-abbrev', '--no-color'],
+        { safeDirectories: options.safeDirectories }
+      ))
+    ]);
+    return {
+      ...parseGitStatus(status),
+      branches: parseGitBranches(branches)
+    };
+  });
+
+  ipcMain.handle('git:stage', async (event, workspaceId, rawPaths) => {
+    assertTrustedRenderer(event);
+    const { workspace, context } = await requireGitWorkspace(workspaceId);
+    if (!context.complete) throw new Error('Git filter configuration could not be verified; staging is disabled.');
+    const paths = validateGitPaths(rawPaths);
+    await runGitOrThrow(workspace.root, buildGitArgv(
+      ['add', '--', ...paths],
+      { filterDrivers: context.filterDrivers, safeDirectories: [workspace.root] }
+    ));
+    return true;
+  });
+
+  ipcMain.handle('git:unstage', async (event, workspaceId, rawPaths) => {
+    assertTrustedRenderer(event);
+    const { workspace } = await requireGitWorkspace(workspaceId);
+    const paths = validateGitPaths(rawPaths);
+    const safeDirectories = [workspace.root];
+    const head = await runGit(workspace.root, buildGitArgv(['rev-parse', '--verify', 'HEAD'], { safeDirectories }));
+    const args = head.ok
+      ? ['reset', 'HEAD', '--', ...paths]
+      : ['rm', '--cached', '--ignore-unmatch', '--', ...paths];
+    await runGitOrThrow(workspace.root, buildGitArgv(args, { safeDirectories }));
+    return true;
+  });
+
+  ipcMain.handle('git:commit', async (event, workspaceId, rawMessage) => {
+    assertTrustedRenderer(event);
+    const { workspace } = await requireGitWorkspace(workspaceId);
+    const message = sanitizeCommitMessage(rawMessage);
+    const args = buildGitArgv(['commit', '-m', message], { safeDirectories: [workspace.root] });
+    const commandIndex = args.indexOf('commit');
+    args.splice(commandIndex, 0, '-c', 'commit.gpgsign=false', '-c', 'gpg.program=');
+    await runGitOrThrow(workspace.root, args);
+    return true;
+  });
+
+  ipcMain.handle('git:branches', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    const { workspace } = await requireGitWorkspace(workspaceId);
+    const stdout = await runGitOrThrow(workspace.root, buildGitArgv(
+      ['branch', '-v', '--no-abbrev', '--no-color'],
+      { safeDirectories: [workspace.root] }
+    ));
+    return parseGitBranches(stdout);
+  });
+
+  ipcMain.handle('git:checkout', async (event, workspaceId, rawBranch) => {
+    assertTrustedRenderer(event);
+    const { workspace, context } = await requireGitWorkspace(workspaceId);
+    if (!context.complete) throw new Error('Git filter configuration could not be verified; branch switching is disabled.');
+    const branch = validateBranchName(rawBranch);
+    const safeDirectories = [workspace.root];
+    await runGitOrThrow(workspace.root, buildGitArgv(['check-ref-format', '--branch', branch], { safeDirectories }));
+    await runGitOrThrow(workspace.root, buildGitArgv(
+      ['switch', '--no-guess', branch],
+      { filterDrivers: context.filterDrivers, safeDirectories }
+    ));
+    return true;
+  });
+
+  ipcMain.handle('git:file-diff', async (event, workspaceId, rawPath, staged) => {
+    assertTrustedRenderer(event);
+    const { workspace, context } = await requireGitWorkspace(workspaceId);
+    if (!context.complete) throw new Error('Git filter configuration could not be verified; file diffs are unavailable.');
+    if (typeof staged !== 'boolean') throw new Error('The diff kind must be specified.');
+    const [file] = validateGitPaths([rawPath]);
+    const args = ['diff', '--no-color', '--unified=3'];
+    if (staged) args.push('--cached');
+    args.push('--', file);
+    const stdout = await runGitOrThrow(workspace.root, buildGitArgv(
+      args,
+      { filterDrivers: context.filterDrivers, safeDirectories: [workspace.root] }
+    ));
+    return truncateText(stdout, 80_000);
+  });
+
+  ipcMain.handle('ts:diagnostics', async (event, workspaceId, overrides, files) => {
+    assertTrustedRenderer(event);
+    return typeScriptService.diagnostics(workspaceId, overrides, files);
   });
 
   ipcMain.handle('ts:definition', async (event, workspaceId, relativePath, line, character, overrides) => {
@@ -1313,6 +2059,32 @@ function registerIpcHandlers() {
   ipcMain.handle('ts:references', async (event, workspaceId, relativePath, line, character, overrides) => {
     assertTrustedRenderer(event);
     return typeScriptService.references(workspaceId, relativePath, line, character, overrides);
+  });
+
+  ipcMain.handle('ts:rename', async (event, workspaceId, relativePath, line, character, newName, overrides) => {
+    assertTrustedRenderer(event);
+    return typeScriptService.rename(workspaceId, relativePath, line, character, newName, overrides);
+  });
+
+  ipcMain.handle(
+    'ts:code-actions',
+    async (event, workspaceId, relativePath, startLine, startCharacter, endLine, endCharacter, overrides) => {
+      assertTrustedRenderer(event);
+      return typeScriptService.codeActions(
+        workspaceId,
+        relativePath,
+        startLine,
+        startCharacter,
+        endLine,
+        endCharacter,
+        overrides
+      );
+    }
+  );
+
+  ipcMain.handle('ts:semantic-tokens', async (event, workspaceId, relativePath, overrides) => {
+    assertTrustedRenderer(event);
+    return typeScriptService.semanticTokens(workspaceId, relativePath, overrides);
   });
 
   ipcMain.handle('ts:outline', async (event, workspaceId, relativePath, overrides) => {
@@ -1330,6 +2102,171 @@ function registerIpcHandlers() {
     if (!updater?.available) return { available: false };
     await updater.check(true);
     return { available: true };
+  });
+}
+
+function registerIntegrationHandlers() {
+  ipcMain.handle('mcp:list-servers', (event) => {
+    assertTrustedRenderer(event);
+    return listMcpServerConfigs();
+  });
+
+  ipcMain.handle('mcp:save-server', (event, server) => {
+    assertTrustedRenderer(event);
+    return saveMcpServerConfig(server);
+  });
+
+  ipcMain.handle('mcp:delete-server', async (event, id) => {
+    assertTrustedRenderer(event);
+    if (typeof id !== 'string') throw new Error('An MCP server id is required.');
+    writeMcpServerRecords(readMcpServerRecords().filter((record) => record.id !== id));
+    await closeMcpClient(id);
+    return listMcpServerConfigs();
+  });
+
+  ipcMain.handle('mcp:connect', async (event, id) => {
+    assertTrustedRenderer(event);
+    return listMcpToolsFor(id);
+  });
+
+  ipcMain.handle('mcp:list-tools', async (event, serverId) => {
+    assertTrustedRenderer(event);
+    return listMcpToolsFor(serverId);
+  });
+
+  ipcMain.handle('mcp:call-tool', async (event, serverId, name, args) => {
+    assertTrustedRenderer(event);
+    if (typeof serverId !== 'string' || typeof name !== 'string' || !name) {
+      throw new Error('An MCP server id and tool name are required.');
+    }
+    const toolArguments = args === undefined || args === null ? {} : args;
+    if (typeof toolArguments !== 'object' || Array.isArray(toolArguments)) {
+      throw new Error('MCP tool arguments must be a JSON object.');
+    }
+    const server = findMcpServerConfig(serverId);
+    if (!server) throw new Error('That MCP server is not configured.');
+    if (!server.enabled) throw new Error('That MCP server is disabled. Enable it in Settings first.');
+    const result = await getMcpClient(server).callTool(name, toolArguments);
+    return {
+      isError: result.isError === true,
+      text: mcpToolResultText(result, name),
+      content: result.content
+    };
+  });
+
+  ipcMain.handle('mcp:disconnect', async (event, id) => {
+    assertTrustedRenderer(event);
+    if (typeof id !== 'string') return false;
+    return closeMcpClient(id);
+  });
+
+  ipcMain.handle('plugins:scan', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    return scanWorkspacePlugins(workspaceAccess.getWorkspace(workspaceId));
+  });
+
+  ipcMain.handle('runtime:detect', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    if (!workspace?.root) {
+      return { plans: [], errors: ['Runtime detection requires an opened workspace.'] };
+    }
+    return detectWorkspaceRuntimes(workspace);
+  });
+
+  ipcMain.handle('preview:start-backend', async (event, workspaceId, requestedPort) => {
+    assertTrustedRenderer(event);
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    if (!workspace || workspace.mode !== 'folder') {
+      throw new Error('Backend preview requires an opened folder workspace.');
+    }
+
+    // Detection always runs here; a renderer never supplies the plan itself.
+    const detected = await detectWorkspaceRuntimes(workspace);
+    const plan = detected.plans.find((candidate) => candidate.kind === 'backend');
+    if (!plan) {
+      throw new Error(detected.errors.join(' ') || 'No backend runtime was detected for this workspace.');
+    }
+
+    const chosenPort = requestedPort === undefined || requestedPort === null ? plan.port : requestedPort;
+    if (!Number.isInteger(chosenPort) || chosenPort < 1 || chosenPort > 65535) {
+      throw new Error('Backend preview port must be an integer between 1 and 65535.');
+    }
+    const args = chosenPort === plan.port
+      ? plan.args
+      : plan.args.map((argument) => argument.split(String(plan.port)).join(String(chosenPort)));
+
+    const absoluteCwd = path.resolve(workspace.root, plan.cwd === '.' ? '' : String(plan.cwd || ''));
+    if (!isPathInsideDirectory(workspace.root, absoluteCwd)) {
+      throw new Error('The detected backend project is outside the opened workspace.');
+    }
+    const cwdStat = await fs.promises.stat(absoluteCwd).catch(() => null);
+    if (!cwdStat?.isDirectory()) {
+      throw new Error('The detected backend project folder no longer exists. Rescan runtimes and try again.');
+    }
+
+    const resolvedCommand = resolveExecutable(plan.command, { root: workspace.root, cwd: absoluteCwd });
+    if (!resolvedCommand) {
+      throw new Error(
+        `"${plan.command}" was not found on PATH outside this workspace. Install the runtime, then rescan.`
+      );
+    }
+
+    const approval = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      title: 'Start backend preview?',
+      message: `Allow ShadRox to start the detected ${plan.adapter} backend?`,
+      detail: truncateText([
+        `Command: ${resolvedCommand}`,
+        `Arguments: ${args.join(' ') || '(none)'}`,
+        `Directory: ${absoluteCwd}`,
+        `Port: ${chosenPort}`,
+        `Health check: http://127.0.0.1:${chosenPort}${plan.healthPath || '/'}`,
+        '',
+        'This starts a local server process that can read and modify files in its directory.'
+      ].join('\n'), 4000),
+      buttons: ['Cancel', 'Start backend'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    });
+    if (approval.response !== 1) throw new Error('Backend preview cancelled.');
+
+    const started = await previewRuntime.startPlan(
+      workspaceId,
+      { ...plan, args, cwd: absoluteCwd, port: chosenPort },
+      { root: workspace.root }
+    );
+    return { status: 'ready', url: started.url, script: plan.adapter, hmr: false };
+  });
+
+  ipcMain.handle('preview:stop-backend', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    return previewRuntime.stopBackend(workspaceId);
+  });
+
+  ipcMain.handle('automation:webhook-status', (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    if (typeof workspaceId !== 'string' || !workspaceId) {
+      throw new Error('A workspace id is required to read the automation webhook status.');
+    }
+    return getAutomationWebhook().status();
+  });
+
+  ipcMain.handle('automation:webhook-start', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    if (!workspace?.root) {
+      throw new Error('The automation webhook requires an opened workspace.');
+    }
+    automationWebhookWorkspaceId = workspaceId;
+    return getAutomationWebhook().start();
+  });
+
+  ipcMain.handle('automation:webhook-stop', async (event) => {
+    assertTrustedRenderer(event);
+    automationWebhookWorkspaceId = null;
+    if (automationWebhook) await automationWebhook.stop();
   });
 }
 
@@ -1498,6 +2435,7 @@ app.whenReady().then(async () => {
   registerIpcHandlers();
   registerSecureStoreHandlers();
   registerAuthHandlers();
+  registerIntegrationHandlers();
   await createWindow();
   updater = createUpdater({
     app,
@@ -1521,6 +2459,13 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   void previewRuntime.stopAll();
+  if (automationWebhook) {
+    void automationWebhook.stop();
+    automationWebhook = null;
+  }
+  automationWebhookWorkspaceId = null;
+  for (const client of mcpClients.values()) void client.close();
+  mcpClients.clear();
   for (const workspaceId of [...workspaceWatchers.keys()]) stopWorkspaceServices(workspaceId);
   if (backend) {
     void backend.close().catch((error) => console.error('[desktop] backend shutdown failed', error));

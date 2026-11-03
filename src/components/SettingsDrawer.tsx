@@ -19,10 +19,21 @@ import {
   X,
   Zap
 } from 'lucide-react';
-import { PROVIDERS, ENDPOINT_PRESETS, findEndpointPreset, getProviderMeta, normalizeBaseUrl, type ModelInfo, type ModelTier, type ProviderId } from '../lib/providers';
-import { CREDIT_RATES, PLANS, PLANS_LOCKED, getPlanMeta } from '../lib/plans';
-import { SHARED_KEY_ENABLED } from '../lib/sharedKeyPolicy';
-import { UpdateCard } from './UpdateCard';
+import { PROVIDERS, ENDPOINT_PRESETS, findEndpointPreset, getProviderMeta, normalizeBaseUrl, type ProviderId } from '../lib/providers';
+import {
+  CREDIT_RATES,
+  PLANS,
+  BETA_UPGRADE_NOTE,
+  getLockedPlanIds,
+  getPlanEntitlementNote,
+  getPlanMeta,
+  isPlanSelectable
+} from '../lib/plans';
+import { isSharedKeyEligible } from '../lib/sharedKeyPolicy';
+import { confirmAction } from '../lib/confirm';
+import { McpToolsSection } from './settings/McpToolsSection';
+import { PluginsSection } from './settings/PluginsSection';
+import { AutomationsSection } from './settings/AutomationsSection';
 import { getMonthlyUsage, resetMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
 import type {
   GitHubRepo,
@@ -54,12 +65,6 @@ interface SettingsDrawerProps {
   extraModels: string[];
   onExtraModelsChange: (modelIds: string[]) => void;
 
-  models: ModelInfo[];
-  selectedModel: string;
-  onSelectModel: (modelId: string) => void;
-
-  temperature: number;
-  onTemperatureChange: (value: number) => void;
   useShadRoxKey: boolean;
   onUseShadRoxKeyChange: (value: boolean) => void;
 
@@ -73,23 +78,19 @@ interface SettingsDrawerProps {
   onGenerateCommitMessage: () => Promise<string>;
   isWritingCommitMessage: boolean;
 
-  accountEmail?: string | null;
-  accountAvatarUrl?: string | null;
-  onSignOut?: () => void;
+  /** Native workspace id for the Plugins and Automations sections. */
+  workspaceId?: string | null;
+  workspaceRoot?: string | null;
 }
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: 'CHAT', label: 'Models & Keys' },
   { id: 'PLAN', label: 'Subscription Plan' },
   { id: 'GITHUB', label: 'GitHub Sync' },
-  { id: 'SECRETS', label: 'Secrets Vault' }
+  { id: 'SECRETS', label: 'Secrets Vault' },
+  { id: 'TOOLS', label: 'MCP Tools' },
+  { id: 'AUTOMATIONS', label: 'Plugins & Automations' }
 ];
-
-const TIER_BADGE: Record<ModelTier, string> = {
-  free: 'text-violet-300 border-violet-300/25',
-  own: 'text-sky-300 border-sky-300/25',
-  pro: 'text-amber-400 border-amber-900/60'
-};
 
 async function postJson(url: string, body: unknown): Promise<any> {
   const response = await fetch(url, {
@@ -119,11 +120,6 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     onBaseUrlChange,
     extraModels,
     onExtraModelsChange,
-    models,
-    selectedModel,
-    onSelectModel,
-    temperature,
-    onTemperatureChange,
     useShadRoxKey,
     onUseShadRoxKeyChange,
     plan,
@@ -133,9 +129,8 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     workspaceFiles,
     onGenerateCommitMessage,
     isWritingCommitMessage,
-    accountEmail,
-    accountAvatarUrl,
-    onSignOut
+    workspaceId,
+    workspaceRoot
   } = props;
 
   const [githubToken, setGithubToken] = useState('');
@@ -183,7 +178,8 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
   const currentSavedKey = currentStatus && currentStatus.state === 'ok';
   const hasStoredKey = currentDraft.trim().length > 0 || currentSavedKey;
   const currentPlan = getPlanMeta(plan);
-  const starterPlan = getPlanMeta('starter');
+  const sharedKeyOpen = isSharedKeyEligible(plan);
+  const lockedPlanIds = getLockedPlanIds();
 
   const handleGithubConnect = async () => {
     if (!githubToken.trim()) return;
@@ -281,13 +277,13 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
         </header>
 
         {/* Tabs */}
-        <nav className="shrink-0 flex border-b border-white/[0.07]">
+        <nav className="shrink-0 flex overflow-x-auto border-b border-white/[0.07]">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               type="button"
               onClick={() => onTabChange(tab.id)}
-              className={`flex-1 border-b-2 py-2.5 text-center text-xs transition-colors cursor-pointer ${
+              className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2.5 text-center text-xs transition-colors cursor-pointer ${
                 activeTab === tab.id
                   ? 'border-violet-300 font-medium text-white'
                   : 'border-transparent text-neutral-500 hover:text-neutral-300'
@@ -300,30 +296,6 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-4 py-5 space-y-6">
-          {accountEmail && (
-            <section className="flex items-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
-              {accountAvatarUrl ? (
-                <img src={accountAvatarUrl} alt="" className="h-8 w-8 rounded-full object-cover" referrerPolicy="no-referrer" />
-              ) : (
-                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-500/15 text-xs font-semibold text-violet-300">
-                  {accountEmail.slice(0, 1).toUpperCase()}
-                </span>
-              )}
-              <div className="min-w-0 flex-1">
-                <p className="text-[10px] uppercase tracking-wider text-neutral-500">Signed in</p>
-                <p className="truncate text-xs text-neutral-200">{accountEmail}</p>
-              </div>
-              {onSignOut && (
-                <button
-                  type="button"
-                  onClick={onSignOut}
-                  className="rounded-md border border-white/[0.08] px-2 py-1 text-[11px] text-neutral-300 transition-colors hover:border-red-400/30 hover:text-red-300 cursor-pointer"
-                >
-                  Sign out
-                </button>
-              )}
-            </section>
-          )}
           {activeTab === 'CHAT' && (
             <>
               {/* Provider Selection */}
@@ -487,8 +459,16 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     <button
                       type="button"
                       onClick={() => {
-                        if (!window.confirm(`Remove the saved ${currentMeta.label} key from this device?`)) return;
-                        onForgetKey(activeProvider);
+                        void (async () => {
+                          const confirmed = await confirmAction({
+                            title: `Remove your ${currentMeta.label} API key?`,
+                            body: `The saved ${currentMeta.label} key is deleted from this device. You can add it again at any time.`,
+                            confirmLabel: 'Remove key',
+                            tone: 'danger'
+                          });
+                          if (!confirmed) return;
+                          onForgetKey(activeProvider);
+                        })();
                       }}
                       className="inline-flex items-center gap-1 rounded-md border border-white/[0.09] px-2 py-1 text-[11px] text-neutral-400 transition-colors hover:border-red-500/40 hover:text-red-400 cursor-pointer"
                     >
@@ -499,106 +479,48 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 </div>
               </section>
 
-              {/* Shared Key Option */}
-              <section className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3">
-                <label className={`flex items-start gap-2 ${SHARED_KEY_ENABLED ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}>
-                  <input
-                    type="checkbox"
-                    checked={useShadRoxKey}
-                    onChange={(event) => onUseShadRoxKeyChange(event.target.checked)}
-                    disabled={!SHARED_KEY_ENABLED}
-                    className="mt-0.5 accent-violet-400"
-                  />
-                  <span className="min-w-0">
-                    <span className="flex items-center gap-2">
-                      <span className="text-xs text-neutral-200 font-medium">Use ShadRox Shared Key</span>
-                      {SHARED_KEY_ENABLED ? (
+              {/* Shared Key / plans CTA */}
+              {sharedKeyOpen ? (
+                <section className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3">
+                  <label className="flex cursor-pointer items-start gap-2">
+                    <input
+                      type="checkbox"
+                      checked={useShadRoxKey}
+                      onChange={(event) => onUseShadRoxKeyChange(event.target.checked)}
+                      className="mt-0.5 accent-violet-400"
+                    />
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-neutral-200">Use ShadRox Shared Key</span>
                         <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/[.08] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300">
-                          Paid plan
+                          Unlocked with {currentPlan.label}
                         </span>
-                      ) : (
-                        <span className="shrink-0 flex items-center gap-1 rounded border border-white/10 bg-white/[.04] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-neutral-400">
-                          <Lock className="w-2.5 h-2.5" />
-                          Locked in beta
-                        </span>
-                      )}
+                      </span>
+                      <span className="mt-1 block text-[11px] text-neutral-400">
+                        Run AI without your own API key — the request goes through the ShadRox proxy and draws plan credits. That proxy only answers while the operator has a key live on the server; otherwise it fails with a clear message and spends nothing.
+                      </span>
                     </span>
-                    <span className="block text-[11px] text-neutral-400 mt-1">
-                      {SHARED_KEY_ENABLED
-                        ? 'Run directly without bringing your own API key. Requests flow through our secure proxy, billed in plan credits.'
-                        : 'Beta me sirf apni key chalti hai (BYOK). Apni Gemini, Groq, ya koi bhi OpenAI-compatible endpoint key upar add karo — ShadRox ka shared key launch ke waqt chalu hoga.'}
-                    </span>
-                  </span>
-                </label>
-                {plan === 'free' && (
+                  </label>
+                </section>
+              ) : (
+                <section className="relative overflow-hidden rounded-2xl border border-violet-300/25 bg-gradient-to-br from-violet-500/[0.14] via-violet-500/[0.05] to-transparent p-4">
+                  <div className="flex items-center gap-2 text-violet-200">
+                    <Sparkles className="h-4 w-4" />
+                    <span className="text-xs font-semibold">No API key? Let ShadRox handle it.</span>
+                  </div>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-400">
+                    Build on the free plan with your own key, or move to a paid plan and ShadRox routes every request — no key to buy, top up or validate.
+                  </p>
                   <button
                     type="button"
-                    onClick={() => onPlanChange('starter')}
-                    disabled={PLANS_LOCKED}
-                    className={`mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border py-2 text-[11px] font-medium transition-colors ${
-                      PLANS_LOCKED
-                        ? 'cursor-not-allowed border-white/10 bg-white/[.02] text-neutral-500'
-                        : 'cursor-pointer border-amber-500/30 text-amber-300 hover:bg-amber-500/[.08]'
-                    }`}
+                    onClick={() => onTabChange('PLAN')}
+                    className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl bg-violet-300 py-2 text-[11px] font-semibold uppercase tracking-wider text-[#16121f] transition-colors hover:bg-violet-200 cursor-pointer"
                   >
-                    {PLANS_LOCKED ? <Lock className="w-3 h-3" /> : <Zap className="w-3 h-3" />}
-                    {PLANS_LOCKED ? 'Starter is locked during beta' : `Upgrade to Starter (${starterPlan.price} — ${starterPlan.creditsPerMonth} credits)`}
+                    <Zap className="h-3 w-3" />
+                    View plans
                   </button>
-                )}
-              </section>
-
-              <UpdateCard />
-
-              {/* Available Models */}
-              <section>
-                <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">
-                  Available Models {models.length > 0 && `(${models.length})`}
-                </h3>
-                {models.length === 0 ? (
-                  <p className="mt-2 text-[11px] text-neutral-500">
-                    No models loaded. Validate your API key above to fetch compatible models.
-                  </p>
-                ) : (
-                  <div className="mt-2 max-h-48 divide-y divide-white/[0.05] overflow-y-auto rounded-xl border border-white/[0.07]">
-                    {models.map((model) => (
-                      <button
-                        key={model.id}
-                        type="button"
-                        onClick={() => onSelectModel(model.id)}
-                        className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs transition-colors hover:bg-white/[0.04] cursor-pointer ${
-                          model.id === selectedModel ? 'bg-violet-500/[.12] font-medium text-white' : 'text-neutral-400'
-                        }`}
-                      >
-                        <span className="truncate">{model.label}</span>
-                        <span className={`rounded border px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${TIER_BADGE[model.tier]}`}>
-                          {model.tier}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </section>
-
-              {/* Temperature Slider */}
-              <section>
-                <div className="flex items-center justify-between">
-                  <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">Temperature</h3>
-                  <span className="text-xs font-mono text-neutral-300">{temperature.toFixed(2)}</span>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={temperature}
-                  onChange={(event) => onTemperatureChange(parseFloat(event.target.value))}
-                  className="mt-2 w-full accent-violet-400 cursor-pointer"
-                />
-                <div className="mt-1 flex justify-between text-[10px] text-neutral-600">
-                  <span>Deterministic (0.0)</span>
-                  <span>Creative (1.0)</span>
-                </div>
-              </section>
+                </section>
+              )}
             </>
           )}
 
@@ -684,12 +606,12 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 cap and cost ₹0 from ShadRox. Paid tiers bill credits for the ShadRox shared key only.
               </p>
 
-              {PLANS_LOCKED && (
+              {lockedPlanIds.length > 0 && (
                 <div className="flex items-start gap-2 rounded-xl border border-violet-300/20 bg-violet-500/[.06] px-3 py-2.5 text-[11px] text-violet-200">
                   <Lock className="mt-0.5 w-3.5 h-3.5 shrink-0" />
                   <span>
-                    Plans are locked for the beta. You stay on Free BYOK (no cap, your own key) and cannot
-                    switch to a paid tier.
+                    Locked for the beta: {lockedPlanIds.map((id) => getPlanMeta(id).label).join(', ')}. Free BYOK
+                    stays unlimited with your own key — switching plans never takes that away.
                   </span>
                 </div>
               )}
@@ -698,6 +620,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
               <section className="space-y-3">
                 {PLANS.map((entry) => {
                   const isCurrent = entry.id === plan;
+                  const selectable = isPlanSelectable(entry.id);
                   return (
                     <div
                       key={entry.id}
@@ -748,29 +671,36 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                         ))}
                       </ul>
 
+                      <p className="mt-3 text-[11px] leading-relaxed text-neutral-500">
+                        {getPlanEntitlementNote(entry.id, isSharedKeyEligible(entry.id))}
+                      </p>
+
                       <button
                         type="button"
                         onClick={() => onPlanChange(entry.id)}
-                        disabled={isCurrent || PLANS_LOCKED}
+                        disabled={isCurrent || !selectable}
                         className={`mt-4 flex w-full items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
                           isCurrent
                             ? 'border border-white/10 text-neutral-600 bg-white/[.02] cursor-default'
-                            : PLANS_LOCKED
+                            : !selectable
                               ? 'border border-white/10 text-neutral-500 bg-white/[.02] cursor-not-allowed'
                               : entry.id === 'free'
                                 ? 'border border-white/10 text-neutral-300 hover:bg-white/[.06] cursor-pointer'
                                 : 'bg-violet-300 text-[#16121f] hover:bg-violet-200 cursor-pointer'
                         }`}
                       >
-                        {PLANS_LOCKED && !isCurrent && <Lock className="w-3 h-3" />}
+                        {!selectable && !isCurrent && <Lock className="w-3 h-3" />}
                         {isCurrent
                           ? 'Current Plan Active'
-                          : PLANS_LOCKED
+                          : !selectable
                             ? 'Locked during beta'
                             : entry.id === 'free'
                               ? 'Switch to Free (BYOK)'
                               : `Upgrade to ${entry.label}`}
                       </button>
+                      {selectable && !isCurrent && Number.isFinite(entry.creditsPerMonth) && (
+                        <p className="mt-1.5 text-[10px] leading-relaxed text-neutral-500">{BETA_UPGRADE_NOTE}</p>
+                      )}
                     </div>
                   );
                 })}
@@ -981,6 +911,15 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   )}
                 </div>
               </section>
+            </>
+          )}
+
+          {activeTab === 'TOOLS' && <McpToolsSection workspaceId={workspaceId} />}
+
+          {activeTab === 'AUTOMATIONS' && (
+            <>
+              <PluginsSection workspaceId={workspaceId} workspaceRoot={workspaceRoot} />
+              <AutomationsSection workspaceId={workspaceId} workspaceRoot={workspaceRoot} />
             </>
           )}
         </div>

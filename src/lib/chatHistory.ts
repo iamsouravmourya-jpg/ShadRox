@@ -117,6 +117,12 @@ function sanitizeMessage(raw: unknown, position: number): ChatMessage | null {
   }
   if (message.refinedMeta) stored.refinedMeta = message.refinedMeta;
   if (message.metrics) stored.metrics = message.metrics;
+  if (Array.isArray(message.toolActivity)) {
+    stored.toolActivity = message.toolActivity
+      .filter((tool) => tool && typeof tool.name === 'string' && typeof tool.label === 'string')
+      .map((tool) => ({ name: tool.name, label: tool.label, ok: tool.ok === true, error: typeof tool.error === 'string' ? tool.error : undefined }));
+  }
+  if (typeof message.toolRounds === 'number') stored.toolRounds = message.toolRounds;
   return stored;
 }
 
@@ -185,8 +191,15 @@ export function saveConversation(store: HistoryStore, workspaceId: string, messa
 
   // Re-inserting puts this conversation last, so two writes inside the same
   // millisecond still sort oldest-first and the pruning stays deterministic.
+  // `Date.now()` alone is not enough: a burst of saves can share a tick, and a
+  // stable descending sort would then keep the oldest twelve and drop this one.
+  // Bumping past the newest stored stamp makes every save strictly newer.
   delete map[workspaceId];
-  map[workspaceId] = { messages: stored.slice(-MAX_MESSAGES), updatedAt: Date.now() };
+  const newestStored = Object.values(map).reduce((newest, entry) => Math.max(newest, entry.updatedAt), 0);
+  map[workspaceId] = {
+    messages: stored.slice(-MAX_MESSAGES),
+    updatedAt: Math.max(Date.now(), newestStored + 1)
+  };
   const keep = Object.entries(map)
     .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
     .slice(0, MAX_WORKSPACES);

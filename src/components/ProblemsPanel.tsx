@@ -1,6 +1,6 @@
-import { useMemo } from 'react';
-import { AlertCircle, AlertTriangle, CircleCheck, Info, Loader2, RefreshCw, X } from 'lucide-react';
-import type { DesktopDiagnostic } from '../lib/desktop';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { AlertCircle, AlertTriangle, CircleCheck, Info, Lightbulb, Loader2, RefreshCw, X } from 'lucide-react';
+import type { CodeAction, DesktopDiagnostic } from '../lib/desktop';
 import { baseName, compareDiagnostics, normalizeSlashes, relativeToRoot } from '../lib/diagnostics';
 
 export interface ProblemsPanelProps {
@@ -18,6 +18,18 @@ export interface ProblemsPanelProps {
     endLine: number,
     endCharacter: number
   ) => void;
+  /**
+   * Language-service quick fixes for one problem, keyed by workspace-relative
+   * path. Absent in the browser build, which is what hides the fix affordance.
+   */
+  onRequestFixes?: (
+    relativePath: string,
+    line: number,
+    character: number,
+    endLine: number,
+    endCharacter: number
+  ) => Promise<CodeAction[]>;
+  onApplyFix?: (action: CodeAction) => Promise<string>;
 }
 
 interface ProblemFileGroup {
@@ -27,6 +39,14 @@ interface ProblemFileGroup {
   diagnostics: DesktopDiagnostic[];
   errors: number;
   warnings: number;
+}
+
+/** Which row has its fix list expanded, and what it currently holds. */
+interface FixMenuState {
+  key: string;
+  loading: boolean;
+  error: string | null;
+  actions: CodeAction[];
 }
 
 function severityIcon(severity: DesktopDiagnostic['severity']) {
@@ -47,8 +67,62 @@ export function ProblemsPanel({
   isRefreshing,
   onRefresh,
   onClose,
-  onOpenProblem
+  onOpenProblem,
+  onRequestFixes,
+  onApplyFix
 }: ProblemsPanelProps) {
+  const [fixMenu, setFixMenu] = useState<FixMenuState | null>(null);
+  // Guards against a slow fix response landing on a row the user already left.
+  const fixRequestId = useRef(0);
+
+  const toggleFixes = useCallback(
+    async (key: string, relativePath: string, diagnostic: DesktopDiagnostic) => {
+      if (!onRequestFixes) return;
+      // Clicking the same row again collapses the list instead of refetching.
+      if (fixMenu?.key === key) {
+        fixRequestId.current += 1;
+        setFixMenu(null);
+        return;
+      }
+      const requestId = ++fixRequestId.current;
+      setFixMenu({ key, loading: true, error: null, actions: [] });
+      try {
+        const actions = await onRequestFixes(
+          relativePath,
+          diagnostic.line,
+          diagnostic.character,
+          diagnostic.endLine ?? diagnostic.line,
+          diagnostic.endCharacter ?? diagnostic.character
+        );
+        if (requestId !== fixRequestId.current) return;
+        setFixMenu({ key, loading: false, error: null, actions });
+      } catch (error) {
+        if (requestId !== fixRequestId.current) return;
+        setFixMenu({
+          key,
+          loading: false,
+          error: error instanceof Error ? error.message : 'Quick fixes failed.',
+          actions: []
+        });
+      }
+    },
+    [fixMenu?.key, onRequestFixes]
+  );
+
+  const applyFix = useCallback(
+    async (action: CodeAction) => {
+      if (!onApplyFix) return;
+      fixRequestId.current += 1;
+      setFixMenu(null);
+      try {
+        await onApplyFix(action);
+      } catch {
+        // The caller owns the message; the row simply collapses again.
+      }
+    },
+    [onApplyFix]
+  );
+
   const groups = useMemo<ProblemFileGroup[]>(() => {
     const byFile = new Map<string, ProblemFileGroup>();
     for (const diagnostic of diagnostics) {
@@ -143,34 +217,85 @@ export function ProblemsPanel({
                   {group.warnings > 0 && <span className="text-amber-400/80">{group.warnings}W</span>}
                 </span>
               </div>
-              {group.diagnostics.map((diagnostic, index) => (
-                <button
-                  key={`${group.key}-${diagnostic.line}-${diagnostic.character}-${index}`}
-                  type="button"
-                  onClick={() =>
-                    onOpenProblem(
-                      group.relativePath,
-                      diagnostic.line,
-                      diagnostic.character,
-                      diagnostic.endLine,
-                      diagnostic.endCharacter
-                    )
-                  }
-                  className="flex w-full items-start gap-2 px-3 py-1 text-left transition-colors hover:bg-white/[0.04] cursor-pointer"
-                  title={`${group.relativePath}:${diagnostic.line + 1}:${diagnostic.character + 1}`}
-                >
-                  <span className="mt-[3px]">{severityIcon(diagnostic.severity)}</span>
-                  <span className="shrink-0 font-mono text-[10px] text-neutral-500">
-                    {diagnostic.line + 1}:{diagnostic.character + 1}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-300" title={diagnostic.message}>
-                    {diagnostic.code && (
-                      <span className="mr-1.5 font-mono text-[10px] text-violet-300/80">{diagnostic.code}</span>
+              {group.diagnostics.map((diagnostic, index) => {
+                const rowKey = `${group.key}-${diagnostic.line}-${diagnostic.character}-${index}`;
+                const isFixOpen = fixMenu?.key === rowKey;
+                return (
+                  <div key={rowKey}>
+                    <div className="group flex items-stretch transition-colors hover:bg-white/[0.04]">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenProblem(
+                            group.relativePath,
+                            diagnostic.line,
+                            diagnostic.character,
+                            diagnostic.endLine,
+                            diagnostic.endCharacter
+                          )
+                        }
+                        className="flex min-w-0 flex-1 items-start gap-2 px-3 py-1 text-left cursor-pointer"
+                        title={`${group.relativePath}:${diagnostic.line + 1}:${diagnostic.character + 1}`}
+                      >
+                        <span className="mt-[3px]">{severityIcon(diagnostic.severity)}</span>
+                        <span className="shrink-0 font-mono text-[10px] text-neutral-500">
+                          {diagnostic.line + 1}:{diagnostic.character + 1}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-300" title={diagnostic.message}>
+                          {diagnostic.code && (
+                            <span className="mr-1.5 font-mono text-[10px] text-violet-300/80">{diagnostic.code}</span>
+                          )}
+                          {diagnostic.message}
+                        </span>
+                      </button>
+                      {onRequestFixes && (
+                        <button
+                          type="button"
+                          onClick={() => void toggleFixes(rowKey, group.relativePath, diagnostic)}
+                          className={`mr-2 shrink-0 self-start rounded p-1 transition-opacity cursor-pointer hover:text-amber-300 ${
+                            isFixOpen
+                              ? 'text-amber-300 opacity-100'
+                              : 'text-neutral-500 opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+                          }`}
+                          title="Quick fixes for this problem"
+                          aria-label="Quick fixes for this problem"
+                          aria-expanded={isFixOpen}
+                        >
+                          <Lightbulb className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    {isFixOpen && fixMenu && (
+                      <div className="border-y border-white/[0.05] bg-ink-950/60">
+                        {fixMenu.loading ? (
+                          <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-neutral-400">
+                            <Loader2 className="h-3 w-3 animate-spin text-amber-300" />
+                            Looking for fixes…
+                          </div>
+                        ) : fixMenu.error ? (
+                          <p className="px-3 py-2 text-[11px] text-rose-400">{fixMenu.error}</p>
+                        ) : fixMenu.actions.length === 0 ? (
+                          <p className="px-3 py-2 text-[11px] text-neutral-500">
+                            No quick fixes available for this problem.
+                          </p>
+                        ) : (
+                          fixMenu.actions.map((action, actionIndex) => (
+                            <button
+                              key={`${action.name}-${actionIndex}`}
+                              type="button"
+                              onClick={() => void applyFix(action)}
+                              className="flex w-full items-start gap-2 px-3 py-1.5 text-left text-[11px] text-neutral-300 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
+                            >
+                              <Lightbulb className="mt-[1px] h-3 w-3 shrink-0 text-amber-300" />
+                              <span className="min-w-0 flex-1">{action.description}</span>
+                            </button>
+                          ))
+                        )}
+                      </div>
                     )}
-                    {diagnostic.message}
-                  </span>
-                </button>
-              ))}
+                  </div>
+                );
+              })}
             </div>
           ))
         )}

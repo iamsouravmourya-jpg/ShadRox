@@ -1,5 +1,6 @@
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
+import { ConfirmHost } from './components/ConfirmHost';
 import { hydrateSecureStore } from './lib/secureStore';
 import './index.css';
 
@@ -12,7 +13,12 @@ async function boot() {
     hydrateSecureStore(),
     new Promise((resolve) => setTimeout(resolve, 1500))
   ]);
-  createRoot(document.getElementById('root')!).render(<App />);
+  createRoot(document.getElementById('root')!).render(
+    <>
+      <App />
+      <ConfirmHost />
+    </>
+  );
 }
 
 void boot();

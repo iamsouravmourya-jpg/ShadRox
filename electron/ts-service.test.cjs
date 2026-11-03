@@ -203,6 +203,96 @@ test('workspace symbol search finds declarations and ignores empty queries', asy
   }
 });
 
+test('rename rewrites the declaration and every reference it can see', async () => {
+  const root = createFixture();
+  const service = createService(root);
+  try {
+    // `add` in `export function add(...)`: line 0, character 16.
+    const result = await service.rename('ws', 'src/math.ts', 0, 16, 'sum');
+    assert.equal(result.canRename, true);
+    assert.equal(result.reason, null);
+    assert.equal(result.displayName, 'add');
+
+    const declaration = result.edits.find((edit) => edit.file.endsWith('math.ts'));
+    assert.ok(declaration);
+    assert.equal(declaration.line, 0);
+    assert.equal(declaration.character, 16);
+    assert.equal(declaration.newText, 'sum');
+
+    // `main.ts` mentions `add` three times: the import specifier and both calls.
+    const inMain = result.edits.filter((edit) => edit.file.endsWith('main.ts'));
+    assert.equal(inMain.length, 3);
+    assert.ok(inMain.every((edit) => edit.newText === 'sum'));
+  } finally {
+    service.closeWorkspace('ws');
+  }
+});
+
+test('rename refuses an empty name and a position that is not a symbol', async () => {
+  const root = createFixture();
+  const service = createService(root);
+  try {
+    const empty = await service.rename('ws', 'src/math.ts', 0, 16, '   ');
+    assert.equal(empty.canRename, false);
+    assert.match(empty.reason, /name is required/i);
+    assert.deepEqual(empty.edits, []);
+
+    // Line 3 of `math.ts` is blank, so the cursor touches no symbol at all.
+    // (TypeScript snaps a cursor inside a keyword to the nearest identifier, so
+    // `export` would legitimately rename `add`.)
+    const blank = await service.rename('ws', 'src/math.ts', 3, 0, 'expose');
+    assert.equal(blank.canRename, false);
+    assert.deepEqual(blank.edits, []);
+  } finally {
+    service.closeWorkspace('ws');
+  }
+});
+
+test('code actions offer a fix for the diagnostic under the cursor', async () => {
+  const root = createFixture();
+  // A reassigned `const` is one of the few diagnostics TypeScript ships a
+  // built-in fix for (`Convert 'const' to 'let'`); a plain type mismatch such as
+  // TS2322 offers nothing, so it cannot exercise this path.
+  fs.writeFileSync(path.join(root, 'src', 'fixable.ts'), 'const frozen = 1;\nfrozen = 2;\n');
+  const service = createService(root);
+  try {
+    // Nothing to fix on line 0 of `main.ts`.
+    assert.deepEqual(await service.codeActions('ws', 'src/main.ts', 0, 0, 0, 0), []);
+
+    // `frozen = 2` raises TS2588 on the assignment target.
+    const actions = await service.codeActions('ws', 'src/fixable.ts', 1, 0, 1, 6);
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].name, 'fixConvertConstToLet');
+    assert.match(actions[0].description, /const/i);
+
+    const edit = actions[0].changes.find((change) => change.file.endsWith('fixable.ts'));
+    assert.ok(edit);
+    assert.equal(edit.line, 0);
+    assert.equal(edit.character, 0);
+    assert.equal(edit.endCharacter, 5);
+    assert.equal(edit.newText, 'let');
+  } finally {
+    service.closeWorkspace('ws');
+  }
+});
+
+test('semantic tokens name declarations with the classifier vocabulary', async () => {
+  const root = createFixture();
+  const service = createService(root);
+  try {
+    const tokens = await service.semanticTokens('ws', 'src/math.ts');
+    assert.ok(tokens.length > 0);
+    // `export function add(...)` — `add` is at line 0, character 16.
+    const addToken = tokens.find((token) => token.line === 0 && token.character === 16);
+    assert.equal(addToken?.type, 'function');
+    // `export interface Point {` sits on line 4 — line 3 is the blank separator.
+    const pointToken = tokens.find((token) => token.line === 4 && token.character === 17);
+    assert.equal(pointToken?.type, 'interface');
+  } finally {
+    service.closeWorkspace('ws');
+  }
+});
+
 test('the extraResources lib folder is preferred over the stripped bundled one', () => {
   const resources = fs.mkdtempSync(path.join(os.tmpdir(), 'shadrox-resources-'));
   const libName = 'lib.es2022.d.ts';

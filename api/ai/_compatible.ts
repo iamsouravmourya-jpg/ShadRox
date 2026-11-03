@@ -1,7 +1,8 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
 import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
 import { resolveCustomEndpoint } from './_endpoint.js';
-import { UpstreamError, type StreamRequest, type StreamResult, type StreamSink } from './_types.js';
+import { UpstreamError, mergeOpenAiUsage, usageFields, type StreamRequest, type StreamResult, type StreamSink, type TokenUsage } from './_types.js';
+import { OpenAiToolCallCollector, rejectsNativeTools } from './_toolCalls.js';
 import { fetchUpstream } from './_upstream.js';
 
 /**
@@ -53,16 +54,25 @@ export async function streamCustomEndpoint(
   const { apiKey, model, temperature, signal } = request;
   const url = chatUrl(request);
 
-  const body = (withTemperature: boolean) =>
+  const body = (withTemperature: boolean, withTools: boolean) =>
     JSON.stringify({
       model,
       messages: buildMessages(request),
       ...(withTemperature ? { temperature } : {}),
       stream: true,
-      stream_options: { include_usage: true }
+      stream_options: { include_usage: true },
+      ...(withTools && request.toolDefinitions?.length
+        ? {
+            tools: request.toolDefinitions.map((tool) => ({
+              type: 'function',
+              function: { name: tool.name, description: tool.description, parameters: tool.parameters }
+            })),
+            tool_choice: 'auto'
+          }
+        : {})
     });
 
-  const send = (withTemperature: boolean, attempts: number) =>
+  const send = (withTemperature: boolean, attempts: number, withTools: boolean) =>
     fetchUpstream(
       url,
       {
@@ -71,20 +81,27 @@ export async function streamCustomEndpoint(
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json'
         },
-        body: body(withTemperature)
+        body: body(withTemperature, withTools)
       },
       signal,
       attempts
     );
 
-  let response = await send(true, 1);
+  let withTools = Boolean(request.toolDefinitions?.length);
+  let response = await send(true, 1, withTools);
   let payload = response.ok ? '' : await readErrorPayload(response);
+
+  if (!response.ok && withTools && rejectsNativeTools(payload)) {
+    withTools = false;
+    response = await send(true, 1, withTools);
+    payload = response.ok ? '' : await readErrorPayload(response);
+  }
 
   // `temperature` is optional in the OpenAI spec and some inference servers
   // reject it outright (local quant builds especially). One retry without it
   // costs nothing and turns a hard failure into a working chat.
   if (!response.ok && /temperature/i.test(payload)) {
-    response = await send(false, 1);
+    response = await send(false, 1, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 
@@ -96,8 +113,9 @@ export async function streamCustomEndpoint(
   }
 
   let fullText = '';
-  let totalTokens = 0;
+  let usage: TokenUsage = {};
   let finishReason: string | null = null;
+  const toolCalls = new OpenAiToolCallCollector();
 
   const decoder = createSseDecoder(({ data }) => {
     if (!data || data === '[DONE]') return;
@@ -125,9 +143,10 @@ export async function streamCustomEndpoint(
       }
       const reasoning = reasoningText(delta);
       if (reasoning) sink.reasoning(reasoning);
+      toolCalls.add(delta.tool_calls);
     }
     if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason;
-    if (typeof parsed?.usage?.total_tokens === 'number') totalTokens = parsed.usage.total_tokens;
+    usage = mergeOpenAiUsage(usage, parsed?.usage);
   });
 
   try {
@@ -146,7 +165,10 @@ export async function streamCustomEndpoint(
     throw new Error(sanitizeErrorMessage(error, 'Custom endpoint stream failed.'));
   }
 
-  if (!fullText.trim()) {
+  const calls = toolCalls.values();
+  if (calls.length > 0) sink.toolCalls(calls);
+
+  if (!fullText.trim() && calls.length === 0) {
     throw new Error(
       finishReason === 'length'
         ? 'Model hit its output limit before writing an answer. Try a shorter prompt or a bigger model.'
@@ -154,7 +176,7 @@ export async function streamCustomEndpoint(
     );
   }
 
-  return { tokens: totalTokens || estimateTokens(fullText), finishReason };
+  return { tokens: usage.total || estimateTokens(fullText), ...usageFields(usage), finishReason };
 }
 
 /**

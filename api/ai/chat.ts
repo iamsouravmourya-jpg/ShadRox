@@ -30,7 +30,8 @@ import {
   outputCeiling,
   rateLimitedMessage
 } from './_spendGuard.js';
-import type { ChatMessage, ChatRequestBody, ProviderId } from './_types.js';
+import type { ChatMessage, ChatRequestBody, NativeToolDefinition, ProviderId } from './_types.js';
+import { nativeToolDefinitions as parseNativeToolDefinitions } from './_toolCalls.js';
 
 const PROVIDER_LABEL: Record<ProviderId, string> = {
   gemini: 'Google Gemini',
@@ -77,6 +78,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   let provider: ProviderId;
   let baseUrl: string | undefined;
   let model: string;
+  let toolDefinitions: NativeToolDefinition[] | undefined;
 
   try {
     const raw = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.chat });
@@ -101,6 +103,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     temperature = clampedNumber(raw, 'temperature', FIELD_LIMITS.temperature);
     const level = enumValue(raw, 'thinking', ['high', 'low', 'none'] as const, 'none' as const);
     thinking = level === 'high' || level === 'low' ? level : undefined;
+    try {
+      toolDefinitions = parseNativeToolDefinitions(raw.toolDefinitions);
+    } catch (error) {
+      throw new RequestRejectedError(400, error instanceof Error ? error.message : 'Invalid tool definitions.');
+    }
   } catch (error) {
     if (sendIfRejected(res, error)) return;
     throw error;
@@ -221,6 +228,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         systemInstruction: budget.systemInstruction,
         temperature,
         thinking,
+        toolDefinitions,
         signal: abort.signal
       },
       {
@@ -229,6 +237,19 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         },
         reasoning(text) {
           forward('reasoning', text);
+        },
+        toolCalls(calls) {
+          if (capped || abort.signal.aborted || res.writableEnded || calls.length === 0) return;
+          const serialized = JSON.stringify(calls);
+          const { head, capped: hitCeiling } = fitChunk(sentChars, ceiling, serialized);
+          if (hitCeiling) {
+            capped = true;
+            abort.abort();
+            return;
+          }
+          sentChars += head.length;
+          markFirstToken();
+          emit({ type: 'tool_calls', calls });
         }
       }
     );
@@ -242,6 +263,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     sseSend(res, {
       type: 'done',
       tokens: result.tokens,
+      // Unknown parts stay omitted so the client can tell "provider did not
+      // report" apart from "the model emitted nothing".
+      ...(result.inputTokens !== undefined ? { inputTokens: result.inputTokens } : {}),
+      ...(result.outputTokens !== undefined ? { outputTokens: result.outputTokens } : {}),
       provider,
       model,
       tier: byok ? 'byok' : 'shadrox',

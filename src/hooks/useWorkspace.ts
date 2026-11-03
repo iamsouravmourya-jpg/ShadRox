@@ -4,10 +4,12 @@ import { resolveActiveFileIndex } from '../lib/activeFile';
 import { detectLanguage } from '../lib/languages';
 import type { FilePatch } from '../lib/markdown';
 import { loadHandleRecord, pruneHandles, saveHandles } from '../lib/fileHandles';
-import { listCheckpoints, loadCheckpointFiles, saveCheckpoint, type CheckpointMeta } from '../lib/history';
+import { addCheckpointCreatedPaths, listCheckpoints, loadCheckpointCreatedPaths, loadCheckpointFiles, mergeCheckpointFiles, saveCheckpoint, type CheckpointMeta } from '../lib/history';
+import { diffToCheckpoint, type CheckpointDiff } from '../lib/checkpointDiff';
 import { getSnapshot, pruneSnapshots, saveSnapshot } from '../lib/snapshots';
 import { getRecentWorkspaces, pushRecentWorkspace, removeRecentWorkspace } from '../lib/storage';
 import { getDesktopBridge, type DirectoryPage, type StagedTransaction, type WorkspaceChange } from '../lib/desktop';
+import { confirmAction } from '../lib/confirm';
 import {
   ensureReadWrite,
   filesFromFileList,
@@ -50,6 +52,12 @@ interface MountOptions {
   diskFileTree?: WorkspaceFileEntry[];
 }
 
+export interface EditorGroup {
+  tabs: string[];
+  activePath: string | null;
+  pinnedTabs: string[];
+}
+
 export interface PatchProposal extends StagedTransaction {
   workspaceId: string;
   base: WorkspaceFile[];
@@ -59,8 +67,15 @@ interface UseWorkspaceResult {
   directoryPages: Record<string, DirectoryPage>;
   loadingDirectories: string[];
   loadDirectory: (path: string, cursor?: number) => Promise<void>;
-  openFile: (path: string) => Promise<void>;
-  closeTab: (index: number) => void;
+  openFile: (path: string, groupIndex?: number) => Promise<void>;
+  closeTab: (index: number, groupIndex?: number) => void;
+  editorGroups: EditorGroup[];
+  activeEditorGroup: number;
+  splitEditor: () => void;
+  focusEditorGroup: (index: number) => void;
+  closeEditorGroup: (index: number) => void;
+  reorderEditorTabs: (groupIndex: number, fromPath: string, toPath: string) => void;
+  togglePinnedTab: (groupIndex: number, path: string) => void;
   conflicts: string[];
   resolveConflict: (name: string, action: 'reload' | 'keep') => Promise<void>;
   pendingProposal: PatchProposal | null;
@@ -84,7 +99,7 @@ interface UseWorkspaceResult {
   openRecent: (entry: RecentEntry) => Promise<void>;
   /** Drops one entry from the recent list. */
   removeRecent: (id: string) => void;
-  selectFile: (index: number) => void;
+  selectFile: (index: number, groupIndex?: number) => void;
   /** Leaves the editor and goes back to the file list. */
   closeFile: () => void;
   updateActiveContent: (content: string) => void;
@@ -93,6 +108,20 @@ interface UseWorkspaceResult {
   deleteFile: (index: number) => void;
   /** Renames a file on disk (desktop only) and keeps its buffer in sync. */
   renameFile: (from: string, to: string) => Promise<boolean>;
+  /** Creates a folder on disk (desktop folder workspaces only). */
+  createDirectory: (path: string) => Promise<boolean>;
+  /** Deletes one file or empty folder from disk and drops its buffer. */
+  deleteWorkspaceEntry: (path: string) => Promise<boolean>;
+  /**
+   * Reads the named files off disk into buffers. Must run before a patch touches
+   * a file the user has not opened, or the edit is treated as a new file.
+   */
+  loadFilesForPatching: (paths: string[]) => Promise<WorkspaceFile[]>;
+  /**
+   * Records which paths the current turn created onto the checkpoint taken
+   * before it, so a rollback deletes them from disk instead of leaving them.
+   */
+  noteCheckpointCreated: (paths: string[]) => Promise<void>;
   /** Reloads the active buffer from disk, discarding local edits. */
   revertActiveFile: () => Promise<void>;
   closeWorkspace: () => void;
@@ -122,11 +151,31 @@ interface UseWorkspaceResult {
   // --- restore timeline ----------------------------------------------------
   checkpoints: CheckpointMeta[];
   /** Snapshots the current files so a later chat turn can be undone. */
-  markCheckpoint: (messageId: string, label: string) => Promise<void>;
+  markCheckpoint: (messageId: string, label: string) => Promise<string | null>;
   restoreCheckpoint: (id: string) => Promise<boolean>;
+  /** What restoring would do to the current buffers, so a restore is never blind. */
+  previewCheckpointDiff: (id: string) => Promise<CheckpointDiff | null>;
+  /**
+   * Restores a checkpoint and writes it through to disk in one transaction.
+   * Used by the autonomous run's failure path; the manual timeline restore
+   * stays buffer-only so the user can inspect before saving.
+   */
+  rollbackToCheckpoint: (id: string) => Promise<boolean>;
 }
 
 const EMPTY_FILES: WorkspaceFile[] = [];
+/** Unedited, unopened buffers past this count are dropped back to the file list. */
+const MAX_LOADED_BUFFERS = 48;
+
+/** Strips the `./` and backslashes that models write into patch paths. */
+export function normalizeWorkspacePath(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+}
+
+/** Traversal-safe, dot-free workspace-relative path. */
+function isEditablePath(path: string): boolean {
+  return path.length > 0 && path.split('/').every((part) => part && part !== '.' && part !== '..');
+}
 
 async function contentVersion(content: string): Promise<string> {
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
@@ -137,6 +186,8 @@ export function useWorkspace(): UseWorkspaceResult {
   const [workspace, setWorkspace] = useState<WorkspaceFolder | null>(null);
   // Nothing is selected on mount: the user sees the file list first and picks.
   const [selectedFileIndex, setSelectedFileIndex] = useState(-1);
+  const [editorGroups, setEditorGroups] = useState<EditorGroup[]>([{ tabs: [], activePath: null, pinnedTabs: [] }]);
+  const [activeEditorGroup, setActiveEditorGroup] = useState(0);
   const [assets, setAssets] = useState<AssetMap>({});
   const [recents, setRecents] = useState<RecentEntry[]>(() => getRecentWorkspaces());
   const [isBusy, setIsBusy] = useState(false);
@@ -156,6 +207,22 @@ export function useWorkspace(): UseWorkspaceResult {
   // resolveActiveFileIndex so they cannot drift apart again.
   const activeFileIndex = resolveActiveFileIndex(selectedFileIndex, files.length);
   const activeFile = files[activeFileIndex] ?? null;
+
+  useEffect(() => {
+    const path = selectedFileIndex >= 0 ? files[selectedFileIndex]?.name : null;
+    if (!path) return;
+    setEditorGroups((previous) => {
+      const current = previous[activeEditorGroup];
+      if (!current || (current.activePath === path && current.tabs.includes(path))) return previous;
+      const next = previous.slice();
+      next[activeEditorGroup] = {
+        ...current,
+        tabs: current.tabs.includes(path) ? current.tabs : [...current.tabs, path],
+        activePath: path
+      };
+      return next;
+    });
+  }, [files, selectedFileIndex, activeEditorGroup]);
 
   const filesRef = useRef<WorkspaceFile[]>(files);
   const baselineRef = useRef<Record<string, string>>(diskBaseline);
@@ -179,6 +246,8 @@ export function useWorkspace(): UseWorkspaceResult {
   proposalRef.current = pendingProposal;
   const savingRef = useRef(false);
   const [changeRevision, setChangeRevision] = useState(0);
+  /** The checkpoint the current turn was taken against — disk pre-images merge in here. */
+  const activeCheckpointRef = useRef<{ id: string; workspacePath: string } | null>(null);
 
   useEffect(() => {
     filesRef.current = files;
@@ -214,6 +283,7 @@ export function useWorkspace(): UseWorkspaceResult {
       setLoadingDirectories([]);
       setConflicts([]);
       setPendingProposal(null);
+      activeCheckpointRef.current = null;
       setAssets(options.assets ?? {});
       const writable = handles.length > 0 || Boolean(options.directoryHandle) || Boolean(options.nativeWorkspaceId);
       canWriteRef.current = writable;
@@ -235,6 +305,13 @@ export function useWorkspace(): UseWorkspaceResult {
         diskFileTree: options.diskFileTree
       });
       setSelectedFileIndex(-1);
+      const initialTabs = nextFiles.map((file) => file.name);
+      setEditorGroups([{
+        tabs: initialTabs,
+        activePath: initialTabs[0] ?? null,
+        pinnedTabs: []
+      }]);
+      setActiveEditorGroup(0);
       setStatusMessage(null);
       setRecents(pushRecentWorkspace({
         name,
@@ -494,18 +571,19 @@ export function useWorkspace(): UseWorkspaceResult {
     if (workspace?.nativeWorkspaceId) void loadDirectory('');
   }, [workspace?.nativeWorkspaceId, loadDirectory]);
 
-  const openFile = useCallback(async (name: string) => {
+  const openFile = useCallback(async (name: string, groupIndex = activeEditorGroup) => {
     const desktop = getDesktopBridge();
     const id = desktopWorkspaceIdRef.current;
     if (!desktop || !id) return;
     const request = ++fileRequest.current;
     const existing = filesRef.current.findIndex((file) => file.name === name);
+    setActiveEditorGroup(groupIndex);
     if (existing >= 0) { setSelectedFileIndex(existing); return; }
     try {
       const loaded = await desktop.readFile(id, name);
       if (desktopWorkspaceIdRef.current !== id) return;
       const next = [...filesRef.current.filter((file) => file.name !== name), { ...loaded, language: detectLanguage(name) }];
-      while (next.length > 48) {
+      while (next.length > MAX_LOADED_BUFFERS) {
         const removable = next.findIndex((file) => file.name !== name && file.content === baselineRef.current[file.name] && !conflictRef.current.includes(file.name));
         if (removable < 0) break;
         next.splice(removable, 1);
@@ -518,19 +596,119 @@ export function useWorkspace(): UseWorkspaceResult {
     } catch (error) {
       if (desktopWorkspaceIdRef.current === id) setStatusMessage(`Could not open ${name}: ${String(error)}`);
     }
+  }, [activeEditorGroup]);
+
+  const splitEditor = useCallback(() => {
+    if (editorGroups.length >= 2) return;
+    const activePath = editorGroups[activeEditorGroup]?.activePath ?? files[activeFileIndex]?.name;
+    if (!activePath) return;
+    const nextIndex = editorGroups.length;
+    setEditorGroups((previous) => [
+      ...previous,
+      { tabs: [activePath], activePath, pinnedTabs: [] }
+    ]);
+    setActiveEditorGroup(nextIndex);
+    setSelectedFileIndex(filesRef.current.findIndex((file) => file.name === activePath));
+  }, [activeEditorGroup, activeFileIndex, editorGroups, files]);
+
+  const focusEditorGroup = useCallback((index: number) => {
+    const group = editorGroups[index];
+    if (!group) return;
+    setActiveEditorGroup(index);
+    setSelectedFileIndex(group.activePath
+      ? filesRef.current.findIndex((file) => file.name === group.activePath)
+      : -1);
+  }, [editorGroups]);
+
+  const closeEditorGroup = useCallback((index: number) => {
+    if (editorGroups.length <= 1 || !editorGroups[index]) return;
+    const nextGroups = editorGroups.filter((_, groupIndex) => groupIndex !== index);
+    const nextActive = activeEditorGroup === index
+      ? Math.max(0, index - 1)
+      : activeEditorGroup > index ? activeEditorGroup - 1 : activeEditorGroup;
+    setEditorGroups(nextGroups);
+    setActiveEditorGroup(nextActive);
+    const activePath = nextGroups[nextActive]?.activePath;
+    setSelectedFileIndex(activePath
+      ? filesRef.current.findIndex((file) => file.name === activePath)
+      : -1);
+  }, [activeEditorGroup, editorGroups]);
+
+  const reorderEditorTabs = useCallback((groupIndex: number, fromPath: string, toPath: string) => {
+    setEditorGroups((previous) => previous.map((group, index) => {
+      if (index !== groupIndex) return group;
+      const from = group.tabs.indexOf(fromPath);
+      const to = group.tabs.indexOf(toPath);
+      if (from < 0 || to < 0 || from === to) return group;
+      const tabs = group.tabs.slice();
+      tabs.splice(from, 1);
+      tabs.splice(to, 0, fromPath);
+      const pinned = new Set(group.pinnedTabs);
+      return {
+        ...group,
+        tabs: [
+          ...tabs.filter((path) => pinned.has(path)),
+          ...tabs.filter((path) => !pinned.has(path))
+        ]
+      };
+    }));
   }, []);
 
-  const closeTab = useCallback((index: number) => {
+  const togglePinnedTab = useCallback((groupIndex: number, path: string) => {
+    setEditorGroups((previous) => previous.map((group, index) => {
+      if (index !== groupIndex || !group.tabs.includes(path)) return group;
+      const pinnedTabs = group.pinnedTabs.includes(path)
+        ? group.pinnedTabs.filter((entry) => entry !== path)
+        : [path, ...group.pinnedTabs];
+      return {
+        ...group,
+        pinnedTabs,
+        tabs: [
+          ...pinnedTabs.filter((entry) => group.tabs.includes(entry)),
+          ...group.tabs.filter((entry) => !pinnedTabs.includes(entry))
+        ]
+      };
+    }));
+  }, []);
+
+  const closeTab = useCallback(async (index: number, groupIndex = activeEditorGroup) => {
     const current = filesRef.current;
     const file = current[index];
-    if (!file) return;
-    if (file.content !== baselineRef.current[file.name] && !window.confirm(`Discard unsaved changes in ${file.name}?`)) return;
-    const next = current.filter((_, i) => i !== index);
+    const group = editorGroups[groupIndex];
+    if (!file || !group?.tabs.includes(file.name)) return;
+    if (file.content !== baselineRef.current[file.name]) {
+      const confirmed = await confirmAction({
+        title: `Discard unsaved changes in "${file.name}"?`,
+        body: 'Closing this tab discards your local edits. The copy on disk is unchanged.',
+        confirmLabel: 'Discard changes',
+        tone: 'danger'
+      });
+      if (!confirmed) return;
+    }
+    const remaining = group.tabs.filter((path) => path !== file.name);
+    const activePath = group.activePath === file.name
+      ? remaining[Math.min(group.tabs.indexOf(file.name), remaining.length - 1)] ?? null
+      : group.activePath;
+    const nextGroups = editorGroups.map((entry, entryIndex) => entryIndex === groupIndex
+      ? {
+          ...entry,
+          tabs: remaining,
+          pinnedTabs: entry.pinnedTabs.filter((path) => path !== file.name),
+          activePath
+        }
+      : entry);
+    const stillOpen = nextGroups.some((entry) => entry.tabs.includes(file.name));
+    const next = stillOpen ? current : current.filter((entry) => entry.name !== file.name);
     filesRef.current = next;
+    setEditorGroups(nextGroups);
     setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
-    setSelectedFileIndex((active) => active === index ? Math.min(index, next.length - 1) : active > index ? active - 1 : active);
+    if (groupIndex === activeEditorGroup) {
+      setSelectedFileIndex(activePath
+        ? next.findIndex((entry) => entry.name === activePath)
+        : -1);
+    }
     setConflicts((previous) => previous.filter((name) => name !== file.name));
-  }, []);
+  }, [activeEditorGroup, editorGroups]);
 
   const refreshDiskFile = useCallback(async (name: string, force?: 'reload' | 'keep') => {
     const desktop = getDesktopBridge();
@@ -614,9 +792,18 @@ export function useWorkspace(): UseWorkspaceResult {
     return () => { disposed = true; clearTimeout(timer); unsubscribe(); };
   }, [workspace?.nativeWorkspaceId, loadDirectory, refreshDiskFile]);
 
-  const selectFile = useCallback((index: number) => { fileRequest.current += 1; setSelectedFileIndex(index); }, []);
+  const selectFile = useCallback((index: number, groupIndex = activeEditorGroup) => {
+    fileRequest.current += 1;
+    setActiveEditorGroup(groupIndex);
+    setSelectedFileIndex(index);
+  }, [activeEditorGroup]);
 
-  const closeFile = useCallback(() => setSelectedFileIndex(-1), []);
+  const closeFile = useCallback(() => {
+    setSelectedFileIndex(-1);
+    setEditorGroups((previous) => previous.map((group, index) => (
+      index === activeEditorGroup ? { ...group, activePath: null } : group
+    )));
+  }, [activeEditorGroup]);
 
   const updateActiveContent = useCallback(
     (content: string) => {
@@ -657,6 +844,68 @@ export function useWorkspace(): UseWorkspaceResult {
     }
     return result;
   }, [workspace]);
+
+  /**
+   * Pulls the named files off disk into editor buffers before a patch touches
+   * them. A folder is mounted as paths only, so the file the assistant means to
+   * edit is almost never open yet — and an edit to a file with no buffer was
+   * treated as creating a brand-new file, which the transactional save refused
+   * because the path already exists. Loading the real content fixes both: the
+   * patch has text to match against and the baseline version is known.
+   */
+  const loadFilesForPatching = useCallback(async (paths: string[]): Promise<WorkspaceFile[]> => {
+    const desktop = getDesktopBridge();
+    const id = desktopWorkspaceIdRef.current;
+    if (!desktop || !id) return filesRef.current;
+    const identity = workspaceIdentityRef.current;
+    const wanted = [...new Set(paths.map(normalizeWorkspacePath))]
+      .filter((path) => isEditablePath(path))
+      .filter((path) => !filesRef.current.some((file) => file.name.toLowerCase() === path.toLowerCase()));
+    if (wanted.length === 0) return filesRef.current;
+
+    const loaded = await desktop.loadFiles(id, wanted).catch((error: unknown) => {
+      setDiskMessage(`Could not load the files to patch: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
+    if (!loaded) return filesRef.current;
+    if (desktopWorkspaceIdRef.current !== id || workspaceIdentityRef.current !== identity) return filesRef.current;
+
+    const additions = loaded.files
+      .filter((file) => !filesRef.current.some((existing) => existing.name === file.name))
+      .map((file) => ({
+        name: file.name,
+        content: file.content,
+        language: detectLanguage(file.name),
+        version: file.version
+      }));
+    if (additions.length === 0) {
+      if (loaded.missing.length > 0) {
+        setDiskMessage(`${loaded.missing.length} file${loaded.missing.length === 1 ? '' : 's'} the patch targets could not be read: ${loaded.missing.slice(0, 3).map((entry) => entry.path).join(', ')}.`);
+      }
+      return filesRef.current;
+    }
+
+    const next = [...filesRef.current, ...additions];
+    const active = activeCheckpointRef.current;
+    if (active && workspaceIdentityRef.current === identity) {
+      void mergeCheckpointFiles(active.id, additions);
+    }
+    const protect = new Set(additions.map((file) => file.name));
+    while (next.length > MAX_LOADED_BUFFERS) {
+      const removable = next.findIndex((file) => !protect.has(file.name)
+        && file.content === baselineRef.current[file.name]
+        && !conflictRef.current.includes(file.name));
+      if (removable < 0) break;
+      next.splice(removable, 1);
+    }
+    additions.forEach((file) => {
+      baselineRef.current[file.name] = file.content;
+    });
+    filesRef.current = next;
+    setDiskBaseline({ ...baselineRef.current });
+    setWorkspace((previous) => (previous ? { ...previous, files: next } : previous));
+    return next;
+  }, []);
 
   // --- disk write-back -------------------------------------------------------
 
@@ -956,33 +1205,72 @@ export function useWorkspace(): UseWorkspaceResult {
     }
   }, [loadDirectory]);
 
-  const createFile = useCallback((name: string, content = '') => {
-    const cleanName = name.trim();
-    if (!cleanName) return;
-    setWorkspace((previous) => {
-      const nextFiles = previous?.files ?? [];
-      if (nextFiles.some((file) => file.name === cleanName)) return previous;
-      const created: WorkspaceFile = { name: cleanName, content, language: detectLanguage(cleanName) };
-      setSelectedFileIndex(nextFiles.length);
-      return {
-        id: previous?.id ?? `file-${cleanName}`,
-        name: previous?.name ?? cleanName,
-        path: previous?.path ?? `file:${cleanName}`,
-        kind: previous?.kind ?? 'file',
-        nativeWorkspaceId: previous?.nativeWorkspaceId,
-        files: [...nextFiles, created]
-      };
-    });
+  /**
+   * Tags the turn's checkpoint with the paths an apply created, so a rollback
+   * deletes them again. A file the user made by hand is never in this list.
+   */
+  const noteCheckpointCreated = useCallback(async (paths: string[]): Promise<void> => {
+    const active = activeCheckpointRef.current;
+    if (!active || paths.length === 0) return;
+    await addCheckpointCreatedPaths(active.id, paths);
   }, []);
 
+  const createFile = useCallback((name: string, content = '') => {
+    const cleanName = normalizeWorkspacePath(name);
+    if (!cleanName || !isEditablePath(cleanName)) {
+      setDiskMessage('That file name is not a valid workspace path.');
+      return;
+    }
+    const existingIndex = filesRef.current.findIndex((file) => file.name === cleanName);
+    if (existingIndex >= 0) {
+      setSelectedFileIndex(existingIndex);
+      return;
+    }
+    const created: WorkspaceFile = { name: cleanName, content, language: detectLanguage(cleanName) };
+    const next = [...filesRef.current, created];
+    filesRef.current = next;
+    setWorkspace((previous) => previous
+      ? { ...previous, files: next }
+      : {
+          id: `file-${cleanName}`,
+          name: cleanName,
+          path: `file:${cleanName}`,
+          kind: 'file',
+          nativeWorkspaceId: undefined,
+          files: next
+        });
+    setSelectedFileIndex(next.length - 1);
+
+    // "New file" must produce a file. In a desktop folder the buffer is written
+    // straight through; the created path is tagged on the turn's checkpoint so a
+    // rollback can delete it again.
+    const desktop = getDesktopBridge();
+    const id = desktopWorkspaceIdRef.current;
+    if (desktop && id && workspaceIdentityRef.current?.startsWith('folder-')) {
+      void saveFilesAtomic([cleanName]).then((outcome) => {
+        if (outcome.failed || outcome.written === 0) return;
+        void noteCheckpointCreated([cleanName]);
+        void loadDirectory(cleanName.split('/').slice(0, -1).join('/'));
+      });
+    }
+  }, [saveFilesAtomic, noteCheckpointCreated, loadDirectory]);
+
   const deleteFile = useCallback((index: number) => {
-    setWorkspace((previous) => {
-      if (!previous || previous.files.length <= 1) return previous;
-      const nextFiles = previous.files.filter((_, fileIndex) => fileIndex !== index);
-      // -1 means the user is on the file list — deleting must not force a file open.
-      setSelectedFileIndex((current) => (current === -1 ? -1 : Math.max(0, Math.min(current, nextFiles.length - 1))));
-      return { ...previous, files: nextFiles };
-    });
+    const current = filesRef.current;
+    if (current.length <= 1 || !current[index]) return;
+    const deletedPath = current[index].name;
+    const nextFiles = current.filter((_, fileIndex) => fileIndex !== index);
+    filesRef.current = nextFiles;
+    delete baselineRef.current[deletedPath];
+    setDiskBaseline({ ...baselineRef.current });
+    setWorkspace((previous) => previous ? { ...previous, files: nextFiles } : previous);
+    setEditorGroups((previous) => previous.map((group) => ({
+      ...group,
+      tabs: group.tabs.filter((path) => path !== deletedPath),
+      pinnedTabs: group.pinnedTabs.filter((path) => path !== deletedPath),
+      activePath: group.activePath === deletedPath ? null : group.activePath
+    })));
+    setSelectedFileIndex((active) => active === -1 ? -1 : Math.min(active, nextFiles.length - 1));
   }, []);
 
   const renameFile = useCallback(async (from: string, to: string) => {
@@ -1010,6 +1298,12 @@ export function useWorkspace(): UseWorkspaceResult {
       if (previousBaseline !== undefined) baselineRef.current[cleanTo] = previousBaseline;
       setDiskBaseline({ ...baselineRef.current });
       setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
+      setEditorGroups((previous) => previous.map((group) => ({
+        ...group,
+        tabs: group.tabs.map((path) => path === from ? cleanTo : path),
+        pinnedTabs: group.pinnedTabs.map((path) => path === from ? cleanTo : path),
+        activePath: group.activePath === from ? cleanTo : group.activePath
+      })));
       setConflicts((previous) => previous.filter((name) => name !== from));
       setDiskMessage(`Renamed ${from} to ${cleanTo}.`);
       return true;
@@ -1018,6 +1312,81 @@ export function useWorkspace(): UseWorkspaceResult {
       return false;
     }
   }, []);
+
+  /** Explorer "New Folder". Desktop folders only; the bridge refuses dot-names. */
+  const createDirectory = useCallback(async (rawPath: string): Promise<boolean> => {
+    const desktop = getDesktopBridge();
+    const id = desktopWorkspaceIdRef.current;
+    const clean = normalizeWorkspacePath(rawPath);
+    if (!clean || !isEditablePath(clean)) {
+      setDiskMessage('That folder name is not a valid workspace path.');
+      return false;
+    }
+    if (!desktop || !id) {
+      setDiskMessage('Creating folders is available in the desktop app.');
+      return false;
+    }
+    try {
+      await desktop.createDirectory(id, clean);
+      setDiskMessage(`Created folder ${clean}.`);
+      void loadDirectory(clean.split('/').slice(0, -1).join('/'));
+      return true;
+    } catch (error) {
+      setDiskMessage(`Could not create ${clean}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }, [loadDirectory]);
+
+  /**
+   * Removes one file (or empty folder) from disk and its buffer from the editor.
+   * Refuses a buffer with unsaved edits so a delete can never throw away work
+   * that was only ever in the editor.
+   */
+  const deleteWorkspaceEntry = useCallback(async (rawPath: string): Promise<boolean> => {
+    const desktop = getDesktopBridge();
+    const id = desktopWorkspaceIdRef.current;
+    const clean = normalizeWorkspacePath(rawPath);
+    if (!clean || !isEditablePath(clean)) {
+      setDiskMessage('That path is not a valid workspace entry.');
+      return false;
+    }
+    if (!desktop || !id) {
+      setDiskMessage('Deleting files is available in the desktop app.');
+      return false;
+    }
+    const buffer = filesRef.current.find((file) => file.name === clean);
+    if (buffer && buffer.content !== baselineRef.current[clean]) {
+      setDiskMessage(`${clean} has unsaved edits — save or revert it before deleting.`);
+      return false;
+    }
+    try {
+      const removed = await desktop.deletePath(id, clean);
+      if (desktopWorkspaceIdRef.current !== id) return false;
+      const index = filesRef.current.findIndex((file) => file.name === clean);
+      if (index >= 0) {
+        const next = filesRef.current.filter((file) => file.name !== clean);
+        filesRef.current = next;
+        delete baselineRef.current[clean];
+        setDiskBaseline({ ...baselineRef.current });
+        setWorkspace((previous) => (previous ? { ...previous, files: next } : previous));
+        setEditorGroups((previous) => previous.map((group) => ({
+          ...group,
+          tabs: group.tabs.filter((path) => path !== clean),
+          pinnedTabs: group.pinnedTabs.filter((path) => path !== clean),
+          activePath: group.activePath === clean ? null : group.activePath
+        })));
+        setSelectedFileIndex((current) => (current === -1 ? -1 : current > index ? current - 1 : current === index ? Math.min(index, next.length - 1) : current));
+      }
+      setConflicts((previous) => previous.filter((name) => name !== clean));
+      deletedPaths.current.delete(clean);
+      void loadDirectory(clean.split('/').slice(0, -1).join('/'));
+      setDiskMessage(`Deleted ${removed.kind === 'directory' ? 'folder' : 'file'} ${clean}.`);
+      return true;
+    } catch (error) {
+      setDiskMessage(`Could not delete ${clean}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }, [loadDirectory]);
 
   const revertActiveFile = useCallback(async () => {
     const file = filesRef.current[activeFileIndex];
@@ -1038,7 +1407,8 @@ export function useWorkspace(): UseWorkspaceResult {
       baselineRef.current = { ...baselineRef.current, [file.name]: loaded.content };
       setDiskBaseline({ ...baselineRef.current });
       setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
-      setDiskMessage(`${file.name} reverted to the version on disk.`);
+      // Reverting is the user's own action; it does not need a notification.
+      setDiskMessage(null);
     } catch (error) {
       setDiskMessage(`Could not revert ${file.name}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1050,6 +1420,8 @@ export function useWorkspace(): UseWorkspaceResult {
     if (desktop && currentId) void desktop.closeWorkspace(currentId);
     setWorkspace(null);
     setSelectedFileIndex(-1);
+    setEditorGroups([{ tabs: [], activePath: null, pinnedTabs: [] }]);
+    setActiveEditorGroup(0);
     workspaceIdentityRef.current = null;
     filesRef.current = [];
     baselineRef.current = {};
@@ -1075,20 +1447,28 @@ export function useWorkspace(): UseWorkspaceResult {
   // --- restore timeline ------------------------------------------------------
 
   const markCheckpoint = useCallback(
-    async (messageId: string, label: string) => {
-      const current = filesRef.current;
-      if (!workspace || current.length === 0) return;
+    async (messageId: string, label: string): Promise<string | null> => {
+      if (!workspace) return null;
       const meta = await saveCheckpoint({
         workspacePath: workspace.path,
         messageId,
         label,
-        files: current
+        files: filesRef.current
       });
-      if (meta) setCheckpoints((previous) => [meta, ...previous]);
+      if (meta) {
+        activeCheckpointRef.current = { id: meta.id, workspacePath: workspace.path };
+        setCheckpoints((previous) => [meta, ...previous]);
+      }
+      return meta?.id ?? null;
     },
     [workspace]
   );
 
+  /**
+   * Tags the active checkpoint with the paths an apply created, so a rollback can
+   * delete them instead of leaving them behind. Deliberately tied to the checkpoint
+   * taken for this turn: a file the user made themselves is never in this list.
+   */
   const restoreCheckpoint = useCallback(
     async (id: string): Promise<boolean> => {
       const restored = await loadCheckpointFiles(id);
@@ -1104,6 +1484,69 @@ export function useWorkspace(): UseWorkspaceResult {
       return true;
     },
     [activeFileIndex]
+  );
+
+  const previewCheckpointDiff = useCallback(async (id: string): Promise<CheckpointDiff | null> => {
+    const stored = await loadCheckpointFiles(id);
+    return stored ? diffToCheckpoint(filesRef.current, stored) : null;
+  }, []);
+
+  /**
+   * Restores a checkpoint and persists it. Files the run created after the
+   * checkpoint are reported rather than silently left behind, because the
+   * bridge has no delete primitive; every pre-existing file is restored.
+   */
+  const rollbackToCheckpoint = useCallback(
+    async (id: string): Promise<boolean> => {
+      const restored = await loadCheckpointFiles(id);
+      if (!restored) return false;
+      const created = await loadCheckpointCreatedPaths(id);
+
+      const before = filesRef.current;
+      const restoredNames = new Set(restored.map((file) => file.name));
+      const inBuffersOnly = before
+        .map((file) => file.name)
+        .filter((name) => !restoredNames.has(name) && !created.includes(name));
+      const activeName = before[activeFileIndex]?.name;
+
+      filesRef.current = restored;
+      setWorkspace((previous) => (previous ? { ...previous, files: restored } : previous));
+      setSelectedFileIndex(restored.findIndex((file) => file.name === activeName));
+
+      const desktop = getDesktopBridge();
+      const workspaceId = desktopWorkspaceIdRef.current;
+      const leftBehind: string[] = [];
+      if (desktop && workspaceId && created.length > 0) {
+        for (const path of created) {
+          try {
+            await desktop.deletePath(workspaceId, path);
+          } catch {
+            leftBehind.push(path);
+          }
+        }
+      }
+
+      const outcome = restored.length > 0
+        ? await saveFilesAtomic(restored.map((file) => file.name))
+        : { written: 0, failed: false, message: null };
+      const notes = [
+        leftBehind.length > 0
+          ? ` ${leftBehind.length} file${leftBehind.length === 1 ? '' : 's'} created during the run could not be deleted: ${leftBehind.slice(0, 5).join(', ')}.`
+          : created.length > 0
+            ? ` ${created.length} file${created.length === 1 ? '' : 's'} created during the run were removed.`
+            : '',
+        inBuffersOnly.length > 0
+          ? ` ${inBuffersOnly.length} unsaved buffer${inBuffersOnly.length === 1 ? '' : 's'} not in the checkpoint were discarded.`
+          : ''
+      ].join('');
+      setDiskMessage(
+        outcome.failed
+          ? `Rollback could not write every restored file to disk.${notes}`
+          : `Restored to the pre-run checkpoint.${notes}`
+      );
+      return !outcome.failed;
+    },
+    [activeFileIndex, saveFilesAtomic]
   );
 
   // Keep the local snapshot in step with the live workspace so "Recently opened"
@@ -1146,6 +1589,13 @@ export function useWorkspace(): UseWorkspaceResult {
       loadDirectory,
       openFile,
       closeTab,
+      editorGroups,
+      activeEditorGroup,
+      splitEditor,
+      focusEditorGroup,
+      closeEditorGroup,
+      reorderEditorTabs,
+      togglePinnedTab,
       conflicts,
       resolveConflict,
       pendingProposal,
@@ -1173,6 +1623,10 @@ export function useWorkspace(): UseWorkspaceResult {
       createFile,
       deleteFile,
       renameFile,
+      createDirectory,
+      deleteWorkspaceEntry,
+      loadFilesForPatching,
+      noteCheckpointCreated,
       revertActiveFile,
       closeWorkspace,
       canWriteToDisk,
@@ -1186,7 +1640,9 @@ export function useWorkspace(): UseWorkspaceResult {
       saveFilesAtomic,
       checkpoints,
       markCheckpoint,
-      restoreCheckpoint
+      restoreCheckpoint,
+      previewCheckpointDiff,
+      rollbackToCheckpoint
     }),
     [
       directoryPages,
@@ -1194,6 +1650,13 @@ export function useWorkspace(): UseWorkspaceResult {
       loadDirectory,
       openFile,
       closeTab,
+      editorGroups,
+      activeEditorGroup,
+      splitEditor,
+      focusEditorGroup,
+      closeEditorGroup,
+      reorderEditorTabs,
+      togglePinnedTab,
       conflicts,
       resolveConflict,
       pendingProposal,
@@ -1221,6 +1684,10 @@ export function useWorkspace(): UseWorkspaceResult {
       createFile,
       deleteFile,
       renameFile,
+      createDirectory,
+      deleteWorkspaceEntry,
+      loadFilesForPatching,
+      noteCheckpointCreated,
       revertActiveFile,
       closeWorkspace,
       canWriteToDisk,
@@ -1233,7 +1700,9 @@ export function useWorkspace(): UseWorkspaceResult {
       saveFilesAtomic,
       checkpoints,
       markCheckpoint,
-      restoreCheckpoint
+      restoreCheckpoint,
+      previewCheckpointDiff,
+      rollbackToCheckpoint
     ]
   );
 }

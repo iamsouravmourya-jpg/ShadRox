@@ -6,6 +6,9 @@ const MAX_FILES = 400;
 const MAX_ASSETS = 200;
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_ASSET_BYTES = 4 * 1024 * 1024;
+const MAX_SEARCH_ENTRIES = 6000;
+const MAX_PATH_BATCH = 4000;
+const MAX_SEARCH_BYTES = 32 * 1024 * 1024;
 const DIRECTORY_PAGE_SIZE = 200;
 const IGNORED_DIRECTORIES = new Set([
   'node_modules', '.git', 'dist', 'dist_staging', 'dist_desktop', 'build', '.next', 'out', 'coverage',
@@ -66,6 +69,28 @@ function isWithinRoot(root, target) {
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
+/**
+ * The config files the app owns inside a workspace, and the ones it may read
+ * but never write. Everything else under a dot-directory stays invisible to the
+ * editor and the save path.
+ */
+const SHADROX_CONFIG_PATTERN = /^\.shadrox\/(?:automations\.json|plugins\/[a-z0-9][a-z0-9-]{1,63}\/plugin\.json)$/;
+/**
+ * Rules and skills steer the prompt, so the chat needs to read them. They stay
+ * out of `SHADROX_CONFIG_PATTERN`, which is also the write allow-list: a reply
+ * must not be able to rewrite the instructions a folder gives its own assistant.
+ */
+const PROJECT_DOC_PATTERN = /^\.shadrox\/(?:(?:rules|skills)\/[^/]+\.md|cursorrules)$/;
+const CURSOR_RULES = '.cursorrules';
+
+function isShadroxConfigFile(clean) {
+  return SHADROX_CONFIG_PATTERN.test(clean);
+}
+
+function isProjectDocFile(clean) {
+  return PROJECT_DOC_PATTERN.test(clean) || clean === CURSOR_RULES;
+}
+
 function isPreviewAsset(fileName) {
   return Object.hasOwn(ASSET_MIME_TYPES, path.extname(fileName).toLowerCase());
 }
@@ -106,10 +131,13 @@ function hashContent(content) {
 
 async function resolveWorkspaceFile(workspace, relativePath) {
   const clean = normalizeRelativePath(relativePath);
-  if (clean.split('/').some((part) => part.startsWith('.') || IGNORED_DIRECTORIES.has(part))) {
+  const hidden = clean.split('/').some((part) => part.startsWith('.') || IGNORED_DIRECTORIES.has(part));
+  if (hidden && !isShadroxConfigFile(clean) && !isProjectDocFile(clean)) {
     throw new Error('Hidden and generated project files are not available in the editor.');
   }
-  if (isIgnoredFile(path.posix.basename(clean)) || isPreviewAsset(clean)) throw new Error('Binary and generated files cannot be opened as text.');
+  if ((isIgnoredFile(path.posix.basename(clean)) || isPreviewAsset(clean)) && !isProjectDocFile(clean)) {
+    throw new Error('Binary and generated files cannot be opened as text.');
+  }
   const segments = clean.split('/');
   let absolute;
   if (workspace.fileMap.has(clean)) {
@@ -127,6 +155,30 @@ async function resolveWorkspaceFile(workspace, relativePath) {
   if (!stat.isFile()) throw new Error('The requested path is not a regular file.');
   if (stat.size > MAX_TEXT_BYTES) throw new Error('The file exceeds the 2 MiB editor limit.');
   return { clean, realPath: absolute };
+}
+
+/**
+ * Folder mode: every regular file under the root belongs to the workspace, even
+ * one the renderer has never opened. The write path used to refuse those with
+ * "a file already exists but was not part of the opened workspace", which meant
+ * an edit to any file that was not already a tab could never be saved. Adopting
+ * the path here makes the write an ordinary edit; the caller's version check
+ * still protects against clobbering edits made outside ShadRox.
+ */
+async function adoptWorkspaceFile(workspace, clean) {
+  if (workspace.mode !== 'folder' || workspace.fileMap.has(clean)) return;
+  if (clean.split('/').some((part) => part.startsWith('.') || IGNORED_DIRECTORIES.has(part)) ||
+    isIgnoredFile(path.posix.basename(clean)) || isPreviewAsset(clean)) {
+    return;
+  }
+  const segments = clean.split('/');
+  const parent = await resolveWorkspaceDirectory(workspace, segments.slice(0, -1).join('/'));
+  const absolute = path.join(parent, segments.at(-1));
+  const stat = await fs.lstat(absolute).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!stat || stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_TEXT_BYTES) return;
+  const realParent = await fs.realpath(parent);
+  if (!isWithinRoot(workspace.root, realParent) && realParent !== workspace.root) return;
+  workspace.fileMap.set(clean, path.join(realParent, segments.at(-1)));
 }
 
 async function readTextFile(absolutePath, relativePath, files, fileMap) {
@@ -188,18 +240,111 @@ async function listWorkspaceFiles(root, limit = MAX_TREE_FILES) {
       }
       if (!entry.isFile() || isIgnoredFile(entry.name) || isPreviewAsset(entry.name)) continue;
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      files.push({ path: relativePath, size: 0, absolutePath: path.join(directory, entry.name) });
+      if (files.length >= limit) { truncated = true; break; }
+    }
+  }
+  // Sequential `stat` per file added seconds of latency to large folders before
+  // the explorer could paint. Sizes are cosmetic, so stat in bounded batches.
+  const STAT_CONCURRENCY = 32;
+  for (let index = 0; index < files.length; index += STAT_CONCURRENCY) {
+    await Promise.all(
+      files.slice(index, index + STAT_CONCURRENCY).map(async (file) => {
+        try {
+          file.size = (await fs.stat(file.absolutePath)).size;
+        } catch {
+          /* removed between listing and stat */
+        }
+      })
+    );
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return {
+    files: files.map((file) => ({ path: file.path, size: file.size })),
+    truncated
+  };
+}
+
+/**
+ * Prompt-shaping documents: the ones the explorer deliberately hides.
+ *
+ * The tree walk skips dot-paths, so `.shadrox/rules/*.md` and `.cursorrules`
+ * are invisible to `listWorkspaceFiles`; without this the rules engine could
+ * only ever see `SHADROX.md` and `AGENTS.md`. Same symlinks-refused,
+ * ignored-directory walk, plus the one dot-directory the app owns.
+ */
+const PROJECT_DOC_NAMES = new Set(['shadrox.md', 'agents.md', 'qoder.md', '.cursorrules']);
+const PROJECT_DOC_LIMIT = 64;
+
+async function listProjectDocs(root) {
+  const found = [];
+  const queue = [{ directory: root, prefix: '' }];
+  while (queue.length > 0 && found.length < PROJECT_DOC_LIMIT) {
+    const { directory, prefix } = queue.pop();
+    let entries;
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (IGNORED_DIRECTORIES.has(entry.name)) continue;
+        const insideConfig = relative === '.shadrox' || prefix === '.shadrox';
+        if (entry.name.startsWith('.') && !insideConfig) continue;
+        queue.push({ directory: path.join(directory, entry.name), prefix: relative });
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const underShadrox = relative.startsWith('.shadrox/rules/') || relative.startsWith('.shadrox/skills/');
+      if (!underShadrox && !PROJECT_DOC_NAMES.has(entry.name.toLowerCase())) continue;
       let size = 0;
       try {
         size = (await fs.stat(path.join(directory, entry.name))).size;
       } catch {
-        size = 0;
+        continue;
       }
-      files.push({ path: relativePath, size });
-      if (files.length >= limit) { truncated = true; break; }
+      found.push({ path: relative, size });
+      if (found.length >= PROJECT_DOC_LIMIT) break;
     }
   }
-  files.sort((a, b) => a.path.localeCompare(b.path));
-  return { files, truncated };
+  return found.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/**
+ * Glob patterns match workspace-relative POSIX paths. `**` spans directories,
+ * `*` and `?` stop at `/`; a pattern without a slash matches the file name.
+ */
+function globToRegExp(pattern) {
+  let source = '';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === '*') {
+      if (pattern[index + 1] === '*') {
+        index += 1;
+        if (pattern[index + 1] === '/') { index += 1; source += '(?:[^/]+/)*'; continue; }
+        source += '.*';
+        continue;
+      }
+      source += '[^/]*';
+      continue;
+    }
+    if (char === '?') { source += '[^/]'; continue; }
+    source += char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${source}$`);
+}
+
+function matchesInclude(relativePath, patterns) {
+  if (patterns.length === 0) return true;
+  return patterns.some((pattern) => {
+    const scoped = pattern.includes('/');
+    const target = scoped ? relativePath : path.posix.basename(relativePath);
+    if (!pattern.includes('*') && !pattern.includes('?')) return target.includes(pattern);
+    return globToRegExp(pattern).test(target);
+  });
 }
 
 function createWorkspaceAccess() {
@@ -281,6 +426,49 @@ function createWorkspaceAccess() {
     return { name: clean, content, version: hashContent(content) };
   }
 
+  /**
+   * Reads many files in one round trip, skipping the ones that cannot be read
+   * instead of failing the batch. The chat uses this to pull a patch's target
+   * files off disk before editing them — a folder is only ever mounted as paths,
+   * so the file the assistant means to edit is usually not a buffer yet.
+   */
+  async function loadFiles(workspaceId, requestedPaths, rawOptions) {
+    const workspace = workspaces.get(workspaceId);
+    if (!workspace) throw new Error('This desktop workspace is no longer open. Reopen its folder before reading.');
+    const options = rawOptions && typeof rawOptions === 'object' ? rawOptions : {};
+    const maxBytesPerFile = Number.isSafeInteger(options.maxBytesPerFile) && options.maxBytesPerFile > 0
+      ? Math.min(options.maxBytesPerFile, MAX_TEXT_BYTES)
+      : MAX_TEXT_BYTES;
+    const maxTotalBytes = Number.isSafeInteger(options.maxTotalBytes) && options.maxTotalBytes > 0
+      ? options.maxTotalBytes
+      : (Number.isSafeInteger(options.maxBytesPerFile) && options.maxBytesPerFile > 0 ? options.maxBytesPerFile : Number.MAX_SAFE_INTEGER);
+    const paths = Array.isArray(requestedPaths) ? requestedPaths.slice(0, MAX_PATH_BATCH) : [];
+    const files = [];
+    const missing = [];
+    let totalBytes = 0;
+    for (const requested of paths) {
+      try {
+        const { clean, realPath } = await resolveWorkspaceFile(workspace, requested);
+        const stat = await fs.stat(realPath);
+        if (stat.size > maxBytesPerFile) {
+          missing.push({ path: clean, reason: `larger than the ${maxBytesPerFile} byte limit for this read` });
+          continue;
+        }
+        if (totalBytes + stat.size > maxTotalBytes) {
+          missing.push({ path: clean, reason: 'the byte budget for this read is full' });
+          continue;
+        }
+        const content = await fs.readFile(realPath, 'utf8');
+        totalBytes += stat.size;
+        workspace.fileMap.set(clean, realPath);
+        files.push({ name: clean, content, version: hashContent(content) });
+      } catch (error) {
+        missing.push({ path: String(requested), reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return { files, missing };
+  }
+
   async function listDirectory(workspaceId, relativePath = '', cursor = 0) {
     const workspace = workspaces.get(workspaceId);
     if (!workspace || workspace.mode !== 'folder') throw new Error('Directory browsing requires an opened folder workspace.');
@@ -328,6 +516,64 @@ function createWorkspaceAccess() {
     workspace.fileMap.set(cleanTo, target);
     const content = await fs.readFile(target, 'utf8');
     return { name: cleanTo, content, version: hashContent(content) };
+  }
+
+  /**
+   * Explorer "New Folder". Dot-names and generated directories are refused for
+   * the same reason they are never listed: the editor must not write into the
+   * places git, node_modules and build outputs live.
+   */
+  async function createDirectory(workspaceId, relativePath) {
+    const workspace = workspaces.get(workspaceId);
+    if (!workspace) throw new Error('This desktop workspace is no longer open. Reopen its folder first.');
+    if (workspace.mode !== 'folder') throw new Error('Folders can only be created in a folder workspace.');
+    const clean = normalizeRelativePath(relativePath);
+    if (clean.split('/').some((part) => part.startsWith('.') || IGNORED_DIRECTORIES.has(part))) {
+      throw new Error('Hidden and generated directories cannot be created.');
+    }
+    const parts = clean.split('/');
+    const parent = await resolveWorkspaceDirectory(workspace, parts.slice(0, -1).join('/'), true);
+    const target = path.join(parent, parts.at(-1));
+    const existing = await fs.lstat(target).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (existing) throw new Error('A folder already exists at that path.');
+
+    await fs.mkdir(target);
+    const real = await fs.realpath(target);
+    if (!isWithinRoot(workspace.root, real)) {
+      await fs.rmdir(real).catch(() => {});
+      throw new Error('The new folder resolves outside the opened workspace.');
+    }
+    return { path: clean };
+  }
+
+  /**
+   * Unlinks one regular file, or removes an empty directory. Non-empty folders
+   * are refused rather than recursed: a mistyped path must never take a subtree
+   * with it, and the explorer has no undo.
+   */
+  async function deletePath(workspaceId, relativePath) {
+    const workspace = workspaces.get(workspaceId);
+    if (!workspace) throw new Error('This desktop workspace is no longer open. Reopen its folder before deleting.');
+    const clean = normalizeRelativePath(relativePath);
+    if (clean.split('/').some((part) => part.startsWith('.') || IGNORED_DIRECTORIES.has(part))) {
+      throw new Error('Hidden and generated project directories cannot be deleted.');
+    }
+    const parts = clean.split('/');
+    const parent = await resolveWorkspaceDirectory(workspace, parts.slice(0, -1).join('/'));
+    const target = path.join(parent, parts.at(-1));
+    const stat = await fs.lstat(target).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (!stat) throw new Error('That path is no longer in the workspace.');
+    if (stat.isSymbolicLink()) throw new Error('Symbolic links are not deleted from the workspace.');
+
+    if (stat.isDirectory()) {
+      if ((await fs.readdir(target)).length > 0) throw new Error('Only an empty folder can be deleted.');
+      await fs.rmdir(target);
+      return { path: clean, kind: 'directory' };
+    }
+    if (!stat.isFile()) throw new Error('Only files and empty folders can be deleted.');
+    await fs.unlink(target);
+    workspace.fileMap.delete(clean);
+    return { path: clean, kind: 'file' };
   }
 
   async function searchFiles(workspaceId, rawQuery, rawLimit) {
@@ -386,6 +632,134 @@ function createWorkspaceAccess() {
     return results;
   }
 
+  /**
+   * Bounded workspace-wide search used by the agent tool loop. Reads every
+   * regular text file once, so it is capped by directory entries, bytes and
+   * matches; a cap hit is reported as `truncated` rather than an error.
+   */
+  async function searchContent(workspaceId, rawOptions) {
+    const workspace = workspaces.get(workspaceId);
+    if (!workspace) throw new Error('This desktop workspace is no longer open.');
+    const options = rawOptions && typeof rawOptions === 'object' ? rawOptions : {};
+    const query = typeof options.query === 'string' ? options.query : '';
+    if (query.length < 2) return { matches: [], truncated: false, filesScanned: 0, error: 'A search query needs at least 2 characters.' };
+    const limit = Math.min(Math.max(Number.isSafeInteger(options.limit) ? options.limit : 60, 1), 200);
+    const namesOnly = options.namesOnly === true;
+    const include = (Array.isArray(options.include)
+      ? options.include
+      : typeof options.include === 'string' ? [options.include] : [])
+      .filter((pattern) => typeof pattern === 'string' && pattern.trim().length > 0)
+      .map((pattern) => pattern.trim().replace(/\\/g, '/'));
+
+    let regex = null;
+    if (options.regex === true) {
+      try {
+        regex = new RegExp(query, 'gi');
+      } catch (error) {
+        return { matches: [], truncated: false, filesScanned: 0, error: `Invalid regular expression: ${error instanceof Error ? error.message : String(error)}` };
+      }
+    }
+    const lowerQuery = query.toLowerCase();
+    const findIn = (text) => {
+      if (regex) {
+        regex.lastIndex = 0;
+        const match = regex.exec(text);
+        return match ? { index: match.index, length: match[0].length } : null;
+      }
+      const index = text.toLowerCase().indexOf(lowerQuery);
+      return index < 0 ? null : { index, length: query.length };
+    };
+
+    const matches = [];
+    let visited = 0;
+    let bytesRead = 0;
+    let capped = false;
+    const pushLineMatches = (childPath, content) => {
+      const lines = content.split(/\r?\n/);
+      for (let index = 0; index < lines.length && matches.length < limit; index += 1) {
+        const hit = findIn(lines[index]);
+        if (!hit) continue;
+        const start = Math.max(0, hit.index - 60);
+        matches.push({
+          path: childPath,
+          line: index + 1,
+          column: hit.index + 1,
+          preview: lines[index].slice(start, hit.index + hit.length + 140).trim().slice(0, 240)
+        });
+      }
+      return matches.length >= limit;
+    };
+
+    if (workspace.mode !== 'folder') {
+      for (const [childPath, absolute] of workspace.fileMap) {
+        if (!matchesInclude(childPath, include)) continue;
+        if (namesOnly) {
+          visited += 1;
+          if (findIn(childPath)) matches.push({ path: childPath, line: 0, column: 0, preview: '' });
+          if (matches.length >= limit) break;
+          continue;
+        }
+        let content;
+        try {
+          const stat = await fs.stat(absolute);
+          if (stat.size > MAX_TEXT_BYTES) continue;
+          bytesRead += stat.size;
+          visited += 1;
+          content = await fs.readFile(absolute, 'utf8');
+        } catch {
+          continue;
+        }
+        if (content.includes('\u0000')) continue;
+        if (pushLineMatches(childPath, content)) { capped = true; break; }
+      }
+      return { matches, truncated: capped, filesScanned: visited, error: null };
+    }
+
+    const pending = [''];
+
+    while (pending.length > 0 && matches.length < limit) {
+      const relative = pending.pop();
+      let entries;
+      try {
+        entries = await fs.readdir(relative ? path.join(workspace.root, relative) : workspace.root, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (visited >= MAX_SEARCH_ENTRIES) { capped = true; break; }
+        if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+        const childPath = relative ? `${relative}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          if (!IGNORED_DIRECTORIES.has(entry.name)) pending.push(childPath);
+          continue;
+        }
+        if (!entry.isFile() || isIgnoredFile(entry.name) || isPreviewAsset(childPath)) continue;
+        if (!matchesInclude(childPath, include)) continue;
+        if (namesOnly) {
+          visited += 1;
+          if (findIn(childPath)) matches.push({ path: childPath, line: 0, column: 0, preview: '' });
+          if (matches.length >= limit) { capped = true; break; }
+          continue;
+        }
+        let content;
+        try {
+          const absolute = path.join(workspace.root, childPath);
+          const stat = await fs.stat(absolute);
+          if (stat.size > MAX_TEXT_BYTES) continue;
+          if (bytesRead + stat.size > MAX_SEARCH_BYTES) { capped = true; break; }
+          bytesRead += stat.size;
+          visited += 1;
+          content = await fs.readFile(absolute, 'utf8');
+        } catch {
+          continue;
+        }
+        if (content.includes('\u0000')) continue;
+        if (pushLineMatches(childPath, content)) { capped = true; break; }
+      }
+    }
+    return { matches: matches.slice(0, limit), truncated: capped, filesScanned: visited, error: null };
+  }
+
   async function saveFiles(workspaceId, requestedFiles) {
     const workspace = workspaces.get(workspaceId);
     if (!workspace) throw new Error('This desktop workspace is no longer open. Reopen its folder before saving.');
@@ -403,6 +777,12 @@ function createWorkspaceAccess() {
         }
 
         const relativePath = normalizeRelativePath(file.name);
+        // Reading a rule is prompt input; letting a reply write one back would
+        // hand the model a place to leave instructions for its next turn.
+        if (isProjectDocFile(relativePath)) {
+          throw new Error('Rule and skill documents are read-only in ShadRox.');
+        }
+        await adoptWorkspaceFile(workspace, relativePath);
         const hadMappedPath = workspace.fileMap.has(relativePath);
         if (!hadMappedPath) {
           if (workspace.mode !== 'folder') {
@@ -426,7 +806,7 @@ function createWorkspaceAccess() {
           if (existing.isSymbolicLink() || !existing.isFile()) {
             throw new Error('The destination is not a regular file.');
           }
-          if (!workspace.fileMap.has(relativePath)) {
+          if (!workspace.fileMap.has(relativePath) && !isShadroxConfigFile(relativePath)) {
             throw new Error('A file already exists at this path but was not part of the opened workspace.');
           }
         } catch (error) {
@@ -473,6 +853,7 @@ function createWorkspaceAccess() {
       if (clean.split('/').some((part) => part.startsWith('.') || IGNORED_DIRECTORIES.has(part)) || isIgnoredFile(path.posix.basename(clean)) || isPreviewAsset(clean)) {
         throw new Error(`${clean} is not an editable workspace file.`);
       }
+      await adoptWorkspaceFile(workspace, clean);
       let target;
       if (workspace.fileMap.has(clean)) {
         target = (await resolveWorkspaceFile(workspace, clean)).realPath;
@@ -482,7 +863,7 @@ function createWorkspaceAccess() {
         const parent = await resolveWorkspaceDirectory(workspace, parts.slice(0, -1).join('/'));
         target = path.join(parent, parts.at(-1));
         const existing = await fs.lstat(target).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
-        if (existing?.isSymbolicLink() || (existing && !workspace.fileMap.has(clean))) throw new Error(`A file already exists at ${clean}.`);
+        if (existing?.isSymbolicLink() || (existing && !workspace.fileMap.has(clean))) throw new Error(`${clean} already exists but is not an editable text file in this workspace.`);
       }
       const current = await fs.readFile(target, 'utf8').catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
       const version = current === null ? null : hashContent(current);
@@ -551,11 +932,18 @@ function createWorkspaceAccess() {
     return workspaces.get(workspaceId) ?? null;
   }
 
+  /** Rule and skill documents the explorer hides; empty for a single-file workspace. */
+  async function projectDocs(workspaceId) {
+    const workspace = workspaces.get(workspaceId);
+    if (!workspace || workspace.mode !== 'folder') return [];
+    return listProjectDocs(workspace.root);
+  }
+
   function closeWorkspace(workspaceId) {
     workspaces.delete(workspaceId);
   }
 
-  return { openFolder, openFiles, listDirectory, readFile, renameFile, searchFiles, saveFiles, stageFiles, commitTransaction, discardTransaction, getWorkspace, closeWorkspace };
+  return { openFolder, openFiles, listDirectory, readFile, loadFiles, projectDocs, renameFile, createDirectory, deletePath, searchFiles, searchContent, saveFiles, stageFiles, commitTransaction, discardTransaction, getWorkspace, closeWorkspace };
 }
 
 module.exports = { createWorkspaceAccess, normalizeRelativePath, isWithinRoot };

@@ -1,6 +1,13 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { resolveTerminalPlan, agentEnvironment, isCredentialVariable } = require('./terminal-modes.cjs');
+const {
+  resolveTerminalPlan,
+  agentEnvironment,
+  isCredentialVariable,
+  clampTerminalSize,
+  normalizeTerminalSessionKey,
+  isSafeExternalUrl
+} = require('./terminal-modes.cjs');
 
 const WINDOWS_ENV = {
   SystemRoot: 'C:\\Windows',
@@ -87,4 +94,41 @@ test('credential detection survives camelCase and glued variable names', () => {
   });
   assert.equal(agent.env.Geminiapikey, undefined);
   assert.equal(agent.env.PATH, '/usr/bin');
+});
+
+test('terminal sizes are clamped into the range node-pty accepts', () => {
+  assert.deepEqual(clampTerminalSize(120, 40), { cols: 120, rows: 40 });
+  assert.deepEqual(clampTerminalSize(2, 1), { cols: 20, rows: 5 });
+  assert.deepEqual(clampTerminalSize(9999, 9999), { cols: 400, rows: 200 });
+  assert.deepEqual(clampTerminalSize(undefined, undefined), { cols: 100, rows: 30 });
+  assert.deepEqual(clampTerminalSize('not-a-number', NaN), { cols: 100, rows: 30 });
+  assert.deepEqual(clampTerminalSize(-5, 0), { cols: 100, rows: 30 });
+  assert.deepEqual(clampTerminalSize(81.9, 24.4), { cols: 81, rows: 24 });
+});
+
+test('renderer tab keys are accepted only as plain tokens', () => {
+  assert.equal(normalizeTerminalSessionKey('aB3-_xyz'), 'aB3-_xyz');
+  assert.equal(normalizeTerminalSessionKey('2f1c9a7e-6b5d-4c3b-9a1f-0d2e4c6a8b0c'), '2f1c9a7e-6b5d-4c3b-9a1f-0d2e4c6a8b0c');
+  assert.equal(normalizeTerminalSessionKey('short'), null);
+  assert.equal(normalizeTerminalSessionKey('has spaces'), null);
+  assert.equal(normalizeTerminalSessionKey('../../etc/passwd'), null);
+  assert.equal(normalizeTerminalSessionKey('x'.repeat(100)), null);
+  assert.equal(normalizeTerminalSessionKey(undefined), null);
+  assert.equal(normalizeTerminalSessionKey(42), null);
+});
+
+test('only a plain http(s) url may leave the app through the browser', () => {
+  assert.equal(isSafeExternalUrl('https://example.com/docs#install'), true);
+  assert.equal(isSafeExternalUrl('http://localhost:3000'), true);
+  assert.equal(isSafeExternalUrl('https://sub.example.co.uk/a/b?c=d'), true);
+  assert.equal(isSafeExternalUrl('file:///C:/Windows/system32/cmd.exe'), false);
+  assert.equal(isSafeExternalUrl('powershell://Invoke-Command'), false);
+  assert.equal(isSafeExternalUrl('javascript:alert(1)'), false);
+  assert.equal(isSafeExternalUrl('mailto:someone@example.com'), false);
+  assert.equal(isSafeExternalUrl('\\example.com\\share\\file.exe'), false);
+  assert.equal(isSafeExternalUrl('https://user:pass@example.com'), false);
+  assert.equal(isSafeExternalUrl('https://example.com/ space'), false);
+  assert.equal(isSafeExternalUrl(' https://example.com'), false);
+  assert.equal(isSafeExternalUrl(''), false);
+  assert.equal(isSafeExternalUrl(null), false);
 });

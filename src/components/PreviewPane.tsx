@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
-  ChevronRight,
-  ExternalLink,
   FolderOpen,
   Laptop,
   Loader2,
   Maximize2,
+  Minimize2,
   RefreshCw,
   Play,
   Square,
@@ -20,6 +19,7 @@ import type { ViewportSize } from '../lib/types';
 import type { PreviewDocument } from '../lib/preview';
 import { parseRevealMessage, type RevealSourceTarget } from '../lib/previewSource';
 import type { DesktopPreviewOutput, DesktopPreviewState, PreviewProjectCandidate } from '../lib/desktop';
+import { BackendPreview } from './BackendPreview';
 
 interface PreviewPaneProps {
   document: PreviewDocument | null;
@@ -50,6 +50,18 @@ interface PreviewPaneProps {
    * served HTML file, so the host can open it and reveal the line.
    */
   onRevealSource?: (target: RevealSourceTarget) => void;
+  /**
+   * Enables the backend preview companion. Omit it to keep the original
+   * single-preview layout untouched.
+   */
+  workspaceId?: string | null;
+  /** Mount the backend companion; false keeps runtime detection asleep. */
+  backendEnabled?: boolean;
+  /** Current full-screen state, controlled by the host. */
+  fullscreen?: boolean;
+  onToggleFullscreen?: () => void;
+  /** Always present so the pane can be closed without the keyboard. */
+  onClose?: () => void;
 }
 
 interface ConsoleEntry {
@@ -101,7 +113,12 @@ export function PreviewPane({
   autoReload = true,
   onToggleAutoReload,
   lastReloadAt = null,
-  onRevealSource
+  onRevealSource,
+  workspaceId = null,
+  backendEnabled = true,
+  fullscreen = false,
+  onToggleFullscreen,
+  onClose
 }: PreviewPaneProps) {
   const [manualReloadKey, setManualReloadKey] = useState(0);
   const effectiveReloadKey = `${reloadKey}:${manualReloadKey}`;
@@ -123,6 +140,15 @@ export function PreviewPane({
         timestamp: new Date().toLocaleTimeString('en-US', { hour12: false })
       }))
     : logs;
+  const previewStartMessage = [...localPreviewLogs].reverse().find((entry) => entry.type === 'status')?.message;
+
+  // Drives the split layout. BackendPreview owns runtime detection and reports
+  // whether a backend plan exists; the frontend preview stays full-width until
+  // one is found.
+  const [backendAvailable, setBackendAvailable] = useState(false);
+  useEffect(() => {
+    setBackendAvailable(false);
+  }, [workspaceId]);
 
   useEffect(() => {
     if (!bundleError) return;
@@ -132,10 +158,8 @@ export function PreviewPane({
   }, [bundleError]);
 
   useEffect(() => {
-    if (localPreviewState.status === 'error' || localPreviewState.status === 'starting') {
-      setIsConsoleOpen(true);
-    }
-  }, [localPreviewState]);
+    if (localPreviewState.status === 'error') setIsConsoleOpen(true);
+  }, [localPreviewState.status]);
 
   // Listen to iframe error and console bridge
   useEffect(() => {
@@ -204,19 +228,12 @@ export function PreviewPane({
     };
   }, [document, localPreviewState.status, localPreviewState.url, effectiveReloadKey, viewport]);
 
-  const handleOpenNewWindow = () => {
-    if (!document) return;
-    const blob = new Blob([document.html], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank');
-  };
-
   const previewAddress = splitPreviewAddress(
     localPreviewState.status === 'ready' ? localPreviewState.url : null
   );
 
-  return (
-    <div className="flex-1 min-h-0 flex flex-col bg-ink-950">
+  const previewSurface = (
+    <div className="@container flex-1 min-h-0 flex flex-col bg-ink-950">
       {/* Top Navigation & Controls Toolbar */}
       <div className="h-10 shrink-0 flex items-center justify-between px-3 border-b border-white/[0.07] bg-ink-950/50 gap-2">
         {/* Left: Stack info and live address bar */}
@@ -261,8 +278,8 @@ export function PreviewPane({
 
           {/* Sandbox indicator. There is no server to navigate to, so this shows
               what is currently mounted instead of pretending to be a URL bar. */}
-          <div className="hidden md:flex items-center flex-1 min-w-0 rounded-lg border border-white/[0.09] bg-white/[0.04] px-2.5 py-1 text-[11px] font-mono text-neutral-400">
-            <span className="text-neutral-600 mr-1 select-none">
+          <div className="hidden @md:flex items-center flex-1 min-w-0 rounded-lg border border-white/[0.09] bg-white/[0.04] px-2.5 py-1 text-[11px] font-mono text-neutral-400">
+            <span className="text-neutral-600 mr-1 select-none whitespace-nowrap">
               {previewAddress?.protocol ?? 'shadrox://'}
             </span>
             <span className="truncate text-neutral-300">
@@ -284,14 +301,14 @@ export function PreviewPane({
             }`}
           >
             <Terminal className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Console</span>
+            <span className="hidden @sm:inline">Console</span>
             {displayedLogs.length > 0 && (
               <span className="ml-0.5 text-[10px] text-neutral-400">({displayedLogs.length})</span>
             )}
           </button>
 
           {/* Viewport size buttons */}
-          <div className="flex items-center gap-0.5 rounded-lg border border-white/[0.09] bg-white/[0.02] p-0.5">
+          <div className="hidden @sm:flex items-center gap-0.5 rounded-lg border border-white/[0.09] bg-white/[0.02] p-0.5">
             {VIEWPORT_SIZES.map((size) => {
               const Icon = VIEWPORT_ICONS[size];
               const isActive = size === viewport;
@@ -331,11 +348,12 @@ export function PreviewPane({
               ? <RefreshCw className="w-3.5 h-3.5" />
               : <Play className="w-3.5 h-3.5" />}
           </button>
-          {localPreviewAvailable && localPreviewState.status === 'ready' && (
+          {localPreviewAvailable && (localPreviewState.status === 'ready' || localPreviewState.status === 'starting') && (
             <button
               type="button"
               onClick={onStopLocalPreview}
-              title="Stop Local Project"
+              title={localPreviewState.status === 'starting' ? 'Cancel project startup' : 'Stop Local Project'}
+              aria-label={localPreviewState.status === 'starting' ? 'Cancel project startup' : 'Stop local project'}
               className="rounded-lg border border-white/[0.09] p-1.5 text-neutral-500 transition-colors hover:border-red-500/40 hover:text-red-400 cursor-pointer"
             >
               <Square className="w-3.5 h-3.5" />
@@ -344,13 +362,25 @@ export function PreviewPane({
 
           <button
             type="button"
-            onClick={handleOpenNewWindow}
-            title="Open in Full Window"
-            disabled={!document || localPreviewAvailable}
-            className="rounded-lg border border-white/[0.09] p-1.5 text-neutral-500 transition-colors hover:border-white/[0.15] hover:text-white disabled:opacity-40 cursor-pointer"
+            onClick={onToggleFullscreen}
+            title={fullscreen ? 'Exit full screen (Esc)' : 'Full screen preview'}
+            aria-pressed={fullscreen}
+            className="rounded-lg border border-white/[0.09] p-1.5 text-neutral-500 transition-colors hover:border-white/[0.15] hover:text-white cursor-pointer"
           >
-            <ExternalLink className="w-3.5 h-3.5" />
+            {fullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
           </button>
+
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              title="Close preview"
+              aria-label="Close preview"
+              className="rounded-lg border border-white/[0.09] p-1.5 text-neutral-500 transition-colors hover:border-white/[0.15] hover:text-white cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -417,7 +447,7 @@ export function PreviewPane({
                       </span>
                       <span className="mt-1 block text-[10px] text-neutral-500">
                         {project.missingDependencies.length > 0
-                          ? `${project.missingDependencies.length} dependency package(s) need installation after approval`
+                          ? `${project.missingDependencies.length} dependency package(s) will be installed when it starts`
                           : 'Dependencies appear to be installed'}
                       </span>
                     </>
@@ -433,14 +463,20 @@ export function PreviewPane({
           <div className="self-center px-6 py-8 text-center">
             <Loader2 className="w-6 h-6 text-violet-300 mx-auto animate-spin" />
             <p className="mt-3 text-xs text-neutral-300 font-medium">Starting project inside ShadRox...</p>
-            <p className="mt-1 text-[11px] text-neutral-500">Installing dependencies if needed, then launching its local server</p>
+            <p className="mt-1 max-w-xl text-[11px] text-neutral-500">
+              {previewStartMessage || 'Installing dependencies if needed, then launching its local server'}
+            </p>
           </div>
         ) : localPreviewAvailable ? (
           <div className="max-w-md self-center px-6 py-8 text-center">
             <Play className="w-5 h-5 text-violet-300 mx-auto" />
-            <p className="mt-3 text-xs text-neutral-200 font-medium">Run this project locally in ShadRox</p>
+            <p className="mt-3 text-xs text-neutral-200 font-medium">
+              {localPreviewState.status === 'error' ? 'Preview failed to start' : 'Run this project locally in ShadRox'}
+            </p>
             <p className="mt-2 text-[11px] text-neutral-500">
-              ShadRox will start the project server here. If dependencies are missing, it can install them after you approve the run.
+              {localPreviewState.status === 'error'
+                ? 'The project server reported the error below. Fix it in the code and run the preview again.'
+                : 'ShadRox starts the project server automatically and installs any missing dependencies before it runs.'}
             </p>
             {localPreviewState.status === 'error' && (
               <pre className="mt-3 rounded-xl border border-red-500/25 bg-red-500/[.06] p-3 text-left font-mono text-[11px] leading-relaxed text-red-300 whitespace-pre-wrap break-words">
@@ -543,6 +579,48 @@ export function PreviewPane({
           </div>
         </div>
       )}
+    </div>
+  );
+
+  // No workspace id means no backend companion exists: keep the original
+  // single-preview tree exactly as it was. Runtime detection is also skipped
+  // until a preview run is actually engaged; mounting it on every folder open
+  // was a measurable part of the startup stall.
+  if (!workspaceId || !backendEnabled) return previewSurface;
+
+  return (
+    <div
+      className={`flex-1 min-h-0 bg-ink-950 ${
+        backendAvailable
+          ? 'grid grid-cols-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-2 lg:grid-rows-1'
+          : 'flex flex-col'
+      }`}
+    >
+      <div className="flex-1 min-h-0 min-w-0 flex flex-col">
+        {backendAvailable && (
+          <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-white/[0.06] bg-ink-950 px-3 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+            <Laptop className="w-3 h-3" aria-hidden="true" />
+            Frontend
+          </div>
+        )}
+        {previewSurface}
+      </div>
+      {/* Kept mounted so runtime detection keeps running, but hidden until a
+          backend plan exists — otherwise the empty placeholder bar eats space. */}
+      <div
+        className={`min-w-0 ${
+          backendAvailable
+            ? 'min-h-0 flex flex-col border-t border-white/[0.06] lg:border-l lg:border-t-0'
+            : 'hidden'
+        }`}
+      >
+        <BackendPreview
+          key={workspaceId}
+          workspaceId={workspaceId}
+          onRevealSource={onRevealSource}
+          onAvailabilityChange={setBackendAvailable}
+        />
+      </div>
     </div>
   );
 }

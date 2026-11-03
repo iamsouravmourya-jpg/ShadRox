@@ -14,8 +14,13 @@ const {
   getPackageManager,
   getPreviewScript,
   getRunArgs,
+  getScriptPort,
+  findAvailableDevPort,
+  findExistingNextDevServer,
+  isPortBusy,
   hasHmrSupport,
-  parsePreviewUrl
+  parsePreviewUrl,
+  resolveExecutable
 } = require('./preview-runtime.cjs');
 
 test('selects package manager and local preview script deterministically', async (context) => {
@@ -42,8 +47,36 @@ test('selects package manager and local preview script deterministically', async
   assert.equal(getPreviewScript({ scripts: { test: 'node test.js' } }), null);
 });
 
-test('binds recognized web dev servers to localhost and extracts local preview URLs', () => {
-  assert.deepEqual(
+test('resolves runtime commands from PATH and never from the workspace', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-root-'));
+  const bin = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-bin-'));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-outside-'));
+  const originalPath = process.env.PATH;
+  context.after(async () => {
+    process.env.PATH = originalPath;
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(bin, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  const fakePython = path.join(bin, `python${ext}`);
+  const plantedPython = path.join(root, `python${ext}`);
+  await fs.writeFile(fakePython, '');
+  await fs.writeFile(plantedPython, '');
+  process.env.PATH = [root, bin].join(path.delimiter);
+
+  assert.equal(resolveExecutable('python', { root, cwd: root })?.toLowerCase(), fakePython.toLowerCase());
+  assert.equal(resolveExecutable('missing-runtime', { root, cwd: root }), null);
+
+  // A Maven wrapper is project code, but only the one inside the chosen cwd.
+  const wrapper = path.join(root, process.platform === 'win32' ? 'mvnw.cmd' : 'mvnw');
+  await fs.writeFile(wrapper, '');
+  assert.equal(resolveExecutable('mvnw', { root, cwd: root })?.toLowerCase(), wrapper.toLowerCase());
+  assert.equal(resolveExecutable('mvnw', { root, cwd: outside }), null);
+});
+
+test('binds recognized web dev servers to localhost and extracts local preview URLs', () => {  assert.deepEqual(
     getRunArgs('npm', { name: 'dev' }, 'vite --port 5173'),
     ['run', 'dev', '--', '--host', '127.0.0.1']
   );
@@ -57,6 +90,180 @@ test('binds recognized web dev servers to localhost and extracts local preview U
   assert.equal(hasHmrSupport('vite --port 5173'), true);
   assert.equal(hasHmrSupport('next dev'), true);
   assert.equal(hasHmrSupport('node server.js'), false);
+});
+
+test('relocates a dev server whose pinned port is already taken', async () => {
+  assert.equal(getScriptPort('next dev -p 3000 -H 0.0.0.0'), 3000);
+  assert.equal(getScriptPort('vite --port 5173'), 5173);
+  assert.equal(getScriptPort('PORT=4000 node server.js'), 4000);
+  assert.equal(getScriptPort('next dev'), null);
+
+  // The override is appended after the script's own flags so it wins.
+  assert.deepEqual(
+    getRunArgs('npm', { name: 'dev' }, 'next dev -p 3000', 3001),
+    ['run', 'dev', '--', '--hostname', '127.0.0.1', '-p', '3001']
+  );
+  assert.deepEqual(
+    getRunArgs('npm', { name: 'dev' }, 'vite', 5174),
+    ['run', 'dev', '--', '--host', '127.0.0.1', '--port', '5174']
+  );
+
+  const net = require('node:net');
+  const squatter = net.createServer();
+  await new Promise((resolve) => squatter.listen(0, '127.0.0.1', resolve));
+  const takenPort = squatter.address().port;
+  assert.equal(await isPortBusy(takenPort), true);
+  await new Promise((resolve) => squatter.close(resolve));
+});
+
+test('skips occupied fallback ports when relocating a pinned dev server', async () => {
+  assert.equal(
+    await findAvailableDevPort(new Set([3000]), async (port) => port === 3001),
+    3002
+  );
+});
+
+test('recognizes an already-running Next server only for the same project root', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-next-lock-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  const port = await new Promise((resolve, reject) => {
+    const server = http.createServer((_request, response) => response.end('existing project'));
+    context.after(() => new Promise((close) => server.close(close)));
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+  });
+  const output =
+    `Another next dev server is already running. - Local: http://127.0.0.1:${port} ` +
+    `- PID: 1234 - Dir: ${root} - Log: .next\\dev\\logs\\next-development.log`;
+  const otherRoot = path.join(root, 'another-project');
+
+  assert.equal(await findExistingNextDevServer(output, root), `http://127.0.0.1:${port}`);
+  assert.equal(await findExistingNextDevServer(output, otherRoot), null);
+});
+
+test('reuses a live Next server for the same project without stopping it', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-next-reuse-'));
+  const server = http.createServer((_request, response) => response.end('existing project'));
+  context.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const port = server.address().port;
+  await fs.writeFile(
+    path.join(root, 'package.json'),
+    JSON.stringify({ scripts: { dev: `next dev -p ${port}` } })
+  );
+  const lockDirectory = path.join(root, '.next', 'dev');
+  await fs.mkdir(lockDirectory, { recursive: true });
+  await fs.writeFile(path.join(lockDirectory, 'lock'), JSON.stringify({
+    pid: process.pid,
+    port,
+    hostname: '127.0.0.1',
+    appUrl: `http://127.0.0.1:${port}`,
+    startedAt: Date.now()
+  }));
+  let spawnCount = 0;
+  const output = [];
+  const runtime = createPreviewRuntime({
+    readyTimeout: 2000,
+    onOutput: (entry) => output.push(entry),
+    spawnProcess: () => {
+      spawnCount += 1;
+      const child = new EventEmitter();
+      child.pid = 1234;
+      child.exitCode = null;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = () => true;
+      setImmediate(() => {
+        child.stderr.write(
+          `You can access the existing server at http://127.0.0.1:${port}, ` +
+          `or run taskkill /PID 1234 /F to stop it and start a new one.`
+        );
+        child.exitCode = 1;
+        child.emit('close', 1);
+      });
+      return child;
+    }
+  });
+
+  const result = await runtime.start('next-reuse-workspace', root);
+  assert.equal(result.url, `http://127.0.0.1:${port}`);
+  assert.equal(spawnCount, 1);
+  assert.ok(output.some((entry) => entry.type === 'ready' && entry.message.includes('Reusing the existing project server')));
+  assert.equal(await runtime.stop('next-reuse-workspace'), false);
+  assert.equal(await (await fetch(result.url)).text(), 'existing project');
+});
+
+test('does not mistake a fallback-port response for a Next server that then exits on its lock', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-next-fallback-'));
+  const existingServer = http.createServer((_request, response) => response.end('existing project'));
+  let transientServer;
+  context.after(async () => {
+    await Promise.all([existingServer, transientServer].filter(Boolean).map(
+      (server) => new Promise((resolve) => server.close(resolve))
+    ));
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  await new Promise((resolve, reject) => {
+    existingServer.once('error', reject);
+    existingServer.listen(0, '127.0.0.1', resolve);
+  });
+  const port = existingServer.address().port;
+  await fs.writeFile(
+    path.join(root, 'package.json'),
+    JSON.stringify({ scripts: { dev: `next dev -p ${port}` } })
+  );
+  const lockDirectory = path.join(root, '.next', 'dev');
+  await fs.mkdir(lockDirectory, { recursive: true });
+  await fs.writeFile(path.join(lockDirectory, 'lock'), JSON.stringify({
+    pid: process.pid,
+    port,
+    hostname: '127.0.0.1',
+    appUrl: `http://127.0.0.1:${port}`,
+    startedAt: Date.now()
+  }));
+  const output = [];
+  const runtime = createPreviewRuntime({
+    readyTimeout: 2000,
+    onOutput: (entry) => output.push(entry),
+    spawnProcess: (_command, args) => {
+      const child = new EventEmitter();
+      child.pid = 1234;
+      child.exitCode = null;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = () => true;
+      const portArgs = [...args.join(' ').matchAll(/(?:^|\s)-p\s+(\d+)/g)];
+      const fallbackPort = Number(portArgs.at(-1)?.[1]);
+      transientServer = http.createServer((_request, response) => response.end('transient fallback'));
+      transientServer.listen(fallbackPort, '127.0.0.1', () => {
+        child.stdout.write(`Local: http://127.0.0.1:${fallbackPort}/\nReady in 2.2s\n`);
+        setTimeout(() => {
+          child.stderr.write(
+            `Another next dev server is already running. - Local: http://127.0.0.1:${port} ` +
+            `- PID: 1234 - Dir: ${root} - Log: .next\\dev\\logs\\next-development.log`
+          );
+          child.exitCode = 1;
+          child.emit('close', 1);
+        }, 75);
+      });
+      return child;
+    }
+  });
+
+  const result = await runtime.start('next-fallback-workspace', root);
+  assert.equal(result.url, `http://127.0.0.1:${port}`);
+  assert.deepEqual(
+    output.filter((entry) => entry.type === 'ready').map((entry) => entry.message),
+    [`Reusing the existing project server at http://127.0.0.1:${port}`]
+  );
+  assert.equal(await (await fetch(result.url)).text(), 'existing project');
+  assert.equal(await runtime.stop('next-fallback-workspace'), false);
 });
 
 test('finds a single runnable nested project and refuses ambiguous roots', async (context) => {
