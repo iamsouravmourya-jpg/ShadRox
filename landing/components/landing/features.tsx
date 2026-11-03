@@ -1,32 +1,44 @@
 'use client'
 
-import { FolderOpen, Sparkles, Eye, Terminal } from 'lucide-react'
+import { FolderOpen, Sparkles, Eye, Terminal, FileCode2, GitBranch } from 'lucide-react'
 import { Reveal } from './reveal'
 
 const features = [
   {
     icon: FolderOpen,
     number: '01',
-    title: 'Open and edit local projects',
-    text: 'Open a folder, browse files as you need them, and write approved edits straight back to your project on disk.',
+    title: 'Your project stays on your machine',
+    text: 'Open a folder, browse files as you need them, and save edits straight back to the project on disk.',
+  },
+  {
+    icon: FileCode2,
+    number: '02',
+    title: 'Code, then preview Markdown',
+    text: 'Edit in CodeMirror, split your editor, and switch any .md file between source and a readable preview.',
   },
   {
     icon: Sparkles,
-    number: '02',
-    title: 'AI help, on your terms',
-    text: 'Use Gemini or Groq with your own provider key. Ask for code, planning, or complex help, then review proposed changes before applying them.',
+    number: '03',
+    title: 'AI help, with you in control',
+    text: 'Use Gemini, Groq, or a compatible endpoint with your own key. Queue follow-ups and review proposed code changes before applying them.',
   },
   {
     icon: Eye,
-    number: '03',
+    number: '04',
     title: 'Preview supported web projects',
-    text: 'Run static sites and supported Node.js projects in an in-app preview. ShadRox asks before starting a project or installing its dependencies.',
+    text: 'View static sites, detected Node.js projects, and Python, Go, PHP, Java, or .NET backends in-app. ShadRox asks before managed install or run actions.',
   },
   {
     icon: Terminal,
-    number: '04',
-    title: 'A terminal beside your code',
-    text: "Use an interactive terminal in the project folder. Commands run with your computer account's permissions, so only run commands you trust.",
+    number: '05',
+    title: 'Terminal and Git tools',
+    text: "Run commands in your project and review Git changes, diffs, branches, staging, and commits in the same workspace.",
+  },
+  {
+    icon: GitBranch,
+    number: '06',
+    title: 'Checkpoints for safer iteration',
+    text: 'Inspect assistant checkpoints and restore earlier workspace content when you need to back out a change.',
   },
 ]
 

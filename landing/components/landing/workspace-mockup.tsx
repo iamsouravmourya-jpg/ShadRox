@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef } from 'react'
-import { Sparkles, Terminal } from 'lucide-react'
+import { Eye, Sparkles, Terminal } from 'lucide-react'
 
 /**
  * A stylized preview of the ShadRox desktop app: file explorer, editor with a
@@ -41,7 +41,7 @@ export function WorkspaceMockup() {
           <i className="size-2 rounded-full bg-amber-300/80" />
           <i className="size-2 rounded-full bg-emerald-400/80" />
         </div>
-        <span className="font-mono">shadRox / portfolio</span>
+        <span className="font-mono">shadRox / my-project</span>
         <span className="ml-auto rounded-md border border-white/10 px-2 py-1 text-zinc-400">Ctrl K</span>
       </div>
 
@@ -50,46 +50,33 @@ export function WorkspaceMockup() {
         {/* Explorer */}
         <aside className="overflow-hidden border-r border-white/8 bg-[#0e1016] p-2 text-[9px] font-mono text-zinc-500 sm:p-3 sm:text-[10px]">
           <p className="mb-3 truncate uppercase tracking-[0.12em] text-zinc-600 sm:tracking-[0.18em]">Explorer</p>
-          <p className="mb-2 truncate text-zinc-300">⌄ portfolio</p>
+          <p className="mb-2 truncate text-zinc-300">⌄ my-project</p>
           <p className="mb-1 truncate pl-1 text-violet-300 sm:pl-3">⌄ src</p>
           <p className="mb-1 truncate pl-2 text-zinc-400 sm:pl-6">◈ app.tsx</p>
           <p className="mb-1 hidden truncate pl-2 text-zinc-500 sm:block sm:pl-6">◈ globals.css</p>
           <p className="mb-1 hidden truncate pl-1 text-zinc-500 sm:block sm:pl-3">⌄ public</p>
           <p className="mt-3 hidden truncate pl-1 text-zinc-500 sm:block sm:pl-3">◇ package.json</p>
-          <p className="hidden truncate pl-1 text-zinc-500 sm:block sm:pl-3">◇ README.md</p>
+          <p className="hidden truncate rounded bg-violet-400/10 pl-1 text-violet-200 sm:block sm:pl-3">◇ README.md</p>
         </aside>
 
         {/* Editor */}
         <div className="relative min-w-0 bg-[#101219]">
-          <div className="flex h-9 items-center gap-4 border-b border-white/8 px-4 text-[10px] font-mono">
-            <span className="border-b border-violet-400 py-2 text-zinc-200">app.tsx</span>
-            <span className="text-zinc-600">globals.css</span>
+          <div className="flex h-9 items-center gap-2 border-b border-white/8 px-3 text-[10px] font-mono sm:gap-4 sm:px-4">
+            <span className="truncate border-b border-violet-400 py-2 text-zinc-200">README.md</span>
+            <span className="hidden text-zinc-600 sm:inline">app.tsx</span>
+            <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded border border-violet-300/20 bg-violet-300/[.07] px-1.5 py-1 text-violet-200">
+              <Eye className="size-3" /> Preview
+            </span>
           </div>
-          <div className="flex gap-2 overflow-hidden p-3 font-mono text-[9px] leading-5 text-zinc-500 sm:gap-4 sm:p-5 sm:text-[11px] sm:leading-6">
-            <div className="select-none text-right text-zinc-700">
-              {Array.from({ length: 11 }, (_, i) => i + 1).join('\n')}
+          <div className="space-y-2 overflow-hidden px-4 py-4 sm:px-6 sm:py-5">
+            <p className="text-xl font-semibold tracking-tight text-white sm:text-2xl">Build with room to think.</p>
+            <p className="text-[9px] leading-4 text-zinc-400 sm:text-[11px] sm:leading-5">
+              Keep your project, editor, AI chat, and preview together while you work.
+            </p>
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              <span className="rounded-full border border-violet-300/20 bg-violet-300/[.06] px-2 py-1 text-[8px] text-violet-200 sm:text-[9px]">Local workspace</span>
+              <span className="rounded-full border border-white/10 bg-white/[.03] px-2 py-1 text-[8px] text-zinc-400 sm:text-[9px]">Markdown preview</span>
             </div>
-            <pre className="overflow-hidden whitespace-pre text-zinc-400">
-              <span className="text-violet-300">import</span>{' '}
-              <span className="text-sky-300">{'{ Sparkles }'}</span>{' '}
-              <span className="text-violet-300">from</span>{' '}
-              <span className="text-emerald-300">&apos;lucide-react&apos;</span>
-              {'\n'}
-              {'\n'}
-              <span className="text-violet-300">export default function</span>{' '}
-              <span className="text-sky-300">App</span>() {'{'}
-              {'\n'}  <span className="text-violet-300">return</span> ({'\n'}    &lt;
-              <span className="text-sky-300">main</span>{' '}
-              <span className="text-amber-200">className</span>=
-              <span className="text-emerald-300">&quot;workspace&quot;</span>&gt;
-              {'\n'}      &lt;<span className="text-sky-300">Sparkles</span> /&gt;
-              {'\n'}      &lt;<span className="text-sky-300">h1</span>&gt;Build something clear.&lt;/
-              <span className="text-sky-300">h1</span>&gt;
-              {'\n'}    &lt;/<span className="text-sky-300">main</span>&gt;
-              {'\n'}  ){'\n'}
-              {'}'}
-              <span className="caret">&nbsp;</span>
-            </pre>
           </div>
 
           {/* Status line */}

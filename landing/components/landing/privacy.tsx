@@ -18,8 +18,8 @@ export function Privacy() {
             <div className="mt-6 rounded-2xl border border-white/8 bg-[#11131a] p-6 text-sm leading-7 text-zinc-400 lg:p-8">
               <p>
                 Your project folder is opened and edited on your computer. When you send a message to
-                AI, the prompt and the project context included with that request are sent to the Gemini
-                or Groq provider you selected.
+                AI, the prompt and the project context included with that request are sent to the
+                provider you selected.
               </p>
               <p className="mt-5 text-zinc-300">
                 You can use your own provider key. Keys entered in the app stay on your device in an
@@ -72,7 +72,7 @@ export function Privacy() {
                 </div>
                 <p className="text-xs font-medium text-zinc-200">AI provider</p>
                 <p className="flex items-center gap-1 text-[10px] text-zinc-500">
-                  <Sparkles className="size-3" /> Gemini or Groq
+                  <Sparkles className="size-3" /> Selected provider
                 </p>
               </div>
             </div>

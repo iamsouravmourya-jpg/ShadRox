@@ -17,7 +17,7 @@ const steps = [
   {
     icon: MousePointerClick,
     title: 'Explore and build',
-    text: 'Browse files, edit code, and ask the connected AI provider for help when you want it.',
+    text: 'Browse files, switch Markdown between source and preview, review AI-proposed edits, and queue a follow-up while a reply is running.',
   },
   {
     icon: Play,

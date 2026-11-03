@@ -3,7 +3,7 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'ShadRox — Your local coding workspace',
+  title: 'ShadRox | Your desktop coding workspace',
   description: 'A desktop workspace for your local projects, code editor, Gemini and Groq AI chat, live web previews, and terminal.',
   icons: {
     icon: '/icon.svg',

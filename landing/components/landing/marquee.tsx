@@ -1,6 +1,6 @@
 'use client'
 
-import { FolderTree, MessageSquare, Eye, TerminalSquare, Sparkles, GitBranch, FileCode2, Boxes } from 'lucide-react'
+import { FolderTree, MessageSquare, Eye, TerminalSquare, Sparkles, GitBranch, FileCode2, Boxes, History } from 'lucide-react'
 
 const items = [
   { icon: FolderTree, label: 'Local project files' },
@@ -9,8 +9,9 @@ const items = [
   { icon: Eye, label: 'In-app preview' },
   { icon: TerminalSquare, label: 'Project terminal' },
   { icon: Sparkles, label: 'Gemini & Groq' },
-  { icon: GitBranch, label: 'Your own provider key' },
+  { icon: GitBranch, label: 'Git source control' },
   { icon: Boxes, label: 'Node-based web projects' },
+  { icon: History, label: 'Workspace checkpoints' },
 ]
 
 export function Marquee() {

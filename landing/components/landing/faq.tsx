@@ -25,15 +25,27 @@ const faqs = [
   },
   {
     q: 'Where is my AI provider key stored?',
-    a: 'Your Gemini or Groq key is saved only on your device in an encrypted local store, and requests go from your machine to the provider. ShadRox servers never receive your provider key. Your provider may charge for usage.',
+    a: 'Your Gemini, Groq, or compatible-provider key is saved only on your device in an encrypted local store, and requests go from your machine to the provider. ShadRox servers never receive your provider key. Your provider may charge for usage.',
   },
   {
     q: 'Which AI providers are supported?',
-    a: 'The current app supports Gemini and Groq with your own key. Model availability and limits depend on your provider account.',
+    a: 'The current app supports Gemini, Groq, and custom OpenAI-compatible endpoints, including compatible local gateways. Model availability and limits depend on your provider account.',
   },
   {
     q: 'Can I preview any project?',
-    a: 'Static sites and supported Node-based web projects are the current focus. Other backend runtimes are not supported yet, and some sites may block embedded previews.',
+    a: 'Static sites, supported Node-based web projects, and detected Python, Go, PHP, Java, and .NET backends are covered — the runtime for a backend must be installed on your machine. Some external sites may block embedded previews.',
+  },
+  {
+    q: 'Can I preview a README or other Markdown file?',
+    a: 'Yes. Select a .md or .markdown file and use the Preview button beside its name. Switch back to Source whenever you want to edit it.',
+  },
+  {
+    q: 'Can I send another chat message while the AI is working?',
+    a: 'Yes. Follow-up messages are held in a small queue and sent after the current turn finishes, rather than interrupting it.',
+  },
+  {
+    q: 'Can I use a custom AI endpoint?',
+    a: 'Yes. Besides Gemini and Groq, you can configure an OpenAI-compatible endpoint, including a compatible local gateway. You provide the key and pay any provider charges.',
   },
 ]
 
