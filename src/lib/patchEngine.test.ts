@@ -77,6 +77,46 @@ test('falls back to a unique whitespace-stripped match', () => {
   assert.equal(content.slice(range.start, range.end), '    callA();');
 });
 
+const level = (content: string, original: string) => {
+  const match = locateBlock(content, original);
+  return match.status === 'found' ? match.via : match.status;
+};
+
+test('the cascade is ordered: verbatim first, then trimmed lines, then stripped', () => {
+  const content = 'if (x) {\n    callA();\n    callB();\n}\n';
+  assert.equal(level(content, '    callB();'), 'exact');
+  assert.equal(level(content, '      callB();'), 'lines');
+  assert.equal(level(content, 'callB( ) ;'), 'stripped');
+  assert.equal(level(content, 'callC();'), 'not-found');
+});
+
+test('a block whose indentation drifted still lands, replacing whole lines', () => {
+  const content = 'function f() {\n  return total / count;\n}\n';
+  const result = applySearchReplaceBlocks(content, [
+    { original: '    return total / count;', updated: '  return count ? total / count : 0;' }
+  ]);
+  assert.equal(result.failures.length, 0);
+  assert.equal(result.content, 'function f() {\n  return count ? total / count : 0;\n}\n');
+});
+
+test('a block anchored to a blank line matches on trimmed lines', () => {
+  const content = 'const a = 1;\n\n    const b = 2;\n';
+  assert.equal(level(content, 'const a = 1;\n\nconst b = 2;'), 'lines');
+});
+
+test('two trimmed-line candidates are refused, not silently picked', () => {
+  const content = '  y();\n\t\t\ty();\n';
+  assert.equal(level(content, '   y();'), 'not-unique');
+});
+
+test('CRLF files keep their line endings through the trimmed-line level', () => {
+  const content = 'const a = 1;\r\n    const b = 2;\r\n';
+  assert.equal(level(content, '      const b = 2;'), 'lines');
+  const result = applySearchReplaceBlocks(content, [{ original: '      const b = 2;', updated: 'const B = 2;' }]);
+  assert.equal(result.failures.length, 0);
+  assert.equal(result.content, 'const a = 1;\r\nconst B = 2;\r\n');
+});
+
 test('applies non-overlapping blocks right-to-left', () => {
   const content = 'const a = 1;\nconst b = 2;\nconst c = 3;\n';
   const result = applySearchReplaceBlocks(content, [

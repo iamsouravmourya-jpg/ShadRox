@@ -31,8 +31,8 @@ export const PROVIDERS: ProviderMeta[] = [
   {
     id: 'gemini',
     label: 'Google Gemini',
-    keyPlaceholder: 'AIzaSy...',
-    keyPrefix: 'AIza',
+    keyPlaceholder: 'AIza… or AQ.…',
+    keyPrefix: 'AIza or AQ.',
     keyHint: 'Get your key from Google AI Studio (Free tier available)',
     docsUrl: 'https://aistudio.google.com/apikey',
     freeTierNote: 'Flash and Flash-Lite models supported on free tier'
@@ -269,7 +269,16 @@ export function looksLikeKeyFor(provider: ProviderId, apiKey: string): boolean {
   if (provider === 'custom') return key.length > 0;
   if (key.length < 20) return false;
   if (provider === 'groq') return key.startsWith('gsk_');
-  return key.startsWith('AIza');
+  return isGeminiKeyShape(key);
+}
+
+/**
+ * Google is retiring the old `AIza` "traffic key" and AI Studio now issues
+ * `AQ.` authentication keys. Both go to the same native endpoint with the same
+ * header, so neither may be rejected on shape alone.
+ */
+function isGeminiKeyShape(key: string): boolean {
+  return key.startsWith('AIza') || key.startsWith('AQ.');
 }
 
 /**
@@ -281,7 +290,7 @@ export function looksLikeKeyFor(provider: ProviderId, apiKey: string): boolean {
 export function detectProviderFromKey(apiKey: string): ProviderId | null {
   const key = apiKey.trim();
   if (key.startsWith('gsk_')) return 'groq';
-  if (key.startsWith('AIza')) return 'gemini';
+  if (isGeminiKeyShape(key)) return 'gemini';
   return null;
 }
 
@@ -300,10 +309,10 @@ export function describeKeyFormatProblem(provider: ProviderId, apiKey: string): 
     return `Enter the key this endpoint issues. Local servers such as Ollama and LM Studio accept any placeholder text — the endpoint itself is what rejects or accepts it.`;
   }
 
-  // Google sign-in tokens (Gemini CLI, Code Assist, gcloud) start with AQ./ya29.
-  // They are hour-long OAuth tokens, not API keys, and the Gemini API rejects them.
-  if (key.startsWith('AQ.') || key.startsWith('ya29.')) {
-    return `That is a Google sign-in token, not a Gemini API key — it expires and the Gemini API rejects it. Open Google AI Studio (${meta.docsUrl}), click "Create API key", and paste the key that starts with AIza.`;
+  // OAuth access tokens from Gemini CLI, Code Assist and gcloud. They are
+  // hour-long tokens, not API keys, and the Gemini API rejects them.
+  if (key.startsWith('ya29.')) {
+    return `That is a Google sign-in token, not a Gemini API key — it expires within the hour. Open Google AI Studio (${meta.docsUrl}), click "Create API key", and paste the key it gives you.`;
   }
   if (key.startsWith('sk-')) {
     return `That looks like an OpenAI-format key. ${meta.label} needs a key starting with ${meta.keyPrefix} — create one at ${meta.docsUrl}, or switch to "Custom endpoint" and point it at an OpenAI-compatible URL.`;
@@ -314,7 +323,7 @@ export function describeKeyFormatProblem(provider: ProviderId, apiKey: string): 
   if (key.startsWith('gsk_')) {
     return `That looks like a Groq key. Select Groq above, or point "Custom endpoint" at https://api.groq.com/openai/v1.`;
   }
-  if (key.startsWith('AIza')) {
+  if (isGeminiKeyShape(key)) {
     return `That looks like a Google AI Studio key. Select Google Gemini above, or create a ${meta.label} key at ${meta.docsUrl}.`;
   }
   return `That does not look like a ${meta.label} key — it should start with ${meta.keyPrefix}. Create one at ${meta.docsUrl}.`;

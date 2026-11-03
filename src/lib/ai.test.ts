@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createPrefixStripper } from './ai';
+import { createPrefixStripper, streamChat } from './ai';
 import {
   INTERRUPTED_STREAM_KEY,
   pruneResumePrefixes,
@@ -42,6 +42,50 @@ test('surrogate pairs are matched as whole code points', () => {
   const strip = createPrefixStripper('emoji 🎉 he');
   assert.equal(strip('emoji 🎉'), '');
   assert.equal(strip('llo'), 'llo');
+});
+
+test('streamChat forwards native tool-call SSE events to the caller', async () => {
+  const originalFetch = globalThis.fetch;
+  const received: unknown[] = [];
+  let requestBody: Record<string, unknown> | null = null;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return new Response([
+      'data: {"type":"tool_calls","calls":[{"id":"call_1","name":"read_file","arguments":"{\\"path\\":\\"src/App.tsx\\"}"}]}',
+      'data: {"type":"done","tokens":4,"provider":"groq","model":"test","tier":"byok"}',
+      ''
+    ].join('\n\n'), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  }) as typeof fetch;
+
+  try {
+    await streamChat({
+      provider: 'groq',
+      model: 'test',
+      messages: [{ role: 'user', content: 'Inspect the app' }],
+      toolDefinitions: [{
+        name: 'read_file',
+        description: 'Read one file.',
+        parameters: { type: 'object', properties: { path: { type: 'string' } } }
+      }]
+    }, {
+      onDelta: () => {},
+      onToolCalls: (calls) => received.push(...calls),
+      onError: (message) => { throw new Error(message); }
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(received, [{
+    id: 'call_1',
+    name: 'read_file',
+    arguments: '{"path":"src/App.tsx"}'
+  }]);
+  assert.deepEqual(requestBody?.toolDefinitions, [{
+    name: 'read_file',
+    description: 'Read one file.',
+    parameters: { type: 'object', properties: { path: { type: 'string' } } }
+  }]);
 });
 
 /* ------------------------------------------------------------------ *

@@ -2,6 +2,7 @@ import { classifyTier } from '../../src/lib/providers.js';
 import { RequestRejectedError } from '../_validate.js';
 import { sharedKeyFor } from '../_sharedKey.js';
 import { streamCustomEndpoint } from './_compatible.js';
+import { runsOnTheUsersMachine } from './_endpoint.js';
 import { streamGemini } from './_gemini.js';
 import { streamGroq } from './_openai.js';
 import type { ProviderAdapter, ProviderId } from './_types.js';
@@ -82,15 +83,18 @@ export function resolveKeyAccess(
   }
 
   if (!byokKey) {
-    // The shared key belongs to ShadRox's paid plan, so it only serves the Pro
-    // tier. The free list stays BYOK-only, which keeps the spend bounded.
-    if (classifyTier(provider, model) !== 'pro') {
+    // The shared key is what a paid plan spends, and a plan's whole point is to
+    // buy cheap models — but the balance that bounds that spend is not enforced
+    // server-side yet (TODO(phase-3): verify the Supabase session and read the
+    // real credit balance before spending). Until then the hosted functions
+    // keep the Pro-only guardrail and only the operator's own loopback backend
+    // may spend the shared key on any tier, which is how the paid path is
+    // exercised before the meter exists.
+    if (classifyTier(provider, model) !== 'pro' && !runsOnTheUsersMachine()) {
       return {
         error: `ShadRox ki shared key sirf Pro models par chalti hai, aur "${model}" free tier me hai. Free models ke liye Settings → BYOK me apni key add karo.`
       };
     }
-    // TODO(phase-3): verify Supabase session + apply per-user rate limit before
-    // spending the shared ShadRox key. See docs in README.
   }
 
   return { access: { apiKey, byok: Boolean(byokKey) } };

@@ -91,6 +91,7 @@ const REDACT_PATTERNS: RegExp[] = [
   /\b[a-z0-9_-]*api[_-]?key\s*[:=]\s*[^\s"',}&]+/gi,
   /\bkey\s*=\s*[^\s"',}&]+/gi,
   /\bAIza[0-9A-Za-z_-]{4,}/g,
+  /\bAQ\.[0-9A-Za-z_-]{4,}/g,
   /\bgsk_[0-9A-Za-z_-]{4,}/g,
   /\bsk-[0-9A-Za-z_-]{4,}/g,
   /\bbearer\s+[0-9A-Za-z._-]{8,}/gi,

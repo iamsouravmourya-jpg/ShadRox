@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
+  Bot,
   Brain,
   Check,
   ChevronDown,
@@ -10,45 +11,69 @@ import {
   FileCode2,
   FileDiff,
   FileText,
-  History as HistoryIcon,
   Loader2,
+  ListTree,
   MessageSquarePlus,
   Mic,
   MicOff,
   Paperclip,
   Play,
-  RotateCcw,
+  History,
   Send,
-  ShieldAlert,
-  Settings,
   Sparkles,
   Square,
   Undo2,
+  Users,
   Wand2,
   X,
   Zap
 } from 'lucide-react';
 import { maskFileWrites, renderMarkdownContent } from '../lib/markdown';
-import { TimelineSlider } from './TimelineSlider';
-import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
-import { getRefineMode, REFINE_MODES } from '../lib/ai';
+import { useSpeechRecognition } from '../hooks/useSpeechRecognition';import { getRefineMode, REFINE_MODES } from '../lib/ai';
 import { getProviderMeta, type ModelInfo, type ModelTier } from '../lib/providers';
 import { getMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
 import { estimateTokens } from '../lib/toolUtils';
-import { getPlanMeta, PLANS_LOCKED } from '../lib/plans';
-import type { ChatMessage, PatchSet, PlanTier, RefineMode, SettingsTab, WorkspaceFile } from '../lib/types';
+import { computeHunks, groupedHunkId, hunkStats } from '../lib/editor/hunks';
+import { formatCredits, formatTokenSplit } from '../lib/usageCredits';
+import type { Skill } from '../lib/skills';
+import type { ChatMessage, PatchSet, PlanTier, RefineMode, SemanticStatus, SettingsTab, WorkspaceFile } from '../lib/types';
 import type { CheckpointMeta } from '../lib/history';
-import type { DesktopPreviewState, PreviewApprovalRequest } from '../lib/desktop';
+import type { CheckpointDiff } from '../lib/checkpointDiff';
+import { TimelineSlider } from './TimelineSlider';
+
+/** A symbol the user pinned with `@`, sent as an explicit context marker. */
+export interface PinnedSymbol {
+  name: string;
+  file: string;
+  line?: number;
+}
+
+/** A symbol the active file offers to the `@` picker. */
+export interface MentionSymbol {
+  name: string;
+  kind: string;
+  file: string;
+  line: number;
+}
+
+interface MentionItem {
+  id: string;
+  kind: 'file' | 'symbol';
+  label: string;
+  file: string;
+  line?: number;
+  symbolKind?: string;
+}
 
 interface ChatPanelProps {
   messages: ChatMessage[];
   input: string;
   onInputChange: (value: string) => void;
   onSend: () => void;
+  queuedMessages?: Array<{ id: string; text: string }>;
+  onCancelQueuedMessage?: (id: string) => void;
   onStop: () => void;
   onClearChat?: () => void;
-  onRegenerate?: () => void;
-  canRegenerate?: boolean;
   isGenerating: boolean;
   isRefining: boolean;
   refineStep: string;
@@ -61,30 +86,57 @@ interface ChatPanelProps {
   hasKey: boolean;
   plan: PlanTier;
   onOpenSettings: (tab?: SettingsTab) => void;
-  attachedFileName: string | null;
-  onAttachedFileChange: (fileName: string | null) => void;
+  attachedFiles: string[];
+  onAttachedFilesChange: (fileNames: string[]) => void;
+  /** Symbols from the active file; choosing one pins it and attaches its file. */
+  symbols?: MentionSymbol[];
+  pinnedSymbols: PinnedSymbol[];
+  onPinnedSymbolsChange: (symbols: PinnedSymbol[]) => void;
   workspaceFiles: WorkspaceFile[];
   checkpoints: CheckpointMeta[];
   onRestoreCheckpoint: (id: string) => void;
   restoringCheckpointId: string | null;
-  previewApproval: PreviewApprovalRequest | null;
-  onApprovePreview: () => void;
-  onCancelPreviewApproval: () => void;
-  onRunPreview: () => void;
-  onStopPreview: () => void;
-  previewState: DesktopPreviewState;
-  hasPreviewDiagnostics: boolean;
+  /** Opening a checkpoint previews the restore instead of performing it. */
+  activeCheckpointId: string | null;
+  onShowCheckpoint: (id: string) => void;
+  onCloseCheckpoint: () => void;
+  checkpointDiff: CheckpointDiff | null;
+  checkpointDiffLoading: boolean;
   patchSets: PatchSet[];
   autoApplyChanges: boolean;
   onToggleAutoApply: () => void;
+  /** Auto: a cheap model picks which files to read, the answer model reads them. */
+  autoContext: boolean;
+  onToggleAutoContext: () => void;
+  /** Local-embedding re-rank: BM25 shortlist, embeddings order the top hits. */
+  semanticRetrieval: boolean;
+  semanticStatus: SemanticStatus;
+  semanticChunkCount: number;
+  onToggleSemanticRetrieval: () => void;
+  /** The repo map that accompanies a request, shown so the user can audit it. */
+  repoMap?: string;
+  /** True while the first bounded read of a newly opened folder is running. */
+  repoMapLoading?: boolean;
+  /** `.shadrox/skills/*.md` of the opened folder; typed as `/name` in the composer. */
+  skills?: Skill[];
   onAcceptPatch: (messageId: string, patchIndex: number) => void;
   onRejectPatch: (messageId: string, patchIndex: number) => void;
   onAcceptAllPatches: (messageId: string) => void;
   onUndoPatch: (messageId: string, patchIndex: number) => void;
+  /** Applies only the accepted hunks of a pending rewrite, in file order. */
+  onApplyPatchHunks: (messageId: string, patchIndex: number, acceptedIds: string[]) => void;
   /** Type errors the applied change set introduced, keyed by assistant message. */
   typeFixCounts?: Record<string, number>;
   onFixTypeErrors?: (messageId: string) => void;
   onResume: (messageId: string) => void;
+  /** A run interrupted by the previous app close; null when nothing is restorable. */
+  backgroundResume?: {
+    summary: string;
+    /** False when a key, folder or idle engine is missing right now. */
+    available: boolean;
+    onResume: () => void;
+    onDismiss: () => void;
+  } | null;
   /** One-line notice when a request had to be degraded to fit the context window. */
   contextNotice?: string | null;
   onDismissContextNotice?: () => void;
@@ -108,15 +160,255 @@ const MODE_ICONS: Record<RefineMode, typeof Code2> = {
   complex: Brain
 };
 
+const ORCHESTRATION_STATUS: Record<NonNullable<ChatMessage['orchestration']>['status'], { label: string; tone: string }> = {
+  planning: { label: 'planning', tone: 'text-violet-200 border-violet-300/25 bg-violet-500/10' },
+  running: { label: 'working', tone: 'text-violet-200 border-violet-300/25 bg-violet-500/10' },
+  done: { label: 'done', tone: 'text-emerald-200 border-emerald-400/25 bg-emerald-500/10' },
+  failed: { label: 'failed', tone: 'text-red-200 border-red-400/25 bg-red-500/10' },
+  stopped: { label: 'stopped', tone: 'text-neutral-300 border-white/10 bg-white/[0.04]' },
+  budget: { label: 'budget cap', tone: 'text-amber-200 border-amber-500/25 bg-amber-500/10' }
+};
+
+/** The chat-inline trace of an automatic run or team. */
+function OrchestrationCard({ message, onStop }: { message: ChatMessage; onStop: () => void }) {
+  const orchestration = message.orchestration;
+  if (!orchestration) return null;
+  const Icon = orchestration.kind === 'team' ? Users : Bot;
+  const status = ORCHESTRATION_STATUS[orchestration.status];
+  const active = orchestration.status === 'planning' || orchestration.status === 'running';
+
+  return (
+    <div className="mb-2 rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 py-2.5">
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border border-violet-300/20 bg-violet-500/10">
+          <Icon className="h-3.5 w-3.5 text-violet-200" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-neutral-200">
+            {orchestration.kind === 'team' ? 'Agent team' : 'Autonomous run'}
+            {active && <Loader2 className="h-3 w-3 animate-spin text-violet-300" />}
+            <span className={`rounded-full border px-1.5 py-px text-[9px] uppercase tracking-wide ${status.tone}`}>
+              {status.label}
+            </span>
+          </div>
+        </div>
+        {active && (
+          <button
+            type="button"
+            onClick={onStop}
+            className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-red-500/30 px-2 py-0.5 text-[10px] text-red-300 transition-colors hover:bg-red-500/10"
+          >
+            <Square className="h-2.5 w-2.5 fill-current" />
+            Stop
+          </button>
+        )}
+      </div>
+
+      <details className="mt-1.5 pl-8">
+        <summary className="cursor-pointer text-[10px] text-neutral-600 hover:text-neutral-400">
+          Run details
+        </summary>
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-600">
+          <span>budget {orchestration.budgetCredits} cr</span>
+          {typeof orchestration.creditsSpent === 'number' && <span>spent {orchestration.creditsSpent} cr</span>}
+          {orchestration.detail && <span className="text-neutral-400">{orchestration.detail}</span>}
+          <span className="font-sans text-neutral-500">{orchestration.reason}</span>
+        </div>
+        {orchestration.progress && orchestration.progress.length > 0 && (
+          <div className="mt-1 max-h-36 space-y-0.5 overflow-y-auto border-l border-white/[0.07] pl-2 font-mono text-[10px] leading-relaxed text-neutral-500">
+            {orchestration.progress.map((line, index) => (
+              <div key={`${index}-${line}`} className="break-words">
+                {line}
+              </div>
+            ))}
+          </div>
+        )}
+      </details>
+    </div>
+  );
+}
+
+/** The slash form of a skill name; matches how the send path resolves `/name`. */
+function skillKey(name: string): string {
+  return name.trim().toLowerCase().replace(/[\s_]+/g, '-').replace(/-+/g, '-');
+}
+
+/** Workspace paths may differ in case or slash direction from the patch path. */
+function samePath(left: string, right: string): boolean {
+  return left.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase() ===
+    right.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+}
+
+interface PatchHunkReviewProps {
+  sections: Array<{
+    key: string;
+    label?: string;
+    before: string;
+    after: string;
+    groupIndex?: number;
+  }>;
+  onApply: (acceptedIds: string[]) => void;
+}
+
+/**
+ * Hunk-by-hunk review for rewrites and search/replace blocks. Accepted ids are
+ * grouped only for search/replace so each block can be merged independently.
+ */
+function PatchHunkReview({ sections, onApply }: PatchHunkReviewProps) {
+  const groupedSections = useMemo(
+    () => sections.map((section) => ({
+      ...section,
+      beforeLines: section.before.split('\n'),
+      hunks: computeHunks(section.before, section.after).map((hunk) => ({
+        ...hunk,
+        reviewId: section.groupIndex === undefined ? hunk.id : groupedHunkId(section.groupIndex, hunk.id)
+      }))
+    })).filter((section) => section.hunks.length > 0),
+    [sections]
+  );
+  const hunks = useMemo(() => groupedSections.flatMap((section) => section.hunks), [groupedSections]);
+  const [rejected, setRejected] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const [open, setOpen] = useState(false);
+
+  const acceptedIds = useMemo(
+    () => hunks.filter((hunk) => !rejected.has(hunk.reviewId)).map((hunk) => hunk.reviewId),
+    [hunks, rejected]
+  );
+  const stats = useMemo(
+    () => groupedSections.reduce((total, section) => {
+      const current = hunkStats(section.hunks);
+      return { added: total.added + current.added, removed: total.removed + current.removed };
+    }, { added: 0, removed: 0 }),
+    [groupedSections]
+  );
+
+  if (hunks.length === 0) return null;
+  const rejectedCount = hunks.length - acceptedIds.length;
+
+  const toggle = (id: string) =>
+    setRejected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  return (
+    <div className="border-t border-white/[0.06] px-2 pb-1.5 pt-1">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-1.5 text-[10px] text-neutral-400 transition-colors hover:text-neutral-200 cursor-pointer"
+      >
+        <ChevronDown className={`w-3 h-3 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
+        <span className="font-medium">Review hunks</span>
+        <span className="text-emerald-400/90">+{stats.added}</span>
+        <span className="text-rose-400/90">−{stats.removed}</span>
+        <span className="text-neutral-600">
+          {hunks.length} hunk{hunks.length === 1 ? '' : 's'}
+          {rejectedCount > 0 ? ` · ${rejectedCount} rejected` : ''}
+        </span>
+      </button>
+
+      {open && (
+        <div className="mt-1.5 space-y-1.5">
+          {groupedSections.map((section) => (
+            <div key={section.key} className="space-y-1.5">
+              {section.label && (
+                <div className="px-1 text-[10px] font-medium text-neutral-500">{section.label}</div>
+              )}
+              {section.hunks.map((hunk) => {
+                const isRejected = rejected.has(hunk.reviewId);
+                const removed = hunk.beforeEnd - hunk.beforeStart;
+            return (
+              <div
+                key={hunk.reviewId}
+                className={`overflow-hidden rounded-md border ${
+                  isRejected ? 'border-white/[0.06] opacity-50' : 'border-white/[0.1]'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 px-1.5 py-1">
+                  <span className="font-mono text-[10px] text-neutral-500">
+                    line {hunk.beforeStart + 1}
+                    {removed > 0 ? ` · −${removed}` : ''}
+                    {hunk.afterLines.length > 0 ? ` +${hunk.afterLines.length}` : ''}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => toggle(hunk.reviewId)}
+                    className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] transition-colors cursor-pointer ${
+                      isRejected
+                        ? 'border-white/[0.12] text-neutral-400 hover:text-neutral-200'
+                        : 'border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10'
+                    }`}
+                  >
+                    {isRejected ? <X className="w-3 h-3" /> : <Check className="w-3 h-3" />}
+                    {isRejected ? 'Rejected' : 'Accepted'}
+                  </button>
+                </div>
+                <div className="max-h-40 overflow-y-auto px-1.5 pb-1.5 font-mono text-[10px] leading-relaxed">
+                  {section.beforeLines.slice(hunk.beforeStart, hunk.beforeEnd).map((line, index) => (
+                    <div key={`removed-${index}`} className="flex gap-1.5 whitespace-pre text-rose-200/90">
+                      <span className="w-2 shrink-0 select-none text-rose-400/60">−</span>
+                      <span>{line || ' '}</span>
+                    </div>
+                  ))}
+                  {hunk.afterLines.map((line, index) => (
+                    <div key={`added-${index}`} className="flex gap-1.5 whitespace-pre text-emerald-200/90">
+                      <span className="w-2 shrink-0 select-none text-emerald-400/60">+</span>
+                      <span>{line || ' '}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+              })}
+            </div>
+          ))}
+          <div className="flex items-center justify-between gap-2 pt-0.5">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setRejected(new Set())}
+                className="text-[10px] text-neutral-500 transition-colors hover:text-neutral-300 cursor-pointer"
+              >
+                Accept all
+              </button>
+              <button
+                type="button"
+                onClick={() => setRejected(new Set(hunks.map((hunk) => hunk.reviewId)))}
+                className="text-[10px] text-neutral-500 transition-colors hover:text-neutral-300 cursor-pointer"
+              >
+                Reject all
+              </button>
+            </div>
+            <button
+              type="button"
+              disabled={acceptedIds.length === 0}
+              onClick={() => onApply(acceptedIds)}
+              className="rounded-md border border-violet-300/25 bg-violet-500/[.12] px-2 py-0.5 text-[10px] font-semibold text-violet-200 transition-colors hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
+            >
+              Apply{' '}
+              {acceptedIds.length === hunks.length
+                ? 'all'
+                : `${acceptedIds.length} hunk${acceptedIds.length === 1 ? '' : 's'}`}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ChatPanel({
   messages,
   input,
   onInputChange,
   onSend,
+  queuedMessages = [],
+  onCancelQueuedMessage,
   onStop,
   onClearChat,
-  onRegenerate,
-  canRegenerate = false,
   isGenerating,
   isRefining,
   refineStep,
@@ -129,41 +421,64 @@ export function ChatPanel({
   hasKey,
   plan,
   onOpenSettings,
-  attachedFileName,
-  onAttachedFileChange,
+  attachedFiles,
+  onAttachedFilesChange,
+  symbols = [],
+  pinnedSymbols,
+  onPinnedSymbolsChange,
   workspaceFiles,
   checkpoints,
   onRestoreCheckpoint,
   restoringCheckpointId,
-  previewApproval,
-  onApprovePreview,
-  onCancelPreviewApproval,
-  onRunPreview,
-  onStopPreview,
-  previewState,
-  hasPreviewDiagnostics,
+  activeCheckpointId,
+  onShowCheckpoint,
+  onCloseCheckpoint,
+  checkpointDiff,
+  checkpointDiffLoading,
   patchSets,
   autoApplyChanges,
   onToggleAutoApply,
+  autoContext,
+  semanticRetrieval,
+  semanticStatus,
+  semanticChunkCount,
+  onToggleSemanticRetrieval,
+  repoMap = '',
+  repoMapLoading = false,
+  skills = [],
+  onToggleAutoContext,
   onAcceptPatch,
   onRejectPatch,
   onAcceptAllPatches,
   onUndoPatch,
+  onApplyPatchHunks,
   typeFixCounts,
   onFixTypeErrors,
   onResume,
+  backgroundResume = null,
   contextNotice = null,
   onDismissContextNotice
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [isTimelineOpen, setIsTimelineOpen] = useState(false);
-  const [timelineSelectedId, setTimelineSelectedId] = useState<string | null>(null);
+  const [isContextOpen, setIsContextOpen] = useState(false);
   const speech = useSpeechRecognition('en-US');
   const activeMode = getRefineMode(refineMode);
+
+  /** `/name` in the composer is a project skill; a bare slash lists them all. */
+  const slashName = /^\/([\w.-]*)$/.exec(input)?.[1]?.toLowerCase() ?? null;
+  const skillMatches = useMemo(() => {
+    if (slashName === null || slashDismissed || skills.length === 0) return [];
+    const ordered = [...skills].sort((a, b) => skillKey(a.name).localeCompare(skillKey(b.name)));
+    if (slashName === '') return ordered.slice(0, 8);
+    return ordered.filter((skill) => skillKey(skill.name).startsWith(slashName)).slice(0, 8);
+  }, [slashName, slashDismissed, skills]);
 
   const [usage, setUsage] = useState<UsageState>(() => getMonthlyUsage(plan));
 
@@ -181,11 +496,80 @@ export function ChatPanel({
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, previewApproval]);
+  }, [messages]);
 
   const activeModel = models.find((model) => model.id === selectedModel) || null;
   const canSend = input.trim().length > 0 && !isGenerating && !usage.isCapReached;
+  const canQueue = input.trim().length > 0 && isGenerating && !usage.isCapReached;
   const lastAssistantId = [...messages].reverse().find((message) => message.role === 'model')?.id ?? null;
+
+  /**
+   * @-mention picker: files and the active file's symbols. A symbol is pinned
+   * as a named context marker and its file is attached, so the model gets both
+   * the request ("look at this symbol") and the source that defines it.
+   */
+  const mentionMatches = useMemo<MentionItem[]>(() => {
+    if (mentionQuery === null) return [];
+    const query = mentionQuery.toLowerCase();
+    const attached = new Set(attachedFiles);
+    const pinned = new Set(pinnedSymbols.map((symbol) => `${symbol.name}:${symbol.file}`));
+    const items: MentionItem[] = [];
+
+    for (const symbol of symbols) {
+      if (pinned.has(`${symbol.name}:${symbol.file}`)) continue;
+      if (!symbol.name.toLowerCase().includes(query)) continue;
+      items.push({
+        id: `symbol:${symbol.name}:${symbol.file}`,
+        kind: 'symbol',
+        label: symbol.name,
+        file: symbol.file,
+        line: symbol.line,
+        symbolKind: symbol.kind
+      });
+    }
+
+    for (const file of workspaceFiles) {
+      if (attached.has(file.name) || !file.name.toLowerCase().includes(query)) continue;
+      items.push({ id: `file:${file.name}`, kind: 'file', label: file.name, file: file.name });
+    }
+
+    const rank = (item: MentionItem) => (item.label.toLowerCase().startsWith(query) ? 0 : 1);
+    return items.sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label)).slice(0, 8);
+  }, [mentionQuery, workspaceFiles, attachedFiles, symbols, pinnedSymbols]);
+  const activeMention = mentionMatches.length > 0
+    ? mentionMatches[Math.min(mentionIndex, mentionMatches.length - 1)]
+    : null;
+
+  const closeMention = () => {
+    setMentionQuery(null);
+    setMentionIndex(0);
+  };
+
+  const handleInputChange = (value: string) => {
+    onInputChange(value);
+    setSlashDismissed(false);
+    const match = /(?:^|\s)@([^\s@]*)$/.exec(value);
+    if (match) {
+      setMentionQuery(match[1]);
+      setMentionIndex(0);
+    } else {
+      setMentionQuery(null);
+    }
+  };
+
+  const addMention = (item: MentionItem) => {
+    if (!attachedFiles.includes(item.file)) {
+      onAttachedFilesChange([...new Set([...attachedFiles, item.file])]);
+    }
+    if (item.kind === 'symbol') {
+      onPinnedSymbolsChange([
+        ...pinnedSymbols.filter((symbol) => !(symbol.name === item.label && symbol.file === item.file)),
+        { name: item.label, file: item.file, line: item.line }
+      ]);
+    }
+    onInputChange(input.replace(/@([^\s@]*)$/, '').replace(/\s+$/, ''));
+    closeMention();
+  };
 
   const copyMessage = async (message: ChatMessage) => {
     try {
@@ -212,7 +596,8 @@ export function ChatPanel({
           icon: 'text-violet-300'
         };
 
-  const starterPlan = getPlanMeta('starter');
+  /** BYOK keys, and plans with no monthly cap, have no meaningful used/limit ratio. */
+  const quotaHasNoCap = usage.isUnlimited || Math.round(usage.limit) === 0;
 
   const groupedModels: Record<ModelTier, ModelInfo[]> = {
     free: models.filter((model) => model.tier === 'free'),
@@ -223,68 +608,112 @@ export function ChatPanel({
   const ActiveModeIcon = MODE_ICONS[refineMode] || Code2;
 
   return (
-    <div className="h-full flex flex-col bg-ink-950 border-r border-white/[0.07] select-text">
+    <div className="h-full flex flex-col bg-ink-950 select-text">
       {/* Header */}
       <header className="h-12 shrink-0 flex items-center justify-between px-3 border-b border-white/[0.07]">
         <button
           type="button"
           onClick={() => setIsModelMenuOpen((open) => !open)}
           disabled={models.length === 0}
-          className="flex items-center gap-2 text-xs text-neutral-200 hover:text-white disabled:opacity-50 transition-colors cursor-pointer min-w-0"
+          title={activeModel ? activeModel.label : 'Select Model'}
+          className={`mr-2 flex min-w-0 flex-1 items-center gap-2 rounded-lg border px-2 py-1 text-xs transition-colors cursor-pointer disabled:opacity-50 ${
+            isModelMenuOpen
+              ? 'border-violet-300/50 bg-violet-500/20 text-white'
+              : 'border-violet-300/25 bg-violet-500/[0.08] text-neutral-100 hover:border-violet-300/40 hover:bg-violet-500/15'
+          }`}
         >
-          <span className="truncate max-w-[150px]">{activeModel ? activeModel.label : 'Select Model'}</span>
+          <Sparkles className="h-3.5 w-3.5 shrink-0 text-violet-300" />
+          <span className="truncate font-medium">{activeModel ? activeModel.label : 'Select Model'}</span>
           {activeModel && (
-            <span className={`rounded px-1.5 py-0.5 border text-[10px] uppercase tracking-wide ${TIER_STYLES[activeModel.tier]}`}>
+            <span className={`shrink-0 rounded px-1.5 py-0.5 border text-[10px] uppercase tracking-wide ${TIER_STYLES[activeModel.tier]}`}>
               {activeModel.tier}
             </span>
           )}
-          <ChevronDown className="w-3 h-3 shrink-0 text-neutral-500" />
+          <ChevronDown className="ml-auto w-3 h-3 shrink-0 text-neutral-400" />
         </button>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           {/* Monthly Quota Indicator Pill */}
           <button
             type="button"
             onClick={() => onOpenSettings('PLAN')}
             title={
-              usage.isUnlimited
-                ? `Bring your own key — no cap (${Math.round(usage.used)} credits used this month)`
+              quotaHasNoCap
+                ? `No monthly cap — ${Math.round(usage.used)} credits used this month. Manage plan in Settings.`
                 : `Credits: ${Math.round(usage.used)}/${Math.round(usage.limit)} used this month (${Math.floor(usage.remaining)} left)`
             }
             className={`flex items-center gap-1 rounded-full px-2 py-1 border text-[10px] tracking-wide transition-colors cursor-pointer ${quotaTone.pill}`}
           >
             <Zap className={`w-3 h-3 ${quotaTone.icon}`} />
-            <span className="font-mono">{Math.round(usage.used)}/{usage.isUnlimited ? '∞' : Math.round(usage.limit)}</span>
+            <span className="font-mono">
+              {quotaHasNoCap ? 'BYOK' : `${Math.round(usage.used)}/${Math.round(usage.limit)}`}
+            </span>
           </button>
 
-          {plan === 'free' && !PLANS_LOCKED && (
+          <div className="relative">
             <button
               type="button"
-              onClick={() => onOpenSettings('PLAN')}
-              title={`Starter plan: ${starterPlan.price} — ${starterPlan.creditsPerMonth} credits & shared key`}
-              className="hidden sm:flex items-center gap-1 px-2 py-1 border border-amber-900/60 text-amber-400 text-[10px] uppercase tracking-wide hover:bg-amber-950/30 transition-colors cursor-pointer"
+              onClick={() => setIsContextOpen((open) => !open)}
+              title="What the model can see: repo map, retrieval mode and pinned context"
+              className={`p-1.5 transition-colors cursor-pointer ${isContextOpen ? 'text-violet-300' : 'text-neutral-500 hover:text-white'}`}
             >
-              Upgrade
+              <ListTree className="w-3.5 h-3.5" />
             </button>
-          )}
-
-          <button
-            type="button"
-            onClick={() => {
-              setIsTimelineOpen((open) => !open);
-              setTimelineSelectedId(checkpoints[0]?.id ?? null);
-            }}
-            disabled={checkpoints.length === 0}
-            title={checkpoints.length === 0 ? 'Checkpoints appear after the first assistant reply' : 'Checkpoint timeline'}
-            className={`relative p-1.5 transition-colors cursor-pointer disabled:opacity-30 ${isTimelineOpen ? 'text-emerald-300' : 'text-neutral-500 hover:text-white'}`}
-          >
-            <HistoryIcon className="w-3.5 h-3.5" />
-            {checkpoints.length > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 rounded-full bg-emerald-500/80 px-1 text-[8px] font-mono text-black">
-                {checkpoints.length}
-              </span>
+            {isContextOpen && (
+              <div className="absolute right-0 top-8 z-30 w-80 overflow-hidden rounded-xl border border-white/[0.09] bg-ink-900/95 shadow-2xl backdrop-blur-xl">
+                <div className="flex items-center justify-between border-b border-white/[0.07] px-3 py-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                    What the model can see
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsContextOpen(false)}
+                    className="text-neutral-500 hover:text-white cursor-pointer"
+                    aria-label="Close context details"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="space-y-1.5 border-b border-white/[0.07] px-3 py-2 text-[11px]">
+                  <div className="flex items-center justify-between text-neutral-400">
+                    <span>Files indexed</span>
+                    <span className="font-mono text-neutral-300">{workspaceFiles.length}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-neutral-400">
+                    <span>Pinned context</span>
+                    <span className="font-mono text-neutral-300">{attachedFiles.length + pinnedSymbols.length}</span>
+                  </div>
+                  <div className="flex items-start justify-between gap-3 text-neutral-400">
+                    <span>Retrieval</span>
+                    <span className="text-right text-neutral-300">
+                      {semanticStatus === 'ready'
+                        ? `BM25 + embeddings · ${semanticChunkCount} chunks`
+                        : semanticStatus === 'checking'
+                          ? 'Checking embeddings…'
+                          : semanticStatus === 'unavailable'
+                            ? 'BM25 only — embeddings unavailable'
+                            : 'BM25 only'}
+                    </span>
+                  </div>
+                </div>
+                <div className="px-3 py-2">
+                  <p className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">Repo map sent with each request</p>
+                  {repoMap ? (
+                    <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.07] bg-ink-950/60 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-neutral-400">
+                      {repoMap}
+                    </pre>
+                  ) : repoMapLoading ? (
+                    <p className="text-[11px] text-neutral-600">Reading the folder once to build the map…</p>
+                  ) : (
+                    <p className="text-[11px] text-neutral-600">Open a folder or attach a file to build a map.</p>
+                  )}
+                  <p className="mt-2 text-[10px] text-neutral-600">
+                    Attach a file or pin a symbol with <span className="font-mono text-neutral-400">@</span> to force it into context.
+                  </p>
+                </div>
+              </div>
             )}
-          </button>
+          </div>
 
           <button
             type="button"
@@ -294,15 +723,6 @@ export function ChatPanel({
             className="p-1.5 text-neutral-500 hover:text-white disabled:opacity-30 transition-colors cursor-pointer"
           >
             <MessageSquarePlus className="w-3.5 h-3.5" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onOpenSettings()}
-            title="Settings"
-            className="p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
-          >
-            <Settings className="w-3.5 h-3.5" />
           </button>
         </div>
       </header>
@@ -355,26 +775,53 @@ export function ChatPanel({
         </div>
       )}
 
-      {/* Checkpoint timeline */}
-      {isTimelineOpen && (
-        <TimelineSlider
-          checkpoints={checkpoints}
-          selectedId={timelineSelectedId}
-          onSelect={setTimelineSelectedId}
-          onRestore={onRestoreCheckpoint}
-          restoringId={restoringCheckpointId}
-          onClose={() => setIsTimelineOpen(false)}
-        />
-      )}
-
       {/* Messages Scroll Area */}
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4 text-xs">
+        {backgroundResume && (
+          <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.07] px-3 py-2.5">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" />
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-medium text-amber-100">Background run paused</p>
+                <p className="mt-0.5 text-[10px] leading-relaxed text-amber-200/80">
+                  {backgroundResume.summary} Interrupted when the app closed.
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={backgroundResume.onResume}
+                  disabled={!backgroundResume.available}
+                  title={
+                    backgroundResume.available
+                      ? 'Continue the stored goal in the autonomy engine'
+                      : 'A key, an open folder and an idle engine are required to resume'
+                  }
+                  className="flex items-center gap-1 rounded-md border border-amber-500/30 px-2 py-0.5 text-[10px] text-amber-200 transition-colors hover:bg-amber-500/10 disabled:opacity-40 cursor-pointer"
+                >
+                  <Play className="h-2.5 w-2.5" />
+                  Resume
+                </button>
+                <button
+                  type="button"
+                  onClick={backgroundResume.onDismiss}
+                  title="Forget this interrupted run"
+                  className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-0.5 text-[10px] text-neutral-400 transition-colors hover:bg-white/[0.04] cursor-pointer"
+                >
+                  <X className="h-2.5 w-2.5" />
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {messages.length === 0 && (
           <div className="h-full flex flex-col items-center justify-center text-center p-6 text-neutral-500">
             <Sparkles className="w-6 h-6 text-violet-300/70 mb-2" />
             <p className="text-xs text-neutral-300 font-medium">ShadRox Assistant</p>
             <p className="mt-1 text-[11px] text-neutral-500 max-w-xs leading-relaxed">
-              Describe what you want to build or change. ShadRox will inspect your workspace and directly apply patches.
+              Describe what you want to build or change. ShadRox answers directly, or quietly switches to an autonomous
+              run or a team when the task actually needs one.
             </p>
           </div>
         )}
@@ -411,9 +858,58 @@ export function ChatPanel({
               </div>
             ) : (
               <div className="max-w-[95%] text-neutral-200 leading-relaxed">
+                {message.orchestration && <OrchestrationCard message={message} onStop={onStop} />}
+
+                {message.taskPlan && message.taskPlan.length > 0 && (
+                  <details className="mb-2 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
+                    <summary className="cursor-pointer text-[10px] uppercase tracking-wider text-neutral-500">
+                      Task plan · {message.taskPlan.filter((task) => task.status === 'done').length}/{message.taskPlan.length} complete
+                    </summary>
+                    <ul className="mt-1.5 space-y-1">
+                      {message.taskPlan.map((task) => (
+                        <li key={task.id} className="flex items-start gap-1.5 text-[11px]">
+                          {task.status === 'done' ? (
+                            <Check className="w-3 h-3 mt-0.5 shrink-0 text-emerald-400" />
+                          ) : task.status === 'blocked' ? (
+                            <AlertCircle className="w-3 h-3 mt-0.5 shrink-0 text-amber-400" />
+                          ) : task.status === 'doing' ? (
+                            <Loader2 className={`w-3 h-3 mt-0.5 shrink-0 text-violet-300${message.streaming ? ' animate-spin' : ''}`} />
+                          ) : (
+                            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-neutral-600" />
+                          )}
+                          <span className={task.status === 'done' ? 'text-neutral-500 line-through' : 'text-neutral-300'}>
+                            {task.subject}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+
+                {message.toolActivity && message.toolActivity.length > 0 && (
+                  <details
+                    className="mb-2 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-[11px] text-neutral-400"
+                  >
+                    <summary className="flex cursor-pointer items-center gap-1.5 text-[10px] uppercase tracking-wider text-neutral-500">
+                      <ListTree className="w-3 h-3" />
+                      Explored the folder · {message.toolActivity.length} step(s)
+                      {message.streaming && <Loader2 className="w-3 h-3 animate-spin text-violet-300" />}
+                    </summary>
+                    <ul className="mt-2 space-y-1">
+                      {message.toolActivity.map((tool, index) => (
+                        <li key={`${tool.name}-${index}`} className="flex items-start gap-1.5 font-mono text-[11px] text-neutral-500">
+                          {tool.ok
+                            ? <Check className="w-3 h-3 mt-0.5 shrink-0 text-emerald-400" />
+                            : <AlertCircle className="w-3 h-3 mt-0.5 shrink-0 text-amber-400" />}
+                          <span className="break-all">{tool.error ? `${tool.label} — ${tool.error}` : tool.label}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+
                 {message.reasoning && (
                   <details
-                    open={Boolean(message.streaming)}
                     className="mb-2 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-[11px] text-neutral-400"
                   >
                     <summary className="flex cursor-pointer items-center gap-1.5 text-[10px] uppercase tracking-wider text-neutral-500">
@@ -485,91 +981,113 @@ export function ChatPanel({
                         {patchSet.patches.map((patch, index) => (
                           <div
                             key={`${patch.path}-${index}`}
-                            className="flex items-center justify-between gap-2 rounded-lg border border-white/[0.06] bg-ink-950/60 px-2 py-1"
+                            className="rounded-lg border border-white/[0.06] bg-ink-950/60"
                           >
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <FileCode2 className="w-3 h-3 text-neutral-500 shrink-0" />
-                              <span className="font-mono truncate text-neutral-300">{patch.path}</span>
-                              <span className="text-[9px] uppercase tracking-wide text-neutral-600 shrink-0">
-                                {patch.kind === 'searchReplace' ? `${patch.blocks?.length ?? 0} s/r` : 'rewrite'}
-                              </span>
-                              {patch.failure && (
-                                <span
-                                  className="flex items-center gap-1 text-rose-400 min-w-0"
-                                  title={patch.failure}
-                                >
-                                  <AlertTriangle className="w-3 h-3 shrink-0" />
-                                  <span className="truncate">{patch.failure}</span>
+                            <div className="flex items-center justify-between gap-2 px-2 py-1">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <FileCode2 className="w-3 h-3 text-neutral-500 shrink-0" />
+                                <span className="font-mono truncate text-neutral-300">{patch.path}</span>
+                                <span className="text-[9px] uppercase tracking-wide text-neutral-600 shrink-0">
+                                  {patch.kind === 'searchReplace' ? `${patch.blocks?.length ?? 0} s/r` : 'rewrite'}
                                 </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              {patch.status === 'pending' && (
-                                <>
+                                {patch.failure && (
+                                  <span
+                                    className="flex items-center gap-1 text-rose-400 min-w-0"
+                                    title={patch.failure}
+                                  >
+                                    <AlertTriangle className="w-3 h-3 shrink-0" />
+                                    <span className="truncate">{patch.failure}</span>
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {patch.status === 'pending' && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => onAcceptPatch(message.id, index)}
+                                      title={`Apply changes to ${patch.path}`}
+                                      className="flex items-center gap-1 rounded-md border border-emerald-500/30 px-2 py-0.5 text-[10px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/10 cursor-pointer"
+                                    >
+                                      <Check className="w-3 h-3" />
+                                      Accept
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => onRejectPatch(message.id, index)}
+                                      title={`Skip changes to ${patch.path}`}
+                                      className="flex items-center gap-1 rounded-md border border-white/[0.12] px-2 py-0.5 text-[10px] text-neutral-400 transition-colors hover:bg-white/[0.05] hover:text-neutral-200 cursor-pointer"
+                                    >
+                                      <X className="w-3 h-3" />
+                                      Skip
+                                    </button>
+                                  </>
+                                )}
+                                {patch.status === 'applied' && (
+                                  <>
+                                    <span
+                                      className={
+                                        patch.disk === 'saved'
+                                          ? 'flex items-center gap-1 text-emerald-400'
+                                          : 'flex items-center gap-1 text-amber-400'
+                                      }
+                                      title={
+                                        patch.disk === 'saved'
+                                          ? 'Written to your file on disk'
+                                          : patch.diskMessage ||
+                                            'Saved in the editor buffer — not yet written to disk'
+                                      }
+                                    >
+                                      <Check className="w-3 h-3" />
+                                      {patch.disk === 'saved' ? 'Saved to disk' : 'Applied in editor'}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => onUndoPatch(message.id, index)}
+                                      title={`Revert ${patch.path} to its previous content`}
+                                      className="rounded-md border border-white/[0.12] p-0.5 text-neutral-400 transition-colors hover:border-amber-300/40 hover:text-amber-300 cursor-pointer"
+                                    >
+                                      <Undo2 className="w-3 h-3" />
+                                    </button>
+                                  </>
+                                )}
+                                {patch.status === 'reverted' && (
+                                  <span className="text-neutral-500">
+                                    {patch.disk === 'saved' ? 'Reverted on disk' : 'Reverted in editor'}
+                                  </span>
+                                )}
+                                {patch.status === 'rejected' && <span className="text-neutral-500">Skipped</span>}
+                                {patch.status === 'failed' && (
                                   <button
                                     type="button"
                                     onClick={() => onAcceptPatch(message.id, index)}
-                                    title={`Apply changes to ${patch.path}`}
-                                    className="flex items-center gap-1 rounded-md border border-emerald-500/30 px-2 py-0.5 text-[10px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/10 cursor-pointer"
+                                    className="rounded-md border border-white/[0.12] px-2 py-0.5 text-[10px] text-neutral-300 transition-colors hover:bg-white/[0.05] cursor-pointer"
                                   >
-                                    <Check className="w-3 h-3" />
-                                    Accept
+                                    Retry
                                   </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => onRejectPatch(message.id, index)}
-                                    title={`Skip changes to ${patch.path}`}
-                                    className="flex items-center gap-1 rounded-md border border-white/[0.12] px-2 py-0.5 text-[10px] text-neutral-400 transition-colors hover:bg-white/[0.05] hover:text-neutral-200 cursor-pointer"
-                                  >
-                                    <X className="w-3 h-3" />
-                                    Skip
-                                  </button>
-                                </>
-                              )}
-                              {patch.status === 'applied' && (
-                                <>
-                                  <span
-                                    className={
-                                      patch.disk === 'saved'
-                                        ? 'flex items-center gap-1 text-emerald-400'
-                                        : 'flex items-center gap-1 text-amber-400'
-                                    }
-                                    title={
-                                      patch.disk === 'saved'
-                                        ? 'Written to your file on disk'
-                                        : patch.diskMessage ||
-                                          'Saved in the editor buffer — not yet written to disk'
-                                    }
-                                  >
-                                    <Check className="w-3 h-3" />
-                                    {patch.disk === 'saved' ? 'Saved to disk' : 'Applied in editor'}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => onUndoPatch(message.id, index)}
-                                    title={`Revert ${patch.path} to its previous content`}
-                                    className="rounded-md border border-white/[0.12] p-0.5 text-neutral-400 transition-colors hover:border-amber-300/40 hover:text-amber-300 cursor-pointer"
-                                  >
-                                    <Undo2 className="w-3 h-3" />
-                                  </button>
-                                </>
-                              )}
-                              {patch.status === 'reverted' && (
-                                <span className="text-neutral-500">
-                                  {patch.disk === 'saved' ? 'Reverted on disk' : 'Reverted in editor'}
-                                </span>
-                              )}
-                              {patch.status === 'rejected' && <span className="text-neutral-500">Skipped</span>}
-                              {patch.status === 'failed' && (
-                                <button
-                                  type="button"
-                                  onClick={() => onAcceptPatch(message.id, index)}
-                                  className="rounded-md border border-white/[0.12] px-2 py-0.5 text-[10px] text-neutral-300 transition-colors hover:bg-white/[0.05] cursor-pointer"
-                                >
-                                  Retry
-                                </button>
-                              )}
+                                )}
+                              </div>
                             </div>
+                            {patch.status === 'pending' && (
+                              <PatchHunkReview
+                                sections={
+                                  patch.kind === 'rewrite'
+                                    ? [{
+                                        key: 'rewrite',
+                                        before: workspaceFiles.find((file) => samePath(file.name, patch.path))?.content ?? '',
+                                        after: patch.content ?? ''
+                                      }]
+                                    : (patch.blocks ?? []).map((block, blockIndex) => ({
+                                        key: `block-${blockIndex}`,
+                                        label: `Replacement block ${blockIndex + 1}`,
+                                        before: block.original,
+                                        after: block.updated,
+                                        groupIndex: blockIndex
+                                      }))
+                                }
+                                onApply={(acceptedIds) => onApplyPatchHunks(message.id, index, acceptedIds)}
+                              />
+                            )}
                           </div>
                         ))}
                       </div>
@@ -594,17 +1112,28 @@ export function ChatPanel({
                         {copiedMessageId === message.id ? 'Copied' : 'Copy'}
                       </button>
                     )}
-                    {message.id === lastAssistantId && canRegenerate && !isGenerating && (
-                      <button
-                        type="button"
-                        onClick={onRegenerate}
-                        title="Regenerate this reply"
-                        className="flex items-center gap-1 transition-colors hover:text-neutral-200 cursor-pointer"
-                      >
-                        <RotateCcw className="w-3 h-3" />
-                        Regenerate
-                      </button>
-                    )}
+                    {(() => {
+                      const checkpoint = checkpoints.find((entry) => entry.messageId === message.id);
+                      if (!checkpoint) return null;
+                      const restoring = restoringCheckpointId === checkpoint.id;
+                      const open = activeCheckpointId === checkpoint.id;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => (open ? onCloseCheckpoint() : onShowCheckpoint(checkpoint.id))}
+                          disabled={restoring}
+                          title={open ? 'Hide the history rail' : `See what restoring before this reply changes (${checkpoint.fileCount} files)`}
+                          className={`flex items-center gap-1 transition-colors hover:text-amber-400 disabled:opacity-40 cursor-pointer ${open ? 'text-amber-300' : ''}`}
+                        >
+                          {restoring ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <History className="w-3 h-3" />
+                          )}
+                          {restoring ? 'Restoring…' : open ? 'History' : 'Checkpoint'}
+                        </button>
+                      );
+                    })()}
                     {message.resumable && !isGenerating && (
                       <button
                         type="button"
@@ -617,89 +1146,25 @@ export function ChatPanel({
                       </button>
                     )}
                     {message.metrics && (message.metrics.tokens > 0 || message.metrics.firstTokenMs !== null) && (
-                      <span
-                        className="flex items-center gap-1 font-mono text-neutral-600"
-                        title="Time to first token · total tokens · total duration"
-                      >
-                        <Zap className="w-3 h-3" />
-                        {message.metrics.firstTokenMs !== null ? `${message.metrics.firstTokenMs}ms` : '—'}
-                        {message.metrics.tokens > 0 ? ` · ${message.metrics.tokens} tok` : ''}
-                        {message.metrics.durationMs ? ` · ${(message.metrics.durationMs / 1000).toFixed(1)}s` : ''}
-                      </span>
+                      <details className="font-mono text-neutral-600">
+                        <summary className="flex cursor-pointer items-center gap-1">
+                          <Zap className="w-3 h-3" />
+                          Usage
+                        </summary>
+                        <span className="mt-1 block" title="Time to first token · input/output tokens · credits billed · total duration">
+                          {message.metrics.firstTokenMs !== null ? `${message.metrics.firstTokenMs}ms` : '—'}
+                          {message.metrics.tokens > 0 ? ` · ${formatTokenSplit(message.metrics, message.metrics.tokens)}` : ''}
+                          {message.metrics.credits !== undefined ? ` · ${formatCredits(message.metrics.credits)}` : ''}
+                          {message.metrics.durationMs ? ` · ${(message.metrics.durationMs / 1000).toFixed(1)}s` : ''}
+                        </span>
+                      </details>
                     )}
                   </div>
                 )}
-
-                {!message.streaming &&
-                  (() => {
-                    const checkpoint = checkpoints.find((entry) => entry.messageId === message.id);
-                    if (!checkpoint) return null;
-                    return (
-                      <button
-                        type="button"
-                        onClick={() => onRestoreCheckpoint(checkpoint.id)}
-                        disabled={restoringCheckpointId === checkpoint.id}
-                        title={`Restore workspace files before this reply (${checkpoint.fileCount} files)`}
-                        className="mt-2 flex items-center gap-1 text-[10px] text-neutral-500 hover:text-amber-400 disabled:opacity-40 transition-colors cursor-pointer"
-                      >
-                        {restoringCheckpointId === checkpoint.id ? (
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                        ) : (
-                          <RotateCcw className="w-3 h-3" />
-                        )}
-                        Restore workspace before this reply
-                      </button>
-                    );
-                  })()}
               </div>
             )}
           </div>
         ))}
-        {previewApproval && (
-          <div className="rounded-xl border border-amber-500/25 bg-amber-500/[.06] p-3 text-[11px]">
-            <div className="flex items-center gap-2 text-amber-300 font-semibold">
-              <ShieldAlert className="w-4 h-4 shrink-0" />
-              Approve project setup
-            </div>
-            <p className="mt-2 text-neutral-300">
-              ShadRox found <span className="font-mono text-white">{previewApproval.projectPath}</span> and wants to run:
-            </p>
-            <code className="mt-1 block break-all rounded-lg border border-white/[0.09] bg-ink-950/60 p-2 text-violet-200">
-              {previewApproval.packageManager} run {previewApproval.scriptName}
-              <span className="block mt-1 text-neutral-400">{previewApproval.scriptCommand}</span>
-            </code>
-            {previewApproval.missingDependencies.length > 0 ? (
-              <p className="mt-2 text-neutral-300 break-words">
-                Install {previewApproval.missingDependencies.length} missing package(s) first:{' '}
-                <span className="font-mono text-neutral-100">
-                  {previewApproval.missingDependencies.slice(0, 10).join(', ')}
-                  {previewApproval.missingDependencies.length > 10 ? ', ...' : ''}
-                </span>
-              </p>
-            ) : (
-              <p className="mt-2 text-neutral-400">Use the dependencies already installed in this project.</p>
-            )}
-            <p className="mt-2 text-amber-200/80">
-              Install hooks and project scripts can access files and the network with your account permissions. Approve only if you trust this project.
-            </p>
-            <div className="mt-3 flex gap-2">
-              <button
-                type="button"
-                onClick={onApprovePreview}
-                className="rounded-lg border border-violet-300/25 bg-violet-500/[.12] px-3 py-1.5 text-violet-200 transition-colors hover:bg-violet-500/20 cursor-pointer"
-              >
-                Approve once &amp; run
-              </button>
-              <button
-                type="button"
-                onClick={onCancelPreviewApproval}
-                className="rounded-lg border border-white/[0.12] px-3 py-1.5 text-neutral-300 transition-colors hover:bg-white/[0.05] cursor-pointer"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
       </div>
 
       {/*
@@ -727,36 +1192,23 @@ export function ChatPanel({
         </div>
       )}
 
+      {activeCheckpointId && (
+        <div className="shrink-0 px-3 pb-1 pt-2">
+          <TimelineSlider
+            checkpoints={checkpoints}
+            selectedId={activeCheckpointId}
+            onSelect={onShowCheckpoint}
+            onRestore={onRestoreCheckpoint}
+            restoringId={restoringCheckpointId}
+            onClose={onCloseCheckpoint}
+            diff={checkpointDiff}
+            diffLoading={checkpointDiffLoading}
+          />
+        </div>
+      )}
+
       {/* Input Area & Prompt Box */}
       <div className="shrink-0 border-t border-white/[0.07] p-3 bg-ink-950">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-[10px] text-neutral-500">
-            {hasPreviewDiagnostics
-              ? 'Recent preview + Console logs are included with your next chat message.'
-              : 'Preview and Console are ready to inspect once a project runs.'}
-          </div>
-          <div className="flex shrink-0 gap-1">
-            {previewState.status === 'ready' ? (
-              <button
-                type="button"
-                onClick={onStopPreview}
-                className="rounded-lg border border-white/[0.09] px-2 py-1 text-[10px] text-neutral-300 transition-colors hover:border-red-500/40 hover:text-red-300 cursor-pointer"
-              >
-                Stop preview
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onRunPreview}
-                disabled={previewState.status === 'starting' || Boolean(previewApproval)}
-                className="rounded-lg border border-violet-300/25 px-2 py-1 text-[10px] text-violet-200 transition-colors hover:bg-violet-500/[.12] disabled:opacity-40 cursor-pointer"
-              >
-                {previewState.status === 'starting' ? 'Checking project…' : 'Run preview'}
-              </button>
-            )}
-          </div>
-        </div>
-
         {/* Monthly Cap Warning Banner */}
         {usage.isCapReached && (
           <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-rose-500/25 bg-rose-500/[.07] p-2 text-[11px] text-rose-300">
@@ -781,49 +1233,221 @@ export function ChatPanel({
           </div>
         )}
 
-        {attachedFileName && (
-          <div className="mb-2 flex items-center justify-between rounded-lg border border-white/[0.09] px-2.5 py-1.5 text-[11px] text-neutral-400">
-            <span className="font-mono truncate">{attachedFileName}</span>
-            <button
-              type="button"
-              onClick={() => onAttachedFileChange(null)}
-              className="text-neutral-600 hover:text-white cursor-pointer"
-            >
-              remove
-            </button>
+        {attachedFiles.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {attachedFiles.map((name) => (
+              <span
+                key={name}
+                className="flex max-w-full items-center gap-1 rounded-lg border border-white/[0.09] bg-white/[0.02] px-2 py-1 text-[11px] text-neutral-300"
+              >
+                {/\.(mdx?|txt|rst)$/i.test(name) ? (
+                  <FileText className="h-3 w-3 shrink-0 text-violet-300/80" />
+                ) : (
+                  <FileCode2 className="h-3 w-3 shrink-0 text-violet-300/80" />
+                )}
+                <span className="truncate font-mono">{name}</span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${name}`}
+                  onClick={() => onAttachedFilesChange(attachedFiles.filter((file) => file !== name))}
+                  className="ml-0.5 text-neutral-600 hover:text-white cursor-pointer"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {pinnedSymbols.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {pinnedSymbols.map((symbol) => (
+              <span
+                key={`${symbol.name}:${symbol.file}`}
+                title={`${symbol.file}${symbol.line !== undefined ? `:${symbol.line + 1}` : ''}`}
+                className="flex max-w-full items-center gap-1 rounded-lg border border-violet-300/20 bg-violet-500/[.08] px-2 py-1 text-[11px] text-violet-100"
+              >
+                <Code2 className="h-3 w-3 shrink-0 text-violet-300/80" />
+                <span className="truncate font-mono">{symbol.name}</span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${symbol.name}`}
+                  onClick={() =>
+                    onPinnedSymbolsChange(
+                      pinnedSymbols.filter((entry) => !(entry.name === symbol.name && entry.file === symbol.file))
+                    )
+                  }
+                  className="ml-0.5 text-violet-300/50 hover:text-white cursor-pointer"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {queuedMessages.length > 0 && (
+          <div className="mb-2 rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 py-2">
+            <div className="mb-1.5 flex items-center justify-between text-[10px] font-medium uppercase tracking-wide text-neutral-500">
+              <span>Queued messages</span>
+              <span>{queuedMessages.length}/5</span>
+            </div>
+            <ol className="space-y-1">
+              {queuedMessages.map((message, index) => (
+                <li key={message.id} className="flex items-center gap-2 text-[11px] text-neutral-300">
+                  <span className="shrink-0 font-mono text-neutral-600">{index + 1}.</span>
+                  <span className="min-w-0 flex-1 truncate">{message.text}</span>
+                  {onCancelQueuedMessage && (
+                    <button
+                      type="button"
+                      onClick={() => onCancelQueuedMessage(message.id)}
+                      aria-label={`Cancel queued message ${index + 1}`}
+                      className="shrink-0 text-neutral-600 transition-colors hover:text-rose-300 cursor-pointer"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ol>
           </div>
         )}
 
         {/* Prompt Input Box */}
-        <div className="rounded-2xl border border-white/[0.09] bg-white/[0.03] transition-colors focus-within:border-violet-300/40 focus-within:bg-white/[0.04]">
+        <div className="relative rounded-2xl border border-white/[0.09] bg-white/[0.03] transition-colors focus-within:border-violet-300/40 focus-within:bg-white/[0.04]">
+          {skillMatches.length > 0 && (
+            <div className="absolute bottom-full left-2 right-2 z-20 mb-2 overflow-hidden rounded-xl border border-white/[0.09] bg-ink-900/95 py-1 shadow-2xl backdrop-blur-xl">
+              <div className="border-b border-white/[0.07] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                Skill of this folder
+              </div>
+              {skillMatches.map((skill) => (
+                <button
+                  key={skill.path}
+                  type="button"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    handleInputChange(`/${skillKey(skill.name)} `);
+                  }}
+                  className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer text-neutral-400 hover:bg-white/[0.04] hover:text-white"
+                >
+                  <span className="shrink-0 font-mono text-[11px] text-violet-200">/{skillKey(skill.name)}</span>
+                  <span className="min-w-0 flex-1 truncate text-[11px]">
+                    {skill.description || skill.whenToUse || 'no description'}
+                  </span>
+                </button>
+              ))}
+              <div className="border-t border-white/[0.07] px-3 py-1 text-[10px] text-neutral-600">
+                Tab inserts the name · Esc hides
+              </div>
+            </div>
+          )}
+          {mentionQuery !== null && (
+            <div className="absolute bottom-full left-2 right-2 z-20 mb-2 overflow-hidden rounded-xl border border-white/[0.09] bg-ink-900/95 py-1 shadow-2xl backdrop-blur-xl">
+              <div className="border-b border-white/[0.07] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                Attach a file or pin a symbol
+              </div>
+              {mentionMatches.length === 0 ? (
+                <p className="px-3 py-2 text-[11px] text-neutral-500">
+                  Nothing matches “{mentionQuery}”.
+                </p>
+              ) : (
+                mentionMatches.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      addMention(item);
+                    }}
+                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer ${
+                      item.id === activeMention?.id
+                        ? 'bg-violet-500/[.14] text-violet-100'
+                        : 'text-neutral-400 hover:bg-white/[0.04] hover:text-white'
+                    }`}
+                  >
+                    {item.kind === 'symbol' ? (
+                      <Code2 className="h-3.5 w-3.5 shrink-0 text-violet-300/80" />
+                    ) : /\.(mdx?|txt|rst)$/i.test(item.file) ? (
+                      <FileText className="h-3.5 w-3.5 shrink-0" />
+                    ) : (
+                      <FileCode2 className="h-3.5 w-3.5 shrink-0" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{item.label}</span>
+                    {item.kind === 'symbol' && (
+                      <span className="shrink-0 truncate font-mono text-[10px] text-neutral-600">
+                        {item.file}:{(item.line ?? 0) + 1}
+                      </span>
+                    )}
+                  </button>
+                ))
+              )}
+              <div className="border-t border-white/[0.07] px-3 py-1 text-[10px] text-neutral-600">
+                ↑↓ choose · Enter attach · Esc close
+              </div>
+            </div>
+          )}
           <textarea
             value={input}
-            onChange={(event) => onInputChange(event.target.value)}
+            onChange={(event) => handleInputChange(event.target.value)}
             onKeyDown={(event) => {
+              if (skillMatches.length > 0) {
+                if (event.key === 'Tab') {
+                  event.preventDefault();
+                  handleInputChange(`/${skillKey(skillMatches[0].name)} `);
+                  return;
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setSlashDismissed(true);
+                  return;
+                }
+              }
+              if (mentionQuery !== null && mentionMatches.length > 0) {
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  setMentionIndex((index) => (index + 1) % mentionMatches.length);
+                  return;
+                }
+                if (event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setMentionIndex((index) => (index - 1 + mentionMatches.length) % mentionMatches.length);
+                  return;
+                }
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  if (activeMention) addMention(activeMention);
+                  return;
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  closeMention();
+                  return;
+                }
+              }
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
-                if (canSend) onSend();
+                if (canSend || canQueue) onSend();
               }
             }}
             rows={3}
             placeholder={
               usage.isCapReached
                 ? 'Monthly message cap reached. Manage usage in Settings...'
-                : 'Ask ShadRox to build, refactor, or explain code...'
+                : 'Ask ShadRox to build, refactor, or explain code… (@ to attach a file or symbol)'
             }
             disabled={usage.isCapReached}
             className="w-full resize-none rounded-2xl bg-transparent px-3.5 py-3 text-xs text-neutral-100 outline-none placeholder:text-neutral-600 disabled:opacity-50"
           />
 
-          <div className="flex items-center justify-between px-2 pb-2">
-            <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2">
+            <div className="flex min-w-0 flex-auto flex-wrap items-center gap-1.5">
               {/* Work Mode Dropdown (Replaces old template option with Code, Plan, Complex) */}
               <div className="relative">
                 <button
                   type="button"
                   onClick={() => setIsModeMenuOpen((open) => !open)}
                   title={`Active mode: ${activeMode.label} — ${activeMode.hint}`}
-                  className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${
+                  className={`flex min-w-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${
                     refineMode === 'plan'
                       ? 'border-amber-500/30 bg-amber-500/[.08] text-amber-300'
                       : refineMode === 'complex'
@@ -831,9 +1455,9 @@ export function ChatPanel({
                         : 'border-violet-300/30 bg-violet-500/10 text-violet-200'
                   }`}
                 >
-                  <ActiveModeIcon className="w-3.5 h-3.5" />
-                  <span className="font-medium">Mode: {activeMode.short}</span>
-                  <ChevronDown className="w-3 h-3 text-neutral-400" />
+                  <ActiveModeIcon className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate font-medium">Mode</span>
+                  <ChevronDown className="w-3 h-3 shrink-0 text-neutral-400" />
                 </button>
 
                 {isModeMenuOpen && (
@@ -878,7 +1502,7 @@ export function ChatPanel({
                   onClick={() => setIsAttachMenuOpen((open) => !open)}
                   disabled={workspaceFiles.length === 0}
                   title="Attach file context"
-                  className="p-1.5 text-neutral-500 hover:text-white disabled:opacity-40 transition-colors cursor-pointer"
+                  className="shrink-0 p-1.5 text-neutral-500 hover:text-white disabled:opacity-40 transition-colors cursor-pointer"
                 >
                   <Paperclip className="w-3.5 h-3.5" />
                 </button>
@@ -889,7 +1513,7 @@ export function ChatPanel({
                         key={file.name}
                         type="button"
                         onClick={() => {
-                          onAttachedFileChange(file.name);
+                          onAttachedFilesChange([...new Set([...attachedFiles, file.name])]);
                           setIsAttachMenuOpen(false);
                         }}
                         className="block w-full truncate px-3 py-1.5 text-left text-xs text-neutral-400 hover:bg-white/[0.04] hover:text-white cursor-pointer"
@@ -907,7 +1531,7 @@ export function ChatPanel({
                   type="button"
                   onClick={() => (speech.isListening ? speech.stop() : speech.start())}
                   title={speech.isListening ? 'Stop recording voice' : 'Dictate with microphone'}
-                  className={`p-1.5 transition-colors cursor-pointer ${
+                  className={`shrink-0 p-1.5 transition-colors cursor-pointer ${
                     speech.isListening ? 'text-red-400 animate-pulse' : 'text-neutral-500 hover:text-white'
                   }`}
                 >
@@ -922,30 +1546,83 @@ export function ChatPanel({
                   onClick={onRefinePrompt}
                   disabled={!input.trim() || isRefining || isGenerating}
                   title="Auto-refine prompt with AI"
-                  className="p-1.5 text-neutral-500 hover:text-white disabled:opacity-30 transition-colors cursor-pointer"
+                  className="shrink-0 p-1.5 text-neutral-500 hover:text-white disabled:opacity-30 transition-colors cursor-pointer"
                 >
                   <Wand2 className="w-3.5 h-3.5" />
                 </button>
               )}
             </div>
 
-            {/* Right side: Token count & Send Button */}
-            <div className="flex items-center gap-2">
+            {/* Right side: toggles, token count & Send Button */}
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              <label
+                title="Semantic: re-rank the retrieval shortlist with an on-device embedding model. Off = BM25 only."
+                className="flex shrink-0 items-center gap-1 text-[10px] uppercase tracking-wide text-neutral-500 hover:text-neutral-300 cursor-pointer select-none"
+              >
+                <input
+                  type="checkbox"
+                  checked={semanticRetrieval}
+                  onChange={onToggleSemanticRetrieval}
+                  disabled={semanticStatus === 'checking'}
+                  aria-label="Semantic retrieval"
+                  className="accent-violet-400 cursor-pointer disabled:opacity-40"
+                />
+                <span className="hidden sm:inline">Semantic</span>
+                {semanticStatus === 'checking' && <Loader2 className="w-3 h-3 shrink-0 animate-spin" />}
+                {semanticStatus === 'ready' && (
+                  <span className="font-mono normal-case text-neutral-600">{semanticChunkCount}</span>
+                )}
+                {semanticStatus === 'unavailable' && (
+                  <span
+                    className="text-amber-400/80"
+                    title="Local embeddings unavailable — install @huggingface/transformers to enable. Retrieval stays on BM25."
+                  >
+                    !
+                  </span>
+                )}
+              </label>
+
+              <label
+                title="Auto: a cheap model first picks which files this task needs, your answer model then reads those files from disk. Heavy repo context stops landing on the expensive model."
+                className="flex shrink-0 items-center gap-1 text-[10px] uppercase tracking-wide text-neutral-500 hover:text-neutral-300 cursor-pointer select-none"
+              >
+                <input
+                  type="checkbox"
+                  checked={autoContext}
+                  onChange={onToggleAutoContext}
+                  aria-label="Auto file context"
+                  className="accent-violet-400 cursor-pointer"
+                />
+                <span className="hidden sm:inline">Auto</span>
+              </label>
+
               {input.length > 0 && (
-                <span className="text-[10px] text-neutral-500 font-mono hidden sm:inline">
+                <span className="hidden text-[10px] text-neutral-500 font-mono xl:inline">
                   {input.length}c · ~{estimateTokens(input)} tok
                 </span>
               )}
 
               {isGenerating ? (
-                <button
-                  type="button"
-                  onClick={onStop}
-                  className="flex items-center gap-1.5 rounded-lg border border-red-500/30 px-3 py-1.5 text-[11px] text-red-300 transition-colors hover:bg-red-500/10 cursor-pointer"
-                >
-                  <Square className="w-3 h-3 fill-current" />
-                  Stop
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onSend()}
+                    disabled={!canQueue || queuedMessages.length >= 5}
+                    title="Queue this message after the current task"
+                    className="flex items-center gap-1.5 rounded-lg border border-violet-300/25 px-2.5 py-1.5 text-[11px] text-violet-200 transition-colors hover:bg-violet-500/10 disabled:opacity-30 cursor-pointer"
+                  >
+                    <MessageSquarePlus className="w-3 h-3" />
+                    Queue
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onStop}
+                    className="flex items-center gap-1.5 rounded-lg border border-red-500/30 px-3 py-1.5 text-[11px] text-red-300 transition-colors hover:bg-red-500/10 cursor-pointer"
+                  >
+                    <Square className="w-3 h-3 fill-current" />
+                    Stop
+                  </button>
+                </>
               ) : (
                 <button
                   type="button"

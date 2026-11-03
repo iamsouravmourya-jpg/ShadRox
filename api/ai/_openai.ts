@@ -1,6 +1,7 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
 import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
-import { UpstreamError, type StreamRequest, type StreamResult, type StreamSink, type ThinkingLevel } from './_types.js';
+import { UpstreamError, mergeOpenAiUsage, usageFields, type StreamRequest, type StreamResult, type StreamSink, type ThinkingLevel, type TokenUsage } from './_types.js';
+import { OpenAiToolCallCollector, rejectsNativeTools } from './_toolCalls.js';
 import { fetchUpstream } from './_upstream.js';
 
 const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
@@ -94,7 +95,8 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
     messages: Array<{ role: string; content: string }>,
     reasoningEffort?: ThinkingLevel,
     maxOutputTokens?: number,
-    attempts = 1
+    attempts = 1,
+    withTools = true
   ) =>
     fetchUpstream(
       `${GROQ_API_BASE}/chat/completions`,
@@ -111,7 +113,16 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
           stream: true,
           stream_options: { include_usage: true },
           ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
-          ...(maxOutputTokens ? { max_tokens: maxOutputTokens } : {})
+          ...(maxOutputTokens ? { max_tokens: maxOutputTokens } : {}),
+          ...(withTools && request.toolDefinitions?.length
+            ? {
+                tools: request.toolDefinitions.map((tool) => ({
+                  type: 'function',
+                  function: { name: tool.name, description: tool.description, parameters: tool.parameters }
+                })),
+                tool_choice: 'auto'
+              }
+            : {})
         })
       },
       signal,
@@ -121,16 +132,23 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
   let messages = payloadMessages;
   let effort = thinking;
   let maxOutputTokens: number | undefined;
+  let withTools = Boolean(request.toolDefinitions?.length);
 
   // One attempt on the limit-aware calls: repeating an oversized request can
   // only burn the same quota, so the retry below changes the request instead.
-  let response = await send(messages, effort, maxOutputTokens);
+  let response = await send(messages, effort, maxOutputTokens, 1, withTools);
   let payload = response.ok ? '' : await readErrorPayload(response);
+
+  if (!response.ok && withTools && rejectsNativeTools(payload)) {
+    withTools = false;
+    response = await send(messages, effort, maxOutputTokens, 1, withTools);
+    payload = response.ok ? '' : await readErrorPayload(response);
+  }
 
   if (!response.ok && effort && /reasoning/i.test(payload)) {
     // Only some Groq models accept `reasoning_effort`; retry plainly otherwise.
     effort = undefined;
-    response = await send(messages, effort, maxOutputTokens);
+    response = await send(messages, effort, maxOutputTokens, 1, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 
@@ -147,11 +165,11 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
       const roomTokens = Math.max(512, limits.tokensPerMinute - output);
       messages = clampMessages(messages, roomTokens * 4);
     }
-    response = await send(messages, effort, maxOutputTokens);
+    response = await send(messages, effort, maxOutputTokens, 1, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
   } else if (!response.ok) {
     // Ordinary transient failure: `fetchUpstream` owns the backoff for these.
-    response = await send(messages, effort, maxOutputTokens, 2);
+    response = await send(messages, effort, maxOutputTokens, 2, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 
@@ -163,8 +181,9 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
   }
 
   let fullText = '';
-  let totalTokens = 0;
+  let usage: TokenUsage = {};
   let finishReason: string | null = null;
+  const toolCalls = new OpenAiToolCallCollector();
 
   const decoder = createSseDecoder(({ data }) => {
     if (!data || data === '[DONE]') return;
@@ -189,9 +208,10 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
       }
       const reasoning = reasoningText(delta);
       if (reasoning) sink.reasoning(reasoning);
+      toolCalls.add(delta.tool_calls);
     }
     if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason;
-    if (typeof parsed?.usage?.total_tokens === 'number') totalTokens = parsed.usage.total_tokens;
+    usage = mergeOpenAiUsage(usage, parsed?.usage);
   });
 
   try {
@@ -211,7 +231,10 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
     throw new Error(sanitizeErrorMessage(error, 'Groq stream failed.'));
   }
 
-  if (!fullText.trim()) {
+  const calls = toolCalls.values();
+  if (calls.length > 0) sink.toolCalls(calls);
+
+  if (!fullText.trim() && calls.length === 0) {
     throw new Error(
       finishReason === 'length'
         ? 'Model hit its output limit before writing an answer. Try a higher limit or a shorter prompt.'
@@ -219,5 +242,5 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
     );
   }
 
-  return { tokens: totalTokens || estimateTokens(fullText), finishReason };
+  return { tokens: usage.total || estimateTokens(fullText), ...usageFields(usage), finishReason };
 }

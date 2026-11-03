@@ -17,6 +17,8 @@ export interface Checkpoint {
   label: string;
   createdAt: number;
   files: Array<{ name: string; hash: string }>;
+  /** Paths a run created after this checkpoint; a rollback removes them again. */
+  createdPaths?: string[];
 }
 
 /** Everything the UI needs, without the (potentially large) file list. */
@@ -107,7 +109,7 @@ export async function saveCheckpoint(input: {
   files: WorkspaceFile[];
 }): Promise<CheckpointMeta | null> {
   const db = await openDb();
-  if (!db || input.files.length === 0) return null;
+  if (!db) return null;
 
   const hashed = await Promise.all(
     input.files.map(async (file) => ({ name: file.name, hash: await hashContent(file.content) }))
@@ -183,6 +185,71 @@ export async function loadCheckpointFiles(id: string): Promise<WorkspaceFile[] |
 }
 
 /** Keeps only the newest checkpoints for a workspace and frees orphaned blobs. */
+/**
+ * Adds pre-write copies of files that were not part of the checkpoint.
+ *
+ * A folder workspace mounts as paths, so the checkpoint taken before a turn only
+ * knows about open tabs. When the patch pipeline pulls a file off disk to edit
+ * it, that file's disk copy *is* its pre-run state — merging it in here is what
+ * lets a rollback restore every file the run actually touched instead of just
+ * the ones that happened to be open.
+ */
+export async function mergeCheckpointFiles(
+  checkpointId: string,
+  files: WorkspaceFile[]
+): Promise<number> {
+  const db = await openDb();
+  if (!db || files.length === 0) return 0;
+  const existing = await requestResult<Checkpoint>(
+    db.transaction(CHECKPOINTS, 'readonly').objectStore(CHECKPOINTS).get(checkpointId)
+  );
+  if (!existing) return 0;
+
+  const known = new Set(existing.files.map((file) => file.name));
+  const additions = files.filter((file) => !known.has(file.name));
+  if (additions.length === 0) return 0;
+
+  const hashed = await Promise.all(
+    additions.map(async (file) => ({ name: file.name, hash: await hashContent(file.content) }))
+  );
+  const write = db.transaction([CHECKPOINTS, BLOBS], 'readwrite');
+  const blobStore = write.objectStore(BLOBS);
+  additions.forEach((file, index) => {
+    blobStore.put({ hash: hashed[index].hash, content: file.content });
+  });
+  const merged: Checkpoint = { ...existing, files: [...existing.files, ...hashed] };
+  write.objectStore(CHECKPOINTS).put(merged);
+  await transactionDone(write);
+  return hashed.length;
+}
+
+/** Records which paths an apply created, so a rollback can delete them again. */
+export async function addCheckpointCreatedPaths(
+  checkpointId: string,
+  paths: string[]
+): Promise<void> {
+  const db = await openDb();
+  if (!db || paths.length === 0) return;
+  const existing = await requestResult<Checkpoint>(
+    db.transaction(CHECKPOINTS, 'readonly').objectStore(CHECKPOINTS).get(checkpointId)
+  );
+  if (!existing) return;
+  const created = [...new Set([...(existing.createdPaths ?? []), ...paths])];
+  const tx = db.transaction(CHECKPOINTS, 'readwrite');
+  tx.objectStore(CHECKPOINTS).put({ ...existing, createdPaths: created });
+  await transactionDone(tx);
+}
+
+/** Empty array means the checkpoint predates created-path tracking. */
+export async function loadCheckpointCreatedPaths(checkpointId: string): Promise<string[]> {
+  const db = await openDb();
+  if (!db) return [];
+  const existing = await requestResult<Checkpoint>(
+    db.transaction(CHECKPOINTS, 'readonly').objectStore(CHECKPOINTS).get(checkpointId)
+  );
+  return existing?.createdPaths ?? [];
+}
+
 async function pruneWorkspaceHistory(workspacePath: string, db: IDBDatabase): Promise<void> {
   const tx = db.transaction(CHECKPOINTS, 'readwrite');
   const store = tx.objectStore(CHECKPOINTS);

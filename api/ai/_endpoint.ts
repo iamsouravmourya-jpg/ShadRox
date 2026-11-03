@@ -18,6 +18,14 @@ import { RequestRejectedError } from '../_validate.js';
 
 const MAX_URL_LENGTH = 512;
 
+/**
+ * True when this process is the desktop app's own loopback backend rather than
+ * a hosted function. `startServer` sets the flag when it binds a loopback host.
+ */
+export function runsOnTheUsersMachine(): boolean {
+  return process.env.SHADROX_LOCAL_BACKEND === '1';
+}
+
 const BLOCKED_HOSTNAMES = new Set([
   'localhost',
   'metadata.google.internal',
@@ -106,8 +114,7 @@ export function resolveCustomEndpoint(rawBaseUrl: unknown): string {
   // Anything reachable by name is fair game there. `startServer` sets this flag
   // when it binds a loopback host; the Vercel functions never do, so the
   // deployment that is an open proxy by construction keeps the strict policy.
-  const runsOnTheUsersMachine = process.env.SHADROX_LOCAL_BACKEND === '1';
-  if (runsOnTheUsersMachine) {
+  if (runsOnTheUsersMachine()) {
     return stripTrailingSlash(url.toString());
   }
 

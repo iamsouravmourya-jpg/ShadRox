@@ -67,6 +67,9 @@ export async function completeOnce(request: CompletionRequest): Promise<Completi
         },
         reasoning() {
           /* reasoning is not part of a completion payload */
+        },
+        toolCalls() {
+          /* tool calls are not part of a completion payload */
         }
       }
     );

@@ -76,6 +76,19 @@ export function recordCreditSpend(plan: PlanTier, rate: CreditRate): number {
   return addCreditSpend(CREDIT_RATES[rate]);
 }
 
+/**
+ * Charge a turn for what it actually used, instead of the fixed per-role price.
+ *
+ * A null credit figure means the provider reported no token split, and then the
+ * old flat rate is the honest ceiling — the alternative is a free ride on the
+ * operator's key. Never both: charging real and flat together would double-bill
+ * every turn that reports usage.
+ */
+export function settleTurnCredits(plan: PlanTier, credits: number | null, fallback: CreditRate): number {
+  if (!Number.isFinite(getPlanMeta(plan).creditsPerMonth)) return 0;
+  return addCreditSpend(credits === null ? CREDIT_RATES[fallback] : credits);
+}
+
 export function resetMonthlyUsage(): void {
   try {
     localStorage.setItem(getMonthKey(), '0');

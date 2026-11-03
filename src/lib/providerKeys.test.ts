@@ -6,12 +6,15 @@ import { describeKeyFormatProblem, getProviderMeta, looksLikeKeyFor } from './pr
 // treats a full-length AIza string as a leaked credential even inside a test.
 const VALID_GEMINI = 'AIza-TEST-KEY-FORMAT-ONLY';
 const VALID_GROQ = 'gsk_0123456789abcdefGHIJKLMNOP';
+// AI Studio now issues these instead of AIza keys; they are ordinary API keys.
+const AUTH_KEY = 'AQ.Ab8R-TEST-KEY-FORMAT-ONLY';
 // Same reason: the detector treats a full-length OAuth token as a live
-// credential, and the classifier only reads the AQ. prefix.
-const SIGN_IN_TOKEN = 'AQ.EXAMPLE-SIGN-IN-TOKEN-NOT-REAL';
+// credential, and the classifier only reads the ya29. prefix.
+const SIGN_IN_TOKEN = 'ya29.EXAMPLE-OAUTH-ACCESS-TOKEN-NOT-REAL';
 
 test('a well-formed key for its provider reports no problem', () => {
   assert.equal(describeKeyFormatProblem('gemini', VALID_GEMINI), null);
+  assert.equal(describeKeyFormatProblem('gemini', AUTH_KEY), null);
   assert.equal(describeKeyFormatProblem('groq', VALID_GROQ), null);
   assert.equal(looksLikeKeyFor('gemini', VALID_GROQ), false);
 });

@@ -93,8 +93,16 @@ test('an oversized base64 screenshot is dropped, the text around it is not', () 
 
 test('only the recent workspaces keep a transcript', () => {
   const store = memoryStore();
-  for (let index = 0; index < 20; index += 1) {
-    saveConversation(store, `folder-${index}`, [turn('1', 'model', `project ${index}`)]);
+  // Freeze the clock so this is a deterministic same-millisecond burst: the
+  // newest save must still win the tie, not be pruned as if it were oldest.
+  const realNow = Date.now;
+  Date.now = () => 1_000;
+  try {
+    for (let index = 0; index < 20; index += 1) {
+      saveConversation(store, `folder-${index}`, [turn('1', 'model', `project ${index}`)]);
+    }
+  } finally {
+    Date.now = realNow;
   }
   const restored = store.backing.get('shadrox.chat.history');
   assert.ok(restored);

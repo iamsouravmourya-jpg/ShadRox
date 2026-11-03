@@ -2,7 +2,14 @@ export type Stage = 'STAGE_2' | 'STAGE_3';
 
 export type TabType = 'CODE' | 'PREVIEW' | 'PLAN' | 'PLUGINS' | 'AGENTS' | 'AUTOMATIONS';
 
-export type SettingsTab = 'CHAT' | 'PLAN' | 'GITHUB' | 'SECRETS';
+export type SettingsTab = 'CHAT' | 'PLAN' | 'GITHUB' | 'SECRETS' | 'TOOLS' | 'AUTOMATIONS';
+
+/**
+ * Local-embedding retrieval state shown in the chat toolbar. `unavailable`
+ * means the optional embeddings package is not installed, so retrieval stays
+ * on the BM25 default.
+ */
+export type SemanticStatus = 'off' | 'checking' | 'ready' | 'unavailable';
 
 /**
  * UI-only plan ladder. Nothing is wired to billing yet — there is no database,
@@ -69,12 +76,47 @@ export interface ChatMessage {
   attachments?: string[];
   attachedImage?: string;
   streaming?: boolean;
+  /** Read-only tool calls this turn ran against the opened folder. */
+  toolActivity?: Array<{ name: string; label: string; ok: boolean; error?: string }>;
+  /** Model turns spent on tool rounds before the answer. */
+  toolRounds?: number;
+  /** The step list the model tracked for itself during this turn. */
+  taskPlan?: Array<{ id: string; subject: string; status: 'pending' | 'doing' | 'done' | 'blocked' }>;
+  /** Set when the turn ended with the finish tool; `blocked` says why it is unfinished. */
+  finishedWith?: { summary: string; blocked: string | null };
   /** Provider reasoning stream (Gemini thoughts / Groq reasoning models). */
   reasoning?: string;
   /** Latency and token usage reported by the streaming endpoint. */
-  metrics?: { tokens: number; firstTokenMs: number | null; durationMs: number | null };
+  metrics?: {
+    tokens: number;
+    /** Absent when the provider reported no input/output split. */
+    inputTokens?: number;
+    outputTokens?: number;
+    /**
+     * Credits this turn actually cost at the rate table, derived from the real
+     * split. Absent when the split is unknown — a guessed charge is worse than
+     * no charge, because the balance would drift silently.
+     */
+    credits?: number;
+    firstTokenMs: number | null;
+    durationMs: number | null;
+  };
   /** True when the stream died mid-way and can be continued without losing output. */
   resumable?: boolean;
+  /** An automatic run/team turn, rendered inline instead of a separate panel. */
+  orchestration?: {
+    kind: 'autonomy' | 'team';
+    status: 'planning' | 'running' | 'done' | 'failed' | 'stopped' | 'budget';
+    /** Why Auto escalated this request instead of answering it directly. */
+    reason: string;
+    /** Hard ceiling the engine enforces for this run, in credits. */
+    budgetCredits: number;
+    creditsSpent?: number;
+    /** Newest engine log lines, trimmed; the full log stays in the hook. */
+    progress?: string[];
+    /** One-line outcome: milestones/tasks passed, files changed, or the error. */
+    detail?: string;
+  };
 }
 
 /** A single file change proposed by one assistant reply, awaiting review. */

@@ -97,4 +97,54 @@ function resolveTerminalPlan({
   };
 }
 
-module.exports = { resolveTerminalPlan, agentEnvironment, isCredentialVariable };
+const TERMINAL_SIZE_LIMITS = { minCols: 20, maxCols: 400, minRows: 5, maxRows: 200 };
+
+/** node-pty rejects a zero or absurd size, so both create and resize share this. */
+function clampTerminalSize(cols, rows) {
+  const toFinite = (value, fallback) => {
+    const parsed = Math.floor(Number(value));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  };
+  return {
+    cols: Math.min(TERMINAL_SIZE_LIMITS.maxCols, Math.max(TERMINAL_SIZE_LIMITS.minCols, toFinite(cols, 100))),
+    rows: Math.min(TERMINAL_SIZE_LIMITS.maxRows, Math.max(TERMINAL_SIZE_LIMITS.minRows, toFinite(rows, 30)))
+  };
+}
+
+/**
+ * The renderer names its own tabs, and that name becomes the pty map key, so it
+ * has to be a plain token: anything else could collide with a UUID minted for a
+ * legacy caller or smuggle path-ish bytes into logs.
+ */
+function normalizeTerminalSessionKey(key) {
+  return typeof key === 'string' && /^[A-Za-z0-9_-]{6,64}$/.test(key) ? key : null;
+}
+
+/**
+ * Guard for links clicked inside the terminal. The renderer cannot open a browser
+ * itself, and handing `shell.openExternal` an arbitrary string turns a log line
+ * into an arbitrary program launch, so only a plain absolute http(s) URL passes.
+ */
+function isSafeExternalUrl(url) {
+  if (typeof url !== 'string' || !url) return false;
+  if (/[\u0000-\u001f\u007f\s]/.test(url)) return false;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  if (parsed.username || parsed.password) return false;
+  return Boolean(parsed.hostname);
+}
+
+module.exports = {
+  resolveTerminalPlan,
+  agentEnvironment,
+  isCredentialVariable,
+  clampTerminalSize,
+  normalizeTerminalSessionKey,
+  isSafeExternalUrl,
+  TERMINAL_SIZE_LIMITS
+};

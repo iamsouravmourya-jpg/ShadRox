@@ -96,8 +96,11 @@ export function parseSearchReplaceBlocks(text: string): SearchReplaceBlock[] {
 export type BlockRange = { start: number; end: number };
 export type BlockLookup = BlockRange | 'not-found' | 'not-unique' | 'ambiguous';
 
+/** How forgiving a match was: verbatim, whole lines trimmed, or all whitespace ignored. */
+export type LocateLevel = 'exact' | 'lines' | 'stripped';
+
 export type BlockMatch =
-  | { status: 'found'; range: BlockRange; matches: number }
+  | { status: 'found'; range: BlockRange; matches: number; via: LocateLevel }
   | { status: 'not-found'; matches: 0 }
   /** Matched in more than one place: the engine cannot know which one was meant. */
   | { status: 'ambiguous'; matches: number; occurrences: BlockRange[] }
@@ -128,6 +131,51 @@ function mapStrippedIndex(content: string, strippedIndex: number): number {
     }
   }
   return content.length;
+}
+
+type TrimmedLineLookup = { range: BlockRange } | 'not-found' | 'not-unique';
+
+/**
+ * Line-level fallback: compare the block against the file one trimmed line at a
+ * time. A model that re-indents a snippet, or whose fence strips the blank line
+ * it was anchored to, still names the right text — this catches that without
+ * going as far as ignoring every whitespace difference in the file.
+ * Blank lines at either end of the block carry no signal, so they are dropped.
+ */
+function locateByTrimmedLines(content: string, original: string): TrimmedLineLookup {
+  const wanted = original.split('\n').map((line) => line.replace(/\r$/, '').trim());
+  while (wanted.length && wanted[0] === '') wanted.shift();
+  while (wanted.length && wanted[wanted.length - 1] === '') wanted.pop();
+  if (!wanted.length) return 'not-found';
+
+  const lines = content.split('\n');
+  const starts: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    starts.push(offset);
+    offset += line.length + 1;
+  }
+  const normalized = lines.map((line) => line.replace(/\r$/, '').trim());
+
+  let hit = -1;
+  for (let start = 0; start + wanted.length <= normalized.length; start += 1) {
+    let matches = true;
+    for (let index = 0; index < wanted.length; index += 1) {
+      if (normalized[start + index] !== wanted[index]) {
+        matches = false;
+        break;
+      }
+    }
+    if (!matches) continue;
+    if (hit !== -1) return 'not-unique';
+    hit = start;
+  }
+  if (hit === -1) return 'not-found';
+  const last = hit + wanted.length - 1;
+  if (last + 1 >= starts.length) return { range: { start: starts[hit], end: content.length } };
+  let end = starts[last + 1] - 1;
+  if (content[end - 1] === '\r') end -= 1;
+  return { range: { start: starts[hit], end } };
 }
 
 /**
@@ -161,16 +209,22 @@ export function locateBlock(content: string, original: string): BlockMatch {
     return {
       status: 'found',
       range: { start: occurrences[0], end: occurrences[0] + original.length },
-      matches: 1
+      matches: 1,
+      via: 'exact'
     };
+  }
+
+  const byLines = locateByTrimmedLines(content, original);
+  if (typeof byLines !== 'string') {
+    return { status: 'found', range: byLines.range, matches: 1, via: 'lines' };
   }
 
   const strip = (value: string) => value.replace(/[ \t]+/g, '');
   const strippedFile = strip(content);
   const strippedOriginal = strip(original);
-  if (!strippedOriginal) return { status: 'not-found', matches: 0 };
+  if (!strippedOriginal) return byLines === 'not-unique' ? { status: 'not-unique', matches: 2 } : { status: 'not-found', matches: 0 };
   const first = strippedFile.indexOf(strippedOriginal);
-  if (first === -1) return { status: 'not-found', matches: 0 };
+  if (first === -1) return byLines === 'not-unique' ? { status: 'not-unique', matches: 2 } : { status: 'not-found', matches: 0 };
   if (strippedFile.indexOf(strippedOriginal, first + strippedOriginal.length) !== -1) {
     return { status: 'not-unique', matches: 2 };
   }
@@ -181,13 +235,13 @@ export function locateBlock(content: string, original: string): BlockMatch {
   const start = content.lastIndexOf('\n', rawStart - 1) + 1;
   const lineEnd = content.indexOf('\n', rawEnd);
   const end = lineEnd === -1 ? content.length : lineEnd;
-  return { status: 'found', range: { start, end }, matches: 1 };
+  return { status: 'found', range: { start, end }, matches: 1, via: 'stripped' };
 }
 
 /**
- * Finds a block's ORIGINAL inside the file. Exact substring first (with and
- * without a trailing newline), then a whitespace-stripped unique match.
- * `'ambiguous'` means the text fits more than one place in the file.
+ * Finds a block's ORIGINAL inside the file. Exact substring first, then whole
+ * trimmed lines, then a whitespace-stripped unique match. `'ambiguous'` means
+ * the text fits more than one place in the file.
  */
 export function findBlockRange(content: string, original: string): BlockLookup {
   const match = locateBlock(content, original);

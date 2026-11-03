@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getDesktopBridge, type DesktopDiagnostic, type TsFileOverride } from '../lib/desktop';
 import {
   EMPTY_DIAGNOSTICS,
+  absolutePathFor,
   compareDiagnostics,
   countDiagnostics,
   findDiagnosticsForFile,
@@ -53,7 +54,31 @@ const EMPTY_STATE: DiagnosticsState = {
 };
 
 const EMPTY_OVERRIDES: TsFileOverride[] = [];
-const EDIT_DEBOUNCE_MS = 700;
+const EDIT_DEBOUNCE_MS = 900;
+
+/**
+ * A scoped response only covers the files it was asked about, so the other
+ * files keep their previous results. This is what lets typing check one file
+ * instead of re-running the whole project.
+ */
+function mergeScopedDiagnostics(
+  previous: Record<string, DesktopDiagnostic[]>,
+  next: Record<string, DesktopDiagnostic[]>,
+  rootPath: string | null,
+  files: string[]
+): Record<string, DesktopDiagnostic[]> {
+  const scoped = new Set(
+    files
+      .map((file) => absolutePathFor(rootPath, file))
+      .filter((file): file is string => Boolean(file))
+      .map((file) => file.toLowerCase())
+  );
+  const merged: Record<string, DesktopDiagnostic[]> = {};
+  for (const [file, list] of Object.entries(previous)) {
+    if (!scoped.has(file.toLowerCase())) merged[file] = list;
+  }
+  return Object.assign(merged, next);
+}
 
 /**
  * Owns TypeScript diagnostics from the main-process language service.
@@ -71,7 +96,8 @@ export function useDiagnostics({
   activeFilePath
 }: UseDiagnosticsOptions): DiagnosticsController {
   const [state, setState] = useState<DiagnosticsState>(EMPTY_STATE);
-  const requestIdRef = useRef(0);
+  const fullRequestIdRef = useRef(0);
+  const scopedRequestIdRef = useRef(0);
   const overridesRef = useRef(overrides);
   const mountedRef = useRef(true);
   const workspaceIdRef = useRef(workspaceId);
@@ -81,69 +107,70 @@ export function useDiagnostics({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      requestIdRef.current += 1;
+      fullRequestIdRef.current += 1;
+      scopedRequestIdRef.current += 1;
     };
   }, []);
 
-  const run = useCallback(async () => {
-    if (!enabled || !workspaceId) return;
-    const desktop = getDesktopBridge();
-    if (!desktop) return;
+  const run = useCallback(
+    async (onlyFiles?: string[]) => {
+      if (!enabled || !workspaceId) return;
+      const desktop = getDesktopBridge();
+      if (!desktop) return;
 
-    const requestWorkspaceId = workspaceId;
-    const id = ++requestIdRef.current;
-    setState((previous) => ({ ...previous, isRefreshing: true }));
-    try {
-      const result = await desktop.diagnostics(workspaceId, overridesRef.current);
-      if (
+      const requestWorkspaceId = workspaceId;
+      const scoped = Boolean(onlyFiles && onlyFiles.length > 0);
+      const id = scoped
+        ? ++scopedRequestIdRef.current
+        : ++fullRequestIdRef.current;
+      const isStale = () =>
         !mountedRef.current ||
-        id !== requestIdRef.current ||
-        workspaceIdRef.current !== requestWorkspaceId
-      ) {
-        return;
+        workspaceIdRef.current !== requestWorkspaceId ||
+        (scoped ? id !== scopedRequestIdRef.current : id !== fullRequestIdRef.current);
+
+      setState((previous) => ({ ...previous, isRefreshing: true }));
+      try {
+        const result = await desktop.diagnostics(workspaceId, overridesRef.current, scoped ? onlyFiles : undefined);
+        if (isStale()) return;
+        const nextByFile = groupDiagnosticsByFile(result?.diagnostics ?? []);
+        setState((previous) => ({
+          byFile: scoped && onlyFiles
+            ? mergeScopedDiagnostics(previous.byFile, nextByFile, rootPath, onlyFiles)
+            : nextByFile,
+          truncated: scoped ? previous.truncated : Boolean(result?.truncated),
+          projectFiles: result?.projectFiles ?? 0,
+          configPath: result?.configPath ?? previous.configPath,
+          isRefreshing: false
+        }));
+      } catch (error) {
+        if (isStale()) return;
+        warnBridgeError('diagnostics', error);
+        setState((previous) => ({ ...previous, isRefreshing: false }));
       }
-      setState({
-        byFile: groupDiagnosticsByFile(result?.diagnostics ?? []),
-        truncated: Boolean(result?.truncated),
-        projectFiles: result?.projectFiles ?? 0,
-        configPath: result?.configPath ?? null,
-        isRefreshing: false
-      });
-    } catch (error) {
-      if (
-        !mountedRef.current ||
-        id !== requestIdRef.current ||
-        workspaceIdRef.current !== requestWorkspaceId
-      ) {
-        return;
-      }
-      warnBridgeError('diagnostics', error);
-      setState((previous) => ({ ...previous, isRefreshing: false }));
-    }
-  }, [enabled, workspaceId]);
+    },
+    [enabled, workspaceId, rootPath]
+  );
 
   // Workspace opened/changed, or diagnostics became available.
   useEffect(() => {
     if (!enabled || !workspaceId) {
-      requestIdRef.current += 1;
+      fullRequestIdRef.current += 1;
+      scopedRequestIdRef.current += 1;
       setState(EMPTY_STATE);
       return;
     }
     void run();
   }, [enabled, workspaceId, run]);
 
-  // Active file changed.
+  // Buffer edits (and switching files, which introduces the only file that
+  // needs a fresh check): debounce so a burst of keystrokes produces one
+  // single-file request. The full project is rescanned on open, save and the
+  // Problems panel's refresh button.
   useEffect(() => {
-    if (!enabled || !workspaceId) return;
-    void run();
-  }, [enabled, workspaceId, activeFilePath, run]);
-
-  // Buffer edits: debounce so a burst of keystrokes produces one request.
-  useEffect(() => {
-    if (!enabled || !workspaceId) return;
-    const timer = window.setTimeout(() => void run(), EDIT_DEBOUNCE_MS);
+    if (!enabled || !workspaceId || !activeFilePath) return;
+    const timer = window.setTimeout(() => void run([activeFilePath]), EDIT_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [enabled, workspaceId, overrides, run]);
+  }, [enabled, workspaceId, overrides, activeFilePath, run]);
 
   const refresh = useCallback(() => {
     void run();

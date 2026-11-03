@@ -18,6 +18,20 @@ const MAX_DECLARATION_BYTES = 32 * 1024 * 1024;
 const MAX_DIAGNOSTICS = 500;
 const MAX_NAVIGATION_RESULTS = 100;
 const MAX_OUTLINE_DEPTH = 3;
+/** A rename can touch every reference in the project, so it gets its own cap. */
+const MAX_RENAME_EDITS = 500;
+const MAX_CODE_ACTIONS = 40;
+const MAX_SEMANTIC_TOKENS = 5_000;
+/**
+ * The 2020 semantic-token encoding packs `(typeIndex + 1) << 8 | modifierBits`,
+ * where `typeIndex` indexes this list (see TypeScript's `classifier2020`). The
+ * names are the editor-facing vocabulary; the renderer maps them to its own
+ * highlight classes and ignores any it does not know.
+ */
+const SEMANTIC_TOKEN_TYPES = [
+  'class', 'enum', 'interface', 'namespace', 'typeParameter', 'type',
+  'parameter', 'variable', 'enumMember', 'property', 'function', 'member'
+];
 const DISK_REFRESH_INTERVAL_MS = 1_500;
 /** `extraResources` folder that carries the packaged default lib declarations. */
 const TS_LIB_RESOURCE_DIRECTORY = 'ts-libs';
@@ -257,6 +271,32 @@ function describeDiagnostic(ts, sourceFile, diagnostic) {
     code: typeof diagnostic.code === 'number' ? `TS${diagnostic.code}` : String(diagnostic.code),
     message: ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')
   };
+}
+
+/**
+ * Flattens TypeScript's per-file edit batches into the flat list the renderer
+ * applies: one entry per text change, with the replacement text inline and the
+ * span already converted to 0-based line/character.
+ */
+function flattenFileChanges(changes, resolveSourceFile) {
+  const edits = [];
+  for (const fileChange of changes ?? []) {
+    const target = resolveSourceFile(fileChange.fileName);
+    if (!target) continue;
+    for (const textChange of fileChange.textChanges ?? []) {
+      const start = locationFromPosition(target, textChange.span.start);
+      const end = locationFromPosition(target, textChange.span.start + textChange.span.length);
+      edits.push({
+        file: fileChange.fileName,
+        line: start.line,
+        character: start.character,
+        endLine: end.line,
+        endCharacter: end.character,
+        newText: textChange.newText
+      });
+    }
+  }
+  return edits;
 }
 
 function symbolKindLabel(ts, kind) {
@@ -623,10 +663,28 @@ function createSession(ts, root) {
   }
 
   return {
-    diagnostics(overrideList) {
+    /**
+     * `options.files` scopes the request to workspace-relative paths. The editor
+     * sends only the file being typed in while the Problems panel asks for the
+     * whole project, so a keystroke never pays for a full-project type check.
+     */
+    diagnostics(overrideList, options = {}) {
       prepare(overrideList);
       const program = service.getProgram();
       if (!program) return { diagnostics: [], truncated: false, projectFiles: 0, configPath };
+
+      let requestedFiles = null;
+      if (Array.isArray(options?.files)) {
+        requestedFiles = new Set();
+        for (const file of options.files.slice(0, MAX_PROJECT_FILES)) {
+          if (typeof file !== 'string') continue;
+          try {
+            requestedFiles.add(toKey(toAbsolutePath(root, file)).toLowerCase());
+          } catch {
+            /* ignore paths outside the workspace */
+          }
+        }
+      }
 
       const diagnostics = [];
       let truncated = false;
@@ -636,6 +694,7 @@ function createSession(ts, root) {
         if (!isInsideRoot(root, sourceFile.fileName) || isSkippablePath(root, sourceFile.fileName)) continue;
         if (sourceFile.isDeclarationFile) continue;
         projectFiles += 1;
+        if (requestedFiles && !requestedFiles.has(toKey(sourceFile.fileName).toLowerCase())) continue;
         const fileDiagnostics = [
           ...service.getSyntacticDiagnostics(sourceFile.fileName),
           ...service.getSemanticDiagnostics(sourceFile.fileName)
@@ -695,12 +754,130 @@ function createSession(ts, root) {
       }).filter(Boolean);
     },
 
+    rename(relativePath, line, character, newName, overrideList) {
+      prepare(overrideList);
+      const requested = typeof newName === 'string' ? newName.trim() : '';
+      if (!requested) {
+        return { canRename: false, reason: 'A new name is required.', displayName: '', edits: [] };
+      }
+      const sourceFile = requestSourceFile(relativePath);
+      const position = positionFromLineAndCharacter(sourceFile, line, character);
+      if (position === null) {
+        return { canRename: false, reason: 'That position is outside the file.', displayName: '', edits: [] };
+      }
+
+      const info = service.getRenameInfo(sourceFile.fileName, position);
+      if (!info.canRename) {
+        return {
+          canRename: false,
+          reason: info.localizedErrorMessage || 'This symbol cannot be renamed safely.',
+          displayName: '',
+          edits: []
+        };
+      }
+      if (info.fileToRename) {
+        // A module-specifier position resolves to the file itself. That rename
+        // belongs to the explorer's move; doing it here would rewrite import
+        // specifiers without moving the file, leaving the project broken.
+        return { canRename: false, reason: 'Rename the file from the explorer instead.', displayName: '', edits: [] };
+      }
+
+      // Prefix/suffix text is what makes a string-literal rename correct: the
+      // service returns `'./` + name + `'`, so `'./math'` becomes `'./arith'`
+      // rather than losing its quotes.
+      const locations = service.findRenameLocations(sourceFile.fileName, position, false, false, true) ?? [];
+      const edits = [];
+      for (const location of locations) {
+        const target = projectSourceFile(location.fileName);
+        if (!target) continue;
+        const start = locationFromPosition(target, location.textSpan.start);
+        const end = locationFromPosition(target, location.textSpan.start + location.textSpan.length);
+        edits.push({
+          file: location.fileName,
+          line: start.line,
+          character: start.character,
+          endLine: end.line,
+          endCharacter: end.character,
+          newText: `${location.prefixText ?? ''}${requested}${location.suffixText ?? ''}`
+        });
+      }
+
+      return { canRename: true, reason: null, displayName: info.displayName, edits: edits.slice(0, MAX_RENAME_EDITS) };
+    },
+
+    codeActions(relativePath, startLine, startCharacter, endLine, endCharacter, overrideList) {
+      prepare(overrideList);
+      const sourceFile = requestSourceFile(relativePath);
+      const start = positionFromLineAndCharacter(sourceFile, startLine, startCharacter);
+      const end = positionFromLineAndCharacter(sourceFile, endLine, endCharacter);
+      if (start === null || end === null) return [];
+      const from = Math.min(start, end);
+      const to = Math.max(start, end);
+
+      // TypeScript only returns fixes for the error codes it is handed, so first
+      // collect the codes of every diagnostic that overlaps the selection.
+      const fileDiagnostics = [
+        ...service.getSyntacticDiagnostics(sourceFile.fileName),
+        ...service.getSemanticDiagnostics(sourceFile.fileName)
+      ];
+      const codes = new Set();
+      for (const diagnostic of fileDiagnostics) {
+        if (typeof diagnostic.code !== 'number') continue;
+        const diagnosticStart = diagnostic.start ?? 0;
+        const diagnosticEnd = diagnosticStart + (diagnostic.length ?? 0);
+        if (diagnosticStart <= to && diagnosticEnd >= from) codes.add(diagnostic.code);
+      }
+      if (codes.size === 0) return [];
+
+      const fixes = service.getCodeFixesAtPosition(sourceFile.fileName, from, to, [...codes], {}, {}) ?? [];
+      return fixes
+        .map((fix) => ({
+          name: fix.fixName,
+          description: fix.description,
+          changes: flattenFileChanges(fix.changes, projectSourceFile)
+        }))
+        // A fix whose edits all landed in files the program does not know about
+        // would apply nothing; drop it rather than offer a no-op.
+        .filter((action) => action.changes.length > 0)
+        .slice(0, MAX_CODE_ACTIONS);
+    },
+
+    semanticTokens(relativePath, overrideList) {
+      prepare(overrideList);
+      const sourceFile = requestSourceFile(relativePath);
+      const result = service.getEncodedSemanticClassifications(
+        sourceFile.fileName,
+        { start: 0, length: sourceFile.text.length },
+        ts.SemanticClassificationFormat.TwentyTwenty
+      );
+      const spans = result?.spans ?? [];
+      const tokens = [];
+      for (let index = 0; index + 2 < spans.length; index += 3) {
+        const start = spans[index];
+        const length = spans[index + 1];
+        // `(typeIndex + 1) << 8 | modifiers`; the low byte is a modifier bitmask
+        // under 64, so `>> 8` recovers the type without a mask collision.
+        const type = SEMANTIC_TOKEN_TYPES[(spans[index + 2] >> 8) - 1];
+        if (!type) continue;
+        const startPosition = locationFromPosition(sourceFile, start);
+        const endPosition = locationFromPosition(sourceFile, start + length);
+        tokens.push({
+          type,
+          line: startPosition.line,
+          character: startPosition.character,
+          endLine: endPosition.line,
+          endCharacter: endPosition.character
+        });
+        if (tokens.length >= MAX_SEMANTIC_TOKENS) break;
+      }
+      return tokens;
+    },
+
     outline(relativePath, overrideList) {
       prepare(overrideList);
       const sourceFile = requestSourceFile(relativePath);
       return outlineFor(sourceFile);
     },
-
     symbols(query, overrideList) {
       prepare(overrideList);
       const trimmed = typeof query === 'string' ? query.trim() : '';
@@ -731,7 +908,9 @@ function createSession(ts, root) {
   };
 }
 
-const WORKER_METHODS = new Set(['diagnostics', 'definition', 'references', 'outline', 'symbols']);
+const WORKER_METHODS = new Set([
+  'diagnostics', 'definition', 'references', 'rename', 'codeActions', 'semanticTokens', 'outline', 'symbols'
+]);
 
 function createWorkerSession(root) {
   const { Worker } = require('node:worker_threads');
@@ -839,11 +1018,17 @@ function createTypeScriptService({ getWorkspace }) {
   }
 
   return {
-    diagnostics: (workspaceId, overrides) => call(workspaceId, 'diagnostics', [overrides]),
+    diagnostics: (workspaceId, overrides, files) => call(workspaceId, 'diagnostics', [overrides, { files }]),
     definition: (workspaceId, relativePath, line, character, overrides) =>
       call(workspaceId, 'definition', [relativePath, line, character, overrides]),
     references: (workspaceId, relativePath, line, character, overrides) =>
       call(workspaceId, 'references', [relativePath, line, character, overrides]),
+    rename: (workspaceId, relativePath, line, character, newName, overrides) =>
+      call(workspaceId, 'rename', [relativePath, line, character, newName, overrides]),
+    codeActions: (workspaceId, relativePath, startLine, startCharacter, endLine, endCharacter, overrides) =>
+      call(workspaceId, 'codeActions', [relativePath, startLine, startCharacter, endLine, endCharacter, overrides]),
+    semanticTokens: (workspaceId, relativePath, overrides) =>
+      call(workspaceId, 'semanticTokens', [relativePath, overrides]),
     outline: (workspaceId, relativePath, overrides) => call(workspaceId, 'outline', [relativePath, overrides]),
     symbols: (workspaceId, query, overrides) => call(workspaceId, 'symbols', [query, overrides]),
     closeWorkspace: (workspaceId) => {

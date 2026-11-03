@@ -15,6 +15,18 @@ export interface ChatTurn {
 /** How much reasoning the upstream model should spend before answering. */
 export type ThinkingLevel = 'low' | 'high';
 
+export interface ChatToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface NativeToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
 export interface RefineModeMeta {
   id: RefineMode;
   label: string;
@@ -70,10 +82,16 @@ export interface StreamChatOptions {
   signal?: AbortSignal;
   /** Partial reply text from an interrupted stream, for resume-with-dedupe. */
   resumePrefix?: string;
+  /** Optional provider-native function definitions; absent on ordinary chat requests. */
+  toolDefinitions?: ChatToolDefinition[];
 }
 
 export interface StreamDoneInfo {
+  /** What the provider reported as the all-in total; the number shown in the UI. */
   tokens: number;
+  /** Absent when the provider reported no split, which is not the same as zero. */
+  inputTokens?: number;
+  outputTokens?: number;
   provider: ProviderId;
   model: string;
   tier: string;
@@ -87,6 +105,7 @@ export interface StreamChatHandlers {
   onDelta: (text: string) => void;
   /** Model reasoning/thinking stream, when the provider exposes it. */
   onReasoning?: (text: string) => void;
+  onToolCalls?: (calls: NativeToolCall[]) => void;
   onDone?: (info: StreamDoneInfo) => void;
   onError: (message: string) => void;
 }
@@ -195,7 +214,8 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
     temperature,
     thinking,
     signal,
-    resumePrefix
+    resumePrefix,
+    toolDefinitions
   } = options;
 
   let response: Response;
@@ -213,7 +233,8 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
         systemInstruction,
         temperature,
         thinking,
-        resume: resumePrefix ? { prefix: resumePrefix } : undefined
+        resume: resumePrefix ? { prefix: resumePrefix } : undefined,
+        toolDefinitions
       })
     });
   } catch (error) {
@@ -260,10 +281,23 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
     } else if (event.type === 'reasoning' && typeof event.text === 'string') {
       receivedOutput = true;
       handlers.onReasoning?.(event.text);
+    } else if (event.type === 'tool_calls' && Array.isArray(event.calls)) {
+      const calls = event.calls.filter((call: unknown): call is NativeToolCall =>
+        Boolean(call && typeof call === 'object' &&
+          typeof (call as NativeToolCall).id === 'string' &&
+          typeof (call as NativeToolCall).name === 'string' &&
+          typeof (call as NativeToolCall).arguments === 'string')
+      );
+      if (calls.length > 0) {
+        receivedOutput = true;
+        handlers.onToolCalls?.(calls);
+      }
     } else if (event.type === 'done') {
       sawDone = true;
       handlers.onDone?.({
         tokens: event.tokens ?? 0,
+        inputTokens: typeof event.inputTokens === 'number' ? event.inputTokens : undefined,
+        outputTokens: typeof event.outputTokens === 'number' ? event.outputTokens : undefined,
         provider: event.provider ?? provider,
         model: event.model ?? model,
         tier: event.tier ?? 'byok',
