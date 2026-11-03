@@ -433,3 +433,29 @@ test('an MCP error is a failed activity, and the turn keeps going', async () => 
   assert.match(result.activity[0].error as string, /quota exceeded/);
   assert.equal(result.text, 'The server is out of quota.');
 });
+
+test('tool activity records stage, durationMs, input, output, and emits onStatus', async () => {
+  const statusUpdates: string[] = [];
+  await withBridge({
+    readFile: async (_id: string, path: string) => ({ name: path, content: 'export const X = 42;', version: 'v1' })
+  }, async () => {
+    const model = scripted([toolBlock([readCall]), 'I read the file.']);
+    const result = await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      stream: model.stream,
+      onStatus: (status) => statusUpdates.push(status)
+    });
+    assert.equal(result.activity.length, 1);
+    const act = result.activity[0];
+    assert.equal(act.name, 'read_file');
+    assert.equal(act.ok, true);
+    assert.equal(act.stage, 'reading');
+    assert.equal(typeof act.durationMs, 'number');
+    assert.deepEqual(act.input, { path: 'src/a.ts' });
+    assert.ok(act.output && act.output.includes('export const X = 42;'));
+    assert.ok(statusUpdates.length > 0, 'onStatus emitted live status updates');
+  });
+});
+

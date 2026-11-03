@@ -26,6 +26,10 @@ export interface ToolActivity {
   label: string;
   ok: boolean;
   error?: string;
+  input?: Record<string, unknown> | string;
+  output?: string;
+  durationMs?: number;
+  stage?: 'reading' | 'planning' | 'editing' | 'checking' | 'completed' | 'failed';
 }
 
 export interface ToolLoopResult {
@@ -51,6 +55,7 @@ export interface ToolLoopInput {
   maxRounds?: number;
   aborted: () => boolean;
   onRound?: (round: number, text: string) => void;
+  onStatus?: (status: string) => void;
   /** Lets a headless run keep a plan across milestones. */
   initialPlan?: TaskPlan;
   onPlan?: (plan: TaskPlan) => void;
@@ -81,12 +86,27 @@ function controlOutcome(call: ToolCall, plan: TaskPlan, guardUsed: boolean): { o
   };
 }
 
-function toActivity(call: ToolCall, outcome: ToolOutcome): ToolActivity {
+function toActivity(call: ToolCall, outcome: ToolOutcome, durationMs?: number): ToolActivity {
+  let stage: ToolActivity['stage'] = 'reading';
+  if (!outcome.ok) {
+    stage = 'failed';
+  } else if (call.name === 'update_tasks') {
+    stage = 'planning';
+  } else if (call.name === 'problems' || call.name === 'git_state') {
+    stage = 'checking';
+  } else if (call.name === 'finish') {
+    stage = 'completed';
+  }
+
   return {
     name: call.name,
     label: summarizeCall(call),
     ok: outcome.ok,
-    error: outcome.error
+    error: outcome.error,
+    input: call.args,
+    output: outcome.content ? (outcome.content.length > 2000 ? `${outcome.content.slice(0, 2000)}... [truncated]` : outcome.content) : undefined,
+    durationMs,
+    stage
   };
 }
 
@@ -218,6 +238,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     });
     input.onPlan?.(plan);
 
+    let batchDurationMs: number | undefined;
     if (runnable.length > 0) {
       const batch = runnable.map((index) => usable[index]);
       const isExternal = batch.map((call) => offeredExternal(call.name));
@@ -231,6 +252,18 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
           plan
         };
       }
+      if (input.onStatus && batch.length > 0) {
+        const primary = batch[0];
+        const statusMsg = primary.name === 'read_file'
+          ? `Reading ${(primary.args as Record<string, unknown>).path || 'file'}...`
+          : primary.name === 'search_text'
+            ? `Searching for "${(primary.args as Record<string, unknown>).query || ''}"...`
+            : primary.name === 'problems'
+              ? 'Checking compiler problems...'
+              : `Running ${summarizeCall(primary)}...`;
+        input.onStatus(statusMsg);
+      }
+      const t0 = Date.now();
       // One batch: an MCP call and a file read in the same round run together, and
       // an MCP call does not need an open folder.
       const batchOutcomes = await Promise.all(
@@ -240,12 +273,13 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
             : runTool(input.workspaceId as string, call)
         )
       );
+      batchDurationMs = Math.max(1, Date.now() - t0);
       runnable.forEach((index, cursor) => {
         outcomes[index] = batchOutcomes[cursor];
       });
     }
 
-    usable.forEach((call, index) => activity.push(toActivity(call, outcomes[index])));
+    usable.forEach((call, index) => activity.push(toActivity(call, outcomes[index], batchDurationMs)));
     history.push({ calls: usable.map((call) => serializeCallKey(call)), changedFiles: 0 });
     if (input.aborted()) return { text: stripToolBlocks(streamed.text), rounds: round, activity, capped: false, error: null, plan };
 

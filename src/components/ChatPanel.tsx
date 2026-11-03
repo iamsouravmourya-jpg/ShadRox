@@ -6,6 +6,8 @@ import {
   Brain,
   Check,
   ChevronDown,
+  ChevronRight,
+  Clock,
   Code2,
   Copy,
   FileCode2,
@@ -20,8 +22,11 @@ import {
   Play,
   History,
   Send,
+  ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Square,
+  Terminal,
   Undo2,
   Users,
   Wand2,
@@ -140,6 +145,12 @@ interface ChatPanelProps {
   /** One-line notice when a request had to be degraded to fit the context window. */
   contextNotice?: string | null;
   onDismissContextNotice?: () => void;
+  /** Callback when user approves a multi-step plan proposal. */
+  onApprovePlan?: (messageId: string) => void;
+  /** Callback when user rejects a plan proposal. */
+  onRejectPlan?: (messageId: string) => void;
+  /** Real-time status string emitted while the agent is planning, reading, editing, or testing. */
+  activeStatusMessage?: string | null;
 }
 
 const TIER_STYLES: Record<ModelTier, string> = {
@@ -169,27 +180,33 @@ const ORCHESTRATION_STATUS: Record<NonNullable<ChatMessage['orchestration']>['st
   budget: { label: 'budget cap', tone: 'text-amber-200 border-amber-500/25 bg-amber-500/10' }
 };
 
-/** The chat-inline trace of an automatic run or team. */
+/** The chat-inline trace of an automatic run or team with Executive Summary Report. */
 function OrchestrationCard({ message, onStop }: { message: ChatMessage; onStop: () => void }) {
   const orchestration = message.orchestration;
   if (!orchestration) return null;
   const Icon = orchestration.kind === 'team' ? Users : Bot;
   const status = ORCHESTRATION_STATUS[orchestration.status];
   const active = orchestration.status === 'planning' || orchestration.status === 'running';
+  const report = orchestration.summaryReport;
 
   return (
-    <div className="mb-2 rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 py-2.5">
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border border-violet-300/20 bg-violet-500/10">
-          <Icon className="h-3.5 w-3.5 text-violet-200" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-neutral-200">
-            {orchestration.kind === 'team' ? 'Agent team' : 'Autonomous run'}
-            {active && <Loader2 className="h-3 w-3 animate-spin text-violet-300" />}
-            <span className={`rounded-full border px-1.5 py-px text-[9px] uppercase tracking-wide ${status.tone}`}>
-              {status.label}
-            </span>
+    <div className="mb-2.5 rounded-xl border border-white/[0.08] bg-white/[0.02] p-3 text-[11px]">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="grid size-6 shrink-0 place-items-center rounded-md border border-violet-300/20 bg-violet-500/10">
+            <Icon className="h-3.5 w-3.5 text-violet-200" />
+          </span>
+          <div>
+            <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-neutral-200">
+              {orchestration.kind === 'team' ? 'Autonomous Specialist Team' : 'Autonomous Agent Run'}
+              {active && <Loader2 className="h-3 w-3 animate-spin text-violet-300" />}
+              <span className={`rounded-full border px-1.5 py-px text-[9px] uppercase tracking-wide ${status.tone}`}>
+                {status.label}
+              </span>
+            </div>
+            {orchestration.detail && (
+              <p className="text-[10.5px] text-neutral-400 mt-0.5 font-mono">{orchestration.detail}</p>
+            )}
           </div>
         </div>
         {active && (
@@ -204,26 +221,405 @@ function OrchestrationCard({ message, onStop }: { message: ChatMessage; onStop: 
         )}
       </div>
 
-      <details className="mt-1.5 pl-8">
-        <summary className="cursor-pointer text-[10px] text-neutral-600 hover:text-neutral-400">
-          Run details
-        </summary>
-        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-600">
-          <span>budget {orchestration.budgetCredits} cr</span>
-          {typeof orchestration.creditsSpent === 'number' && <span>spent {orchestration.creditsSpent} cr</span>}
-          {orchestration.detail && <span className="text-neutral-400">{orchestration.detail}</span>}
-          <span className="font-sans text-neutral-500">{orchestration.reason}</span>
+      {/* Structured Executive Summary Report */}
+      {report && (
+        <div className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-950/20 p-2.5 space-y-2">
+          <div className="flex items-center justify-between gap-2 border-b border-emerald-500/20 pb-1.5">
+            <span className="font-semibold text-emerald-200 text-xs flex items-center gap-1.5">
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+              Executive Summary Report
+            </span>
+            <span className="font-mono text-[9.5px] text-emerald-400">
+              {report.tasksCompleted}/{report.totalTasks} tasks passed
+            </span>
+          </div>
+          <p className="text-[10.5px] text-neutral-200 leading-relaxed">{report.overview}</p>
+          <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-neutral-400 pt-1">
+            <div className="rounded bg-black/30 p-1.5 border border-white/[0.04]">
+              <span className="text-neutral-500 block text-[9px] uppercase">Files Modified</span>
+              <span className="text-emerald-300 font-bold">{report.filesModified.length} file(s)</span>
+            </div>
+            <div className="rounded bg-black/30 p-1.5 border border-white/[0.04]">
+              <span className="text-neutral-500 block text-[9px] uppercase">Tests Executed</span>
+              <span className="text-violet-300 font-bold">{report.testsPassed ?? 0} / {report.testsRun ?? 0}</span>
+            </div>
+          </div>
+          {report.filesModified.length > 0 && (
+            <div className="flex flex-wrap gap-1 pt-1">
+              {report.filesModified.map((file) => (
+                <span key={file} className="rounded bg-white/[0.05] border border-white/[0.08] px-1.5 py-0.5 font-mono text-[9.5px] text-neutral-300">
+                  {file}
+                </span>
+              ))}
+            </div>
+          )}
+          {report.openIssues && report.openIssues.length > 0 && (
+            <div className="mt-1 border-t border-emerald-500/15 pt-1 text-[10px] text-amber-300 font-mono space-y-0.5">
+              <span className="text-neutral-500 uppercase text-[9px]">Open Follow-ups:</span>
+              {report.openIssues.map((issue, idx) => (
+                <div key={idx}>• {issue}</div>
+              ))}
+            </div>
+          )}
         </div>
-        {orchestration.progress && orchestration.progress.length > 0 && (
-          <div className="mt-1 max-h-36 space-y-0.5 overflow-y-auto border-l border-white/[0.07] pl-2 font-mono text-[10px] leading-relaxed text-neutral-500">
+      )}
+
+      {orchestration.progress && orchestration.progress.length > 0 && (
+        <details className="mt-2 pl-8">
+          <summary className="cursor-pointer text-[10px] font-mono text-neutral-500 hover:text-neutral-300">
+            Execution trace ({orchestration.progress.length} logs)
+          </summary>
+          <div className="mt-1.5 max-h-36 space-y-0.5 overflow-y-auto rounded bg-ink-950/80 p-2 font-mono text-[9.5px] text-neutral-400 border border-white/[0.04]">
             {orchestration.progress.map((line, index) => (
               <div key={`${index}-${line}`} className="break-words">
                 {line}
               </div>
             ))}
           </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function ThinkingTrace({ reasoning, streaming }: { reasoning: string; streaming?: boolean }) {
+  const [open, setOpen] = useState(Boolean(streaming));
+  const wordCount = useMemo(() => reasoning.trim().split(/\s+/).filter(Boolean).length, [reasoning]);
+
+  return (
+    <div className="mb-2.5 rounded-xl border border-violet-500/20 bg-violet-950/15 p-2.5 text-[11px]">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex w-full cursor-pointer items-center justify-between gap-2 text-left"
+      >
+        <div className="flex items-center gap-1.5 min-w-0">
+          <Brain className="w-3.5 h-3.5 text-violet-300 shrink-0" />
+          <span className="font-semibold text-violet-200 text-xs">
+            {streaming ? 'Deep Reasoning in Progress…' : 'Deep Reasoning Trace'}
+          </span>
+          <span className="text-[10px] text-neutral-500 font-mono">
+            · {wordCount} words
+          </span>
+          {streaming && <Loader2 className="w-3 h-3 animate-spin text-violet-300 ml-1" />}
+        </div>
+        <ChevronRight className={`w-3.5 h-3.5 text-neutral-400 transition-transform ${open ? 'rotate-90' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="mt-2 pt-2 border-t border-violet-400/10 max-h-60 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-relaxed text-neutral-400 bg-black/30 p-2 rounded">
+          {reasoning}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Agent UX components (Devin / Cursor / Zed style) -----------------------
+
+interface ToolCardProps {
+  tool: NonNullable<ChatMessage['toolActivity']>[number];
+}
+
+function ToolCard({ tool }: ToolCardProps) {
+  const [open, setOpen] = useState(false);
+  const stage = tool.stage ?? (tool.ok ? (tool.name.includes('read') || tool.name.includes('list') ? 'reading' : 'completed') : 'failed');
+  
+  const stageStyles: Record<string, { label: string; tone: string }> = {
+    reading: { label: 'READ', tone: 'text-sky-300 border-sky-400/25 bg-sky-500/10' },
+    planning: { label: 'PLAN', tone: 'text-violet-300 border-violet-400/25 bg-violet-500/10' },
+    editing: { label: 'EDIT', tone: 'text-amber-300 border-amber-400/25 bg-amber-500/10' },
+    checking: { label: 'CHECK', tone: 'text-indigo-300 border-indigo-400/25 bg-indigo-500/10' },
+    completed: { label: 'DONE', tone: 'text-emerald-300 border-emerald-400/25 bg-emerald-500/10' },
+    failed: { label: 'FAIL', tone: 'text-rose-300 border-rose-400/25 bg-rose-500/10' }
+  };
+  const config = stageStyles[stage] || { label: 'TOOL', tone: 'text-neutral-300 border-white/10 bg-white/[0.04]' };
+
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-ink-950/80 transition-colors hover:border-white/[0.12]">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex w-full cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[11px]"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={`rounded px-1.5 py-0.5 text-[9px] font-mono font-semibold tracking-wider border ${config.tone}`}>
+            {config.label}
+          </span>
+          <span className="font-mono text-neutral-300 truncate" title={tool.label}>
+            {tool.label}
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2 text-neutral-500 font-mono text-[10px]">
+          {typeof tool.durationMs === 'number' && (
+            <span className="flex items-center gap-0.5 text-neutral-500">
+              <Clock className="w-2.5 h-2.5" />
+              {tool.durationMs}ms
+            </span>
+          )}
+          {tool.ok ? (
+            <Check className="w-3.5 h-3.5 text-emerald-400" />
+          ) : (
+            <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
+          )}
+          <ChevronRight className={`w-3 h-3 text-neutral-500 transition-transform ${open ? 'rotate-90' : ''}`} />
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-white/[0.06] bg-black/30 p-2.5 space-y-2 text-[10.5px]">
+          {tool.error && (
+            <div className="rounded border border-rose-500/30 bg-rose-950/30 p-2 text-rose-200 font-mono break-all">
+              {tool.error}
+            </div>
+          )}
+          {tool.input && Object.keys(tool.input).length > 0 && (
+            <div>
+              <p className="text-[9.5px] uppercase tracking-wider text-neutral-500 mb-1 font-semibold">Arguments</p>
+              <pre className="max-h-36 overflow-y-auto rounded bg-ink-900/90 p-2 font-mono text-neutral-300 leading-relaxed break-all whitespace-pre-wrap">
+                {JSON.stringify(tool.input, null, 2)}
+              </pre>
+            </div>
+          )}
+          {tool.output && (
+            <div>
+              <p className="text-[9.5px] uppercase tracking-wider text-neutral-500 mb-1 font-semibold">Output</p>
+              <pre className="max-h-44 overflow-y-auto rounded bg-ink-900/90 p-2 font-mono text-neutral-300 leading-relaxed break-all whitespace-pre-wrap">
+                {tool.output}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolActivityFeed({ tools, streaming }: { tools: NonNullable<ChatMessage['toolActivity']>; streaming?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const totalDuration = tools.reduce((acc, t) => acc + (t.durationMs ?? 0), 0);
+  const failedCount = tools.filter((t) => !t.ok).length;
+
+  return (
+    <div className="mb-2 rounded-xl border border-white/[0.08] bg-white/[0.02] p-2.5 text-[11px]">
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        className="flex w-full cursor-pointer items-center justify-between gap-2 text-left"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="grid size-5 place-items-center rounded-md border border-violet-400/20 bg-violet-500/10 text-violet-300">
+            <ListTree className="w-3 h-3" />
+          </span>
+          <span className="font-medium text-neutral-200">
+            Agent Operations · {tools.length} step{tools.length === 1 ? '' : 's'}
+          </span>
+          {failedCount > 0 && (
+            <span className="rounded-full border border-rose-500/30 bg-rose-500/10 px-1.5 py-px text-[9px] text-rose-300">
+              {failedCount} failed
+            </span>
+          )}
+          {streaming && <Loader2 className="w-3 h-3 animate-spin text-violet-300" />}
+        </div>
+        <div className="flex shrink-0 items-center gap-2 text-[10px] text-neutral-500 font-mono">
+          {totalDuration > 0 && <span>{totalDuration}ms</span>}
+          <ChevronRight className={`w-3.5 h-3.5 text-neutral-400 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="mt-2.5 space-y-1.5 max-h-80 overflow-y-auto pr-0.5">
+          {tools.map((tool, index) => (
+            <ToolCard key={`${tool.name}-${index}`} tool={tool} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface TaskPlanViewProps {
+  plan: NonNullable<ChatMessage['taskPlan']>;
+  streaming?: boolean;
+  approval?: ChatMessage['planApproval'];
+  onApprove?: () => void;
+  onReject?: () => void;
+}
+
+function TaskPlanView({ plan, streaming, approval, onApprove, onReject }: TaskPlanViewProps) {
+  const completed = plan.filter((t) => t.status === 'done').length;
+  const total = plan.length;
+  const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+  return (
+    <div className="mb-2.5 rounded-xl border border-white/[0.08] bg-white/[0.02] p-3 text-[11px]">
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2">
+          <Brain className="w-3.5 h-3.5 text-violet-300" />
+          <span className="font-semibold text-neutral-200 text-xs">Autonomous Task Plan</span>
+          <span className="text-[10px] font-mono text-neutral-500">
+            {completed}/{total} done ({percent}%)
+          </span>
+        </div>
+        {streaming && <Loader2 className="w-3 h-3 animate-spin text-violet-300" />}
+      </div>
+
+      {/* Progress Bar */}
+      <div className="w-full bg-white/[0.06] h-1.5 rounded-full overflow-hidden mb-3">
+        <div
+          className="h-full bg-gradient-to-r from-violet-500 to-emerald-400 transition-all duration-300"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+
+      {/* Steps List */}
+      <ul className="space-y-1.5">
+        {plan.map((task) => (
+          <li key={task.id} className="flex items-start gap-2 rounded-lg bg-ink-950/40 p-2 border border-white/[0.04]">
+            <div className="mt-0.5 shrink-0">
+              {task.status === 'done' ? (
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+              ) : task.status === 'blocked' ? (
+                <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+              ) : task.status === 'doing' ? (
+                <Loader2 className={`w-3.5 h-3.5 text-violet-300${streaming ? ' animate-spin' : ''}`} />
+              ) : (
+                <span className="block size-2 rounded-full border border-neutral-600 bg-neutral-800 ml-1 mt-1" />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className={`leading-snug ${task.status === 'done' ? 'text-neutral-500 line-through' : task.status === 'doing' ? 'text-white font-medium' : 'text-neutral-300'}`}>
+                {task.subject}
+              </p>
+              {task.files && task.files.length > 0 && (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {task.files.map((file) => (
+                    <span key={file} className="rounded bg-white/[0.05] border border-white/[0.08] px-1.5 py-0.5 font-mono text-[9.5px] text-neutral-400">
+                      {file}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {task.evidence && (
+                <p className="mt-1 text-[10px] text-emerald-400/90 font-mono bg-emerald-950/20 rounded px-1.5 py-0.5 border border-emerald-500/20">
+                  {task.evidence}
+                </p>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      {/* Plan Approval Gate Banner */}
+      {approval && (approval.status === 'pending' || approval.status === 'required') && (
+        <div className="mt-3 rounded-lg border border-violet-400/30 bg-violet-950/20 p-2.5">
+          <div className="flex items-center gap-1.5 text-violet-200 font-medium text-xs mb-1">
+            <Sparkles className="w-3.5 h-3.5 text-violet-300" />
+            <span>Plan proposal requires user approval</span>
+          </div>
+          {approval.planSummary && (
+            <p className="text-[11px] text-neutral-300 mb-2 leading-relaxed">
+              {approval.planSummary}
+            </p>
+          )}
+          {approval.targetFiles && approval.targetFiles.length > 0 && (
+            <div className="mb-2.5 flex flex-wrap gap-1">
+              {approval.targetFiles.map((file) => (
+                <span key={file} className="rounded bg-violet-500/10 border border-violet-400/20 px-1.5 py-0.5 font-mono text-[9.5px] text-violet-300">
+                  {file}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onApprove}
+              className="flex items-center gap-1.5 rounded-md bg-violet-600 px-3 py-1 text-xs font-semibold text-white shadow hover:bg-violet-500 transition-colors cursor-pointer"
+            >
+              <Check className="w-3.5 h-3.5" />
+              Approve & Execute Plan
+            </button>
+            <button
+              type="button"
+              onClick={onReject}
+              className="flex items-center gap-1 rounded-md border border-white/10 px-2.5 py-1 text-xs text-neutral-400 hover:text-white hover:bg-white/[0.05] transition-colors cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+              Reject Plan
+            </button>
+          </div>
+        </div>
+      )}
+
+      {approval && approval.status === 'approved' && (
+        <div className="mt-2.5 flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-950/20 px-2.5 py-1.5 text-[11px] text-emerald-300">
+          <Check className="w-3.5 h-3.5 text-emerald-400" />
+          <span>Plan approved by user · Executing autonomously</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VerificationOutcomeBanner({ result }: { result: NonNullable<ChatMessage['verificationResult']> }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div
+      className={`mb-2.5 rounded-xl border p-2.5 text-[11px] ${
+        result.passed
+          ? 'border-emerald-500/25 bg-emerald-950/20 text-emerald-200'
+          : 'border-amber-500/30 bg-amber-950/20 text-amber-200'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {result.passed ? (
+            <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+          ) : (
+            <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
+          )}
+          <span className="font-semibold text-xs">
+            {result.passed ? 'Code Verification Passed' : 'Verification Warnings'}
+          </span>
+          <span className="text-[10px] text-neutral-400 font-mono">
+            {result.summary}
+          </span>
+        </div>
+        {result.checks && result.checks.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setOpen((prev) => !prev)}
+            className="flex items-center gap-1 font-mono text-[10px] text-neutral-400 hover:text-white cursor-pointer"
+          >
+            <span>{result.checks.length} checks</span>
+            <ChevronRight className={`w-3 h-3 transition-transform ${open ? 'rotate-90' : ''}`} />
+          </button>
         )}
-      </details>
+      </div>
+
+      {open && result.checks && (
+        <div className="mt-2 pt-2 border-t border-white/[0.08] space-y-1">
+          {result.checks.map((chk, i) => (
+            <div key={`${chk.name}-${i}`} className="flex items-start gap-1.5 font-mono text-[10.5px]">
+              {chk.ok ? (
+                <Check className="w-3 h-3 text-emerald-400 mt-0.5 shrink-0" />
+              ) : (
+                <AlertCircle className="w-3 h-3 text-amber-400 mt-0.5 shrink-0" />
+              )}
+              <span className={chk.ok ? 'text-neutral-300' : 'text-amber-300'}>
+                {chk.name}
+              </span>
+              {chk.details && (
+                <span className="text-neutral-500 truncate" title={chk.details}>
+                  — {chk.details}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -457,7 +853,10 @@ export function ChatPanel({
   onResume,
   backgroundResume = null,
   contextNotice = null,
-  onDismissContextNotice
+  onDismissContextNotice,
+  onApprovePlan,
+  onRejectPlan,
+  activeStatusMessage = null
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
@@ -861,66 +1260,25 @@ export function ChatPanel({
                 {message.orchestration && <OrchestrationCard message={message} onStop={onStop} />}
 
                 {message.taskPlan && message.taskPlan.length > 0 && (
-                  <details className="mb-2 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
-                    <summary className="cursor-pointer text-[10px] uppercase tracking-wider text-neutral-500">
-                      Task plan · {message.taskPlan.filter((task) => task.status === 'done').length}/{message.taskPlan.length} complete
-                    </summary>
-                    <ul className="mt-1.5 space-y-1">
-                      {message.taskPlan.map((task) => (
-                        <li key={task.id} className="flex items-start gap-1.5 text-[11px]">
-                          {task.status === 'done' ? (
-                            <Check className="w-3 h-3 mt-0.5 shrink-0 text-emerald-400" />
-                          ) : task.status === 'blocked' ? (
-                            <AlertCircle className="w-3 h-3 mt-0.5 shrink-0 text-amber-400" />
-                          ) : task.status === 'doing' ? (
-                            <Loader2 className={`w-3 h-3 mt-0.5 shrink-0 text-violet-300${message.streaming ? ' animate-spin' : ''}`} />
-                          ) : (
-                            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-neutral-600" />
-                          )}
-                          <span className={task.status === 'done' ? 'text-neutral-500 line-through' : 'text-neutral-300'}>
-                            {task.subject}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
+                  <TaskPlanView
+                    plan={message.taskPlan}
+                    streaming={message.streaming}
+                    approval={message.planApproval}
+                    onApprove={onApprovePlan ? () => onApprovePlan(message.id) : undefined}
+                    onReject={onRejectPlan ? () => onRejectPlan(message.id) : undefined}
+                  />
                 )}
 
                 {message.toolActivity && message.toolActivity.length > 0 && (
-                  <details
-                    className="mb-2 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-[11px] text-neutral-400"
-                  >
-                    <summary className="flex cursor-pointer items-center gap-1.5 text-[10px] uppercase tracking-wider text-neutral-500">
-                      <ListTree className="w-3 h-3" />
-                      Explored the folder · {message.toolActivity.length} step(s)
-                      {message.streaming && <Loader2 className="w-3 h-3 animate-spin text-violet-300" />}
-                    </summary>
-                    <ul className="mt-2 space-y-1">
-                      {message.toolActivity.map((tool, index) => (
-                        <li key={`${tool.name}-${index}`} className="flex items-start gap-1.5 font-mono text-[11px] text-neutral-500">
-                          {tool.ok
-                            ? <Check className="w-3 h-3 mt-0.5 shrink-0 text-emerald-400" />
-                            : <AlertCircle className="w-3 h-3 mt-0.5 shrink-0 text-amber-400" />}
-                          <span className="break-all">{tool.error ? `${tool.label} — ${tool.error}` : tool.label}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
+                  <ToolActivityFeed tools={message.toolActivity} streaming={message.streaming} />
+                )}
+
+                {message.verificationResult && (
+                  <VerificationOutcomeBanner result={message.verificationResult} />
                 )}
 
                 {message.reasoning && (
-                  <details
-                    className="mb-2 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-[11px] text-neutral-400"
-                  >
-                    <summary className="flex cursor-pointer items-center gap-1.5 text-[10px] uppercase tracking-wider text-neutral-500">
-                      <Brain className="w-3 h-3" />
-                      Reasoning
-                      {message.streaming && <Loader2 className="w-3 h-3 animate-spin text-violet-300" />}
-                    </summary>
-                    <div className="mt-2 max-h-56 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-neutral-500">
-                      {message.reasoning}
-                    </div>
-                  </details>
+                  <ThinkingTrace reasoning={message.reasoning} streaming={message.streaming} />
                 )}
 
                 {message.content ? (
@@ -1223,6 +1581,31 @@ export function ChatPanel({
             >
               Settings
             </button>
+          </div>
+        )}
+
+        {/* Live Agent Phase / Activity Status */}
+        {activeStatusMessage && (
+          <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-violet-400/25 bg-violet-950/30 px-2.5 py-1.5 text-[11px] text-violet-200">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-violet-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-violet-500"></span>
+              </span>
+              <span className="truncate font-mono text-[10.5px] text-violet-200">
+                {activeStatusMessage}
+              </span>
+            </div>
+            {onStop && isGenerating && (
+              <button
+                type="button"
+                onClick={onStop}
+                className="flex items-center gap-1 text-[10px] text-red-300 hover:text-red-200 cursor-pointer shrink-0"
+              >
+                <Square className="h-2.5 w-2.5 fill-current" />
+                Stop
+              </button>
+            )}
           </div>
         )}
 

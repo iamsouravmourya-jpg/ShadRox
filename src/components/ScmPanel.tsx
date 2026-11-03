@@ -20,6 +20,68 @@ function changeLabel(change: GitChange): string {
   return change.status === '??' ? 'U' : change.status.trim() || 'M';
 }
 
+function HunkDiffViewer({ diffText }: { diffText: string }) {
+  const lines = useMemo(() => diffText.split('\n'), [diffText]);
+  const stats = useMemo(() => {
+    let added = 0;
+    let removed = 0;
+    for (const l of lines) {
+      if (l.startsWith('+') && !l.startsWith('+++')) added++;
+      else if (l.startsWith('-') && !l.startsWith('---')) removed++;
+    }
+    return { added, removed };
+  }, [lines]);
+
+  return (
+    <div className="font-mono text-[9.5px] leading-relaxed">
+      <div className="flex items-center justify-between border-b border-white/[0.06] bg-black/40 px-2.5 py-1 text-[9px] text-neutral-400">
+        <span>Unified Diff</span>
+        <div className="flex items-center gap-1.5 font-bold">
+          <span className="text-emerald-400">+{stats.added}</span>
+          <span className="text-rose-400">-{stats.removed}</span>
+        </div>
+      </div>
+      <div className="max-h-64 overflow-y-auto p-1.5 space-y-0.5">
+        {lines.map((line, idx) => {
+          if (line.startsWith('@@')) {
+            return (
+              <div key={idx} className="my-1 rounded bg-violet-950/30 px-2 py-0.5 font-semibold text-violet-300 border border-violet-500/20">
+                {line}
+              </div>
+            );
+          }
+          if (line.startsWith('+') && !line.startsWith('+++')) {
+            return (
+              <div key={idx} className="bg-emerald-500/10 text-emerald-300 border-l-2 border-emerald-500 pl-1.5 whitespace-pre-wrap break-all">
+                {line}
+              </div>
+            );
+          }
+          if (line.startsWith('-') && !line.startsWith('---')) {
+            return (
+              <div key={idx} className="bg-rose-500/10 text-rose-300 border-l-2 border-rose-500 pl-1.5 whitespace-pre-wrap break-all">
+                {line}
+              </div>
+            );
+          }
+          if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ')) {
+            return (
+              <div key={idx} className="text-neutral-500 truncate text-[9px]">
+                {line}
+              </div>
+            );
+          }
+          return (
+            <div key={idx} className="text-neutral-400 pl-2 whitespace-pre-wrap break-all">
+              {line}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function ScmPanel({
   desktop,
   workspaceId,
@@ -172,12 +234,14 @@ export function ScmPanel({
         </button>
       </div>
       {selectedDiff?.path === change.path && selectedDiff.staged === staged && (
-        <div className="max-h-56 overflow-auto border-t border-white/[0.05] bg-black/20">
-          {isLoadingDiff
-            ? <p className="px-3 py-2 text-[10px] text-neutral-500">Loading diff…</p>
-            : diff
-              ? <pre className="whitespace-pre-wrap break-words px-3 py-2 font-mono text-[9px] leading-relaxed text-neutral-400">{diff}</pre>
-              : <p className="px-3 py-2 text-[10px] text-neutral-500">No diff available.</p>}
+        <div className="border-t border-white/[0.08] bg-ink-950/90">
+          {isLoadingDiff ? (
+            <p className="px-3 py-2 text-[10px] text-neutral-500 font-mono">Loading diff…</p>
+          ) : diff ? (
+            <HunkDiffViewer diffText={diff} />
+          ) : (
+            <p className="px-3 py-2 text-[10px] text-neutral-500 font-mono">No diff available.</p>
+          )}
         </div>
       )}
     </div>

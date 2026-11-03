@@ -4,6 +4,8 @@ export interface TaskItem {
   id: string;
   subject: string;
   status: TaskStatus;
+  evidence?: string;
+  files?: string[];
 }
 
 export type TaskPlan = TaskItem[];

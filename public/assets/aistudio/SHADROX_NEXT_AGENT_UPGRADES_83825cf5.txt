@@ -1,0 +1,127 @@
+ShadRox - baad mein discuss karne wale bade upgrades
+=====================================================
+
+Yeh backlog reference projects (Aider, Cline, OpenHands, Zed aur Void)
+se ideas lekar banaya gaya hai. Inka code copy nahi kiya gaya. ShadRox
+mein agent loop, autonomy, teams, repo map, checkpoints aur hunk review
+jaise features pehle se hain; har item ko implement karne se pehle current
+code mein dobara verify karein, taaki duplicate feature na ban jaye.
+
+Abhi is file ka scope sirf discussion hai. In bade changes ko is release
+mein chupke se include nahi karna.
+
+
+1. Bade named tasks ko predictable banana
+------------------------------------------
+Samasya:
+- "README pura update karo" ya "X feature build karo" jaise kaam mein model
+  ko pehle scope aur completion criteria tay karne chahiye. Ek lamba answer ya
+  kuch patches aane ka matlab yeh nahi ki poora kaam complete hua.
+
+Candidate:
+- Kaam shuru hone se pehle short plan dikhana: files/areas, dependencies,
+  out-of-scope cheezen aur verify karne ke commands.
+- User plan ko approve/edit kar sake; approved plan visible rahe.
+- Har task ke liye status, evidence aur verification result store ho.
+- Finish tabhi ho jab acceptance checks pass hon; warna exact incomplete
+  items aur blockers saaf bataye jayein.
+- README jaise document ke liye headings/links/code examples ka before/after
+  validation ho, aur unrelated sections preserve hon.
+
+Reference se inspiration:
+- OpenHands ka structured task tracking aur history ko compact view mein
+  rakhna; original history ko mitana nahi.
+- Cline ka bounded tool loop aur tool errors ko model ke saamne actionable
+  result ke roop mein rakhna.
+
+Acceptance test:
+- Ek clean disposable repo par "README ko poora update karo" task chalayein.
+- Final diff mein requested sections hon, links resolve hon, aur app ke
+  configured test/build checks ka exact result diya gaya ho.
+- Ek jaan-boojhkar fail hone wala check completion ko rokta hai aur blocker
+  visible hota hai.
+
+
+2. Long conversation aur context recovery
+-----------------------------------------
+Candidate:
+- Context limit ke paas pahunchne par safe compaction: recent turns aur
+  current task state preserve hon, tool/edit history ko zarurat par dobara
+  dekha ja sake.
+- Summary mein Goal, Current state, Next steps, touched files aur failed
+  checks hon.
+- User ko bataya jaye ki kaunsa purana context compact hua; silent truncation
+  nahi.
+
+Reference se inspiration:
+- Cline ki turn-safe compaction; OpenHands ka event history ko preserve karna
+  aur model ko compact project view dena.
+
+Acceptance test:
+- Bahut lambi multi-step conversation ke baad agent bina duplicate edits ke
+  pending task continue kare aur completed/failed checks sahi yaad rakhe.
+
+
+3. Permission aur project conventions ka ek consistent flow
+------------------------------------------------------------
+Candidate:
+- File write, delete, move aur shell command ke liye permission policy ko ek
+  hi jagah define aur audit karna.
+- Workspace root ke bahar ke paths fail-closed hon.
+- Project rules (AGENTS.md, CLAUDE.md, .rules aur ShadRox-specific rules)
+  ka precedence aur discovery order documented ho.
+- User ko pending approval, allowed action aur denied action ka clear reason
+  mile.
+
+Reference se inspiration:
+- Zed ka layered allow/confirm/deny approach aur ordered rules discovery.
+
+Acceptance test:
+- Allowed project-relative edit kaam kare; project ke bahar ka path block ho;
+  approval deny karne par disk na badle.
+
+
+4. Hunk review aur checkpoint time travel ko end-to-end harden karna
+--------------------------------------------------------------------
+Candidate:
+- Rewrite ke saath search/replace blocks par bhi per-hunk accept/reject.
+- Create/delete/rename aur disk/buffer state ke undo/redo ko checkpoint ke
+  saath test karna.
+- Restore se pehle exact diff dikhana; restore failure par state aadhi na
+  badle.
+
+Reference se inspiration:
+- Void ka per-file snapshot aur hunk review. ShadRox ka checkpoint-based
+  reversal potential differentiator ho sakta hai; us behavior ko preserve
+  karke test karein.
+
+Acceptance test:
+- Mixed accepted/rejected hunks ke baad sirf accepted hunks save hon.
+- File create, delete, rename aur restore sequence ke baad disk aur editor
+  dono expected state mein hon.
+
+
+5. BYOK ke saath manual chat-queue smoke test
+---------------------------------------------
+Is release mein chat queue ko FIFO aur maximum 5 pending messages ke saath
+add kiya gaya hai. API key ke saath yeh manual cases check karein:
+- Ek normal chat ke dauran doosra message Queue se add ho; pehla complete
+  hone ke baad hi doosra start ho.
+- Autonomous/team run ke dauran queued message run ke khatam hone tak wait
+  kare.
+- Queue mein attachments, pinned symbols aur selected mode preserve hon.
+- Queued item cancel ho; queue full hone par pehle ke items safe rahen.
+- New chat clear karne par pending queue bhi clear ho.
+
+Abhi ke release mein nahi:
+- Parallel chat sends (jaan-boojhkar nahi; requests serial hain).
+- Queue ko app restart ke baad restore karna.
+- Queue ke andar se running item ko edit/reorder karna.
+
+
+Suggested discussion order
+--------------------------
+1. Pehle BYOK smoke test: queue + answer quality + read/write/save.
+2. Phir large-task acceptance criteria par sahmati.
+3. Uske baad ek hi vertical slice chunein; doosre backlog items ko usi PR
+   mein bundle na karein.

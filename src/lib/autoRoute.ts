@@ -49,6 +49,61 @@ export const CONDENSE_MIN_INPUT_TOKENS = 4_000;
  *  themselves and `complete` is a single-pass fill-in, so none gets a digest. */
 const CONDENSABLE_ROLES: RouteRole[] = ['chatter', 'edit', 'premium'];
 
+export type TaskComplexity = 'simple' | 'moderate' | 'architectural' | 'reasoning';
+
+export interface ComplexityResult {
+  complexity: TaskComplexity;
+  reason: string;
+  recommendedRole: RouteRole;
+}
+
+/**
+ * Classifies the incoming prompt's technical complexity to inform auto-routing
+ * and specialist team escalation decisions.
+ */
+export function classifyTaskComplexity(text: string, attachedFilesCount = 0): ComplexityResult {
+  const lower = text.toLowerCase();
+  if (
+    lower.includes('architect') ||
+    lower.includes('migrate') ||
+    lower.includes('redesign') ||
+    lower.includes('refactor entire') ||
+    attachedFilesCount > 4
+  ) {
+    return {
+      complexity: 'architectural',
+      reason: 'Multi-file structural change requiring frontier model coordination',
+      recommendedRole: 'premium'
+    };
+  }
+  if (
+    lower.includes('why') ||
+    lower.includes('root cause') ||
+    lower.includes('debug') ||
+    lower.includes('deep think') ||
+    lower.includes('analyze') ||
+    lower.includes('reason')
+  ) {
+    return {
+      complexity: 'reasoning',
+      reason: 'Analytical reasoning task requiring deep thought trace',
+      recommendedRole: 'chatter'
+    };
+  }
+  if (lower.length > 400 || attachedFilesCount > 1 || lower.includes('implement') || lower.includes('build')) {
+    return {
+      complexity: 'moderate',
+      reason: 'Standard multi-step code modification',
+      recommendedRole: 'edit'
+    };
+  }
+  return {
+    complexity: 'simple',
+    reason: 'Direct single-turn query or small modification',
+    recommendedRole: 'edit'
+  };
+}
+
 export interface AutoInput {
   role: RouteRole;
   estimatedInputTokens: number;
