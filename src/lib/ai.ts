@@ -1,5 +1,19 @@
 import { buildModelList, type ModelInfo, type ProviderId } from './providers';
 import { createSseDecoder } from './sse';
+import {
+  aiderRetryMessage,
+  DEFAULT_RETRY_SETTINGS,
+  planRetry,
+  REAL_RETRY_DEPS,
+  type RetryClockDeps,
+  type RetrySettings
+} from './ai/backoff';
+import {
+  classifyFailure,
+  EXCEPTION_INFO,
+  parseRetryAfterSeconds,
+  type ExInfo
+} from './ai/retryPolicy';
 import type { RefineMode } from './types';
 
 export interface ValidateKeyResult {
@@ -84,6 +98,12 @@ export interface StreamChatOptions {
   resumePrefix?: string;
   /** Optional provider-native function definitions; absent on ordinary chat requests. */
   toolDefinitions?: ChatToolDefinition[];
+  /**
+   * Retry/backoff overrides for this turn (aider's discipline, see
+   * ./ai/backoff.ts). `now`/`sleep`/`rng`/`setTimer`/`clearTimer` are the test
+   * seam — production never passes them.
+   */
+  retry?: Partial<RetrySettings> & Partial<RetryClockDeps>;
 }
 
 export interface StreamDoneInfo {
@@ -101,6 +121,26 @@ export interface StreamDoneInfo {
   durationMs?: number | null;
 }
 
+/**
+ * The retry notification hook — the port of aider's
+ * `io.tool_warning(err_msg)` + `print(f"Retrying in {retry_delay:.1f} seconds...")`
+ * from base_coder.py `send_messages`. Surfacing it is the host's call: App.tsx
+ * owns the notice channel (`announce()`), so these are optional callbacks —
+ * wiring `onRetry`/`onWarning` to `announce` in App is a one-line seam for the
+ * UI owner, not a requirement for the retries to work.
+ */
+export interface StreamRetryNotice {
+  /** The attempt that just failed (1-based). */
+  attempt: number;
+  maxAttempts: number;
+  /** How long we will wait before the next attempt, after jitter/Retry-After. */
+  delayMs: number;
+  /** Aider's ExInfo class name, e.g. 'RateLimitError'. */
+  reason: string;
+  /** Human text equivalent to what aider printed. */
+  message: string;
+}
+
 export interface StreamChatHandlers {
   onDelta: (text: string) => void;
   /** Model reasoning/thinking stream, when the provider exposes it. */
@@ -108,6 +148,13 @@ export interface StreamChatHandlers {
   onToolCalls?: (calls: NativeToolCall[]) => void;
   onDone?: (info: StreamDoneInfo) => void;
   onError: (message: string) => void;
+  /** Emitted before each backoff sleep — "Retrying in X seconds..." (aider). */
+  onRetry?: (notice: StreamRetryNotice) => void;
+  /**
+   * Aider's tool_warning channel. Today: a mid-stream break that keeps the
+   * partial reply — the turn is *not* destroyed, the user is warned instead.
+   */
+  onWarning?: (message: string) => void;
 }
 
 async function readJson(response: Response): Promise<any> {
@@ -202,8 +249,109 @@ export function createPrefixStripper(prefix: string): (text: string) => string {
   };
 }
 
-/** Streams a chat completion as normalised SSE events from /api/ai/chat. */
+/**
+ * Streams a chat completion as normalised SSE events from /api/ai/chat.
+ *
+ * The retry discipline around this call is ported from aider — see
+ * ./ai/backoff.ts (aider/models.py `simple_send_with_retries` + base_coder.py
+ * `send_messages` retry loop, Apache-2.0) and ./ai/retryPolicy.ts
+ * (aider/exceptions.py classification). Retryable failures — lost connections,
+ * 429, 5xx, provider timeouts — re-issue the request after exponential backoff
+ * that doubles from 0.125 s (aider's numbers), capped by aider's RETRY_TIMEOUT,
+ * plus jitter, a retry count, a max-elapsed deadline, and respect for
+ * `Retry-After` when the provider sends one.
+ *
+ * IDEMPOTENCY RULE (stricter than aider on purpose): a request body is replayed
+ * only while nothing of the reply has reached this client — connection lost
+ * before the first token. Once the model has produced any output, a mid-stream
+ * break gets aider's end-of-reply treatment instead: the partial answer stays
+ * on screen, the user is warned (`onWarning`), and the turn ends via `onError`
+ * so the host can mark the reply resumable. We never silently re-spend a turn
+ * the model already saw.
+ */
 export async function streamChat(options: StreamChatOptions, handlers: StreamChatHandlers): Promise<void> {
+  const overrides = options.retry ?? {};
+  const settings: RetrySettings = { ...DEFAULT_RETRY_SETTINGS };
+  (Object.keys(DEFAULT_RETRY_SETTINGS) as (keyof RetrySettings)[]).forEach((key) => {
+    const value = overrides[key];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) settings[key] = value;
+  });
+  const deps: RetryClockDeps = {
+    now: overrides.now ?? REAL_RETRY_DEPS.now,
+    sleep: overrides.sleep ?? REAL_RETRY_DEPS.sleep,
+    rng: overrides.rng ?? REAL_RETRY_DEPS.rng,
+    setTimer: overrides.setTimer ?? REAL_RETRY_DEPS.setTimer,
+    clearTimer: overrides.clearTimer ?? REAL_RETRY_DEPS.clearTimer
+  };
+
+  const startedAt = deps.now();
+  // aider's loop seeds `retry_delay = 0.125` and doubles it on every failure;
+  // the carried value is always the un-jittered doubling.
+  let previousDelayMs = settings.initialDelayMs;
+  let attempt = 0;
+
+  for (;;) {
+    attempt += 1;
+    const failure = await runStreamAttempt(options, handlers, deps, settings);
+    if (!failure) return;
+
+    const plan = planRetry({
+      previousDelayMs,
+      failedAttempt: attempt,
+      elapsedMs: deps.now() - startedAt,
+      retryAfterSeconds: failure.retryAfterSeconds,
+      settings,
+      rng: deps.rng
+    });
+    if (plan.kind === 'exhausted') {
+      const description = failure.exInfo.description ? ` ${failure.exInfo.description}` : '';
+      const gaveUp = attempt > 1 ? ` Giving up after ${attempt} attempts.` : '';
+      handlers.onError(`${failure.message}${description}${gaveUp}`);
+      return;
+    }
+
+    handlers.onRetry?.({
+      attempt,
+      maxAttempts: settings.maxAttempts,
+      delayMs: plan.delayMs,
+      reason: failure.exInfo.name,
+      message: aiderRetryMessage(failure.exInfo.description, plan.delayMs, attempt, settings.maxAttempts)
+    });
+    previousDelayMs = plan.nextDelayMs;
+    if (await sleepUnlessAborted(plan.delayMs, options.signal, deps)) return;
+  }
+}
+
+/** A retryable pre-first-token failure; `null` means the turn was terminal. */
+interface RetryableFailure {
+  exInfo: ExInfo;
+  message: string;
+  retryAfterSeconds: number | null;
+}
+
+/** Raised internally when the stream goes byte-silent past `idleTimeoutMs`. */
+class StreamIdleTimeoutError extends Error {
+  constructor() {
+    super('stream-idle-timeout');
+    this.name = 'StreamIdleTimeoutError';
+  }
+}
+
+/**
+ * Aider's "keep the partial, warn the user" behaviour for a broken stream —
+ * adapted to ShadRox: App's error path already preserves the partial text and
+ * offers Resume (see streamSnapshot.ts), so the warning tells the user that is
+ * what happened instead of losing the turn.
+ */
+const PARTIAL_KEPT_WARNING =
+  'Connection dropped mid-reply — the partial answer is kept, press Resume to continue from it.';
+
+async function runStreamAttempt(
+  options: StreamChatOptions,
+  handlers: StreamChatHandlers,
+  deps: RetryClockDeps,
+  settings: RetrySettings
+): Promise<RetryableFailure | null> {
   const {
     provider,
     model,
@@ -238,25 +386,46 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
       })
     });
   } catch (error) {
-    if (signal?.aborted) return;
+    if (signal?.aborted) return null;
+    if (error instanceof TypeError) {
+      // aider: litellm APIConnectionError, retryable. Safe to replay — the body
+      // never produced a token, so there is nothing to duplicate.
+      return {
+        exInfo: EXCEPTION_INFO.APIConnectionError,
+        message:
+          'Could not reach the ShadRox AI service. Check your internet connection and try again.',
+        retryAfterSeconds: null
+      };
+    }
     handlers.onError(
-      error instanceof TypeError
-        ? 'Could not reach the ShadRox AI service. Check your internet connection and try again.'
+      error instanceof Error && error.name === 'AbortError'
+        ? 'Generation stopped.'
         : error instanceof Error ? error.message : 'Network error.'
     );
-    return;
+    return null;
   }
 
   if (!response.ok) {
     const data = await readJson(response);
-    handlers.onError(data?.error || `Request failed (HTTP ${response.status}).`);
-    return;
+    const serverMessage: string | undefined =
+      typeof data?.error === 'string' && data.error ? data.error : undefined;
+    const exInfo = classifyFailure(response.status, serverMessage);
+    const message = serverMessage || `Request failed (HTTP ${response.status}).`;
+    if (exInfo.retry) {
+      return {
+        exInfo,
+        message,
+        retryAfterSeconds: parseRetryAfterSeconds(response.headers.get('retry-after'))
+      };
+    }
+    handlers.onError(message);
+    return null;
   }
 
   const reader = response.body?.getReader();
   if (!reader) {
     handlers.onError('Stream unavailable.');
-    return;
+    return null;
   }
 
   const textDecoder = new TextDecoder();
@@ -312,26 +481,59 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithinIdleWindow(reader, deps, settings.idleTimeoutMs);
       if (done) break;
       decoder.push(textDecoder.decode(value, { stream: true }));
     }
     decoder.flush();
   } catch (error) {
-    if (signal?.aborted) return;
-    handlers.onError(
-      error instanceof Error && error.name === 'AbortError'
-        ? 'Generation stopped.'
-        : 'The AI stream was interrupted before it finished.'
-    );
-    return;
+    await cancelQuietly(reader);
+    if (signal?.aborted) return null;
+
+    if (error instanceof StreamIdleTimeoutError) {
+      const message = 'The AI stream went silent before it finished.';
+      if (receivedOutput) {
+        // aider partial + warning: the mid-stream timeout is NOT replayed.
+        handlers.onWarning?.(PARTIAL_KEPT_WARNING);
+        handlers.onError(message);
+        return null;
+      }
+      // aider: Timeout — "The API provider timed out without returning a
+      // response. They may be down or overloaded." Retryable, replay-safe.
+      return { exInfo: EXCEPTION_INFO.Timeout, message, retryAfterSeconds: null };
+    }
+
+    if (error instanceof Error && error.name === 'AbortError') {
+      handlers.onError('Generation stopped.');
+      return null;
+    }
+
+    if (receivedOutput) {
+      handlers.onWarning?.(PARTIAL_KEPT_WARNING);
+      handlers.onError('The AI stream was interrupted before it finished.');
+      return null;
+    }
+    // Connection lost before the first token: nothing reached the UI, so a
+    // replay duplicates no work and no output.
+    return {
+      exInfo: EXCEPTION_INFO.APIConnectionError,
+      message: 'The AI stream was interrupted before it finished.',
+      retryAfterSeconds: null
+    };
   }
 
-  if (signal?.aborted) return;
+  if (signal?.aborted) return null;
 
   if (streamError) {
+    const exInfo = classifyFailure(null, streamError);
+    if (exInfo.retry && !receivedOutput) {
+      return { exInfo, message: streamError, retryAfterSeconds: null };
+    }
+    if (exInfo.retry && receivedOutput) {
+      handlers.onWarning?.(PARTIAL_KEPT_WARNING);
+    }
     handlers.onError(streamError);
-    return;
+    return null;
   }
 
   if (!sawDone) {
@@ -343,6 +545,78 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
       handlers.onError('The model returned an empty response.');
     }
   }
+  return null;
+}
+
+/**
+ * ADAPTATION (ShadRox): the "mid-stream hang" the retry loop needs to see.
+ * A provider that stops sending bytes never throws on its own, so each read is
+ * raced against an idle window. On expiry the attempt dies as a `Timeout`
+ * (aider's class), which the loop replays before the first token and warns-
+ * about-keeps after it.
+ */
+async function readWithinIdleWindow(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  deps: RetryClockDeps,
+  idleTimeoutMs: number
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (idleTimeoutMs <= 0) return reader.read();
+  return new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+    let settled = false;
+    const timer = deps.setTimer(() => {
+      if (settled) return;
+      settled = true;
+      reject(new StreamIdleTimeoutError());
+    }, idleTimeoutMs);
+    reader.read().then(
+      (result) => {
+        if (settled) return;
+        settled = true;
+        deps.clearTimer(timer);
+        resolve(result);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        deps.clearTimer(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
+async function cancelQuietly(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  try {
+    await reader.cancel();
+  } catch {
+    /* the stream is already dead */
+  }
+  try {
+    reader.releaseLock();
+  } catch {
+    /* nothing to release */
+  }
+}
+
+/** Backoff sleep that cuts short the moment the user stops the generation. */
+async function sleepUnlessAborted(
+  ms: number,
+  signal: AbortSignal | undefined,
+  deps: RetryClockDeps
+): Promise<boolean> {
+  if (signal?.aborted) return true;
+  if (!signal) {
+    await deps.sleep(ms);
+    return false;
+  }
+  let listener: (() => void) | null = null;
+  const aborted = new Promise<'aborted'>((resolve) => {
+    listener = () => resolve('aborted');
+    signal.addEventListener('abort', listener, { once: true });
+  });
+  const winner = await Promise.race([deps.sleep(ms).then(() => 'slept' as const), aborted]);
+  if (listener) signal.removeEventListener('abort', listener);
+  return winner === 'aborted';
 }
 
 export interface RefinedPrompt {
@@ -365,22 +639,28 @@ export async function refinePrompt(options: {
   contextInfo: string;
   mode?: RefineMode;
 }): Promise<RefinedPrompt> {
+  const activeKey =
+    options.provider === 'gemini'
+      ? options.geminiKey
+      : options.provider === 'groq'
+        ? options.groqKey
+        : options.customKey;
+  const body: Record<string, unknown> = {
+    rawPrompt: options.rawPrompt,
+    provider: options.provider,
+    contextInfo: options.contextInfo,
+    mode: options.mode,
+    model: options.model,
+    baseUrl: options.provider === 'custom' ? options.baseUrl : undefined
+  };
+  if (activeKey) {
+    body.apiKeyByProvider = { [options.provider]: activeKey };
+  }
+
   const response = await fetch('/api/prompt/refine', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      rawPrompt: options.rawPrompt,
-      provider: options.provider,
-      contextInfo: options.contextInfo,
-      mode: options.mode,
-      model: options.model,
-      baseUrl: options.provider === 'custom' ? options.baseUrl : undefined,
-      apiKeyByProvider: {
-        gemini: options.geminiKey,
-        groq: options.groqKey,
-        custom: options.customKey
-      }
-    })
+    body: JSON.stringify(body)
   });
 
   const data = await readJson(response);

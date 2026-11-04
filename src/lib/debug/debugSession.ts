@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { scrubEnvironment } from '../envSafety.ts';
 import type { DebugProtocol } from './debugProtocol.ts';
 import { Emitter, StreamDebugAdapter } from './abstractDebugAdapter.ts';
 
@@ -95,9 +96,10 @@ export class DebugSession {
 			this.setState('terminated');
 		});
 
+		const mergedEnv = { ...scrubEnvironment(process.env), ...(descriptor.env ? scrubEnvironment(descriptor.env as Record<string, string>) : {}) };
 		const options: SpawnOptions = {
 			cwd: descriptor.cwd,
-			env: descriptor.env ? { ...process.env, ...descriptor.env } : process.env,
+			env: mergedEnv,
 			stdio: ['pipe', 'pipe', 'pipe']
 		};
 		const child = spawn(descriptor.command, descriptor.args ?? [], options);

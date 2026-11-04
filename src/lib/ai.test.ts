@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createPrefixStripper, streamChat } from './ai';
+import { streamChat, createPrefixStripper, type StreamRetryNotice } from './ai';
+import {
+  aiderRetryMessage,
+  DEFAULT_RETRY_SETTINGS,
+  planRetry
+} from './ai/backoff';
+import {
+  classifyFailure,
+  classifyMessage,
+  classifyStatus,
+  parseRetryAfterSeconds
+} from './ai/retryPolicy';
 import {
   INTERRUPTED_STREAM_KEY,
   pruneResumePrefixes,
@@ -370,4 +381,396 @@ test('browser mode keeps using localStorage — there is nothing else to use', a
     assert.equal(getApiKey('groq'), '');
     assert.equal(localStorage.getItem('shadrox.byok.groq'), null);
   });
+});
+
+/* ------------------------------------------------------------------ *
+ * Aider-ported retry discipline (src/lib/ai/backoff.ts + retryPolicy.ts).
+ *
+ * No real network, no real timers: fetch is faked per test and the retry
+ * clock (now/sleep/rng/setTimer) is injected through StreamChatOptions.retry.
+ * ------------------------------------------------------------------ */
+
+const encoder = new TextEncoder();
+const sseDelta = (text: string) => `data: ${JSON.stringify({ type: 'delta', text })}\n\n`;
+const sseDone = `data: ${JSON.stringify({ type: 'done', tokens: 3, provider: 'groq', model: 'test', tier: 'byok' })}\n\n`;
+
+function streamResponse(chunks: string[]): Response {
+  return new Response(chunks.join(''), {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' }
+  });
+}
+
+function errorResponse(status: number, message: string, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...headers }
+  });
+}
+
+interface TurnResult {
+  text: string;
+  done: boolean;
+  error: string | null;
+  notices: StreamRetryNotice[];
+  warnings: string[];
+}
+
+async function runTurn(
+  fetchScript: Array<(call: number) => Response | Promise<Response>>,
+  retry: Record<string, unknown>,
+  extraOptions: Record<string, unknown> = {}
+): Promise<TurnResult & { calls: number }> {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    const step = fetchScript[Math.min(calls, fetchScript.length - 1)];
+    calls += 1;
+    return step(calls);
+  }) as typeof fetch;
+  const result: TurnResult = { text: '', done: false, error: null, notices: [], warnings: [] };
+  try {
+    await streamChat(
+      {
+        provider: 'groq',
+        model: 'test',
+        messages: [{ role: 'user', content: 'hi' }],
+        retry,
+        ...extraOptions
+      },
+      {
+        onDelta: (chunk) => { result.text += chunk; },
+        onDone: () => { result.done = true; },
+        onError: (message) => { result.error = message; },
+        onRetry: (notice) => { result.notices.push(notice); },
+        onWarning: (message) => { result.warnings.push(message); }
+      }
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  return { ...result, calls };
+}
+
+/** Fake monotonic clock; every backoff sleep advances it and is recorded. */
+function fakeClock(rng: () => number = () => 1) {
+  let time = 1_000_000;
+  const sleeps: number[] = [];
+  return {
+    sleeps,
+    retry: {
+      now: () => time,
+      sleep: async (ms: number) => { sleeps.push(ms); time += ms; },
+      rng,
+      // The idle watchdog never fires unless a test opts in.
+      setTimer: () => 0,
+      clearTimer: () => {}
+    }
+  };
+}
+
+test('a 429 retries after the Retry-After the provider asked for, then succeeds', async () => {
+  const clock = fakeClock();
+  const out = await runTurn(
+    [
+      () => errorResponse(429, 'Too many requests from this key.', { 'Retry-After': '2' }),
+      () => streamResponse([sseDelta('Hello'), sseDone])
+    ],
+    clock.retry
+  );
+  assert.equal(out.error, null);
+  assert.equal(out.calls, 2);
+  assert.equal(out.text, 'Hello');
+  assert.ok(out.done);
+  assert.equal(out.notices.length, 1);
+  assert.equal(out.notices[0].reason, 'RateLimitError');
+  // Retry-After (2000 ms) must dominate the exponential 250 ms: never sleep
+  // less than what the provider explicitly requested.
+  assert.deepEqual(clock.sleeps, [2000]);
+  // aider's notice text survives the port.
+  assert.match(out.notices[0].message, /Retrying in 2\.0 seconds\.\.\. \(attempt 2 of 4\)/);
+});
+
+test('5xx failures double the aider backoff from the 0.125 s seed', async () => {
+  const clock = fakeClock();
+  const out = await runTurn(
+    [
+      () => errorResponse(500, 'Internal Server Error.'),
+      () => errorResponse(502, 'Bad Gateway.'),
+      () => streamResponse([sseDelta('Recovered'), sseDone])
+    ],
+    clock.retry
+  );
+  assert.equal(out.error, null);
+  assert.equal(out.calls, 3);
+  assert.equal(out.text, 'Recovered');
+  // retry_delay *= 2 from 0.125 s: first sleep 250 ms, second 500 ms.
+  // rng() = 1 pins the jitter to its upper bound so the numbers are exact.
+  assert.deepEqual(clock.sleeps, [250, 500]);
+  assert.deepEqual(out.notices.map((n) => n.reason), ['InternalServerError', 'BadGatewayError']);
+});
+
+test('jitter is applied to every backoff sleep', async () => {
+  const clock = fakeClock(() => 0.5);
+  const out = await runTurn(
+    [
+      () => errorResponse(503, 'Service Unavailable.'),
+      () => errorResponse(500, 'Internal Server Error.'),
+      () => streamResponse([sseDelta('x'), sseDone])
+    ],
+    clock.retry
+  );
+  assert.equal(out.error, null);
+  // equal jitter: doubled/2 + rng * doubled/2 -> 125+62.5=188, then 250+125=375.
+  assert.deepEqual(clock.sleeps, [188, 375]);
+  // A different rng draw yields different delays — retries must not stampede.
+  const other = fakeClock(() => 0);
+  await runTurn(
+    [() => errorResponse(500, 'Internal Server Error.'), () => streamResponse([sseDelta('x'), sseDone])],
+    other.retry
+  );
+  assert.deepEqual(other.sleeps, [125]);
+});
+
+test('the backoff is capped by the max-elapsed deadline and then gives up', async () => {
+  const clock = fakeClock();
+  const out = await runTurn(
+    [
+      () => errorResponse(500, 'Internal Server Error.'),
+      () => errorResponse(500, 'Internal Server Error.'),
+      () => streamResponse([sseDelta('never'), sseDone])
+    ],
+    { ...clock.retry, maxElapsedMs: 700 }
+  );
+  // attempt 1: 250 ms sleep fits (0+250<=700); attempt 2 would sleep 500 ms
+  // at 250 ms elapsed -> 750 > 700, so the deadline vetoes the replay.
+  assert.equal(out.calls, 2);
+  assert.deepEqual(clock.sleeps, [250]);
+  assert.equal(out.done, false);
+  assert.equal(out.text, '');
+  assert.ok(out.error);
+  assert.match(out.error, /Internal Server Error\./);
+  assert.match(out.error, /Giving up after 2 attempts\./);
+  assert.match(out.error, /servers are down or overloaded/); // aider's ExInfo description
+});
+
+test('a mid-stream break keeps the partial reply and warns instead of replaying', async () => {
+  const brokenBody = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(sseDelta('Half an ')));
+    },
+    // The drop happens after the first chunk is delivered, not before: a
+    // pre-delivery error would discard the queue, not model a mid-stream break.
+    pull(controller) {
+      controller.error(new Error('socket reset mid-stream'));
+    }
+  });
+  const out = await runTurn(
+    [() => new Response(brokenBody, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })],
+    fakeClock().retry
+  );
+  // IDEMPOTENCY: the body already reached the model — no second request, ever.
+  assert.equal(out.calls, 1);
+  // The partial text already streamed to the UI and stays there.
+  assert.equal(out.text, 'Half an ');
+  assert.equal(out.warnings.length, 1);
+  assert.match(out.warnings[0], /partial answer is kept/);
+  assert.match(out.warnings[0], /Resume/);
+  assert.equal(out.notices.length, 0);
+  assert.ok(out.error);
+  assert.equal(out.done, false);
+});
+
+test('a connection loss before the first token is replayed (nothing reached the UI)', async () => {
+  const droppedBody = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(new Error('connection reset before first byte'));
+    }
+  });
+  const out = await runTurn(
+    [
+      () => new Response(droppedBody, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      () => streamResponse([sseDelta('Second try'), sseDone])
+    ],
+    fakeClock().retry
+  );
+  assert.equal(out.calls, 2);
+  assert.equal(out.text, 'Second try');
+  assert.equal(out.error, null);
+  assert.deepEqual(out.notices.map((n) => n.reason), ['APIConnectionError']);
+});
+
+test('a fetch-level network failure (TypeError) is retried like APIConnectionError', async () => {
+  const out = await runTurn(
+    [
+      () => { throw new TypeError('fetch failed'); },
+      () => streamResponse([sseDelta('back up'), sseDone])
+    ],
+    fakeClock().retry
+  );
+  assert.equal(out.calls, 2);
+  assert.equal(out.text, 'back up');
+  assert.equal(out.error, null);
+});
+
+test('an SSE error event naming a transient provider fault replays before any output', async () => {
+  const out = await runTurn(
+    [
+      () => streamResponse([
+        `data: ${JSON.stringify({ type: 'error', message: 'Could not reach Google Gemini. Check your internet connection and try again.' })}\n\n`
+      ]),
+      () => streamResponse([sseDelta('gemini is back'), sseDone])
+    ],
+    fakeClock().retry
+  );
+  assert.equal(out.calls, 2);
+  assert.equal(out.text, 'gemini is back');
+  assert.equal(out.error, null);
+  assert.deepEqual(out.notices.map((n) => n.reason), ['APIConnectionError']);
+});
+
+test('a 401 authentication failure is never retried', async () => {
+  const clock = fakeClock();
+  const out = await runTurn(
+    [() => errorResponse(401, 'The API provider is not able to authenticate you.')],
+    clock.retry
+  );
+  assert.equal(out.calls, 1);
+  assert.equal(out.notices.length, 0);
+  assert.deepEqual(clock.sleeps, []);
+  assert.equal(out.error, 'The API provider is not able to authenticate you.');
+});
+
+test('a user stop during the backoff sleep ends the turn silently', async () => {
+  const controller = new AbortController();
+  const clock = fakeClock();
+  clock.retry.sleep = async () => {
+    controller.abort();
+    await Promise.resolve();
+  };
+  const out = await runTurn(
+    [
+      () => errorResponse(429, 'Too many requests.'),
+      () => streamResponse([sseDelta('must not run'), sseDone])
+    ],
+    clock.retry,
+    { signal: controller.signal }
+  );
+  assert.equal(out.calls, 1, 'the replay never starts after a stop');
+  assert.equal(out.error, null, 'a stop is not an error');
+  assert.equal(out.text, '');
+  assert.equal(out.notices.length, 1, 'the user was still told a retry was starting');
+});
+
+test('a silent stream hits the idle watchdog and replays as a Timeout', async () => {
+  let timerArmed = 0;
+  const clock = fakeClock();
+  const hangingBody = new ReadableStream<Uint8Array>({ start: () => {} });
+  const out = await runTurn(
+    [
+      () => new Response(hangingBody, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      () => streamResponse([sseDelta('unhung'), sseDone])
+    ],
+    {
+      ...clock.retry,
+      // Fire the watchdog exactly once: on the first attempt's first read.
+      setTimer: (callback: () => void) => {
+        timerArmed += 1;
+        if (timerArmed === 1) queueMicrotask(callback);
+        return 0;
+      }
+    }
+  );
+  assert.equal(out.calls, 2);
+  assert.equal(out.text, 'unhung');
+  assert.equal(out.error, null);
+  assert.deepEqual(out.notices.map((n) => n.reason), ['Timeout']);
+});
+
+/* ---- classification + backoff unit tests (aider ports) ---- */
+
+test('aider OpenRouter "choices" quirk classifies as a retryable connection error', () => {
+  const info = classifyFailure(
+    500,
+    "litellm.APIConnectionError: OpenrouterException - {'error': 'upstream', 'choices': missing}"
+  );
+  assert.equal(info.name, 'APIConnectionError');
+  assert.equal(info.retry, true);
+  assert.equal(
+    info.description,
+    'OpenRouter or the upstream API provider is down, overloaded or rate limiting your requests.'
+  );
+});
+
+test('aider insufficient-credits special case is never retried', () => {
+  const info = classifyFailure(402, 'Groq API error: {"error":{"code":402}} insufficient credits');
+  assert.equal(info.retry, false);
+  assert.equal(info.description, 'Insufficient credits with the API provider. Please add credits.');
+});
+
+test('HTTP statuses map onto aider exception classes for Gemini/Groq/OpenAI-compat', () => {
+  assert.equal(classifyStatus(429).name, 'RateLimitError');
+  assert.equal(classifyStatus(429).retry, true);
+  assert.equal(classifyStatus(500).name, 'InternalServerError');
+  assert.equal(classifyStatus(503).name, 'ServiceUnavailableError');
+  assert.equal(classifyStatus(504).name, 'Timeout');
+  assert.equal(classifyStatus(408).name, 'Timeout');
+  assert.equal(classifyStatus(400).retry, false);
+  assert.equal(classifyStatus(418).retry, false, 'an unknown status stays non-retryable');
+  assert.equal(classifyStatus(599).retry, true, 'any other 5xx is a server fault');
+});
+
+test('message classification mirrors aider and defaults to no-retry', () => {
+  assert.equal(classifyMessage('The model is overloaded, try again later').name, 'InternalServerError');
+  assert.equal(classifyMessage('Request timed out after 20 seconds').name, 'Timeout');
+  assert.equal(classifyMessage('rate limited, check your quotas').name, 'RateLimitError');
+  assert.equal(classifyMessage('something ineffable happened').retry, false);
+  // A status outranks prose: a 401 must not be promoted by the word "connection".
+  assert.equal(classifyFailure(401, 'lost connection to the key server').name, 'AuthenticationError');
+});
+
+test('Retry-After header parsing: seconds, HTTP dates, garbage', () => {
+  assert.equal(parseRetryAfterSeconds('7'), 7);
+  assert.equal(parseRetryAfterSeconds('999999'), 3600, 'clamped to an hour');
+  const now = Date.parse('Wed, 21 Oct 2015 07:28:00 GMT');
+  assert.equal(parseRetryAfterSeconds('Wed, 21 Oct 2015 07:28:30 GMT', now), 30);
+  assert.equal(parseRetryAfterSeconds('Wed, 21 Oct 2015 07:27:00 GMT', now), 0, 'past dates clamp to 0');
+  assert.equal(parseRetryAfterSeconds('not a date'), null);
+  assert.equal(parseRetryAfterSeconds(null), null);
+});
+
+test('planRetry keeps aider doubling + RETRY_TIMEOUT cap, and the ShadRox budgets', () => {
+  const settings = { ...DEFAULT_RETRY_SETTINGS };
+  // aider: retry_delay *= 2 ... if retry_delay > RETRY_TIMEOUT: should_retry = False
+  const capped = planRetry({ previousDelayMs: 40_000, failedAttempt: 1, elapsedMs: 0, settings, rng: () => 1 });
+  assert.deepEqual(capped, { kind: 'exhausted', reason: 'max-delay' });
+
+  const attempts = planRetry({ previousDelayMs: 125, failedAttempt: 4, elapsedMs: 0, settings, rng: () => 1 });
+  assert.deepEqual(attempts, { kind: 'exhausted', reason: 'attempts' });
+
+  const deadline = planRetry({ previousDelayMs: 125, failedAttempt: 1, elapsedMs: 29_900, settings, rng: () => 1 });
+  assert.deepEqual(deadline, { kind: 'exhausted', reason: 'deadline' });
+
+  const ok = planRetry({ previousDelayMs: 125, failedAttempt: 1, elapsedMs: 0, settings, rng: () => 1 });
+  assert.deepEqual(ok, { kind: 'retry', delayMs: 250, nextDelayMs: 250 });
+
+  // Retry-After floors the sleep even above the jittered exponential.
+  const floored = planRetry({
+    previousDelayMs: 125, failedAttempt: 1, elapsedMs: 0, retryAfterSeconds: 5, settings, rng: () => 1
+  });
+  assert.deepEqual(floored, { kind: 'retry', delayMs: 5000, nextDelayMs: 250 });
+});
+
+test('aiderRetryMessage reproduces the aider notice text', () => {
+  const text = aiderRetryMessage(
+    'The API provider has rate limited you. Try again later or check your quotas.',
+    2000,
+    1,
+    4
+  );
+  assert.equal(
+    text,
+    'The API provider has rate limited you. Try again later or check your quotas. ' +
+      'Retrying in 2.0 seconds... (attempt 2 of 4)'
+  );
 });

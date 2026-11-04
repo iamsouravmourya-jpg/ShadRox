@@ -1,11 +1,20 @@
 import { resolveTarget, type FilePatch, type KnownFile } from './markdown';
+import { canonicalize, calculateSimilarity, SIMILARITY_THRESHOLD } from './patch/clineDiff';
+import {
+	clineSectionsToPatches,
+	parseClinePatchSections,
+	refusalBlock,
+	type ClinePatchEntry,
+} from './patch/clinePatchApply';
+import { PATCH_MARKERS, DiffError } from './patch/clinePatchParser';
 
 /**
  * Multi-file unified patch engine.
  *
  * Ported from Void's Fast Apply (reference/void-main/.../common/helpers/
  * extractCodeFromResult.ts and browser/editCodeService.ts), stripped of every
- * VS Code dependency:
+ * VS Code dependency, and extended with Cline's apply-patch algorithm
+ * (Apache-2.0; see src/lib/patch/*.ts for the attribution headers):
  *
  * - The model may emit SEARCH/REPLACE blocks instead of whole files:
  *
@@ -21,6 +30,20 @@ import { resolveTarget, type FilePatch, type KnownFile } from './markdown';
  *   than silently applied to the first hit.
  * - Every patch carries its target path, so one reply can touch many files and
  *   the UI reviews/accepts them as a single set.
+ * - NEW (Cline port): the model may also emit Cline's `*** Begin Patch`
+ *   apply_patch grammar (Update/Add with @@ context hunks, tolerant of the
+ *   legacy %%bash apply_patch <<'EOF' wrapper). Hunks are converted to
+ *   SEARCH/REPLACE blocks so ShadRox's own anchor verification — never
+ *   Cline's write-now fuzz — positions and validates them.
+ * - NEW (Cline port): locateBlock grows a fourth level, `fuzzy`: a unique
+ *   Levenshtein-similar line window (similarity >= 0.66 over >= 3 lines, the
+ *   same math Cline's findContext uses). Two or more similar windows are
+ *   refused as `not-unique`; a short block never reaches this level.
+ * - SAFETY vs Cline: computeClinePatchChanges (the fuzz-anchored executor
+ *   Cline itself uses) is exported from './patch/clinePatchApply' as a seam
+ *   but is NOT wired into auto-apply — its similarity pass can place a hunk
+ *   on a merely *similar* window. Anything that fails verification writes
+ *   zero bytes.
  */
 
 export const SEARCH_ORIGINAL_MARKER = '<<<<<<< ORIGINAL';
@@ -96,8 +119,8 @@ export function parseSearchReplaceBlocks(text: string): SearchReplaceBlock[] {
 export type BlockRange = { start: number; end: number };
 export type BlockLookup = BlockRange | 'not-found' | 'not-unique' | 'ambiguous';
 
-/** How forgiving a match was: verbatim, whole lines trimmed, or all whitespace ignored. */
-export type LocateLevel = 'exact' | 'lines' | 'stripped';
+/** How forgiving a match was: verbatim, whole lines trimmed, all whitespace ignored, or Cline's similarity pass. */
+export type LocateLevel = 'exact' | 'lines' | 'stripped' | 'fuzzy';
 
 export type BlockMatch =
   | { status: 'found'; range: BlockRange; matches: number; via: LocateLevel }
@@ -178,6 +201,70 @@ function locateByTrimmedLines(content: string, original: string): TrimmedLineLoo
   return { range: { start: starts[hit], end } };
 }
 
+type SimilarityLookup =
+  | { kind: 'found'; range: BlockRange }
+  | { kind: 'not-unique'; candidates: number }
+  | { kind: 'none' };
+
+/**
+ * Fourth-level fallback, ported in spirit from Cline's findContext()
+ * similarity pass (Levenshtein ratio >= 0.66, canonicalized punctuation —
+ * src/lib/patch/clineDiff.ts). Two ShadRox safety changes over Cline:
+ *  - EVERY window at or over the threshold is collected, not just the first;
+ *    two or more candidates means the block cannot say which place it meant,
+ *    so it is refused as `not-unique` (Cline would silently take the first).
+ *  - Only multi-line blocks (>= 3 lines, >= 40 non-whitespace characters)
+ *    reach this level. On one short line a 0.66 ratio is a coin flip —
+ *    `callC();` is 0.875 similar to `callA();` — and a coin flip is not an
+ *    anchor. Cheap first/last-line pre-checks keep the O(n·m) distance math
+ *    off windows that cannot possibly pass.
+ */
+function locateBySimilarity(content: string, original: string): SimilarityLookup {
+  const wantedLines = original.split('\n').map((line) => line.replace(/\r$/, ''));
+  while (wantedLines.length && wantedLines[0].trim() === '') wantedLines.shift();
+  while (wantedLines.length && wantedLines[wantedLines.length - 1].trim() === '') wantedLines.pop();
+  if (wantedLines.length < 3) return { kind: 'none' };
+  if (wantedLines.join('').replace(/\s/g, '').length < 40) return { kind: 'none' };
+
+  const rawLines = content.split('\n');
+  if (rawLines.length > 20000) return { kind: 'none' };
+  const starts: number[] = [];
+  let offset = 0;
+  for (const line of rawLines) {
+    starts.push(offset);
+    offset += line.length + 1;
+  }
+  const lines = rawLines.map((line) => line.replace(/\r$/, ''));
+
+  const canonWanted = canonicalize(wantedLines.join('\n'));
+  const firstWanted = canonWanted.split('\n')[0] ?? '';
+  const lastWanted = canonWanted.split('\n')[canonWanted.split('\n').length - 1] ?? '';
+  const window = wantedLines.length;
+
+  const candidates: number[] = [];
+  for (let start = 0; start + window <= lines.length; start += 1) {
+    const firstLine = canonicalize((lines[start] ?? '').trimEnd());
+    if (calculateSimilarity(firstLine, firstWanted) < SIMILARITY_THRESHOLD) continue;
+    const lastLine = canonicalize((lines[start + window - 1] ?? '').trimEnd());
+    if (calculateSimilarity(lastLine, lastWanted) < SIMILARITY_THRESHOLD) continue;
+    const segment = canonicalize(lines.slice(start, start + window).join('\n'));
+    if (calculateSimilarity(segment, canonWanted) >= SIMILARITY_THRESHOLD) {
+      candidates.push(start);
+      if (candidates.length > 1) return { kind: 'not-unique', candidates: candidates.length };
+    }
+  }
+  if (!candidates.length) return { kind: 'none' };
+
+  // Snap to whole lines, exactly like the trimmed-line level, so the
+  // replacement keeps the file's own surrounding newlines.
+  const hit = candidates[0];
+  const last = hit + window - 1;
+  if (last + 1 >= starts.length) return { kind: 'found', range: { start: starts[hit], end: content.length } };
+  let end = starts[last + 1] - 1;
+  if (content[end - 1] === '\r') end -= 1;
+  return { kind: 'found', range: { start: starts[hit], end } };
+}
+
 /**
  * Locates a block's ORIGINAL inside a file and — this is the whole point —
  * reports *every* place it matches.
@@ -224,7 +311,18 @@ export function locateBlock(content: string, original: string): BlockMatch {
   const strippedOriginal = strip(original);
   if (!strippedOriginal) return byLines === 'not-unique' ? { status: 'not-unique', matches: 2 } : { status: 'not-found', matches: 0 };
   const first = strippedFile.indexOf(strippedOriginal);
-  if (first === -1) return byLines === 'not-unique' ? { status: 'not-unique', matches: 2 } : { status: 'not-found', matches: 0 };
+  if (first === -1) {
+    if (byLines !== 'not-unique') {
+      const fuzzy = locateBySimilarity(content, original);
+      if (fuzzy.kind === 'found') {
+        return { status: 'found', range: fuzzy.range, matches: 1, via: 'fuzzy' };
+      }
+      if (fuzzy.kind === 'not-unique') {
+        return { status: 'not-unique', matches: fuzzy.candidates };
+      }
+    }
+    return byLines === 'not-unique' ? { status: 'not-unique', matches: 2 } : { status: 'not-found', matches: 0 };
+  }
   if (strippedFile.indexOf(strippedOriginal, first + strippedOriginal.length) !== -1) {
     return { status: 'not-unique', matches: 2 };
   }
@@ -376,6 +474,12 @@ function scanFencedBlocks(content: string): BlockScan[] {
  * code blocks become searchReplace patches, other fenced bodies become
  * whole-file rewrites. An S/R fence may carry the path on the first line
  * (Void's chat convention) or in the fence info.
+ *
+ * A fenced body carrying Cline's `*** Begin Patch` grammar (Update/Add/Delete
+ * File with @@ context hunks, with or without the legacy %%bash wrapper)
+ * becomes searchReplace/rewrite patches per file through the same engine;
+ * operations the pipeline cannot express (Delete, Move) and parse failures
+ * become guaranteed-refusal patches, never silent drops.
  */
 export function extractUnifiedPatches(content: string, files: KnownFile[] = []): UnifiedPatch[] {
   const patches: UnifiedPatch[] = [];
@@ -386,6 +490,11 @@ export function extractUnifiedPatches(content: string, files: KnownFile[] = []):
     let body = block.body.replace(/\s+$/, '');
     const info = block.info;
     let context = block.context;
+
+    if (looksLikeClinePatch(body)) {
+      patches.push(...clinePatchBodyToUnifiedPatches(body, info, context, files));
+      continue;
+    }
 
     // Void's chat convention: the first line of the block is the FULL PATH.
     const bodyLines = body.split('\n');
@@ -408,6 +517,64 @@ export function extractUnifiedPatches(content: string, files: KnownFile[] = []):
     if (target) patches.push({ path: target, kind: 'rewrite', content: body });
   }
 
+  return patches;
+}
+
+/** True when any line of the body carries an apply_patch file operation marker. */
+export function looksLikeClinePatch(body: string): boolean {
+  for (const line of body.split('\n').slice(0, 8)) {
+    const trimmed = line.trim();
+    if (
+      trimmed.startsWith(PATCH_MARKERS.BEGIN) ||
+      trimmed.startsWith(PATCH_MARKERS.ADD) ||
+      trimmed.startsWith(PATCH_MARKERS.UPDATE) ||
+      trimmed.startsWith(PATCH_MARKERS.DELETE)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function canonicalPatchPath(path: string, files: KnownFile[]): string {
+  const wanted = path.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  for (const file of files) {
+    if (file.name.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase() === wanted) return file.name;
+  }
+  return path.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function clinePatchBodyToUnifiedPatches(
+  body: string,
+  info: string,
+  context: string,
+  files: KnownFile[]
+): UnifiedPatch[] {
+  const contents: Record<string, string> = {};
+  for (const file of files) contents[file.name] = file.content;
+
+  let entries: ClinePatchEntry[];
+  try {
+    entries = clineSectionsToPatches(parseClinePatchSections(body), contents);
+  } catch (error) {
+    if (!(error instanceof DiffError)) throw error;
+    // A malformed or unanchorable patch must still BLOCK the plan; it can
+    // never be dropped quietly, or the model claims edits that did not land.
+    const target = resolveTarget(info, context, body, files) ?? canonicalPatchPath('apply-patch', files);
+    return [{ path: target, kind: 'searchReplace', blocks: [refusalBlock(error.message)] }];
+  }
+
+  const patches: UnifiedPatch[] = [];
+  for (const entry of entries) {
+    const target = canonicalPatchPath(entry.path, files);
+    if (entry.kind === 'rewrite') {
+      patches.push({ path: target, kind: 'rewrite', content: entry.content });
+    } else if (entry.kind === 'searchReplace') {
+      patches.push({ path: target, kind: 'searchReplace', blocks: entry.blocks });
+    } else {
+      patches.push({ path: target, kind: 'searchReplace', blocks: [refusalBlock(entry.reason)] });
+    }
+  }
   return patches;
 }
 
@@ -461,3 +628,29 @@ export function assessRewriteRisk(
 export function toRewritePatch(patch: UnifiedPatch, newContent: string): FilePatch {
   return { path: patch.path, content: newContent };
 }
+
+/* ------------------------------------------------------------------ *
+ * Cline seams (see src/lib/patch/*.ts for the Apache-2.0 port headers).
+ *
+ * computeClinePatchChanges is Cline's own executor math — fuzz-anchored
+ * hunks resolved against CURRENT contents, throwing before producing a
+ * change set when any hunk fails every match level. It is exported for
+ * callers that verify the result on disk with their own guards
+ * (a future human-reviewed apply path); auto-apply deliberately does NOT
+ * use it, it stays on the SEARCH/REPLACE verification pipeline above.
+ * atomicApply must not be edited from this task, so this export IS its
+ * seam: planAtomicApply can adopt it later without patchEngine changing.
+ * ------------------------------------------------------------------ */
+export {
+	computeClinePatchChanges,
+	findContent as findClineFileContent,
+} from './patch/clinePatchApply';
+export {
+	DiffError as ClineDiffError,
+	PATCH_MARKERS as CLINE_PATCH_MARKERS,
+	PatchActionType as ClinePatchActionType,
+	PatchParser as ClinePatchParser,
+} from './patch/clinePatchParser';
+export { makeUnifiedDiff, countDiffLines } from './patch/clineUiDiff';
+export type { ClineChangeSet, ClineFileChange } from './patch/clinePatchApply';
+export type { ClineParsedSections, ClinePatchEntry, ClineUpdateSection } from './patch/clinePatchApply';

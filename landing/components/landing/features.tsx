@@ -1,80 +1,151 @@
 'use client'
 
-import { FolderOpen, Sparkles, Eye, Terminal, FileCode2, GitBranch } from 'lucide-react'
+import type { MouseEvent, ReactNode } from 'react'
+import {
+  MessagesSquare, FileCode2, SearchCode, Command,
+  Eye, Terminal, GitBranch, Replace, History,
+} from 'lucide-react'
 import { Reveal } from './reveal'
 
-const features = [
+type Feature = {
+  icon: typeof MessagesSquare
+  title: string
+  text: string
+  span?: 4 | 3 | 2
+  visual?: ReactNode
+}
+
+const mono = 'font-mono text-[11px]'
+
+const features: Feature[] = [
   {
-    icon: FolderOpen,
-    number: '01',
-    title: 'Your project stays on your machine',
-    text: 'Open a folder, browse files as you need them, and save edits straight back to the project on disk.',
+    icon: MessagesSquare,
+    title: 'AI chat & queue',
+    text: 'Use Gemini, Groq or any OpenAI-compatible endpoint with your own BYOK key. Queue follow-up messages while a turn is running, review proposed diffs before applying, and dictate prompts by voice.',
+    span: 4,
+    visual: (
+      <div className="mt-5 grid gap-2 text-xs">
+        <div className="justify-self-end rounded-xl bg-[var(--ac)] px-3 py-2 font-semibold text-white">Add a loading state</div>
+        <div className={`rounded-xl bg-red-500/10 px-3 py-2 text-red-600 dark:text-red-400 ${mono}`}>{'- ready={ready}'}</div>
+        <div className={`rounded-xl bg-emerald-500/10 px-3 py-2 text-emerald-700 dark:text-emerald-400 ${mono}`}>{'+ loading={!ready}'}</div>
+      </div>
+    ),
   },
   {
     icon: FileCode2,
-    number: '02',
-    title: 'Code, then preview Markdown',
-    text: 'Edit in CodeMirror, split your editor, and switch any .md file between source and a readable preview.',
+    title: 'Editor & Markdown',
+    text: 'CodeMirror 6 with split editor groups, pinned and reorderable tabs, quick open, file outline, inline AI completions, and a one-click Markdown source/preview toggle.',
   },
   {
-    icon: Sparkles,
-    number: '03',
-    title: 'AI help, with you in control',
-    text: 'Use Gemini, Groq, or a compatible endpoint with your own key. Queue follow-ups and review proposed code changes before applying them.',
+    icon: SearchCode,
+    title: 'Code navigation',
+    text: 'TypeScript diagnostics, go-to-definition, find references, rename symbols, quick fixes, semantic highlighting, and workspace symbol search.',
+  },
+  {
+    icon: Command,
+    title: 'Palette & Ctrl+K',
+    text: 'Fuzzy-find files, workspace symbols and commands from one palette. Select any code and press Ctrl+K for an inline AI edit with ghost-text completions.',
   },
   {
     icon: Eye,
-    number: '04',
-    title: 'Preview supported web projects',
-    text: 'View static sites, detected Node.js projects, and Python, Go, PHP, Java, or .NET backends in-app. ShadRox asks before managed install or run actions.',
+    title: 'Local preview',
+    text: 'Preview static sites, Vite, Next.js, Nuxt, Astro, Angular, SvelteKit and Node-based projects, plus detected Python, Go, PHP, Java and .NET backends.',
   },
   {
     icon: Terminal,
-    number: '05',
-    title: 'Terminal and Git tools',
-    text: "Run commands in your project and review Git changes, diffs, branches, staging, and commits in the same workspace.",
+    title: 'Integrated terminal',
+    text: 'Multiple terminal sessions with resizable split panes rooted in your workspace. Assistant-initiated commands use a separate approval-gated path.',
   },
   {
     icon: GitBranch,
-    number: '06',
-    title: 'Checkpoints for safer iteration',
-    text: 'Inspect assistant checkpoints and restore earlier workspace content when you need to back out a change.',
+    title: 'Source control',
+    text: 'Inspect staged and unstaged changes, preview diffs, stage or unstage, switch branches, resolve conflicts, and commit with AI-generated messages.',
+    span: 4,
+    visual: (
+      <div className="mt-5 grid gap-2 text-xs">
+        <div className={`rounded-xl bg-emerald-500/10 px-3 py-2 font-semibold text-emerald-700 dark:text-emerald-400 ${mono}`}>✓ 3 files staged</div>
+        <div className="rounded-xl bg-[var(--bg2)] px-3 py-2 text-[var(--mut)]">feat: add loading state to App</div>
+      </div>
+    ),
+  },
+  {
+    icon: Replace,
+    title: 'Search & replace',
+    text: 'Search files on disk and in open buffers, review every match, and replace selected or all occurrences.',
+    span: 3,
+  },
+  {
+    icon: History,
+    title: 'Checkpoints',
+    text: 'Review assistant checkpoints and restore earlier workspace content when an experiment goes sideways.',
+    span: 3,
   },
 ]
 
+function trackGlow(e: MouseEvent<HTMLElement>) {
+  const rect = e.currentTarget.getBoundingClientRect()
+  e.currentTarget.style.setProperty('--x', `${e.clientX - rect.left}px`)
+  e.currentTarget.style.setProperty('--y', `${e.clientY - rect.top}px`)
+}
+
 export function Features() {
   return (
-    <section id="features" className="border-t border-white/8 bg-[#0d0f13] px-5 py-20 lg:px-8 lg:py-28">
-      <div className="mx-auto max-w-6xl">
-        <Reveal className="mb-12 max-w-xl">
-          <p className="mb-4 text-xs font-medium uppercase tracking-[0.2em] text-violet-300">The workspace</p>
-          <h2 className="text-3xl font-semibold tracking-[-0.04em] text-white sm:text-4xl">
-            Everything around the code, together.
+    <section id="features" className="border-t border-[var(--line)] bg-[var(--bg)] px-5 py-20 lg:px-8 lg:py-28">
+      <div className="mx-auto max-w-[1180px]">
+        <Reveal>
+          <p className="mb-3 text-center text-[11px] font-bold uppercase tracking-[0.2em] text-[var(--ac)]">
+            Everything in one place
+          </p>
+        </Reveal>
+        <Reveal delay={80}>
+          <h2 className="mx-auto mb-4 max-w-[820px] text-center text-[clamp(32px,5vw,58px)] font-bold tracking-[-0.04em] leading-[1.08] text-[var(--ink)]">
+            Stop switching windows.{' '}
+            <em className="font-normal italic text-[var(--ac)]">Start shipping.</em>
           </h2>
         </Reveal>
+        <Reveal delay={160}>
+          <p className="mx-auto mb-14 max-w-[600px] text-center text-[var(--mut)] text-base leading-7">
+            Editor, AI chat, preview, Git tools and terminal live side by side — writing,
+            reviewing, running and committing stay in one flow.
+          </p>
+        </Reveal>
 
-        <div className="feature-track grid gap-px overflow-hidden rounded-2xl border border-white/8 bg-white/8 md:grid-cols-2">
-          {features.map(({ icon: Icon, number, title, text }, i) => (
+        <div className="grid gap-[18px] md:grid-cols-2 lg:grid-cols-6">
+          {features.map(({ icon: Icon, title, text, span = 2, visual }, i) => (
             <Reveal
-              key={number}
-              delay={i * 90}
+              key={title}
               as="article"
-              className="feature-card min-w-[280px] border-b border-r border-white/8 bg-[#0d0f13] p-7 last:border-b-0 hover:bg-[#12151b] lg:p-9 md:[&:nth-child(2n)]:border-r-0"
+              delay={(i % 3) * 90}
+              className={
+                span === 4 ? 'md:col-span-2 lg:col-span-4' :
+                span === 3 ? 'lg:col-span-3' : undefined
+              }
             >
-              <div className="mb-16 flex items-center justify-between">
-                <span className="relative grid size-10 place-items-center rounded-xl border border-violet-300/20 bg-violet-300/[.07]">
-                  <Icon className="size-5 text-violet-300" />
-                </span>
-                <span className="font-mono text-xs text-zinc-600">{number}</span>
+              <div
+                onMouseMove={trackGlow}
+                className="group relative h-full overflow-hidden rounded-[26px] border border-[var(--line)] bg-[var(--card)] p-6 sm:p-[30px] feature-card"
+              >
+                {/* cursor spotlight */}
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+                  style={{
+                    background:
+                      'radial-gradient(380px circle at var(--x,50%) var(--y,50%), var(--glow), transparent 60%)',
+                  }}
+                />
+                <div className="relative">
+                  <span className="mb-5 grid size-[46px] place-items-center rounded-[14px] bg-[var(--bg2)] motion-safe:transition-transform motion-safe:duration-300 motion-safe:group-hover:-rotate-6 motion-safe:group-hover:scale-110">
+                    <Icon className="size-[22px] text-[var(--ac)]" strokeWidth={1.75} />
+                  </span>
+                  <h3 className="mb-2 text-[17px] font-bold text-[var(--ink)] leading-snug">{title}</h3>
+                  <p className="text-sm leading-6 text-[var(--mut)]">{text}</p>
+                  {visual}
+                </div>
               </div>
-              <h3 className="max-w-sm text-lg font-medium text-white">{title}</h3>
-              <p className="mt-3 max-w-sm text-sm leading-6 text-zinc-500">{text}</p>
             </Reveal>
           ))}
         </div>
-        <p className="mt-4 text-center text-[10px] uppercase tracking-[0.2em] text-zinc-600 md:hidden">
-          Swipe to explore
-        </p>
       </div>
     </section>
   )

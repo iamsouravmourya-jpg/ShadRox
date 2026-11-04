@@ -42,7 +42,7 @@ const {
   validateBranchName,
   validateGitPaths
 } = require('./git-scm.cjs');
-const { resolveTerminalPlan, clampTerminalSize, normalizeTerminalSessionKey, isSafeExternalUrl } = require('./terminal-modes.cjs');
+const { resolveTerminalPlan, systemEnvironment, clampTerminalSize, normalizeTerminalSessionKey, isSafeExternalUrl } = require('./terminal-modes.cjs');
 const { createMcpClient, validateServerConfig, isSafeHttpUrl } = require('./mcp-client.cjs');
 const { detectRuntime, planDualPreview } = require('./runtime-adapters.cjs');
 const { createAutomationWebhook } = require('./automation-webhook.cjs');
@@ -1655,9 +1655,10 @@ function registerIpcHandlers() {
     const plan = resolveTerminalPlan({ env: process.env, mode: requestedMode });
     const sessionId = requestedKey ?? randomUUID();
     const size = clampTerminalSize(cols, rows);
+    const terminalEnv = requestedMode === 'agent' ? plan.env : systemEnvironment(plan.env);
     const terminal = pty.spawn(plan.shellPath, plan.shellArgs, {
       name: 'xterm-256color', cols: size.cols, rows: size.rows,
-      cwd: workspace.root, env: { ...plan.env, TERM: 'xterm-256color' }, useConpty: process.platform === 'win32',
+      cwd: workspace.root, env: { ...terminalEnv, TERM: 'xterm-256color' }, useConpty: process.platform === 'win32',
       windowsHide: true
     });
     const sessionInfo = { workspaceId, mode: plan.mode, label: plan.label, terminal };
