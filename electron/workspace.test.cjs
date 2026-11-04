@@ -313,6 +313,65 @@ test('adopted files keep the optimistic-concurrency guard on both write paths', 
   assert.equal(await fs.readFile(path.join(root, 'README.md'), 'utf8'), 'old text');
 });
 
+test('a transaction validates every file before writing any — a late external edit blocks the whole set', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-txn-atomic-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'a.ts'), 'export const a = 1;\n');
+  await fs.writeFile(path.join(root, 'b.ts'), 'export const b = 2;\n');
+
+  const access = createWorkspaceAccess();
+  const opened = await access.openFolder(root);
+  const staged = await access.stageFiles(opened.workspaceId, [
+    { name: 'a.ts', content: 'export const A = 1;\n' },
+    { name: 'b.ts', content: 'export const B = 2;\n' }
+  ]);
+
+  // The user edits b.ts by hand after the proposal was staged.
+  await fs.writeFile(path.join(root, 'b.ts'), 'export const b = 999; // vim\n', 'utf8');
+
+  await assert.rejects(
+    access.commitTransaction(opened.workspaceId, staged.transactionId),
+    /b\.ts changed after the proposal was prepared\. Generate it again\./
+  );
+  // Commit-time validation runs over the whole transaction before any save,
+  // so the still-valid a.ts must NOT have landed. Ten files landing and one
+  // failing is exactly the half-applied refactor this rail must never do.
+  assert.equal(await fs.readFile(path.join(root, 'a.ts'), 'utf8'), 'export const a = 1;\n');
+  assert.equal(await fs.readFile(path.join(root, 'b.ts'), 'utf8'), 'export const b = 999; // vim\n');
+
+  // The refused transaction is untouched and can be discarded; the disk keeps
+  // the external edit.
+  access.discardTransaction(opened.workspaceId, staged.transactionId);
+  await assert.rejects(access.commitTransaction(opened.workspaceId, staged.transactionId), /expired/);
+});
+
+test('a file the turn never read cannot be replaced: never-adoptable paths stay foreign to the save path', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-never-read-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  const pngBytes = Buffer.from('89504e470d0a1a0a0000000dIHDR', 'hex');
+  await fs.mkdir(path.join(root, 'assets'), { recursive: true });
+  await fs.writeFile(path.join(root, 'assets', 'logo.png'), pngBytes);
+
+  const access = createWorkspaceAccess();
+  const opened = await access.openFolder(root);
+
+  // Assets are not adoptable text, so the save path must refuse to overwrite
+  // a file it could never have read — the whole-file-wipe shape at disk level.
+  const result = await access.saveFiles(opened.workspaceId, [
+    { name: 'assets/logo.png', content: 'export const evil = 1;' }
+  ]);
+  assert.deepEqual(result.saved, []);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0].message, /not part of the opened workspace/);
+  assert.deepEqual(await fs.readFile(path.join(root, 'assets', 'logo.png')), pngBytes);
+
+  // The staging path refuses the same shape before any transaction exists.
+  await assert.rejects(
+    access.stageFiles(opened.workspaceId, [{ name: 'assets/logo.png', content: 'nope' }]),
+    /is not an editable workspace file/
+  );
+});
+
 test('saveFiles writes a never-opened folder file and still guards hidden ones', async (context) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-adopt-save-'));
   context.after(() => fs.rm(root, { recursive: true, force: true }));

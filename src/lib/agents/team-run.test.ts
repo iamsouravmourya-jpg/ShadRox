@@ -276,3 +276,188 @@ test('cancellation stops between tasks and marks the run cancelled', async () =>
   assert.equal(state.tasks[1].status, 'pending');
   assert.match(state.error ?? '', /Cancelled with 1 task/);
 });
+
+/* ── the closing integration turn ─────────────────────────────────────────── */
+
+/** A merge check that finds breakage no single task's check could see. */
+const BROKEN_MERGE: VerificationReport = {
+  verdict: 'failed',
+  diagnostics: [
+    { path: 'src/api.ts', line: 7, column: 3, message: "Property 'onRename' is missing.", severity: 'error' }
+  ],
+  notes: ['one type error']
+};
+
+/** Each task writes its own file(s), so the changed set is never empty. */
+function writes(files: Record<string, string[]>) {
+  return (unit: TurnUnit): TurnResult => ({
+    reply: `did ${unit.id}`,
+    patchesApplied: 1,
+    patchFailures: [],
+    creditsSpent: 1,
+    aborted: false,
+    touchedFiles: files[unit.id] ?? []
+  });
+}
+
+test('a run that changed files ends with an integration turn and a per-role merge report', async () => {
+  const h = harness({
+    tasks: [
+      plannedTask({ id: 't1', assignee: 'frontend', expectedFiles: ['src/ui.ts'] }),
+      plannedTask({ id: 't2', assignee: 'backend', expectedFiles: ['src/api.ts'] })
+    ],
+    errors: []
+  });
+  h.setTurn(writes({ t1: ['src/ui.ts'], t2: ['src/api.ts'] }));
+  const state = await h.run('build it');
+
+  assert.equal(state.status, 'done');
+  assert.equal(h.turns.at(-1)?.id, 'integration');
+
+  const report = state.mergeReport;
+  assert.ok(report);
+  assert.equal(report.role, 'coordinator');
+  assert.equal(report.verdict, 'clean');
+  assert.equal(report.ran, true);
+  assert.deepEqual(report.files, ['src/ui.ts', 'src/api.ts']);
+  assert.deepEqual(report.byRole, [
+    { role: 'frontend', taskIds: ['t1'], files: ['src/ui.ts'] },
+    { role: 'backend', taskIds: ['t2'], files: ['src/api.ts'] }
+  ]);
+  assert.deepEqual(report.overlaps, []);
+
+  // The closing turn is told what each role changed and who owned each file.
+  const instruction = h.turns.at(-1)?.instruction ?? '';
+  assert.match(instruction, /WHAT EACH ROLE CHANGED/);
+  assert.match(instruction, /frontend \(t1\): src\/ui\.ts/);
+  assert.match(instruction, /OWNERSHIP MAP/);
+  assert.match(instruction, /- src\/api\.ts: t2 \(backend\)/);
+  assert.match(instruction, /OVERLAPS: none/);
+
+  assert.equal(h.events.some((event) => event.type === 'team:integration'), true);
+  assert.equal(state.messages.at(-1)?.from, 'coordinator');
+  assert.match(state.messages.at(-1)?.text ?? '', /Integration \(coordinator\) verdict clean/);
+  assert.equal(state.summaryReport?.mergeVerdict, 'clean');
+  assert.deepEqual(state.summaryReport?.filesModified, ['src/ui.ts', 'src/api.ts']);
+  assert.equal(state.creditsSpent, 3);
+});
+
+test('two roles writing one file is flagged as a conflict and fails the run', async () => {
+  const h = harness({
+    tasks: [
+      plannedTask({ id: 't1', assignee: 'frontend', expectedFiles: ['src/shared.ts'] }),
+      plannedTask({ id: 't2', assignee: 'backend', expectedFiles: ['src/shared.ts'] })
+    ],
+    errors: []
+  });
+  h.setTurn(writes({ t1: ['src/shared.ts'], t2: ['src/shared.ts'] }));
+  const state = await h.run('build it');
+
+  const report = state.mergeReport;
+  assert.ok(report);
+  assert.equal(report.overlaps.length, 1);
+  assert.equal(report.overlaps[0].file, 'src/shared.ts');
+  assert.deepEqual(report.overlaps[0].roles, ['frontend', 'backend']);
+  assert.deepEqual(report.overlaps[0].taskIds, ['t1', 't2']);
+  assert.equal(report.verdict, 'conflicts');
+  assert.equal(report.notes[0], report.overlaps[0].note);
+
+  // Never silently accepted: the run does not end `done` on a conflict, and the
+  // overlap lands in the panel's existing conflicts list.
+  assert.equal(state.status, 'failed');
+  assert.deepEqual(state.conflicts, [report.overlaps[0].note]);
+  assert.match(state.error ?? '', /written by more than one role: src\/shared\.ts/);
+  assert.deepEqual(state.summaryReport?.mergeConflicts, [report.overlaps[0].note]);
+  assert.equal(state.messages.at(-1)?.kind, 'blocked');
+  assert.match(h.turns.at(-1)?.instruction ?? '', /OVERLAPS — more than one task wrote these files/);
+  assert.match(h.turns.at(-1)?.instruction ?? '', /src\/shared\.ts was written by t1 \(frontend\) then t2 \(backend\)/);
+});
+
+test('diagnostics that only appear across the merged files make the verdict broken', async () => {
+  const h = harness({
+    tasks: [plannedTask({ id: 't1', assignee: 'frontend' }), plannedTask({ id: 't2', assignee: 'backend' })],
+    errors: []
+  });
+  h.setTurn(writes({ t1: ['src/ui.ts'], t2: ['src/api.ts'] }));
+  h.setVerify((unit) => (unit.id === 'integration' ? BROKEN_MERGE : PASSED));
+  const state = await h.run('build it');
+
+  const report = state.mergeReport;
+  assert.ok(report);
+  assert.equal(report.verdict, 'broken');
+  assert.equal(report.errors, 1);
+  assert.equal(report.diagnostics[0].path, 'src/api.ts');
+  assert.match(report.notes.join('\n'), /1 error diagnostic\(s\) remain across 2 changed file\(s\)/);
+  assert.equal(state.status, 'failed');
+  assert.match(state.error ?? '', /src\/api\.ts:7/);
+  assert.match(state.error ?? '', /does not fit together/);
+});
+
+test('the merge turn re-checks what it repaired, and its own files join the report', async () => {
+  const h = harness({
+    tasks: [plannedTask({ id: 't1', assignee: 'frontend' }), plannedTask({ id: 't2', assignee: 'backend' })],
+    errors: []
+  });
+  let checks = 0;
+  h.setTurn(writes({ t1: ['src/ui.ts'], t2: ['src/api.ts'], integration: ['src/ui.ts', 'src/bridge.ts'] }));
+  h.setVerify((unit) => {
+    if (unit.id !== 'integration') return PASSED;
+    checks += 1;
+    // Broken before the closing turn, clean after it repaired the pair.
+    return checks === 1 ? BROKEN_MERGE : PASSED;
+  });
+  const state = await h.run('build it');
+
+  const report = state.mergeReport;
+  assert.ok(report);
+  assert.equal(report.verdict, 'clean');
+  assert.deepEqual(report.files, ['src/ui.ts', 'src/api.ts', 'src/bridge.ts']);
+  assert.deepEqual(report.byRole.at(-1), { role: 'coordinator', taskIds: ['integration'], files: ['src/bridge.ts'] });
+  assert.equal(checks, 2);
+});
+
+test('the closing turn can be handed to the reviewer instead of the coordinator', async () => {
+  const h = harness({ tasks: [plannedTask({ id: 't1', assignee: 'backend' })], errors: [] });
+  h.deps.integrationRole = 'reviewer';
+  h.setTurn(writes({ t1: ['src/api.ts'] }));
+  const state = await h.run('goal');
+
+  assert.equal(state.mergeReport?.role, 'reviewer');
+  assert.equal(state.messages.at(-1)?.from, 'reviewer');
+  assert.match(h.turns.at(-1)?.instruction ?? '', /You are the Reviewer agent/);
+});
+
+test('a run with no credit left for the closing turn is still judged, and says it was not merged', async () => {
+  const h = harness(
+    { tasks: [plannedTask({ id: 't1', assignee: 'frontend' }), plannedTask({ id: 't2', assignee: 'backend' })], errors: [] },
+    { ...DEFAULT_TEAM_BUDGET, maxCredits: 2.2 }
+  );
+  h.setTurn(writes({ t1: ['src/ui.ts'], t2: ['src/api.ts'] }));
+  const state = await h.run('goal');
+
+  assert.equal(h.turns.length, 2);
+  assert.equal(state.status, 'done');
+  assert.equal(state.mergeReport?.ran, false);
+  assert.equal(state.mergeReport?.verdict, 'clean');
+  assert.match(state.mergeReport?.notes.join(' ') ?? '', /the closing turn did not run/);
+});
+
+test('a run that wrote nothing has no end to merge, so there is no closing turn', async () => {
+  const h = harness({ tasks: [plannedTask({ id: 't1', expectedFiles: [] })], errors: [] });
+  h.setTurn((unit) => ({ reply: `did ${unit.id}`, patchesApplied: 0, patchFailures: [], creditsSpent: 1, aborted: false }));
+  const state = await h.run('goal');
+
+  assert.equal(state.status, 'done');
+  assert.equal(state.mergeReport, undefined);
+  assert.equal(h.turns.length, 1);
+});
+
+test('a stopped team reports what it has instead of merging a half run', async () => {
+  const h = harness({ tasks: [plannedTask({ id: 't1', assignee: 'frontend' }), plannedTask({ id: 't2', assignee: 'backend' })], errors: [] });
+  h.setTurn(writes({ t1: ['src/ui.ts'], t2: ['src/api.ts'] }));
+  h.cancelAfter(1);
+  const state = await h.run('goal');
+
+  assert.equal(state.status, 'cancelled');
+  assert.equal(state.mergeReport, undefined);
+});

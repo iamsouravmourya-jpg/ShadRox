@@ -257,6 +257,34 @@ test('unknown extensions are skipped', (t) => {
   assert.deepEqual(result.skipped, ['notes.txt', 'assets/logo.png']);
 });
 
+test('the gate judges the proposed content, never the copy on disk, and touches nothing', (t) => {
+  const root = makeRoot(t);
+  const appPath = path.join(root, 'src', 'App.ts');
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+
+  // Disk holds valid code, the proposal is broken: the gate must fail closed
+  // on the proposal — this is the content that would land, so this is what
+  // must be judged.
+  fs.writeFileSync(appPath, 'export const a = 1;\n', 'utf8');
+  const brokenProposal = verify(root, [{ path: 'src/App.ts', content: 'const bad: = 2;\n' }]);
+  assert.equal(brokenProposal.ok, false);
+  assert.equal(brokenProposal.issues[0].code, 'TS1110');
+  assert.equal(brokenProposal.checked, 1);
+
+  // Disk holds broken code, the proposal is the fix: the gate must pass on
+  // the proposal alone — it never reads the pre-image.
+  fs.writeFileSync(appPath, 'const bad: = 1;\n', 'utf8');
+  const validProposal = verify(root, [{ path: 'src/App.ts', content: 'export const a = 1;\n' }]);
+  assert.equal(validProposal.ok, true);
+  assert.deepEqual(validProposal.issues, []);
+
+  // Verification is pure: the workspace is byte-identical afterwards, and no
+  // temporary or side-effect files were created anywhere.
+  assert.equal(fs.readFileSync(appPath, 'utf8'), 'const bad: = 1;\n');
+  const strays = fs.readdirSync(path.join(root, 'src')).filter((name) => name.startsWith('.shadrox-'));
+  assert.deepEqual(strays, []);
+});
+
 test('a missing or non-directory root throws', (t) => {
   const root = makeRoot(t);
   const missing = path.join(root, 'does-not-exist');

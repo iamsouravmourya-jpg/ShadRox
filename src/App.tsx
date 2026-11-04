@@ -24,6 +24,7 @@ import { getRefineMode, refinePrompt, streamChat, type ChatTurn, type RefineMode
 import { describeExternalTools, describeTools, nativeToolDefinitions, summarizeCall } from './lib/agent/tools';
 import { createMcpToolHandle, discoveryNotes, type McpToolHandle } from './lib/agent/mcpTools';
 import { DEFAULT_MAX_TOOL_ROUNDS, runToolRounds } from './lib/agent/toolLoop';
+import { CHAT_PROMPT_CORE, TOOL_DISCIPLINE_RULES } from './lib/agent/promptDiscipline';
 import { parseToolBlocks, stripToolBlocks } from './lib/agent/toolProtocol';
 import { runAgentTurn } from './lib/agents/turnRunner';
 import { bundleDocument, bundleProject, canBundle, describeBundleError } from './lib/bundler';
@@ -1725,21 +1726,7 @@ export default function App() {
       const mcpDiscovery = await mcpHandle.discover();
       const mcpNotes = discoveryNotes(mcpDiscovery);
 
-      const core = [
-        'You are ShadRox, an expert AI software engineer embedded in a browser-based IDE.',
-        'Answer practically and code-first.',
-        'WRITING STYLE RULES (an answer the user has to re-read is a failed answer):',
-        '- Write the whole reply in ONE language. If the user writes Hinglish, choose simple English or simple Hindi and stay in it; never blend both inside a sentence. File paths, identifiers and API names stay as they are.',
-        '- One idea per sentence, and the subject comes first. Keep sentences under ~20 words.',
-        '- Bold is for the verdict only; backticks are for code only. No bold phrases scattered through prose.',
-        '- An unverified claim does not go in brackets inside the answer. State the answer, then one short final line "Not checked: <what>".',
-        'LENGTH RULES (the answer is read in a narrow side panel, so a long answer is a worse answer):',
-        '- Lead with the result. No preamble, no restating the request, no "here is what I will do".',
-        '- Say each fact exactly once. If you list findings and then next steps, each step names the finding number instead of re-explaining it.',
-        '- Prefer bullets of one line over paragraphs. Never add a closing "what I need from you" section unless the answer is genuinely blocked.',
-        '- Budget: under 200 words for a question, under 500 for a review. Exceed it only when the user explicitly asked for that depth, and then cut repetition rather than detail.',
-        ''
-      ];
+      const core = [...CHAT_PROMPT_CORE, ...TOOL_DISCIPLINE_RULES, ''];
 
       if (mode.writesFiles) {
         core.push(

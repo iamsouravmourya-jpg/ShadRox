@@ -21,6 +21,17 @@ export const MAX_CALLS_PER_ROUND = 6;
 const FINAL_ASK =
   'Tool budget for this answer is finished. Write the final answer now using what you have read; name any file you did not get to instead of guessing about it.';
 
+/**
+ * Workspace-exploration intent: the asks that must not be answered from memory.
+ * Deliberately narrow verbs plus codebase objects, so "why does this line
+ * throw?" keeps its old single-round path.
+ */
+const EXPLORATION_INTENT =
+  /\b(scan|explore|walkthrough|overview|explain|analys[ei]s?\w*|analyz\w*|what (is|does) (this|the) (project|codebase|repo\w*|folder|application|app))\b/i;
+
+const EXPLORATION_NUDGE =
+  'You have not inspected the workspace yet. Use the read/search tools to examine the code before answering.';
+
 export interface ToolActivity {
   name: string;
   label: string;
@@ -130,6 +141,15 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   let stuckNudged = false;
   let finished: { summary: string; blocked: string | null } | null = null;
 
+  // The user's ask as issued, not the running transcript: observations and
+  // nudges also arrive as `user` turns, so the intent is read once up front.
+  const latestUserAsk = [...input.messages].reverse().find((turn) => turn.role === 'user')?.content ?? '';
+  const wantsExploration = EXPLORATION_INTENT.test(latestUserAsk);
+  let nudgeUsed = false;
+  const inspectedWorkspace = () => activity.some((entry) => !isControlTool(entry.name));
+  /** One nudge per turn, and only while a round is left to spend on it. */
+  const mayNudgeExploration = () => !nudgeUsed && wantsExploration && !inspectedWorkspace() && round < maxRounds;
+
   /** The cap is reached: one more stream, with instructions to answer now. */
   const forceFinal = async (currentRound: number, ask: string): Promise<ToolLoopResult> => {
     capped = true;
@@ -163,7 +183,15 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     if (streamed.error) return { text, rounds: round, activity, capped: false, error: streamed.error, plan };
 
     const blocks = parseToolBlocks(streamed.text);
-    if (blocks.length === 0) return { text, rounds: round, activity, capped: false, error: null, plan };
+    if (blocks.length === 0) {
+      if (mayNudgeExploration()) {
+        nudgeUsed = true;
+        if (streamed.text.trim()) messages.push({ role: 'assistant', content: streamed.text });
+        messages.push({ role: 'user', content: EXPLORATION_NUDGE });
+        continue;
+      }
+      return { text, rounds: round, activity, capped: false, error: null, plan };
+    }
 
     const fresh: ToolCall[] = [];
     const freshKeys: string[] = [];
@@ -290,6 +318,14 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     messages.push({ role: 'user', content: problems.length > 0 ? `${observation}\n\nAlso: ${problems.join(' ')}` : observation });
 
     if (finished) {
+      if (mayNudgeExploration()) {
+        // A finish without a single read is the same lazy turn as a prose
+        // answer: the summary is withheld and one nudge replaces it.
+        nudgeUsed = true;
+        finished = null;
+        messages.push({ role: 'user', content: EXPLORATION_NUDGE });
+        continue;
+      }
       const prose = stripToolBlocks(streamed.text).trim();
       return {
         text: prose || (finished as { summary: string }).summary,

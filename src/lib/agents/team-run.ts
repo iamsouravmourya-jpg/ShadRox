@@ -11,15 +11,40 @@
  * single workspace, so two agents editing at once would produce a patch that
  * applies against bytes the other one already changed. Bounded concurrency here
  * means a hard task cap and a hard credit cap, not a thread pool.
+ *
+ * When the last task settles, one closing turn reads the run as a whole. Each task
+ * only ever checked its own files, so a prop Frontend renamed and Backend never
+ * saw passes every per-task check and still ships broken; the integration turn is
+ * the only moment anything looks at all the changed files at once.
  */
 
 import { estimateTurn } from '../autonomy/budget';
 import { countPending, findBlocked, nextRunnable } from '../autonomy/dag';
 import { buildRepairBrief } from '../autonomy/feedback';
 import type { CreditTracker } from '../autonomy/run-loop';
-import type { PlanError, TurnUnit, VerificationReport } from '../autonomy/types';
-import { buildTaskInstruction } from './roles';
-import type { TaskStatus, TeamBudget, TeamMessage, TeamPorts, TeamState, TeamPlan, TeamTask } from './types';
+import type { DiagnosticLine, PlanError, TurnUnit, VerificationReport } from '../autonomy/types';
+import { normalizeOwnedPath } from './ownership';
+import {
+  buildIntegrationInstruction,
+  buildTaskInstruction,
+  changedFileUnion,
+  changedFilesByRole,
+  integrationRole,
+  ownershipMap,
+  writeOverlaps
+} from './roles';
+import type {
+  AgentRole,
+  TaskStatus,
+  TeamBudget,
+  TeamMergeReport,
+  TeamMessage,
+  TeamPorts,
+  TeamState,
+  TeamPlan,
+  TeamTask,
+  MergeVerdict
+} from './types';
 
 export interface TeamDeps {
   ports: TeamPorts;
@@ -32,7 +57,21 @@ export interface TeamDeps {
   checkpoint: (goal: string) => Promise<void> | void;
   persist: (state: TeamState) => void;
   now: () => number;
+  /**
+   * Who carries the closing integration turn: `coordinator` (default, may repair)
+   * or `reviewer` (reads and reports). Anything else falls back to the coordinator.
+   */
+  integrationRole?: AgentRole;
 }
+
+/**
+ * The closing turn's id. It is deliberately not a plan task: the checklist, the
+ * per-task retry loop and the persisted resume all describe assigned work, and an
+ * unassigned final pass must not look like a task nobody planned.
+ */
+export const INTEGRATION_TASK_ID = 'integration';
+const INTEGRATION_TITLE = 'Integrate the team’s changes as one closing pass';
+
 
 /** How much of an agent's reply is kept for the view and for later agents. */
 const REPORT_LIMIT = 800;
@@ -269,7 +308,14 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
     }
   }
 
-  const touchedFiles = Array.from(new Set(state.tasks.flatMap((t) => t.touchedFiles ?? [])));
+  // The closing pass, and only for a run whose assigned work is all settled: a
+  // cancelled or budget-stopped team reports what it has, it has no end to merge.
+  if (canIntegrate(state, deps)) await integrateRun(goal, state, deps);
+
+  // The merge turn credits itself, so the file list is read after it, not before.
+  const touchedFiles = Array.from(
+    new Set([...state.tasks.flatMap((t) => t.touchedFiles ?? []), ...(state.mergeReport?.files ?? [])])
+  );
   const completedTasks = state.tasks.filter((t) => t.status === 'passed' || t.status === 'unverified').length;
   const testsPassed = state.tasks.filter((t) => t.assignee === 'tests' && t.status === 'passed').length;
   const testsRun = state.tasks.filter((t) => t.assignee === 'tests').length;
@@ -285,12 +331,214 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
     testsPassed,
     testsRun,
     durationMs: Math.max(0, deps.now() - state.startedAt),
-    openIssues: openIssues.length > 0 ? openIssues : undefined
+    openIssues: openIssues.length > 0 ? openIssues : undefined,
+    mergeVerdict: state.mergeReport?.verdict,
+    mergeConflicts: state.mergeReport?.overlaps.map((overlap) => overlap.note)
   };
 
   deps.persist(state);
   deps.ports.onEvent({ type: 'team:done', status: state.status });
   return state;
+}
+
+/** Whether this run has an end to merge at all. */
+function canIntegrate(state: TeamState, deps: TeamDeps): boolean {
+  if (deps.ports.isCancellationRequested()) return false;
+  if (state.status === 'planning' || state.status === 'cancelled' || state.status === 'stopped-budget') return false;
+  if (state.tasks.some((task) => task.status === 'pending' || task.status === 'running')) return false;
+  return changedFileUnion(state.tasks).length > 0;
+}
+
+/**
+ * The closing integration turn: one agent reads the whole change set — the files
+ * each role changed, the plan's ownership map, and the diagnostics for every
+ * changed file at once — and its verdict decides whether the run ends `done`.
+ *
+ * Two things it must never do: accept an overlap silently, and claim a merge it
+ * could not check. Both are verdicts here, not prose in a reply.
+ */
+async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Promise<void> {
+  const role = integrationRole(deps.integrationRole);
+  const byRole = changedFilesByRole(state.tasks);
+  const ownership = ownershipMap(state.tasks);
+  const overlaps = writeOverlaps(state.tasks);
+  let mergedFiles = changedFileUnion(state.tasks);
+  let awaitingReview = [...new Set(state.tasks.flatMap((task) => task.pendingReview ?? []))];
+  const notes: string[] = [];
+
+  // Diagnostics arrive through the port a task's own check uses; the only thing
+  // wider here is the unit it names — every changed file at once, not one task's.
+  const before = await deps.ports.verify({ id: INTEGRATION_TASK_ID, expectedFiles: mergedFiles });
+
+  const estimate = estimateTurn({ expectedFiles: mergedFiles });
+  const left = Math.round((deps.budget.maxCredits - deps.tracker.spent()) * 10) / 10;
+  const skipped = deps.ports.isCancellationRequested() || left < estimate;
+
+  deps.ports.onEvent({
+    type: 'team:log',
+    text: skipped
+      ? `Integration pass skipped: the closing turn needs about ${estimate} credits and the team has ${left} left.`
+      : `Integration: ${role} is checking ${mergedFiles.length} changed file(s) together.`
+  });
+
+  let reply = '';
+  let creditsSpent = 0;
+  let ran = false;
+  let checked = before;
+
+  if (!skipped) {
+    const unit: TurnUnit = {
+      id: INTEGRATION_TASK_ID,
+      title: INTEGRATION_TITLE,
+      instruction: buildIntegrationInstruction({
+        goal,
+        role,
+        byRole,
+        ownership,
+        overlaps,
+        diagnostics: before.diagnostics,
+        awaitingReview
+      }),
+      expectedFiles: mergedFiles
+    };
+    const turn = await deps.ports.runTurn({ goal, milestone: unit });
+    ran = true;
+    reply = trim(turn.reply, REPORT_LIMIT);
+    creditsSpent = turn.creditsSpent;
+    deps.tracker.credit(turn.creditsSpent);
+    deps.ports.onEvent({ type: 'credit', spent: turn.creditsSpent, total: deps.tracker.spent() });
+
+    const extra = [...new Set((turn.touchedFiles ?? []).map(normalizeOwnedPath))]
+      .filter((file) => file.length > 0 && !mergedFiles.includes(file));
+    if (extra.length > 0) {
+      // A repair is part of the merge: it is credited to the role that made it and
+      // re-checked, because fixing one pair can break another.
+      const mine = byRole.find((entry) => entry.role === role);
+      if (mine) {
+        mine.taskIds.push(INTEGRATION_TASK_ID);
+        mine.files.push(...extra);
+      } else {
+        byRole.push({ role, taskIds: [INTEGRATION_TASK_ID], files: extra });
+      }
+      mergedFiles = [...mergedFiles, ...extra];
+    }
+    awaitingReview = [...new Set([...awaitingReview, ...(turn.pendingReview ?? [])])];
+    checked = await deps.ports.verify({ id: INTEGRATION_TASK_ID, expectedFiles: mergedFiles });
+    if (turn.aborted) notes.push('the closing turn was interrupted mid-turn, so its repair may be partial.');
+  } else {
+    notes.push(
+      `the closing turn did not run — ${integrationSkipReason(deps)}. This verdict is the whole-team check, not a merge.`
+    );
+  }
+
+  const diagnostics = checked.diagnostics;
+  const errors = diagnostics.filter((line) => line.severity === 'error').length;
+  const warnings = diagnostics.filter((line) => line.severity === 'warning').length;
+
+  // The overlaps are listed first: they are the reason this turn exists, and a
+  // clean type check does not make an overwritten role's work any less gone.
+  for (const overlap of overlaps) notes.push(overlap.note);
+  if (errors > 0) notes.push(`${errors} error diagnostic(s) remain across ${mergedFiles.length} changed file(s) after the merge.`);
+  if (warnings > 0) notes.push(`${warnings} warning(s) across the merged files.`);
+  if (checked.verdict === 'unverified') {
+    notes.push(`nothing could check the merged files: ${checked.notes.join('; ') || 'no checker could run'}`);
+  }
+
+  const verdict: MergeVerdict =
+    errors > 0
+      ? 'broken'
+      : overlaps.length > 0
+        ? 'conflicts'
+        : checked.verdict === 'unverified'
+          ? 'unverified'
+          : warnings > 0
+            ? 'warned'
+            : 'clean';
+
+  const report: TeamMergeReport = {
+    role,
+    verdict,
+    ran,
+    files: mergedFiles,
+    byRole,
+    overlaps,
+    diagnostics,
+    errors,
+    warnings,
+    awaitingReview,
+    notes,
+    reply,
+    creditsSpent,
+    at: deps.now()
+  };
+
+  state.mergeReport = report;
+  state.creditsSpent = deps.tracker.spent();
+
+  // The panel already shows `conflicts`, so an overlap the merge found on disk goes
+  // there as well: a collision nobody planned is still a collision the user must see.
+  if (overlaps.length > 0) {
+    const known = new Set(state.conflicts ?? []);
+    state.conflicts = [...(state.conflicts ?? []), ...overlaps.map((overlap) => overlap.note).filter((note) => !known.has(note))];
+  }
+
+  // The merge decides the run's final status. A conflict or a surviving error is
+  // not a pass, however green every per-task check looked on its own.
+  const failure = mergeFailureText(report);
+  if (failure) {
+    if (report.verdict === 'broken' || report.verdict === 'conflicts') state.status = 'failed';
+    state.error = [state.error, failure].filter((text) => text !== undefined && text.length > 0).join(' ');
+  }
+
+  const message: TeamMessage = {
+    from: role,
+    to: 'team',
+    kind: report.verdict === 'clean' || report.verdict === 'warned' ? 'finding' : 'blocked',
+    text: mergeLine(report),
+    at: deps.now()
+  };
+  state.messages.push(message);
+  deps.ports.onEvent({ type: 'team:integration', report });
+  deps.ports.onEvent({ type: 'message', message });
+  deps.persist(state);
+}
+
+/** Why the closing turn never ran, in the words a user reads. */
+function integrationSkipReason(deps: TeamDeps): string {
+  return deps.ports.isCancellationRequested()
+    ? 'the user stopped the team'
+    : 'the credit cap left no room for it';
+}
+
+/** The one thing a red merge row needs: which file, and what the checker said. */
+function firstError(diagnostics: readonly DiagnosticLine[]): string {
+  const line = diagnostics.find((entry) => entry.severity === 'error');
+  return line ? `${line.path}:${line.line} ${trim(line.message, 160)}` : 'the checker gave no line';
+}
+
+/** The sentence that goes into `state.error`, or null when the merge is not a failure. */
+function mergeFailureText(report: TeamMergeReport): string | null {
+  if (report.verdict === 'broken') {
+    return `Integration found ${report.errors} error(s) in the merged files — ${firstError(report.diagnostics)}. Each task passed its own check, but the team does not fit together.`;
+  }
+  if (report.verdict === 'conflicts') {
+    return `Integration found ${report.overlaps.length} file(s) written by more than one role: ${report.overlaps
+      .map((overlap) => overlap.file)
+      .join(', ')} — the merge report names who overwrote whom.`;
+  }
+  if (report.verdict === 'unverified') {
+    return 'The closing integration pass could not check the merged files, so the merge is not proven.';
+  }
+  return null;
+}
+
+/** The line the timeline and the shared context both show for a merge report. */
+function mergeLine(report: TeamMergeReport): string {
+  const parts = [`${report.files.length} changed file(s) across ${report.byRole.length} role(s)`];
+  if (report.overlaps.length > 0) parts.push(`${report.overlaps.length} overlap(s)`);
+  if (report.errors > 0) parts.push(`${report.errors} error(s) after the merge`);
+  else if (report.warnings > 0) parts.push(`${report.warnings} warning(s)`);
+  return `Integration (${report.role}) verdict ${report.verdict}: ${parts.join(', ')}.`;
 }
 
 /** The last check's report, but only when it is what the next attempt must repair. */

@@ -225,8 +225,12 @@ function getRunArgs(manager, script, scriptCommand, portOverride) {
   } else if (isNext) {
     extra.push('--hostname', '127.0.0.1');
   }
-  // Appended last so it wins over the port the script pins for itself.
-  if (portOverride) extra.push(isNext ? '-p' : '--port', String(portOverride));
+  // Appended last so it wins over the port the script pins for itself, but
+  // only for CLIs that parse the flag; `node server.js --port 4000` would just
+  // add ignored argv entries while the PORT env override below does the work.
+  if (portOverride && getPortOverrideStrategy(scriptCommand) === 'flag') {
+    extra.push(isNext ? '-p' : '--port', String(portOverride));
+  }
   if (extra.length > 0) args.push('--', ...extra);
   return args;
 }
@@ -238,6 +242,62 @@ function getScriptPort(scriptCommand) {
   if (env) return Number(env[1]);
   const flag = text.match(/(?:^|\s)(?:-p|--port)[= ]?(\d{2,5})(?=\s|$)/);
   return flag ? Number(flag[1]) : null;
+}
+
+/** The port a framework binds when its script pins none. */
+const FRAMEWORK_DEFAULT_PORTS = [
+  [/\bnext\b/, 3000],
+  [/\bnuxt\b/, 3000],
+  [/\bvite\b/, 5173],
+  [/\bastro\b/, 4321],
+  [/\bangular|\bng serve\b/, 4200],
+  [/\bwebpack-dev-server\b/, 8080],
+  [/\bparcel\b/, 1234]
+];
+
+function getFrameworkDefaultPort(scriptCommand) {
+  const text = String(scriptCommand ?? '').toLowerCase();
+  for (const [pattern, port] of FRAMEWORK_DEFAULT_PORTS) {
+    if (pattern.test(text)) return port;
+  }
+  return null;
+}
+
+/**
+ * How a busy port can be moved off the intended one: 'flag' CLIs accept a
+ * trailing `--port`, 'env' scripts follow the PORT convention, and null means
+ * the command pins its port in a way ShadRox cannot override — an inline
+ * `PORT=NN` assignment re-sets the port after the child environment we pass,
+ * and unknown runners may ignore both. A conflict with null must surface to
+ * the user instead of spawning a server doomed to EADDRINUSE.
+ */
+function getPortOverrideStrategy(scriptCommand) {
+  const text = String(scriptCommand ?? '').toLowerCase();
+  if (/\b(vite|next|astro|nuxt|webpack-dev-server|webpack|parcel|ng|angular)\b/.test(text)) return 'flag';
+  if (/\bport=\d+/.test(text)) return null;
+  if (/^\s*(?:node|nodemon|tsx|ts-node|deno|bun|npx)\b/.test(text) || /\b(?:react-scripts|serve)\b/.test(text)) return 'env';
+  return null;
+}
+
+function portOfUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return Number(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80);
+  } catch {
+    return null;
+  }
+}
+
+function portConflictError(port, holderId) {
+  const heldBy = holderId ? 'another ShadRox preview' : 'another local application';
+  const fix = holderId ? 'Stop that preview' : 'Close the other application';
+  const error = new Error(
+    `Port ${port} is already in use by ${heldBy}, and this project's dev script pins that port ` +
+    `in a way ShadRox cannot override. ${fix} or change the project's port, then start the preview again.`
+  );
+  error.code = 'PREVIEW_PORT_CONFLICT';
+  error.port = port;
+  return error;
 }
 
 /** Ask the OS for a port nothing is holding, used when every common port is busy. */
@@ -283,6 +343,22 @@ async function findAvailableDevPort(excludedPorts = new Set(), isBusy = isPortBu
     return port;
   }
   return findFreePort();
+}
+
+/**
+ * Vite's relocation rule: walk upward port-by-port from the occupied one
+ * until a bind check passes, instead of jumping to an unrelated common port.
+ * Bounded to 50 probes, then falls back to the common dev-port list and an
+ * OS-allocated ephemeral port.
+ */
+async function findNextFreeDevPort(startPort, { excludedPorts = new Set(), maxAttempts = 50, isBusy = isPortBusy } = {}) {
+  for (let offset = 1; offset <= maxAttempts; offset++) {
+    const port = startPort + offset;
+    if (port > 65535) break;
+    if (excludedPorts.has(port)) continue;
+    if (!await isBusy(port)) return port;
+  }
+  return findAvailableDevPort(new Set([...excludedPorts, startPort]), isBusy);
 }
 
 async function findExistingNextDevServer(output, root) {
@@ -684,7 +760,22 @@ function createPreviewRuntime({
     return Promise.resolve(true);
   }
 
-  async function start(workspaceId, root, approvedManifestHash, retryCount = 0) {
+  /**
+   * Workspace id of a session this runtime launched and still tracks on the
+   * given port, or null when the holder is a foreign process. Used only for
+   * message wording: another workspace's preview is never killed here, it is
+   * relocated around like any other occupant.
+   */
+  function trackedSessionOnPort(port) {
+    for (const records of [processes, backendProcesses]) {
+      for (const [trackedId, record] of records) {
+        if (record.url && portOfUrl(record.url) === port) return trackedId;
+      }
+    }
+    return null;
+  }
+
+  async function start(workspaceId, root, approvedManifestHash, retryCount = 0, conflictPorts = new Set()) {
     if (typeof workspaceId !== 'string' || !workspaceId || typeof root !== 'string' || !path.isAbsolute(root)) {
       throw new Error('A valid folder workspace is required to start local preview.');
     }
@@ -715,20 +806,40 @@ function createPreviewRuntime({
       await probeHttp(`http://127.0.0.1:${port}/`, 700) ? port : null
     ))).filter(Number.isInteger));
 
-    // A script that pins its own port (`next dev -p 3000`) dies outright when
-    // an unrelated server already holds it, which left the preview showing
-    // nothing but EADDRINUSE. Move it to a free port instead of giving up.
-    const pinnedPort = getScriptPort(script.command);
+    // The intended port is the one the script pins for itself, or the
+    // framework's well-known default when it pins none. `stopFrontend` above
+    // already killed this workspace's own previous session, so anything still
+    // holding the port afterwards is foreign: never kill it, move to the next
+    // free port like Vite's strictPort fallback instead. A script that offers
+    // no override at all gets a structured error the UI can explain.
+    const intendedPort = getScriptPort(script.command) ?? getFrameworkDefaultPort(script.command);
+    const overrideStrategy = getPortOverrideStrategy(script.command);
     let portOverride = null;
-    const pinnedPortIsBusy = pinnedPort &&
-      (baselinePorts.has(pinnedPort) || await isPortBusy(pinnedPort));
-    if (pinnedPortIsBusy) {
-      baselinePorts.add(pinnedPort);
-      portOverride = await findAvailableDevPort(new Set([...baselinePorts, pinnedPort]));
-      if (portOverride) {
-        emit(workspaceId, 'status',
-          `Port ${pinnedPort} is already used by another local server. Starting on ${portOverride} instead.`);
+    if (intendedPort &&
+      (conflictPorts.has(intendedPort) || baselinePorts.has(intendedPort) || await isPortBusy(intendedPort))) {
+      if (!overrideStrategy) {
+        const error = portConflictError(intendedPort, trackedSessionOnPort(intendedPort));
+        emit(workspaceId, 'error', error.message);
+        throw error;
       }
+      portOverride = await findNextFreeDevPort(intendedPort, {
+        excludedPorts: new Set([...baselinePorts, ...conflictPorts, intendedPort])
+      });
+      if (!portOverride) {
+        const error = new Error(
+          `Port ${intendedPort} is in use and no free local port was found to start this project. ` +
+          'Stop some local servers, then start the preview again.'
+        );
+        error.code = 'PREVIEW_PORT_CONFLICT';
+        error.port = intendedPort;
+        emit(workspaceId, 'error', error.message);
+        throw error;
+      }
+      baselinePorts.add(intendedPort);
+      const holderId = trackedSessionOnPort(intendedPort);
+      emit(workspaceId, 'status',
+        `Port ${intendedPort} is already used by ${holderId ? 'another ShadRox preview' : 'another local server'}. ` +
+        `Starting on port ${portOverride} instead.`);
     }
 
     const child = spawnCommand(
@@ -767,7 +878,7 @@ function createPreviewRuntime({
               record.url = url;
               record.rejectReady = null;
               emit(workspaceId, 'ready', `Local preview is responding at ${url}`);
-              resolve({ url, script: script.name, hmr: hasHmrSupport(script.command) });
+              resolve({ url, port: portOfUrl(url), script: script.name, hmr: hasHmrSupport(script.command) });
             }, 350);
           }
         } finally {
@@ -843,7 +954,7 @@ function createPreviewRuntime({
           record.rejectReady = null;
           processes.delete(workspaceId);
           emit(workspaceId, 'ready', `Reusing the existing project server at ${existingNextUrl}`);
-          if (!wasSettled) resolve({ url: existingNextUrl, script: script.name, hmr: true });
+          if (!wasSettled) resolve({ url: existingNextUrl, port: portOfUrl(existingNextUrl), script: script.name, hmr: true });
           return;
         }
         // The server's own lines say why it died (EADDRINUSE, a syntax error,
@@ -866,6 +977,9 @@ function createPreviewRuntime({
         processes.delete(workspaceId);
       });
     }).catch((error) => {
+      // A structured conflict is the user-facing verdict already; retrying it
+      // would just re-run the same bind check.
+      if (error?.code === 'PREVIEW_PORT_CONFLICT') throw error;
       const message = error instanceof Error ? error.message : String(error);
       if (
         retryCount >= 2 ||
@@ -874,7 +988,8 @@ function createPreviewRuntime({
         throw error;
       }
       emit(workspaceId, 'status', `A port conflict stopped the preview; retrying on another available port (${retryCount + 1}/2).`);
-      return start(workspaceId, root, approvedManifestHash, retryCount + 1);
+      const triedPorts = new Set([...conflictPorts, intendedPort, portOverride].filter(Number.isInteger));
+      return start(workspaceId, root, approvedManifestHash, retryCount + 1, triedPorts);
     });
   }
 
@@ -1096,10 +1211,14 @@ module.exports = {
   getPreviewScript,
   getRunArgs,
   getScriptPort,
+  getFrameworkDefaultPort,
+  getPortOverrideStrategy,
   findAvailableDevPort,
+  findNextFreeDevPort,
   findExistingNextDevServer,
   findFreePort,
   isPortBusy,
+  portOfUrl,
   hasHmrSupport,
   parsePreviewUrl,
   resolveExecutable
