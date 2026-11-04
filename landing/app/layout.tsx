@@ -87,6 +87,43 @@ const jsonLd = {
       description: 'Native desktop workspace with a local code editor, BYOK AI chat, agent tools, live web previews, Git tools, and terminal.',
       offers: { '@type': 'Offer', price: '0', priceCurrency: 'INR' },
     },
+    {
+      '@type': 'FAQPage',
+      mainEntity: [
+        {
+          '@type': 'Question',
+          name: 'Who is behind ShadRox?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'ShadRox is a solo project built by Sourav Maurya, a 19-year-old full-stack developer and AI engineer based in Delhi, India. There is no company behind it — the app, the website, and the GitHub repo are all maintained by one person, in the open.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Can I download ShadRox now?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Yes. The Download for Windows button installs the latest beta (currently 0.0.5) on Windows 10 or 11, 64-bit. You do not need an account, form, or approval to download the installer. Windows may show a SmartScreen warning because the build is not code-signed yet.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Does ShadRox store my project in the cloud?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'No. The desktop workspace opens and edits project files on your computer. There is no ShadRox cloud project sync. When you ask the AI for help, the prompt and the project context you include are sent to the provider you selected.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Which AI providers are supported?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'The current app supports Gemini, Groq, and custom OpenAI-compatible endpoints, including compatible local gateways. Model availability and limits depend on your provider account.',
+          },
+        },
+      ],
+    },
   ],
 }
 
