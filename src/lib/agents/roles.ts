@@ -6,9 +6,25 @@
  * "Frontend" is not a label on a card; it is the sentence that keeps the agent
  * out of the backend while a different agent is editing it, which is what makes
  * a team more than a queue of unrelated edits.
+ *
+ * The same module also owns the mapping the closing integration turn reads: which
+ * role changed which file, which files more than one role wrote, and the plan's
+ * ownership map. That turn is the only moment the team sees its own work as one
+ * change set, so the rollup lives next to the roles it rolls up, not in the driver.
  */
 
-import type { AgentRole, AgentSpec, AgentStatus, TaskStatus, TeamState, TeamTask } from './types';
+import { fileClaims, normalizeOwnedPath } from './ownership';
+import type {
+  AgentRole,
+  AgentSpec,
+  AgentStatus,
+  DiagnosticLine,
+  MergeOverlap,
+  RoleChangedFiles,
+  TaskStatus,
+  TeamState,
+  TeamTask
+} from './types';
 
 /** The coordinator plans and assigns. It never carries a task itself. */
 export const COORDINATOR: AgentSpec = {
@@ -60,7 +76,10 @@ export function isSpecialistRole(value: string): value is AgentRole {
   return SPECIALIST_ROLES.includes(value as AgentRole);
 }
 
-const BY_ROLE = new Map(TEAM_ROSTER.map((spec) => [spec.id, spec]));
+/** The coordinator is in the map so the closing turn can be phrased in its voice. */
+const BY_ROLE = new Map<AgentRole, AgentSpec>(
+  [COORDINATOR, ...TEAM_ROSTER].map((spec) => [spec.id, spec] as [AgentRole, AgentSpec])
+);
 
 /**
  * The spec for a role. Unknown roles fall back to the first specialist so a view
@@ -138,3 +157,178 @@ export function buildTaskInstruction(task: TeamTask, sharedContext: string): str
   sections.push('', 'Reply with the change itself, not a plan for it.');
   return sections.join('\n');
 }
+
+/** ─── The closing integration pass: the rollup it reads, and how it is phrased ── */
+
+/** How many files one line lists before it is shortened, and how many diagnostics. */
+const MAX_LISTED_FILES = 12;
+const MAX_LISTED_DIAGNOSTICS = 24;
+
+/** Files a task actually wrote, normalised and de-duplicated, in first-write order. */
+function writtenBy(task: TeamTask): string[] {
+  const files: string[] = [];
+  for (const raw of task.touchedFiles ?? []) {
+    const file = normalizeOwnedPath(raw);
+    if (file && !files.includes(file)) files.push(file);
+  }
+  return files;
+}
+
+/**
+ * Which role changed which file, roles in order of first write. A task that wrote
+ * nothing (an investigation, a blocked task) contributes no line, so the report
+ * only ever claims bytes that reached disk.
+ */
+export function changedFilesByRole(tasks: readonly TeamTask[]): RoleChangedFiles[] {
+  const byRole = new Map<AgentRole, RoleChangedFiles>();
+  for (const task of tasks) {
+    const files = writtenBy(task);
+    if (files.length === 0) continue;
+    const entry = byRole.get(task.assignee) ?? { role: task.assignee, taskIds: [], files: [] };
+    entry.taskIds.push(task.id);
+    for (const file of files) {
+      if (!entry.files.includes(file)) entry.files.push(file);
+    }
+    byRole.set(task.assignee, entry);
+  }
+  return [...byRole.values()];
+}
+
+/** Every file the team changed, union across roles, in first-write order. */
+export function changedFileUnion(tasks: readonly TeamTask[]): string[] {
+  const files: string[] = [];
+  for (const task of tasks) {
+    for (const file of writtenBy(task)) {
+      if (!files.includes(file)) files.push(file);
+    }
+  }
+  return files;
+}
+
+/**
+ * Files more than one task wrote — the breakage no per-task check can see, because
+ * each task only ever looked at its own files. Detected on what reached disk, not
+ * on what the plan claimed, so a task that never wrote cannot raise a false alarm.
+ */
+export function writeOverlaps(tasks: readonly TeamTask[]): MergeOverlap[] {
+  const writers = new Map<string, { taskId: string; role: AgentRole }[]>();
+  for (const task of tasks) {
+    for (const file of writtenBy(task)) {
+      const list = writers.get(file) ?? [];
+      list.push({ taskId: task.id, role: task.assignee });
+      writers.set(file, list);
+    }
+  }
+
+  const overlaps: MergeOverlap[] = [];
+  for (const [file, list] of writers) {
+    if (list.length < 2) continue;
+    const order = list.map((writer) => `${writer.taskId} (${writer.role})`).join(' then ');
+    overlaps.push({
+      file,
+      roles: [...new Set(list.map((writer) => writer.role))],
+      taskIds: list.map((writer) => writer.taskId),
+      note: `${file} was written by ${order} — only the last write is on disk, so the earlier role's change is gone.`
+    });
+  }
+  return overlaps;
+}
+
+export interface OwnershipMapEntry {
+  file: string;
+  /** `t1 (frontend)`, in plan order: who was allowed to write this. */
+  owners: string[];
+}
+
+/** The plan's own claim list, so the merge turn can compare intent against disk. */
+export function ownershipMap(tasks: TeamTask[]): OwnershipMapEntry[] {
+  return [...fileClaims(tasks)].map(([file, owners]) => ({
+    file,
+    owners: owners.map((task) => `${task.id} (${task.assignee})`)
+  }));
+}
+
+export interface IntegrationBriefInput {
+  goal: string;
+  /** The role carrying the closing turn: the coordinator, or the reviewer. */
+  role: AgentRole;
+  byRole: RoleChangedFiles[];
+  ownership: OwnershipMapEntry[];
+  overlaps: MergeOverlap[];
+  /** Diagnostics for the changed files, taken after every task had settled. */
+  diagnostics: DiagnosticLine[];
+  /** Files the apply policy held back; they are proposed, not landed. */
+  awaitingReview: string[];
+}
+
+function fileList(files: readonly string[]): string {
+  if (files.length === 0) return '(none)';
+  const shown = files.slice(0, MAX_LISTED_FILES).join(', ');
+  return files.length > MAX_LISTED_FILES ? `${shown} (+${files.length - MAX_LISTED_FILES} more)` : shown;
+}
+
+/** Errors first: the closing turn reads the top of this list, not the whole build. */
+function diagnosticLines(diagnostics: readonly DiagnosticLine[]): string {
+  if (diagnostics.length === 0) return '- nothing was reported for these files.';
+  const ordered = [...diagnostics].sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'error' ? -1 : 1));
+  return ordered
+    .slice(0, MAX_LISTED_DIAGNOSTICS)
+    .map((line) => `- ${line.severity} ${line.path}:${line.line}:${line.column} ${line.message}`)
+    .join('\n');
+}
+
+/**
+ * Compose the closing turn's instruction: what each role changed, who was allowed
+ * to change it, which files two roles both wrote, and what the checker now says
+ * about all of them together. The overlaps get their own block, because a merge
+ * that quietly keeps the last write is the failure this turn exists to catch.
+ */
+export function buildIntegrationInstruction(input: IntegrationBriefInput): string {
+  const spec = findAgent(input.role);
+  const sections: string[] = [
+    `You are the ${spec.name} agent on a local project team. Every task has now finished, and you carry the one closing integration pass.`,
+    spec.brief,
+    '',
+    `GOAL: ${input.goal}`,
+    '',
+    'WHAT EACH ROLE CHANGED:',
+    input.byRole.length > 0
+      ? input.byRole.map((entry) => `- ${entry.role} (${entry.taskIds.join(', ')}): ${fileList(entry.files)}`).join('\n')
+      : '- no task wrote any file.',
+    '',
+    'OWNERSHIP MAP — which task each file was assigned to:',
+    input.ownership.length > 0
+      ? input.ownership.map((entry) => `- ${entry.file}: ${entry.owners.join(', ')}`).join('\n')
+      : '- the plan assigned no files.',
+    '',
+    input.overlaps.length > 0
+      ? [
+          'OVERLAPS — more than one task wrote these files. These are NOT accepted silently:',
+          input.overlaps.map((overlap) => `- ${overlap.note}`).join('\n'),
+          '',
+          'Decide which version must survive, apply it, and name the other one in your reply.'
+        ].join('\n')
+      : 'OVERLAPS: none — every changed file has exactly one writer.',
+    '',
+    'DIAGNOSTICS FOR ALL CHANGED FILES, TOGETHER (each task passed its own check; this is the whole-team view):',
+    diagnosticLines(input.diagnostics),
+    '',
+    `AWAITING USER REVIEW (proposed, deliberately not written): ${fileList(input.awaitingReview)}`,
+    '',
+    'Fix only what the team broke BETWEEN its tasks — a renamed prop, a moved symbol, a signature two',
+    'roles read differently. Add no new scope, and change no file outside the list above.',
+    '',
+    'Reply with the change itself, not a plan for it, then one line saying whether the pieces fit.'
+  ];
+  return sections.join('\n');
+}
+
+/**
+ * The role for the closing turn. `coordinator` integrates and may repair; `reviewer`
+ * reads and reports. Anything else falls back to the coordinator, since only these
+ * two are allowed to see the whole change set at once.
+ */
+export function integrationRole(role: AgentRole | undefined): AgentRole {
+  return role === 'reviewer' ? 'reviewer' : 'coordinator';
+}
+

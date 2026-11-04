@@ -312,7 +312,7 @@ export interface StaticPreviewProjectCandidate {
 export type PreviewProjectCandidate = NodePreviewProjectCandidate | StaticPreviewProjectCandidate;
 
 export type DesktopPreviewStartResult =
-  | { status: 'ready'; url: string; script: string; hmr?: boolean }
+  | { status: 'ready'; url: string; script: string; hmr?: boolean; port?: number }
   | { status: 'approval-required'; approval: PreviewApprovalRequest }
   | { status: 'selection-required'; projects: PreviewProjectCandidate[] };
 

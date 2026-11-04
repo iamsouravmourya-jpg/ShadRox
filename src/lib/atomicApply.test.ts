@@ -65,6 +65,34 @@ test('a rewrite that erases an existing file is blocked unless destructive edits
   assert.equal(allowed.jobs[0].originalContent, LONG_FILE);
 });
 
+test('a rewrite to empty content is blocked as a whole-file wipe', () => {
+  // The classic defect shape: a reply "clears" a 40-line file by rewriting it
+  // to nothing. The plan must refuse it, and the refusal must be reversible —
+  // an explicit Accept still lets the user truncate their own file.
+  const files = [file('src/big.ts', LONG_FILE)];
+  const blocked = planAtomicApply([rewrite('src/big.ts', '')], files);
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.patches[0].failure ?? '', /returned a 0-line replacement for a 40-line file/);
+
+  const accepted = planAtomicApply([rewrite('src/big.ts', '')], files, { allowDestructive: true });
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.jobs[0].content, '');
+  assert.equal(accepted.jobs[0].originalContent, LONG_FILE);
+});
+
+test('the wipe guard starts at 12 non-blank lines, documenting the real threshold', () => {
+  const eleven = Array.from({ length: 11 }, (_, index) => `const v${index} = ${index};`).join('\n');
+  const twelve = `${eleven}\nconst v11 = 11;`;
+
+  // Below the threshold an emptied small file is a legitimate trim, not a
+  // wipe; at it, the guard fires. Pinning the boundary keeps the threshold
+  // from silently drifting.
+  assert.equal(planAtomicApply([rewrite('small.ts', '')], [file('small.ts', eleven)]).ok, true);
+  const guarded = planAtomicApply([rewrite('big.ts', '')], [file('big.ts', twelve)]);
+  assert.equal(guarded.ok, false);
+  assert.match(guarded.patches[0].failure ?? '', /0-line replacement for a 12-line file/);
+});
+
 test('a fully resolvable set becomes one job per pending patch', () => {
   const files = [
     file('src/a.ts', 'const a = 1;\n'),

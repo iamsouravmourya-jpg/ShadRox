@@ -90,6 +90,25 @@ function splitPreviewAddress(url: string | null): { protocol: string; path: stri
   return match ? { protocol: match[1], path: match[2] } : null;
 }
 
+/**
+ * The port the local server actually ended up on. When a port conflict moves
+ * the preview, this is the one number the user needs to see without opening
+ * the console; the main process reports it in the ready URL.
+ */
+function previewPortOf(url: string | null): number | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    const port = Number(parsed.port);
+    if (port > 0) return port;
+    if (parsed.protocol === 'https:') return 443;
+    if (parsed.protocol === 'http:') return 80;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function PreviewPane({
   document,
   capabilityMessage,
@@ -274,6 +293,17 @@ export function PreviewPane({
                 </button>
               )
             )}
+            {localPreviewState.status === 'ready' && (() => {
+              const port = previewPortOf(localPreviewState.url);
+              return port === null ? null : (
+                <span
+                  title={`The local server is listening on port ${port}`}
+                  className="rounded-full border border-white/[0.09] bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-mono text-neutral-400 shrink-0"
+                >
+                  :{port}
+                </span>
+              );
+            })()}
           </span>
 
           {/* Sandbox indicator. There is no server to navigate to, so this shows

@@ -13,6 +13,7 @@
 
 import type {
   AutonomyPorts,
+  DiagnosticLine,
   PlanError,
   TurnResult,
   Verdict,
@@ -108,6 +109,70 @@ export const DEFAULT_TEAM_BUDGET: TeamBudget = {
 
 export type TeamStatus = 'planning' | 'running' | 'done' | 'failed' | 'cancelled' | 'stopped-budget';
 
+/** ─── The closing integration turn ─────────────────────────────────────────
+ *
+ * When the last task settles, the team has changed files no single task owns:
+ * Frontend renamed a prop Backend had already written against, and every task
+ * passed its own check because each one only looked at its own files. One final
+ * turn, run by the coordinator, reads the whole change set — the per-role files,
+ * the ownership map and the diagnostics for all of them together — and says out
+ * loud what the per-task verdicts could not.
+ */
+
+/** One role's contribution to the merge: which of its tasks wrote which files. */
+export interface RoleChangedFiles {
+  role: AgentRole;
+  /** Task ids of that role which actually wrote something, in plan order. */
+  taskIds: string[];
+  /** Repo-relative, normalised, in first-write order. */
+  files: string[];
+}
+
+/** Two roles writing one file. Never accepted silently, so it is always named. */
+export interface MergeOverlap {
+  file: string;
+  /** Roles that wrote it, plan order, deduplicated. */
+  roles: AgentRole[];
+  /** Task ids that wrote it, plan order. */
+  taskIds: string[];
+  /** One sentence for the merge report and the timeline. */
+  note: string;
+}
+
+/**
+ * `clean` — nothing contradicts anything. `warned` — only warnings. `conflicts`
+ * — two roles wrote one file, whatever the checker says. `broken` — an error
+ * diagnostic survives the merge. `unverified` — nothing could check the merged
+ * files, so the merge is not proven; like the task verdict, it is never smoothed
+ * into a pass. A conflict is its own verdict: two agents overwriting each other
+ * is a finding even when the last write type-checks.
+ */
+export type MergeVerdict = 'clean' | 'warned' | 'conflicts' | 'broken' | 'unverified';
+
+export interface TeamMergeReport {
+  /** The role that carried the closing turn. */
+  role: AgentRole;
+  verdict: MergeVerdict;
+  /** False when the turn was skipped (cancel, or no credits left) but judged anyway. */
+  ran: boolean;
+  /** Union of every file the team changed, in first-write order. */
+  files: string[];
+  byRole: RoleChangedFiles[];
+  overlaps: MergeOverlap[];
+  /** Diagnostics for `files` after the merge turn, errors first. */
+  diagnostics: DiagnosticLine[];
+  errors: number;
+  warnings: number;
+  /** Files the apply policy still holds back, so the merge never claims them as landed. */
+  awaitingReview: string[];
+  /** Every reason behind the verdict, one line each, shown as-is. */
+  notes: string[];
+  /** The closing turn's own reply, trimmed for the view. */
+  reply: string;
+  creditsSpent: number;
+  at: number;
+}
+
 export interface TeamState {
   id: string;
   goal: string;
@@ -127,6 +192,8 @@ export interface TeamState {
   conflicts?: string[];
   /** True once the pre-write checkpoint was taken, so a resume does not take a second one. */
   checkpointed?: boolean;
+  /** What the closing integration turn found, once it has run. */
+  mergeReport?: TeamMergeReport;
   /** Structured executive summary report generated upon team run completion. */
   summaryReport?: {
     overview: string;
@@ -137,6 +204,10 @@ export interface TeamState {
     testsRun?: number;
     durationMs?: number;
     openIssues?: string[];
+    /** The merge verdict, when a closing turn ran. Never smoothed to a pass. */
+    mergeVerdict?: MergeVerdict;
+    /** Files two roles wrote, one sentence each. */
+    mergeConflicts?: string[];
   };
 }
 
@@ -151,6 +222,8 @@ export type TeamEvent =
   | { type: 'message'; message: TeamMessage }
   | { type: 'credit'; spent: number; total: number }
   | { type: 'team:log'; text: string }
+  /** The closing integration turn's structured merge report, before `team:done`. */
+  | { type: 'team:integration'; report: TeamMergeReport }
   | { type: 'team:done'; status: TeamStatus };
 
 /**
@@ -169,4 +242,4 @@ export interface TeamPlan {
 }
 
 /** Re-exported so a consumer of the team module needs one types import, not two. */
-export type { TurnResult, Verdict, VerificationReport, PlanError };
+export type { DiagnosticLine, TurnResult, Verdict, VerificationReport, PlanError };

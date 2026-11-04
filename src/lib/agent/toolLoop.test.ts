@@ -310,6 +310,67 @@ test('a model that stays stuck past the nudge is forced to answer', async () => 
 
 const externalRead = { name: 'mcp__search__web', args: { q: 'aider' } };
 
+const exploreMessages: ChatTurn[] = [{ role: 'user', content: 'scan the project and explain what it is' }];
+const NUDGE = 'You have not inspected the workspace yet';
+
+test('an exploration answered with zero tool calls earns one nudge and one more round', async () => {
+  const model = scripted(['This looks like a React app, probably.', 'Having read the files: it is a Vite + React app with an Electron shell.']);
+  const result = await runToolRounds({
+    messages: exploreMessages,
+    workspaceId: 'ws',
+    aborted: () => false,
+    stream: model.stream
+  });
+  assert.equal(model.seen.length, 2, 'the lazy answer did not end the turn');
+  assert.match(model.seen[1].at(-1).content, new RegExp(NUDGE));
+  assert.equal(model.seen[1].at(-1).role, 'user');
+  assert.equal(model.seen[1].at(-2).role, 'assistant');
+  assert.equal(result.rounds, 2);
+  assert.equal(result.text, 'Having read the files: it is a Vite + React app with an Electron shell.');
+});
+
+test('the nudge is spent once: a second zero-tool ending completes the turn anyway', async () => {
+  const model = scripted(['Lazy first answer.', 'Still no tools, but this is final.']);
+  const result = await runToolRounds({
+    messages: exploreMessages,
+    workspaceId: 'ws',
+    aborted: () => false,
+    stream: model.stream
+  });
+  assert.equal(model.seen.length, 2, 'no third stream — one nudge per turn');
+  assert.equal(result.rounds, 2);
+  assert.equal(result.text, 'Still no tools, but this is final.');
+  assert.equal(result.error, null);
+  assert.equal(result.capped, false);
+});
+
+test('a finish tool with zero workspace reads earns the nudge; the next finish ends the turn', async () => {
+  const model = scripted([finishWith('It is a React app, I think.'), finishWith('After reading package.json: a Vite + React app.')]);
+  const result = await runToolRounds({
+    messages: exploreMessages,
+    workspaceId: null,
+    aborted: () => false,
+    stream: model.stream
+  });
+  assert.equal(model.seen.length, 2);
+  assert.match(model.seen[1].at(-1).content, new RegExp(NUDGE));
+  assert.equal(result.rounds, 2);
+  assert.equal(result.finish?.summary, 'After reading package.json: a Vite + React app.');
+});
+
+test('a non-exploration request with zero tool calls keeps its single-round path', async () => {
+  const model = scripted(['Use ?? instead of || here.']);
+  const result = await runToolRounds({
+    messages: [{ role: 'user', content: 'why does this line throw?' }],
+    workspaceId: 'ws',
+    aborted: () => false,
+    stream: model.stream
+  });
+  assert.equal(model.seen.length, 1, 'no nudge, no extra round');
+  assert.equal(result.rounds, 1);
+  assert.equal(result.text, 'Use ?? instead of || here.');
+});
+
 function mcpFixture(options: {
   servers?: Array<{ id: string; enabled: boolean }>;
   tools?: Record<string, unknown[]>;

@@ -49,7 +49,7 @@ import {
 import { copyToClipboard, downloadFile, downloadWorkspaceZip, estimateTokens, formatCode } from '../lib/toolUtils';
 import { confirmAction } from '../lib/confirm';
 import { resolveActiveFileIndex } from '../lib/activeFile';
-import { getLanguageExtension } from '../lib/languages';
+import { getLanguageExtension, detectLanguage } from '../lib/languages';
 import { ghostText } from '../lib/ghostText';
 import {
   FIM_FAILURE_HINT_THRESHOLD,

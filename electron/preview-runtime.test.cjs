@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs/promises');
 const http = require('node:http');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { PassThrough } = require('node:stream');
@@ -15,13 +16,108 @@ const {
   getPreviewScript,
   getRunArgs,
   getScriptPort,
+  getFrameworkDefaultPort,
+  getPortOverrideStrategy,
   findAvailableDevPort,
+  findNextFreeDevPort,
   findExistingNextDevServer,
   isPortBusy,
   hasHmrSupport,
   parsePreviewUrl,
   resolveExecutable
 } = require('./preview-runtime.cjs');
+
+/** True when 127.0.0.1:<port> can be bound right now. */
+async function tryBindPort(port) {
+  const server = net.createServer();
+  const bound = await new Promise((resolve) => {
+    server.once('error', () => resolve(false));
+    server.listen(port, '127.0.0.1', () => resolve(true));
+  });
+  if (bound) await new Promise((resolve) => server.close(resolve));
+  return bound;
+}
+
+/**
+ * A run of `length` currently-free consecutive ports. The relocation tests
+ * need the squatter's port and the expected next port to both be predictable,
+ * which an ephemeral listen(0) alone does not guarantee.
+ */
+async function findFreePortRun(length) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const probe = net.createServer();
+    await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const start = probe.address().port;
+    await new Promise((resolve) => probe.close(resolve));
+    let allFree = true;
+    for (let offset = 0; offset < length; offset++) {
+      if (!await tryBindPort(start + offset)) {
+        allFree = false;
+        break;
+      }
+    }
+    if (allFree) return start;
+  }
+  throw new Error('No free port run was available for the preview tests.');
+}
+
+/**
+ * A fake package-manager spawner that stands in for a real dev server: each
+ * `run dev` bind-opens the port the invocation ends with (`--port N`/`-p N`)
+ * or the script's pinned default, prints its Local URL, and serves it. A
+ * `taskkill.exe` call closes that session's server completely before the
+ * killer exits, exactly as the Windows stop path expects.
+ */
+function createFakeDevSpawner(pinnedPort) {
+  const calls = [];
+  const sessions = new Map();
+  let nextPid = 5000;
+  const spawnProcess = (command, args, options) => {
+    const invocation = [command, ...args].join(' ').replace(/"/g, ' ');
+    calls.push({ command, args, options, invocation });
+    const child = new EventEmitter();
+    child.exitCode = null;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    if (command === 'taskkill.exe') {
+      const pid = Number(args[args.indexOf('/pid') + 1]);
+      const session = sessions.get(pid);
+      if (session) {
+        sessions.delete(pid);
+        session.server.closeAllConnections?.();
+        session.server.close(() => {
+          session.child.exitCode = 1;
+          session.child.emit('close', 1);
+          setImmediate(() => child.emit('close', 0));
+        });
+      } else {
+        setImmediate(() => child.emit('close', 0));
+      }
+      return child;
+    }
+    child.pid = nextPid++;
+    const portMatch = [...invocation.matchAll(/(?:^|\s)(?:--port|-p)[= ](\d{2,5})(?=\s|$)/g)].at(-1);
+    const bindPort = portMatch ? Number(portMatch[1]) : pinnedPort;
+    const server = http.createServer((_request, response) => response.end('served by fake dev server'));
+    sessions.set(child.pid, { server, child });
+    server.listen(bindPort, '127.0.0.1', () => {
+      child.stdout.write(`Local: http://127.0.0.1:${bindPort}/\n`);
+    });
+    child.kill = () => {
+      server.closeAllConnections?.();
+      server.close();
+      return true;
+    };
+    return child;
+  };
+  return { spawnProcess, calls };
+}
+
+async function writeProject(directory, scriptCommand) {
+  await fs.writeFile(path.join(directory, 'package.json'), JSON.stringify({ scripts: { dev: scriptCommand } }));
+  return directory;
+}
 
 test('selects package manager and local preview script deterministically', async (context) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-manager-'));
@@ -116,11 +212,148 @@ test('relocates a dev server whose pinned port is already taken', async () => {
   await new Promise((resolve) => squatter.close(resolve));
 });
 
-test('skips occupied fallback ports when relocating a pinned dev server', async () => {
+test('skips occupied fallback ports when relocating a pinned dev server', async (context) => {
   assert.equal(
     await findAvailableDevPort(new Set([3000]), async (port) => port === 3001),
     3002
   );
+
+  assert.equal(getFrameworkDefaultPort('vite'), 5173);
+  assert.equal(getFrameworkDefaultPort('next dev'), 3000);
+  assert.equal(getFrameworkDefaultPort('node server.js'), null);
+
+  assert.equal(getPortOverrideStrategy('vite --port 5173'), 'flag');
+  assert.equal(getPortOverrideStrategy('next dev -p 3000'), 'flag');
+  assert.equal(getPortOverrideStrategy('node server.js'), 'env');
+  assert.equal(getPortOverrideStrategy('nodemon server.js'), 'env');
+  // An inline PORT= assignment re-sets the port after any child environment,
+  // so nothing ShadRox passes can move it.
+  assert.equal(getPortOverrideStrategy('PORT=4000 node server.js'), null);
+  assert.equal(getPortOverrideStrategy('some-unknown-runner'), null);
+
+  // Port flags are only appended for CLIs that actually parse them.
+  assert.deepEqual(getRunArgs('npm', { name: 'dev' }, 'node server.js', 4000), ['run', 'dev']);
+
+  // Vite's rule: walk upward from the occupied port one by one.
+  const busy = new Set([3000, 3001]);
+  assert.equal(await findNextFreeDevPort(3000, { isBusy: async (port) => busy.has(port) }), 3002);
+  assert.equal(
+    await findNextFreeDevPort(3000, {
+      excludedPorts: new Set([3002]),
+      isBusy: async (port) => port <= 3002
+    }),
+    3003
+  );
+});
+
+test('starts on the pinned port when it is free and appends no override', async (context) => {
+  const base = await findFreePortRun(1);
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-port-free-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  await writeProject(root, `vite --port ${base}`);
+  const { spawnProcess, calls } = createFakeDevSpawner(base);
+  const runtime = createPreviewRuntime({ spawnProcess, readyTimeout: 4000 });
+  context.after(() => runtime.stopAll());
+
+  const result = await runtime.start('port-free-workspace', root);
+  assert.equal(result.port, base);
+  assert.equal(result.url, `http://127.0.0.1:${base}/`);
+  const devCall = calls.find(({ invocation }) => invocation.includes(' run dev '));
+  assert.ok(!/--port|\s-p\s/.test(devCall.invocation), devCall.invocation);
+  assert.equal(devCall.options.env.PORT, undefined);
+  assert.equal(await (await fetch(result.url)).text(), 'served by fake dev server');
+});
+
+test('relocates over a foreign process on the pinned port without killing it', async (context) => {
+  const base = await findFreePortRun(2);
+  const squatter = net.createServer();
+  await new Promise((resolve, reject) => {
+    squatter.once('error', reject);
+    squatter.listen(base, '127.0.0.1', resolve);
+  });
+  context.after(() => new Promise((resolve) => squatter.close(resolve)));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-port-foreign-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  await writeProject(root, `vite --port ${base}`);
+  const { spawnProcess, calls } = createFakeDevSpawner(base);
+  const output = [];
+  const runtime = createPreviewRuntime({ spawnProcess, onOutput: (entry) => output.push(entry), readyTimeout: 4000 });
+  context.after(() => runtime.stopAll());
+
+  const result = await runtime.start('foreign-port-workspace', root);
+  assert.equal(result.port, base + 1);
+  assert.equal(result.url, `http://127.0.0.1:${base + 1}/`);
+  const devCall = calls.find(({ invocation }) => invocation.includes(' run dev '));
+  assert.match(devCall.invocation, new RegExp(`--port ${base + 1}`));
+  assert.equal(devCall.options.env.PORT, String(base + 1));
+  assert.ok(output.some((entry) =>
+    entry.type === 'status' &&
+    entry.message.includes(`Port ${base} is already used by another local server. Starting on port ${base + 1} instead.`)
+  ));
+  assert.ok(await isPortBusy(base), 'The foreign listener must survive the preview start.');
+});
+
+test('reports a structured conflict when the pinned port is taken and cannot be overridden', async (context) => {
+  const base = await findFreePortRun(1);
+  const squatter = net.createServer();
+  await new Promise((resolve, reject) => {
+    squatter.once('error', reject);
+    squatter.listen(base, '127.0.0.1', resolve);
+  });
+  context.after(() => new Promise((resolve) => squatter.close(resolve)));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-port-conflict-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  await writeProject(root, `PORT=${base} node server.js`);
+  const output = [];
+  const runtime = createPreviewRuntime({
+    spawnProcess: () => assert.fail('A port that cannot be overridden must not start a doomed dev server.'),
+    onOutput: (entry) => output.push(entry)
+  });
+
+  await assert.rejects(runtime.start('port-conflict-workspace', root), (error) => {
+    assert.equal(error.code, 'PREVIEW_PORT_CONFLICT');
+    assert.equal(error.port, base);
+    assert.match(error.message, new RegExp(`Port ${base} is already in use by another local application`));
+    assert.match(error.message, /Close the other application or change the project's port/);
+    return true;
+  });
+  assert.ok(output.some((entry) => entry.type === 'error' && entry.message.includes(`Port ${base}`)));
+});
+
+test('restarts its own previous session and only relocates around other previews', async (context) => {
+  const base = await findFreePortRun(2);
+  const rootA = await writeProject(await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-session-a-')), `vite --port ${base}`);
+  const rootB = await writeProject(await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-session-b-')), `vite --port ${base}`);
+  context.after(async () => {
+    await fs.rm(rootA, { recursive: true, force: true });
+    await fs.rm(rootB, { recursive: true, force: true });
+  });
+  const { spawnProcess, calls } = createFakeDevSpawner(base);
+  const output = [];
+  const runtime = createPreviewRuntime({ spawnProcess, onOutput: (entry) => output.push(entry), readyTimeout: 4000 });
+  context.after(() => runtime.stopAll());
+
+  const first = await runtime.start('session-workspace-a', rootA);
+  assert.equal(first.port, base);
+
+  // Another workspace's live preview is foreign too: relocate, never kill it.
+  const second = await runtime.start('session-workspace-b', rootB);
+  assert.equal(second.port, base + 1);
+  assert.ok(output.some((entry) =>
+    entry.type === 'status' &&
+    entry.message.includes('another ShadRox preview') &&
+    entry.message.includes(`Starting on port ${base + 1}`)
+  ));
+  assert.equal((await fetch(first.url)).status, 200);
+
+  // This workspace's own previous session is killed and restarted on its port.
+  const third = await runtime.start('session-workspace-a', rootA);
+  assert.equal(third.port, base);
+  const devCalls = calls.filter(({ invocation }) => invocation.includes(' run dev '));
+  assert.equal(devCalls.length, 3);
+  assert.ok(!/--port/.test(devCalls[2].invocation), devCalls[2].invocation);
+  assert.equal(await runtime.stop('session-workspace-a'), true);
+  assert.equal((await fetch(second.url)).status, 200);
 });
 
 test('recognizes an already-running Next server only for the same project root', async (context) => {
