@@ -372,6 +372,14 @@ Static sites, supported Node-based web projects, and detected Python, Go, PHP, J
 Yes. Select any `.md` or `.markdown` file and use the Preview button beside its name; use Source to return to editing.
 </details>
 
+## Who is behind ShadRox?
+
+ShadRox is a solo project — not a company. It is designed, built, and maintained by **Sourav Maurya**, a 19-year-old full-stack developer and AI engineer based in Delhi, India. The app, this repository, and [shadrox.cyou](https://www.shadrox.cyou) are all maintained by one person, in the open.
+
+- GitHub: [@iamsouravmourya-jpg](https://github.com/iamsouravmourya-jpg)
+- LinkedIn: [Sourav Maurya](https://www.linkedin.com/in/sourav-maurya-45b272377)
+- Website: [shadrox.cyou](https://www.shadrox.cyou)
+
 ## Acknowledgements
 
 ShadRox is built on excellent open-source projects including [Electron](https://www.electronjs.org/), [React](https://react.dev/), [CodeMirror](https://codemirror.net/), [xterm.js](https://xtermjs.org/), [Vite](https://vitejs.dev/), [Tailwind CSS](https://tailwindcss.com/), and [Supabase](https://supabase.com/). Third-party dependencies remain subject to their own licenses.

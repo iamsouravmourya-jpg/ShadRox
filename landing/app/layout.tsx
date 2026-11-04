@@ -62,7 +62,7 @@ const jsonLd = {
       '@id': `${SITE_URL}/#sourav-maurya`,
       name: 'Sourav Maurya',
       url: 'https://github.com/iamsouravmourya-jpg',
-      sameAs: ['https://github.com/iamsouravmourya-jpg'],
+      sameAs: ['https://github.com/iamsouravmourya-jpg', 'https://www.linkedin.com/in/sourav-maurya-45b272377', 'https://www.shadrox.cyou'],
       jobTitle: 'Solo Developer & AI Engineer',
       description: 'A 19-year-old full-stack developer and AI engineer from Delhi, India. Built ShadRox alone.',
       address: { '@type': 'PostalAddress', addressLocality: 'Delhi', addressCountry: 'IN' },
