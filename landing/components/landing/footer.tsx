@@ -9,7 +9,8 @@ export function Footer() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-5">
           <Logo />
           <p className="max-w-xs text-zinc-600">
-            A desktop workspace for building with your local projects.
+            ShadRox is built solo by Sourav Maurya — a 19-year-old full-stack developer and AI
+            engineer in Delhi, India.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-5">

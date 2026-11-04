@@ -47,6 +47,10 @@ const faqs = [
     q: 'Can I use a custom AI endpoint?',
     a: 'Yes. Besides Gemini and Groq, you can configure an OpenAI-compatible endpoint, including a compatible local gateway. You provide the key and pay any provider charges.',
   },
+  {
+    q: 'Who is behind ShadRox?',
+    a: 'ShadRox is a solo project built by Sourav Maurya, a 19-year-old full-stack developer and AI engineer based in Delhi, India. There is no company behind it — the app, the website, and the GitHub repo are all maintained by one person, in the open.',
+  },
 ]
 
 export function Faq() {
