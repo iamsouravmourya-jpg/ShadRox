@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  applySearchReplaceBlocks,
-  assessRewriteRisk,
-  extractUnifiedPatches,
-  findBlockRange,
-  formatApplyFailure,
-  locateBlock,
-  parseSearchReplaceBlocks,
-  resolvePatchContent
+	applySearchReplaceBlocks,
+	assessRewriteRisk,
+	computeClinePatchChanges,
+	extractUnifiedPatches,
+	findBlockRange,
+	formatApplyFailure,
+	locateBlock,
+	looksLikeClinePatch,
+	parseSearchReplaceBlocks,
+	resolvePatchContent
 } from './patchEngine';
+import { countDiffLines, makeUnifiedDiff } from './patch/clineUiDiff';
+import { clineSectionsToPatches, parseClinePatchSections } from './patch/clinePatchApply';
 
 const SR_SAMPLE = [
   '<<<<<<< ORIGINAL',
@@ -344,4 +348,377 @@ test('a rewrite that keeps most of the file is allowed', () => {
 test('rewrites of new or small files are never blocked', () => {
   assert.equal(assessRewriteRisk('app.ts', 'const a = 1;', undefined), null);
   assert.equal(assessRewriteRisk('app.ts', 'let a = 1;\nlet b = 2;', 'let a;\nlet b;'), null);
+});
+
+/* ========================================================================== *
+ * Cline apply-patch port (Apache-2.0; src/lib/patch/*).
+ *
+ * The "ported" cases below are the scenarios from
+ * reference/cline-main/sdk/packages/core/src/extensions/tools/executors/
+ * apply-patch.test.ts, adapted from Cline's disk-writing vitest executor to
+ * ShadRox's diskless compute seam (contents in, changes out, zero writes).
+ * ========================================================================== */
+
+const PAGE_TSX = [
+  'export default function Page() {',
+  '\treturn (',
+  '\t\t<div>',
+  '\t\t\t<button onClick={() => console.log("clicked")}>Click me</button>',
+  '\t\t</div>',
+  '\t);',
+  '}',
+].join('\n');
+
+test('ported from Cline: applies the documented freeform patch format without shell wrappers', () => {
+  const { changes, fuzz } = computeClinePatchChanges(
+    [
+      '*** Update File: page.tsx',
+      '@@',
+      ' export default function Page() {',
+      ' \treturn (',
+      ' \t\t<div>',
+      ' \t\t\t<button onClick={() => console.log("clicked")}>Click me</button>',
+      '+\t\t\t<button onClick={() => console.log("cancel clicked")}>Cancel</button>',
+      ' \t\t</div>',
+      ' \t);',
+      ' }',
+    ].join('\n'),
+    { 'page.tsx': PAGE_TSX }
+  );
+  assert.equal(fuzz, 0);
+  assert.ok(changes['page.tsx'].newContent!.includes('console.log("cancel clicked")'));
+});
+
+test('ported from Cline: accepts the legacy %%bash apply_patch <<EOF wrapper', () => {
+  const { changes } = computeClinePatchChanges(
+    [
+      '%%bash',
+      'apply_patch <<"EOF"',
+      '*** Begin Patch',
+      '*** Add File: note.txt',
+      '+hello',
+      '*** End Patch',
+      'EOF',
+    ].join('\n'),
+    {}
+  );
+  assert.equal(changes['note.txt'].type, 'add');
+  assert.equal(changes['note.txt'].newContent, 'hello');
+});
+
+test('ported from Cline: does not strip valid patch lines that begin with wrapper tokens', () => {
+  const { changes } = computeClinePatchChanges(
+    [
+      '*** Update File: note.txt',
+      '@@',
+      ' alpha',
+      ' EOF literal',
+      ' ``` fence',
+      '+tail',
+      ' omega',
+    ].join('\n'),
+    { 'note.txt': ['alpha', 'EOF literal', '``` fence', 'omega'].join('\n') }
+  );
+  assert.equal(changes['note.txt'].newContent, ['alpha', 'EOF literal', '``` fence', 'tail', 'omega'].join('\n'));
+});
+
+test('ported from Cline: accepts an end sentinel with trailing whitespace', () => {
+  const { changes } = computeClinePatchChanges(
+    ['*** Begin Patch', '*** Add File: note.txt', '+hello', '*** End Patch '].join('\n'),
+    {}
+  );
+  assert.equal(changes['note.txt'].newContent, 'hello');
+});
+
+test('ported from Cline: preserves CRLF line endings when updating a CRLF file', () => {
+  const { changes } = computeClinePatchChanges(
+    ['*** Update File: note.txt', '@@', ' alpha', '-beta', '+BETA', '+inserted', ' gamma'].join('\n'),
+    { 'note.txt': 'alpha\r\nbeta\r\ngamma' }
+  );
+  // Models emit LF-only patch text even for CRLF files; the file's own EOL
+  // must come back on the output (github.com/cline/cline/issues/13504).
+  assert.equal(changes['note.txt'].newContent, 'alpha\r\nBETA\r\ninserted\r\ngamma');
+});
+
+test('ported from Cline: updates a pure-LF file without introducing CRLF', () => {
+  const { changes } = computeClinePatchChanges(
+    ['*** Update File: lf.txt', '@@', ' one', '-two', '+TWO', ' three'].join('\n'),
+    { 'lf.txt': 'one\ntwo\nthree' }
+  );
+  assert.equal(changes['lf.txt'].newContent, 'one\nTWO\nthree');
+});
+
+test('ported from Cline: refuses to add a file that already exists', () => {
+  assert.throws(
+    () =>
+      computeClinePatchChanges(
+        ['*** Begin Patch', '*** Add File: note.txt', '+overwritten', '*** End Patch'].join('\n'),
+        { 'note.txt': 'important data' }
+      ),
+    /Add File Error: File already exists: note\.txt/
+  );
+});
+
+test('ported from Cline: rejects incomplete patch sentinels', () => {
+  assert.throws(
+    () => computeClinePatchChanges('*** Begin Patch\n*** Add File: note.txt\n+hello', {}),
+    /Invalid patch text - incomplete sentinels/
+  );
+});
+
+test('ported from Cline: rejects a patch when a hunk context does not match — and yields no changes at all', () => {
+  assert.throws(
+    () =>
+      computeClinePatchChanges(
+        ['*** Update File: note.txt', '@@', ' unrelated heading', ' missing middle', '+replacement', ' absent footer'].join('\n'),
+        { 'note.txt': 'alpha\nbeta\ngamma' }
+      ),
+    /note\.txt: hunk 1: Could not find matching context/
+  );
+});
+
+test('ported from Cline: a Move to section computes the renamed content, and the auto-apply pipeline refuses the rename', () => {
+  const { changes } = computeClinePatchChanges(
+    ['*** Update File: old.txt', '*** Move to: new.txt', '@@', ' one', '-two', '+TWO'].join('\n'),
+    { 'old.txt': 'one\r\ntwo' }
+  );
+  assert.equal(changes['old.txt'].movePath, 'new.txt');
+  assert.equal(changes['old.txt'].newContent, 'one\r\nTWO');
+
+  // ShadRox deliberately drops Cline's rename-on-write: the pipeline has no
+  // delete kind, so a move surfaces as a guaranteed refusal instead of a
+  // silent half-rename.
+  const patches = extractUnifiedPatches(
+    '```\n*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n@@\n one\n-two\n+TWO\n*** End Patch\n```',
+    [{ name: 'old.txt', content: 'one\r\ntwo' }]
+  );
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].kind, 'searchReplace');
+  const resolved = resolvePatchContent(patches[0], 'one\r\ntwo');
+  assert.equal(resolved.content, 'one\r\ntwo', 'zero bytes: the move must never partially land');
+  assert.equal(resolved.failures[0].reason, 'not-found');
+});
+
+test('ported from Cline: the @@ defStr anchor and similarity levels count as fuzz in the compute seam', () => {
+  // The defStr anchors a function signature the file writes with extra
+  // indentation — matched only after trimming, so Cline's fuzz counter rises.
+  const defStr = computeClinePatchChanges(
+    ['*** Update File: f.ts', '@@ function f() {', '-    return 1;', '+    return 2;'].join('\n'),
+    { 'f.ts': 'class C {\n  function f() {\n    return 1;\n  }\n}\n' }
+  );
+  assert.equal(defStr.changes['f.ts'].newContent, 'class C {\n  function f() {\n    return 2;\n  }\n}\n');
+  assert.ok(defStr.fuzz >= 1, 'expected the trimmed defStr anchor to raise fuzz');
+
+  // A one-character drift that survives every strict pass lands via the
+  // similarity pass (>= 0.66) — and only because the window is unique.
+  const similar = computeClinePatchChanges(
+    ['*** Update File: g.ts', '@@', '-const total = sum(values);', '+const total = sum(values.slice(1));'].join('\n'),
+    { 'g.ts': 'const totals = sum(values);\nexport default totals;\n' }
+  );
+  assert.ok(similar.fuzz >= 1000, 'expected similarity-level placement to raise fuzz by 1000');
+});
+
+test('ported with safety change: a similarity pass with two >= 0.66 windows is refused, not picked first', () => {
+  // The deleted line is fuzzy-similar to ALL THREE windows (0.89 / 0.75 /
+  // 0.79); Cline's original pass took the first. The port collects every
+  // candidate and refuses — the throw means computeClinePatchChanges never
+  // returns a change set, so no bytes.
+  assert.throws(
+    () =>
+      computeClinePatchChanges(
+        ['*** Update File: d.ts', '@@', '-const alpha = compute(a);', '+const alpha = compute(a, b);'].join('\n'),
+        { 'd.ts': 'const alpha = compute(a, x);\nconst betaX = compute(a, x);\nconst gamma = compute(a, x);\n' }
+      ),
+    /Could not find matching context/
+  );
+});
+
+/* -------------------------------------------------------------------------- *
+ * Extraction: Cline grammar → ShadRox SEARCH/REPLACE blocks (adapted, not
+ * Cline: positioning is always re-verified by locateBlock at plan time).
+ * -------------------------------------------------------------------------- */
+
+const clineFence = (body: string): string => '```diff\n' + body + '\n```';
+
+test('extraction turns a Cline update hunk into verified search/replace blocks', () => {
+  const reply = clineFence([
+    '*** Begin Patch',
+    '*** Update File: page.tsx',
+    '@@',
+    ' export default function Page() {',
+    ' \treturn (',
+    ' \t\t<div>',
+    ' \t\t\t<button onClick={() => console.log("clicked")}>Click me</button>',
+    '+\t\t\t<button onClick={() => console.log("cancel clicked")}>Cancel</button>',
+    ' \t\t</div>',
+    ' \t);',
+    ' }',
+    '*** End Patch',
+  ].join('\n'));
+  const patches = extractUnifiedPatches(reply, [{ name: 'page.tsx', content: PAGE_TSX + '\n' }]);
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].kind, 'searchReplace');
+  const blocks = (patches[0].blocks ?? []);
+  assert.equal(blocks.length, 1);
+  const resolved = resolvePatchContent(patches[0], PAGE_TSX + '\n');
+  assert.deepEqual(resolved.failures, []);
+  assert.ok(resolved.content.includes('Cancel</button>'));
+  assert.ok(resolved.content.endsWith('\n'), 'the file keeps its trailing newline');
+});
+
+test('extraction routes Add File into the pipeline create path and rejects an Add over an existing file', () => {
+  const fresh = extractUnifiedPatches(
+    clineFence(['*** Begin Patch', '*** Add File: src/new/Widget.ts', '+export const widget = 7;', '*** End Patch'].join('\n')),
+    []
+  );
+  assert.equal(fresh.length, 1);
+  assert.equal(fresh[0].kind, 'rewrite');
+  assert.equal(fresh[0].path, 'src/new/Widget.ts');
+
+  const clash = extractUnifiedPatches(
+    clineFence(['*** Begin Patch', '*** Add File: src/App.tsx', '+trampling rewrite', '*** End Patch'].join('\n')),
+    [{ name: 'src/App.tsx', content: 'export const a = 1;\n' }]
+  );
+  assert.equal(clash.length, 1);
+  const resolved = resolvePatchContent(clash[0], 'export const a = 1;\n');
+  assert.equal(resolved.content, 'export const a = 1;\n', 'the existing file is not touched');
+  assert.equal(resolved.failures[0].reason, 'not-found');
+});
+
+test('extraction refuses a Delete hunk — the pipeline has no delete kind', () => {
+  const patches = extractUnifiedPatches(
+    clineFence(['*** Begin Patch', '*** Delete File: src/gone.ts', '*** End Patch'].join('\n')),
+    [{ name: 'src/gone.ts', content: 'export const gone = 1;\n' }]
+  );
+  assert.equal(patches.length, 1);
+  const resolved = resolvePatchContent(patches[0], 'export const gone = 1;\n');
+  assert.equal(resolved.content, 'export const gone = 1;\n');
+  assert.equal(resolved.failures[0].reason, 'not-found');
+});
+
+test('a malformed Cline patch blocks the plan instead of being dropped', () => {
+  const patches = extractUnifiedPatches(
+    clineFence(['*** Begin Patch', '*** Update File: src/a.ts', '@@', ' line one', '-missing line', '*** End Patch'].join('\n')),
+    [{ name: 'src/a.ts', content: 'line one\n' }]
+  );
+  assert.equal(patches.length, 1);
+  const resolved = resolvePatchContent(patches[0], 'line one\n');
+  assert.equal(resolved.content, 'line one\n', 'zero bytes: a broken anchor never silently vanishes');
+  assert.equal(resolved.failures[0].reason, 'not-found');
+});
+
+test('safety: an extracted Cline block that fits several places is refused, not applied to the first', () => {
+  const content = 'x(1);\nx(1);\nx(1);\n';
+  const patches = extractUnifiedPatches(
+    clineFence(['*** Update File: dup.ts', '@@', '-x(1);', '+y(1);'].join('\n')),
+    [{ name: 'dup.ts', content }]
+  );
+  assert.equal(patches.length, 1);
+  const resolved = resolvePatchContent(patches[0], content);
+  assert.equal(resolved.content, content, 'an ambiguous anchor must not change the file at all');
+  assert.equal(resolved.failures[0].reason, 'ambiguous');
+  assert.equal(resolved.failures[0].matches, 3);
+});
+
+test('safety: an external edit that breaks the hunk anchor mid-stream is refused', () => {
+  const generated = PAGE_TSX + '\n';
+  const patches = extractUnifiedPatches(
+    clineFence([
+      '*** Update File: page.tsx',
+      '@@',
+      '-\t\t\t<button onClick={() => console.log("clicked")}>Click me</button>',
+      '+\t\t\t<button onClick={() => console.log("clicked")}>Cancel</button>',
+    ].join('\n')),
+    [{ name: 'page.tsx', content: generated }]
+  );
+  assert.equal(patches.length, 1);
+  // Somebody edited the button line outside ShadRox before the apply click.
+  // The one-line anchor never reaches the fuzzy level (short-block gate),
+  // so the drifted file is refused verbatim.
+  const drifted = generated.replace('console.log("clicked")', 'console.log("CONFIRMED")');
+  const resolved = resolvePatchContent(patches[0], drifted);
+  assert.equal(resolved.content, drifted, 'the external edit must survive untouched');
+  assert.ok(resolved.failures.length > 0);
+});
+
+test('looksLikeClinePatch recognizes the grammar and nothing else', () => {
+  assert.equal(looksLikeClinePatch('*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch'), true);
+  assert.equal(looksLikeClinePatch('*** Update File: a.txt\n@@\n-a\n+b'), true);
+  assert.equal(looksLikeClinePatch('<<<<<<< ORIGINAL\na\n=======\nb\n>>>>>>> UPDATED'), false);
+  assert.equal(looksLikeClinePatch('export const a = 1;\n// mentions *** Update File: deep in a comment'), false);
+});
+
+test('parseClinePatchSections / clineSectionsToPatches are importable standalone seams', () => {
+  const sections = parseClinePatchSections(
+    ['*** Update File: src/a.ts', '@@', ' keep', '-old', '+new', ' tail', '*** Add File: src/b.ts', '+made'].join('\n')
+  );
+  assert.equal(sections.updates.length, 1);
+  assert.equal(sections.adds.length, 1);
+  const entries = clineSectionsToPatches(sections, {});
+  const update = entries.find((entry) => entry.path === 'src/a.ts');
+  const add = entries.find((entry) => entry.path === 'src/b.ts');
+  assert.equal(update?.kind, 'searchReplace');
+  assert.equal(add?.kind, 'rewrite');
+});
+
+/* -------------------------------------------------------------------------- *
+ * Fuzzy locate level (Cline similarity math inside ShadRox's cascade).
+ * -------------------------------------------------------------------------- */
+
+const FUZZY_FILE = [
+  'function summarize(rows) {',
+  '  const total = rows.reduce((sum, row) => sum + row.value, 0);',
+  '  return { count: rows.length, total };',
+  '}',
+  '',
+].join('\n');
+
+const FUZZY_WANTED = [
+  'function summarize(rows) {',
+  '  const total = rows.reduce((sum, row) => sum + row.value, 0);',
+  '  return { count: rows.length, total: Math.round(total) };',
+  '}',
+].join('\n');
+
+test('a multi-line drifted block lands through the fuzzy level', () => {
+  const match = locateBlock(FUZZY_FILE, FUZZY_WANTED);
+  assert.equal(match.status, 'found');
+  assert.equal(match.via, 'fuzzy');
+  const result = applySearchReplaceBlocks(FUZZY_FILE, [{ original: FUZZY_WANTED, updated: 'function summarize(rows) { /* replaced */ }' }]);
+  assert.equal(result.failures.length, 0);
+  assert.ok(result.content.includes('/* replaced */'));
+});
+
+test('two similar windows for a fuzzy block are refused as not-unique', () => {
+  const doubled = FUZZY_FILE + FUZZY_FILE;
+  const match = locateBlock(doubled, FUZZY_WANTED);
+  assert.equal(match.status, 'not-unique');
+});
+
+test('short blocks never reach the fuzzy level — a 0.66 ratio on one line is a coin flip', () => {
+  // 'callC();' is 87.5% similar to 'callA();'; the gate keeps that out.
+  const content = 'if (x) {\n    callA();\n    callB();\n}\n';
+  const match = locateBlock(content, 'callC();');
+  assert.equal(match.status, 'not-found');
+  // Two lines is still under the three-line gate.
+  const twoLine = locateBlock(FUZZY_FILE, 'function summarize(rowsX {\n  const totals = rows.reduce((sum, row) => sum + row.valueX, 9);\n');
+  assert.equal(twoLine.status, 'not-found');
+});
+
+/* -------------------------------------------------------------------------- *
+ * Cline UI diff renderer (pure text; ported for the review rail).
+ * -------------------------------------------------------------------------- */
+
+test('ported from Cline: makeUnifiedDiff renders whole-file and fragment diffs with honest headers', () => {
+  const whole = makeUnifiedDiff('alpha\nbeta\ngamma', 'alpha\nBETA\ngamma', 'note.txt');
+  assert.ok(whole.includes('--- a/note.txt'));
+  assert.ok(whole.includes('+++ b/note.txt'));
+  assert.ok(whole.includes('@@ -1,3 +1,3 @@'));
+  assert.ok(whole.includes('-beta'));
+  assert.ok(whole.includes('+BETA'));
+
+  const fragment = makeUnifiedDiff('beta', 'BETA', 'note.txt', 3, { fragment: true });
+  assert.ok(fragment.includes('@@ … @@'), 'fragments must not fabricate line-1 positions');
+
+  assert.deepEqual(countDiffLines(whole), { additions: 1, deletions: 1 });
 });

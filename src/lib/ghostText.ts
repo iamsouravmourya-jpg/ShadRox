@@ -19,6 +19,7 @@ import { StateEffect, StateField, type Extension } from '@codemirror/state';
 import { completionStatus } from '@codemirror/autocomplete';
 import { isWorthCompleting } from './fim';
 import { requestFimCompletion, type FimRequestContext } from './fimClient';
+import { boostFor, ingestDocument, mergeGhostSuggestion, trailingIdentifier } from './completionTrie';
 
 interface Ghost {
   pos: number;
@@ -83,21 +84,32 @@ const ghostField = StateField.define<Ghost | null>({
     )
 });
 
+/** Upper bound on how much of a freshly opened buffer feeds the trie. */
+const TRIE_INGEST_CAP = 400_000;
+
 class GhostController {
   private timer: number | null = null;
   private controller: AbortController | null = null;
   private requestId = 0;
+  /** Registry key for this view's buffer inside the project trie. */
+  private readonly docId = `ghost-view-${++GhostController.viewCounter}`;
+  private static viewCounter = 0;
 
   constructor(
     private readonly view: EditorView,
     private readonly options: GhostTextOptions
-  ) {}
+  ) {
+    // Seed the project trie from the buffer this view opened: pure local CPU,
+    // zero API calls. Every file the user visits passes through here.
+    ingestDocument(this.docId, view.state.doc.sliceString(0, TRIE_INGEST_CAP));
+  }
 
   update(update: ViewUpdate): void {
     if (this.options.enabled === false) {
       this.cancel();
       return;
     }
+    if (update.docChanged) this.ingestChanges(update);
     if (!update.docChanged && !update.selectionSet) return;
     if (update.selectionSet && !update.docChanged) this.show(null);
     this.schedule();
@@ -105,6 +117,21 @@ class GhostController {
 
   destroy(): void {
     this.cancel();
+  }
+
+  /**
+   * Only newly inserted text feeds the trie — deletions are not re-indexed,
+   * and each keystroke tokenizes at most its inserted run, so the cost stays
+   * far below the debounce interval it shares with the FIM request.
+   */
+  private ingestChanges(update: ViewUpdate): void {
+    let inserted = '';
+    update.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
+      if (toB > fromB && inserted.length < 8_000) {
+        inserted += update.state.doc.sliceString(fromB, Math.min(toB, fromB + 8_000));
+      }
+    });
+    if (inserted) ingestDocument(this.docId, inserted);
   }
 
   private schedule(): void {
@@ -132,6 +159,12 @@ class GhostController {
     const suffix = state.doc.sliceString(cursor.from);
     if (!isWorthCompleting(prefix)) return;
 
+    // The local boost is computed before the network call so a project
+    // identifier is still on hand when the model is offline, aborted or cooling
+    // down — fimClient resolves those to an empty string rather than throwing.
+    const partial = trailingIdentifier(prefix);
+    const boost = boostFor(prefix);
+
     const id = ++this.requestId;
     const controller = new AbortController();
     this.controller = controller;
@@ -147,7 +180,8 @@ class GhostController {
       // Drop the response if a newer request started or the caret moved.
       if (id !== this.requestId) return;
       if (this.view.state.selection.main.from !== cursor.from) return;
-      this.show(result.text ? { pos: cursor.from, text: result.text } : null);
+      const ghost = mergeGhostSuggestion(result.text, partial, boost);
+      this.show(ghost ? { pos: cursor.from, text: ghost } : null);
     } finally {
       if (this.controller === controller) this.controller = null;
     }

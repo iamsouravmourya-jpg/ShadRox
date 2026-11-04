@@ -25,9 +25,10 @@ const CREDENTIAL_SUFFIXES = [
 ];
 const CREDENTIAL_WORDS = ['SESSION', 'AUTH'];
 
-const ALWAYS_SCRUBBED = [
+const SCRUBBED_NAMES = [
   'SHADROX_GEMINI_API_KEY',
   'SHADROX_GROQ_API_KEY',
+  'SHADROX_CUSTOM_API_KEY',
   'SUPABASE_SERVICE_ROLE_KEY',
   'SUPABASE_ANON_KEY',
   'SUPABASE_KEY',
@@ -35,6 +36,7 @@ const ALWAYS_SCRUBBED = [
   'GEMINI_API_KEY',
   'GOOGLE_API_KEY'
 ];
+const ALWAYS_SCRUBBED = SCRUBBED_NAMES;
 
 function splitVariableName(name) {
   return name
@@ -47,21 +49,31 @@ function splitVariableName(name) {
 
 function isCredentialVariable(name) {
   if (typeof name !== 'string' || !name) return false;
-  if (ALWAYS_SCRUBBED.includes(name.toUpperCase())) return true;
+  const upper = name.toUpperCase();
+  if (upper.startsWith('SHADROX_')) return true;
+  if (ALWAYS_SCRUBBED.includes(upper)) return true;
   return splitVariableName(name).some(
     (word) => CREDENTIAL_WORDS.includes(word) ||
       CREDENTIAL_SUFFIXES.some((suffix) => word.length > suffix.length ? word.endsWith(suffix) : word === suffix)
   );
 }
 
-function agentEnvironment(env) {
+function scrubEnvironment(env) {
   const scrubbed = {};
-  for (const [name, value] of Object.entries(env)) {
+  for (const [name, value] of Object.entries(env || {})) {
     if (typeof value !== 'string') continue;
     if (isCredentialVariable(name)) continue;
     scrubbed[name] = value;
   }
   return scrubbed;
+}
+
+function agentEnvironment(env) {
+  return scrubEnvironment(env);
+}
+
+function systemEnvironment(env) {
+  return scrubEnvironment(env);
 }
 
 function resolveTerminalPlan({
@@ -142,9 +154,13 @@ function isSafeExternalUrl(url) {
 module.exports = {
   resolveTerminalPlan,
   agentEnvironment,
+  systemEnvironment,
+  scrubEnvironment,
   isCredentialVariable,
   clampTerminalSize,
   normalizeTerminalSessionKey,
   isSafeExternalUrl,
-  TERMINAL_SIZE_LIMITS
+  TERMINAL_SIZE_LIMITS,
+  SCRUBBED_NAMES,
+  ALWAYS_SCRUBBED
 };

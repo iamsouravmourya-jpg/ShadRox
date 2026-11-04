@@ -3,6 +3,15 @@ import { RESULT_FENCE, TOOL_FENCE, stripToolBlocks } from './agent/toolProtocol'
 import { estimateTokens, messageBudgetChars, TRIM_TO_LEN } from './contextBudget';
 import { resolveTarget } from './markdown';
 import { SEARCH_ORIGINAL_MARKER, parseSearchReplaceBlocks } from './patchEngine';
+import {
+  CONDENSER_MINIMUM_PROGRESS,
+  DEFAULT_KEEP_FIRST_HEAD,
+  buildCondensationDigest,
+  computeLocks,
+  condensationPrompt,
+  observationAnchors,
+  transcriptOf
+} from './compaction/openhands';
 
 /**
  * LLM-free history compaction: the step that runs before trimMessagesToBudget().
@@ -17,9 +26,18 @@ import { SEARCH_ORIGINAL_MARKER, parseSearchReplaceBlocks } from './patchEngine'
  * are the one thing in a turn the model cannot reconstruct from the file on disk,
  * because the file may have moved on since.
  *
+ * When the folded history still overruns the budget, the second stage is the
+ * OpenHands condenser lineage, ported in ./compaction/openhands.ts (MIT):
+ * keep the head (the original requests, keep_first), keep the tail (the recent
+ * turns), condense the middle into one digest per run, drop single messages
+ * only when condensation cannot reach minimum progress — and escalate into the
+ * head as a last resort, the analogue of the upstream hard context reset.
+ *
  * Everything here is deterministic and idempotent: no ordering by length, no
  * sampling, no model call. Compacting an already compacted history is a no-op
- * that hands the caller back its own array reference.
+ * that hands the caller back its own array reference. Byte-stable output for a
+ * byte-stable history is deliberate: it keeps the provider prompt cache warm,
+ * which is what actually saves credits.
  */
 
 export const DEFAULT_KEEP_RECENT = 4;
@@ -30,6 +48,8 @@ export const HISTORY_BUDGET_RATIO = 0.5;
 const PROSE_KEEP_CHARS = 700;
 const MIN_FILE_BODY_LINES = 12;
 const MAX_ACK_CHARS = 24;
+/** One digest's worth of slack, so a condensation event lands under budget. */
+const DIGEST_SLACK_CHARS = 200;
 
 export interface CompactedHistory {
   messages: ChatMessage[];
@@ -49,6 +69,21 @@ export interface CompactionOptions {
    * so the caller hands that set over for the "never drop a patched message" rule.
    */
   patchedMessageIds?: ReadonlySet<string>;
+  /**
+   * OpenHands keep_first, adapted: how many of the oldest messages are always
+   * kept when condensing (default 2 ≈ upstream's 4 events). 0 disables the
+   * head protection and restores the old plain oldest-drops-first behaviour.
+   */
+  keepFirstHead?: number;
+  /**
+   * Optional synchronous summarizer seam for the condenser pass. ShadRox's
+   * compaction runs inside a synchronous dispatch path and uses no LLM call
+   * today, so the seam stays synchronous: give it one and the middle runs are
+   * summarized by whatever you wire (a cached small-model call, a template);
+   * without one the deterministic extractive digest is used, and a run whose
+   * summary would not reach minimum progress falls back to plain dropping.
+   */
+  condenseSummarizer?: (prompt: string) => string;
 }
 
 interface Fence {
@@ -245,9 +280,14 @@ function foldOldMessage(message: ChatMessage, patchedIds?: ReadonlySet<string>):
         return foldFileBody(segment.fence);
       })
       .join('\n');
+    // A pasted observation that folds to nothing must still say what went: an
+    // action whose only trace of an answer vanished reads as a lost result.
+    const withNote = !folded.trim() && blocks > 0 && content.trim()
+      ? `[tools] ${plural(blocks, 'tool result', 'tool results')} folded`
+      : folded;
     return {
-      content: folded,
-      changed: folded !== content,
+      content: withNote,
+      changed: withNote !== content,
       toolBlocks: blocks,
       fileBodies,
       proseFolded: false,
@@ -281,21 +321,158 @@ function tokensOf(messages: readonly ChatMessage[]): number {
   return messages.reduce((sum, message) => sum + estimateTokens(message.content), 0);
 }
 
+interface KeptEntry {
+  message: ChatMessage;
+  /** Index of the original message, so pair anchors survive the fold's reindexing. */
+  origin: number;
+  /** Untouchable by the fit stage: head aside, this is the survivors' shield. */
+  protected: boolean;
+  /** The message still carries an edit block — counts into the digest's honesty line. */
+  edits: boolean;
+  /** True for a condenser digest; digests are never dropped by the fit loop. */
+  digest: boolean;
+}
+
+function lockableView(entries: readonly KeptEntry[]): Array<{ message: ChatMessage; protected: boolean }> {
+  return entries.map((entry) => ({ message: entry.message, protected: entry.protected || entry.digest }));
+}
+
+/**
+ * Position-based pair anchors for the current `kept` array: an observation
+ * travels with the action that produced it. The walk runs over the *original*
+ * contents once (folding rewrites fences in place, so the raw history is the
+ * only stable witness of who answered whom); an anchor whose action was itself
+ * dropped degrades to no anchor.
+ */
+function fitAnchors(kept: readonly KeptEntry[], anchorByOrigin: ReadonlyMap<number, number>): number[] {
+  const positionByOrigin = new Map<number, number>();
+  kept.forEach((entry, index) => positionByOrigin.set(entry.origin, index));
+  return kept.map((entry, index) => {
+    const anchorOrigin = anchorByOrigin.get(entry.origin) ?? entry.origin;
+    return positionByOrigin.get(anchorOrigin) ?? index;
+  });
+}
+
+function locksFor(kept: readonly KeptEntry[], keepFirstHead: number, anchors: readonly number[]): boolean[] {
+  return computeLocks(lockableView(kept), keepFirstHead, anchors);
+}
+
+function messageCarriesEdits(message: ChatMessage, patchedIds?: ReadonlySet<string>): boolean {
+  if (carriesPatches(message, patchedIds)) return true;
+  return hasEditFence(scanSegments(message.content), message.role !== 'user');
+}
+
+/**
+ * The OpenHands keep-head-keep-tail condensation: the middle between the
+ * protected head and the protected tail is forgotten oldest-first, each stretch
+ * replaced in place by one digest — the `summary_offset` of the ported
+ * CondensationEvent. Like upstream, only as much history as the budget overrun
+ * demands is condensed (plus one entry of slack for the digest itself), so the
+ * fit keeps the most recent context alive as long as it fits. A run that no
+ * digest can shrink by minimum progress is left alone for the drop loop;
+ * digest text is a pure function of the forgotten entries (plus the previous
+ * digest, rolled forward), so the same history always produces the same bytes.
+ */
+function condenseRuns(
+  kept: KeptEntry[],
+  keepFirstHead: number,
+  anchors: readonly number[],
+  summarizer: ((prompt: string) => string) | undefined,
+  preservedEdits: number,
+  overrun: number
+): { entries: KeptEntry[]; condensed: number; digests: number; savedChars: number } {
+  const locked = locksFor(kept, keepFirstHead, anchors);
+  const next: KeptEntry[] = [];
+  let condensed = 0;
+  let digests = 0;
+  let savedChars = 0;
+  let previousDigest: string | null = null;
+  let index = 0;
+  let pending = overrun;
+
+  while (index < kept.length) {
+    if (locked[index]) {
+      next.push(kept[index]);
+      index += 1;
+      continue;
+    }
+    let end = index;
+    while (end < kept.length && !locked[end]) end += 1;
+    const run = kept.slice(index, end);
+
+    // OpenHands computes the summarize window from the overflow, not from the
+    // whole middle: take the oldest entries that cover the overrun plus one
+    // digest's worth of slack, and stop there.
+    let take = 0;
+    let seenChars = 0;
+    while (take < run.length && (take === 0 || seenChars < pending + DIGEST_SLACK_CHARS)) {
+      seenChars += run[take].message.content.length;
+      take += 1;
+    }
+    // Never digest an action and strand its observation in the survivors:
+    // grow the forgotten prefix over any entry anchored inside it.
+    while (take < run.length && anchors[index + take] >= index && anchors[index + take] < index + take) {
+      seenChars += run[take].message.content.length;
+      take += 1;
+    }
+    const forgotten = run.slice(0, take);
+    const remaining = run.slice(take);
+    const runChars = forgotten.reduce((sum, entry) => sum + entry.message.content.length, 0);
+    const foldable = forgotten.map((entry) => entry.message);
+    const text = summarizer
+      ? (summarizer(condensationPrompt(transcriptOf(foldable), previousDigest)).trim() ||
+        buildCondensationDigest(foldable, preservedEdits, previousDigest))
+      : buildCondensationDigest(foldable, preservedEdits, previousDigest);
+
+    if (text.length >= runChars || runChars - text.length < CONDENSER_MINIMUM_PROGRESS * runChars) {
+      next.push(...run);
+      index = end;
+      continue;
+    }
+
+    const first = forgotten[0].message;
+    next.push({
+      message: { ...first, id: `condensed:${first.id}`, content: text, toolActivity: undefined },
+      origin: forgotten[0].origin,
+      protected: true,
+      edits: false,
+      digest: true
+    });
+    next.push(...remaining);
+    condensed += forgotten.length;
+    digests += 1;
+    savedChars += runChars - text.length;
+    pending -= runChars - text.length;
+    previousDigest = text;
+    index = end;
+  }
+
+  return { entries: next, condensed, digests, savedChars };
+}
+
 /**
  * Folds the machine payload out of every message older than `keepRecent`, then
- * drops the oldest folded messages until the history fits `maxHistoryChars`. The
- * newest message always survives, and so does any message that still carries an
- * edit — that is the information a fold cannot invent again later.
+ * fits the history into `maxHistoryChars` with the ported condenser: condense
+ * the middle into digests first (head and tail protected, tool-action/
+ * observation pairs never split), drop single unprotected messages oldest-first
+ * only when condensation cannot reach minimum progress, and escalate into the
+ * head as the hard-reset last resort. The newest message always survives, and
+ * so does any message that still carries an edit — that is the information a
+ * fold cannot invent again later.
  */
 export function compactHistory(
   messages: ChatMessage[],
   options: CompactionOptions
 ): CompactedHistory {
   const keepRecent = Math.max(0, options.keepRecent ?? DEFAULT_KEEP_RECENT);
+  const keepFirstHead = Math.max(0, options.keepFirstHead ?? DEFAULT_KEEP_FIRST_HEAD);
   const cutoff = Math.max(0, messages.length - keepRecent);
   const newest = messages.length - 1;
+  const anchorByOrigin = new Map<number, number>();
+  observationAnchors(messages.map((message) => message.content))
+    .forEach((anchor, origin) => anchorByOrigin.set(origin, anchor));
 
-  const kept: Array<{ message: ChatMessage; patch: boolean }> = [];
+  const kept: KeptEntry[] = [];
   let toolBlocks = 0;
   let fileBodies = 0;
   let proseFolded = 0;
@@ -304,7 +481,13 @@ export function compactHistory(
 
   messages.forEach((message, index) => {
     if (index >= cutoff || index === newest) {
-      kept.push({ message, patch: true });
+      kept.push({
+        message,
+        origin: index,
+        protected: true,
+        edits: messageCarriesEdits(message, options.patchedMessageIds),
+        digest: false
+      });
       return;
     }
     if (message.role === 'user' && isAcknowledgement(message.content)) {
@@ -314,7 +497,7 @@ export function compactHistory(
 
     const outcome = foldOldMessage(message, options.patchedMessageIds);
     if (!outcome.changed) {
-      kept.push({ message, patch: outcome.patch });
+      kept.push({ message, origin: index, protected: outcome.patch, edits: outcome.patch, digest: false });
       return;
     }
 
@@ -326,7 +509,13 @@ export function compactHistory(
       emptied += 1;
       return;
     }
-    kept.push({ message: { ...message, content: outcome.content }, patch: outcome.patch });
+    kept.push({
+      message: { ...message, content: outcome.content },
+      origin: index,
+      protected: outcome.patch,
+      edits: outcome.patch,
+      digest: false
+    });
   });
 
   if (toolBlocks + fileBodies + proseFolded + acknowledgements + emptied === 0) {
@@ -337,13 +526,57 @@ export function compactHistory(
     ?? Math.floor(messageBudgetChars(options.contextWindow) * HISTORY_BUDGET_RATIO);
   let chars = kept.reduce((sum, entry) => sum + entry.message.content.length, 0);
   let dropped = 0;
+  let condensed = 0;
+  let digests = 0;
 
-  while (chars > budget) {
-    const victim = kept.findIndex((entry, index) => !entry.patch && index < kept.length - 1);
-    if (victim === -1) break;
-    chars -= kept[victim].message.content.length;
-    kept.splice(victim, 1);
-    dropped += 1;
+  if (chars > budget) {
+    const outcome = condenseRuns(
+      kept,
+      keepFirstHead,
+      fitAnchors(kept, anchorByOrigin),
+      options.condenseSummarizer,
+      kept.filter((entry) => entry.edits).length,
+      chars - budget
+    );
+    kept.length = 0;
+    kept.push(...outcome.entries);
+    condensed = outcome.condensed;
+    digests = outcome.digests;
+    chars -= outcome.savedChars;
+  }
+
+  let guard = 0;
+  while (chars > budget && guard < 100_000) {
+    guard += 1;
+    const anchors = fitAnchors(kept, anchorByOrigin);
+    const locked = locksFor(kept, keepFirstHead, anchors);
+    // Whole pair groups only: an action and its observation leave together or
+    // not at all — the ported TruncatingCondenser rule. Groups come out in
+    // position order, so the oldest low-value block is always the first victim.
+    const groups: number[][] = [];
+    const byAnchor = new Map<number, number[]>();
+    kept.forEach((entry, index) => {
+      const list = byAnchor.get(anchors[index]) ?? [];
+      list.push(index);
+      byAnchor.set(anchors[index], list);
+    });
+    byAnchor.forEach((members) => groups.push(members));
+
+    let victims = groups.find((members) => members.every((i) => !locked[i] && i < kept.length - 1));
+    if (!victims) {
+      // Last resort, the ported hard context reset: condensing and middle
+      // drops cannot fit the budget, so unprotected history is dropped from
+      // the head up. Edit carriers, digests, pair-mates of kept messages and
+      // the newest message stay.
+      victims = groups.find((members) =>
+        members.every((i) => !kept[i].protected && !kept[i].digest && i < kept.length - 1));
+    }
+    if (!victims) break;
+    for (const index of [...victims].sort((a, b) => b - a)) {
+      chars -= kept[index].message.content.length;
+      kept.splice(index, 1);
+      dropped += 1;
+    }
   }
 
   const folds: string[] = [];
@@ -352,6 +585,9 @@ export function compactHistory(
   if (proseFolded > 0) folds.push(`shortened ${plural(proseFolded, 'old reply')}`);
   if (acknowledgements > 0) folds.push(`collapsed ${plural(acknowledgements, 'acknowledgement message')}`);
   if (emptied > 0) folds.push(`dropped ${plural(emptied, 'emptied message')}`);
+  if (condensed > 0) {
+    folds.push(`condensed ${plural(condensed, 'middle message', 'middle messages')} into ${plural(digests, 'digest')}`);
+  }
   if (dropped > 0) folds.push(`dropped ${plural(dropped, 'oldest message')} to fit the budget`);
 
   const compacted = kept.map((entry) => entry.message);
