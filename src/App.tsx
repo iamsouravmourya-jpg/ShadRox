@@ -25,7 +25,9 @@ import { describeExternalTools, describeTools, nativeToolDefinitions, summarizeC
 import { createMcpToolHandle, discoveryNotes, type McpToolHandle } from './lib/agent/mcpTools';
 import { DEFAULT_MAX_TOOL_ROUNDS, runToolRounds } from './lib/agent/toolLoop';
 import { CHAT_PROMPT_CORE, TOOL_DISCIPLINE_RULES } from './lib/agent/promptDiscipline';
+import { expandChatMentions } from './lib/chat/contextMentions';
 import { parseToolBlocks, stripToolBlocks } from './lib/agent/toolProtocol';
+import { findFileEditingCommand, formatCommandRiskNotice } from './lib/agent/commandGuard';
 import { runAgentTurn } from './lib/agents/turnRunner';
 import { bundleDocument, bundleProject, canBundle, describeBundleError } from './lib/bundler';
 import {
@@ -85,7 +87,8 @@ import {
 import { resolveContextWindow } from './lib/modelCapabilities';
 import { PREVIEW_BASE_STYLE, PREVIEW_ERROR_BRIDGE, previewCapabilityMessage, resolvePreviewDocument } from './lib/preview';
 import { buildChunksForTesting, buildRepoMap, renderRetrievedChunks, retrieveContext, retrieveContextSemantic } from './lib/retrieval';
-import { buildSignatureMap, repoMapBudgetFor } from './lib/repoMap';
+import { repoMapBudgetFor } from './lib/repoMap';
+import { buildRepoMap as buildRankedRepoMap } from './lib/agent/repoMap';
 import { createTransformersEmbedder, getActiveEmbedder, isTransformersAvailable, setActiveEmbedder } from './lib/localEmbeddings';
 import {
   describeWorkspaceForPrompt,
@@ -1785,15 +1788,20 @@ export default function App() {
         // when a real folder is mounted. MCP tools are the user's own servers and
         // work with or without a folder.
         if (nativeWorkspaceId) core.push(...describeTools(DEFAULT_MAX_TOOL_ROUNDS, mcpDiscovery.tools, mcpNotes));
-        const signatureMap = repoMapFiles.files.length > 0 ? buildSignatureMap(repoMapFiles.files, {
+        // aider-style repo map: identifiers form a reference graph, PageRank
+        // ranks the files in it, and the top-ranked definitions are packed
+        // into the budget as real disk lines — so a folder with zero open
+        // tabs still reaches the model as a ranked map, not a name list.
+        const signatureMap = repoMapFiles.files.length > 0 ? await buildRankedRepoMap(folder.path, {
           tokenBudget: repoMapBudgetFor(contextWindow),
           query,
-          pinned: contextFiles.map((file) => file.name),
-          personalization: [...new Set([workspace.activeFile?.name, ...selectedFiles].filter((name): name is string => Boolean(name)))]
-        }, repoMapFiles.signatures) : '';
+          files: repoMapFiles.files,
+          signaturesByFile: repoMapFiles.signatures,
+          openTabs: [...new Set([workspace.activeFile?.name, ...selectedFiles].filter((name): name is string => Boolean(name)))]
+        }) : '';
         if (signatureMap) {
           core.push(
-            'REPO MAP — every declaration the folder holds, ranked by how much the rest of the folder references it. Files here are listed by shape only; read one before editing it:',
+            'REPO MAP — the folder as a reference graph, ranked by PageRank over it: the most-referenced definitions first, with their real lines. Files here are listed by shape only; read one before editing it:',
             signatureMap
           );
         }
@@ -2957,7 +2965,16 @@ export default function App() {
       history = result.messages.map(toTurn);
       folded = result.folds;
     }
-    history.push({ role: 'user', content: text });
+    // @-mentions (grammar ported from Cline, Apache-2.0) expand into context
+    // blocks for the model only: the message the user reads keeps the raw text.
+    history.push({
+      role: 'user',
+      content: await expandChatMentions(text, {
+        files: workspace.files,
+        bridge: desktopBridge,
+        workspaceId: nativeWorkspaceId
+      })
+    });
     // The system instruction is measured first and subtracted from the window,
     // so the history is trimmed against what is actually left for it.
     const readerModel = autoReaderModel(text, mode.writesFiles ? 'edit' : 'chatter');
@@ -3541,6 +3558,30 @@ export default function App() {
             timedOut: false,
             declinedReason: 'No folder is open, so no terminal is available.'
           };
+        }
+        // Cline's command blacklist (ported in lib/agent/commandGuard): a
+        // command that can modify files never runs on the silent proof-command
+        // path — it raises an explicit danger approval carrying the detected
+        // reason, and a decline flows back as the engine's declinedReason.
+        const risk = findFileEditingCommand(argv);
+        if (risk) {
+          const proceed = await confirmAction({
+            title: `Run this command? ${risk} can modify files`,
+            body: formatCommandRiskNotice(argv, risk),
+            confirmLabel: 'Allow once',
+            cancelLabel: 'Block command',
+            tone: 'danger'
+          });
+          if (!proceed) {
+            return {
+              argv,
+              exitCode: null,
+              stdoutTail: '',
+              stderrTail: '',
+              timedOut: false,
+              declinedReason: `the command was not approved: ${risk} can modify files`
+            };
+          }
         }
         const result = await desktop.runCommand(nativeWorkspaceId, argv);
         return {

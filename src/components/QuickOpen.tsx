@@ -21,6 +21,7 @@ import {
 } from '../lib/editor/searchReplace';
 import type { WorkspaceFile } from '../lib/types';
 import { rankCommands, type Command } from '../lib/commands';
+import { pathBasename, pathDirname, rankByFuzzy } from '../lib/search/fuzzyScorer';
 
 interface QuickOpenProps {
   mode: 'files' | 'content' | 'commands';
@@ -93,20 +94,17 @@ function kindLabel(kind: string): string {
   return SYMBOL_KIND_LABELS[kind?.toLowerCase()] ?? '·';
 }
 
-function score(text: string, query: string): number {
-  const haystack = text.toLowerCase();
-  const needle = query.toLowerCase();
-  if (!needle) return 0;
-  const direct = haystack.indexOf(needle);
-  if (direct >= 0) return direct + haystack.lastIndexOf('/') * 0.01;
-  let cursor = 0;
-  for (const char of needle) {
-    cursor = haystack.indexOf(char, cursor);
-    if (cursor < 0) return Number.POSITIVE_INFINITY;
-    cursor += 1;
-  }
-  return 500;
-}
+/**
+ * The VSCode fuzzy scorer's `IItemAccessor` for quick-open candidates: label
+ * is the file name, description the folder, path the whole relative path, so
+ * `fuzzyScorer` wins against `src/lib/search/fuzzyScorer.ts` and `search/fz`
+ * style queries work as expected.
+ */
+const fileCandidateAccessor = {
+  getItemLabel: (candidate: FileCandidate) => pathBasename(candidate.path),
+  getItemDescription: (candidate: FileCandidate) => pathDirname(candidate.path) || undefined,
+  getItemPath: (candidate: FileCandidate) => candidate.path
+};
 
 /**
  * Ctrl+P quick open. File search behaves exactly as before; a leading `@`
@@ -188,12 +186,7 @@ export function QuickOpen({
     if (!query.trim()) {
       return list.sort((a, b) => Number(b.path.includes('/')) - Number(a.path.includes('/')) || a.path.localeCompare(b.path)).slice(0, 60);
     }
-    return list
-      .map((candidate) => ({ candidate, rank: score(candidate.path, query.trim()) }))
-      .filter((entry) => Number.isFinite(entry.rank))
-      .sort((a, b) => a.rank - b.rank || a.candidate.path.localeCompare(b.candidate.path))
-      .slice(0, 60)
-      .map((entry) => entry.candidate);
+    return rankByFuzzy(query.trim(), list, fileCandidateAccessor, { limit: 60 }).map((entry) => entry.item);
   }, [files, directoryPages, query]);
 
   const localHits = useMemo<WorkspaceSearchHit[]>(() => {
