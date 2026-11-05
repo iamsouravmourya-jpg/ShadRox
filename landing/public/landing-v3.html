@@ -3,37 +3,49 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ShadRox — Your project, code, AI and preview in one workspace</title>
-<meta name="description" content="A native desktop workspace for local projects with a code editor, Markdown preview, BYOK AI chat, project preview, Git tools and an integrated terminal.">
+<title>ShadRox — Project files, editor, AI chat, preview, Git and terminal in one Windows app</title>
+<meta name="description" content="A native Windows workspace for local projects: focused code editor, bring-your-own-key AI chat, live project preview, Git tools and an integrated terminal. Files stay on your computer; only the context you choose goes to your AI provider.">
+<link rel="canonical" href="https://www.shadrox.cyou/">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
 <style>
 /* ═══════════════════════════════════════════
    THEME TOKENS
 ═══════════════════════════════════════════ */
 :root {
+  color-scheme: light;
   --bg:      #FAF7F5;
   --bg2:     #F3ECE7;
   --bg3:     #EDE3DC;
   --card:    #FFFFFF;
   --ink:     #1d1410;
   --ink2:    #3d342e;
-  --mut:     #7a6d66;
+  --mut:     #756860;
   --line:    #DCCDC5;
   --ac:      #c0392b;
   --ac2:     #e74c3c;
+  --acbtn:   #c0392b;
   --acsoft:  rgba(192,57,43,0.10);
   --glow:    rgba(192,57,43,0.15);
   --purple:  #6d4aff;
   --pink:    #ec4899;
-  --nav:     rgba(250,247,245,0.88);
+  --nav:     rgba(250,247,245,0.96);
   --shadow:  rgba(60,20,10,0.10);
   --tag-bg:  #FFFFFF;
   --hero-orb1: rgba(192,57,43,0.12);
   --hero-orb2: rgba(241,90,70,0.10);
+  --hero-wash: rgba(192,57,43,.055);
+  --r-lg:20px; --r-md:13px; --r-sm:9px;
+  --sp-1:6px; --sp-2:10px; --sp-3:16px; --sp-4:22px;
+  --sh-1:0 1px 2px var(--shadow);
+  --sh-2:0 10px 26px -14px var(--shadow);
+  --sh-hi:0 18px 38px -20px var(--glow);
+  --ok:#166534; --bad:#be123c;
+  --slab:#1d1410; --on-slab:#FAF7F5;
 }
 [data-th="dark"] {
+  color-scheme: dark;
   --bg:      #0c0a10;
   --bg2:     #12101a;
   --bg3:     #18151f;
@@ -44,15 +56,19 @@
   --line:    #342e40;
   --ac:      #a78bfa;
   --ac2:     #c4b5fd;
+  --acbtn:   #7c3aed;
   --acsoft:  rgba(167,139,250,0.12);
   --glow:    rgba(167,139,250,0.20);
   --purple:  #7c5cff;
   --pink:    #f472b6;
-  --nav:     rgba(12,10,16,0.85);
+  --nav:     rgba(12,10,16,0.94);
   --shadow:  rgba(0,0,0,0.40);
   --tag-bg:  #1a1726;
   --hero-orb1: rgba(109,74,255,0.18);
   --hero-orb2: rgba(244,114,182,0.14);
+  --hero-wash: rgba(167,139,250,.07);
+  --ok:#4ade80; --bad:#fb7185;
+  --slab:#141122; --on-slab:#f2eef8;
 }
 
 /* ═══════════════════════════════════════════
@@ -72,18 +88,16 @@ button,input{font-family:inherit}
 .serif{font-family:'Playfair Display',Georgia,serif;font-weight:400;letter-spacing:-.02em}
 em{font-style:italic;color:var(--ac)}
 strong{font-weight:700}
+svg.i{width:20px;height:20px;display:block;flex:none;fill:none;stroke:currentColor;
+  stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 
 /* ═══════════════════════════════════════════
-   GRADIENT TEXT
+   ACCENT PHRASE
 ═══════════════════════════════════════════ */
-.gt{
-  background:linear-gradient(110deg,var(--ac),var(--pink),var(--purple),var(--ac));
-  background-size:260% 100%;
-  -webkit-background-clip:text;background-clip:text;
-  color:transparent;-webkit-text-fill-color:transparent;
-  animation:gt-move 7s linear infinite;
+.gt{color:var(--ac)}
+@media(forced-colors:active){
+  .gt{color:CanvasText;-webkit-text-fill-color:CanvasText}
 }
-@keyframes gt-move{to{background-position:260% 0}}
 
 /* ═══════════════════════════════════════════
    LAYOUT
@@ -93,67 +107,71 @@ strong{font-weight:700}
 /* ═══════════════════════════════════════════
    PROGRESS BAR
 ═══════════════════════════════════════════ */
-#pg{position:fixed;top:0;left:0;height:3px;width:0%;z-index:200;
-  background:linear-gradient(90deg,var(--ac),var(--pink),var(--purple));
-  transition:width .1s linear}
+#pg{position:fixed;top:0;left:0;height:2px;width:100%;z-index:200;
+  background:var(--ac);opacity:.85;
+  transform:scaleX(0);transform-origin:0 50%;transition:transform .1s linear}
 
 /* ═══════════════════════════════════════════
    CURSOR GLOW
 ═══════════════════════════════════════════ */
 #cur{
-  position:fixed;width:480px;height:480px;
-  margin:-240px 0 0 -240px;border-radius:50%;
+  position:fixed;top:0;left:0;width:420px;height:420px;
+  margin:-210px 0 0 -210px;border-radius:50%;
   background:radial-gradient(var(--glow),transparent 65%);
-  pointer-events:none;z-index:0;
-  transition:opacity .4s,left .08s,top .08s;
+  pointer-events:none;z-index:0;opacity:0;
+  will-change:transform;
 }
 
 /* ═══════════════════════════════════════════
    ANNOUNCEMENT BAR
 ═══════════════════════════════════════════ */
 .ann{
-  background:linear-gradient(90deg,var(--ac),var(--purple),var(--pink));
-  color:#fff;font-size:13px;font-weight:500;
-  text-align:center;padding:10px 48px;position:relative;
-  letter-spacing:.01em;
+  background:var(--bg2);
+  color:var(--ink2);font-size:12.5px;font-weight:500;
+  text-align:center;padding:9px 48px;position:relative;
+  letter-spacing:.01em;border-bottom:1px solid var(--line);
 }
-.ann a{font-weight:700;text-decoration:underline;margin-left:8px;opacity:.95}
-.ann a:hover{opacity:1}
+.ann a{font-weight:700;color:var(--ac);margin-left:8px;text-decoration:none;
+  border-bottom:1px solid var(--acsoft)}
+.ann a:hover{border-bottom-color:var(--ac)}
 .ann button{
-  position:absolute;right:16px;top:50%;transform:translateY(-50%);
-  background:0;border:0;color:#fff;font-size:20px;cursor:pointer;opacity:.7;
-  line-height:1;
+  position:absolute;right:12px;top:50%;transform:translateY(-50%);
+  background:0;border:0;color:var(--ink2);font-size:19px;cursor:pointer;
+  line-height:1;min-width:44px;min-height:44px;
 }
-.ann button:hover{opacity:1}
+.ann button:hover{color:var(--ac)}
 
 /* ═══════════════════════════════════════════
    NAVIGATION
 ═══════════════════════════════════════════ */
 nav{
   position:sticky;top:0;z-index:100;
-  background:var(--nav);
-  backdrop-filter:saturate(180%) blur(24px);
-  -webkit-backdrop-filter:saturate(180%) blur(24px);
+  background:transparent;
   border-bottom:1px solid transparent;
-  transition:border-color .3s,background .45s;
+  transition:background .3s,border-color .3s,box-shadow .3s;
 }
-nav.scrolled{border-color:var(--line)}
+nav.scrolled{
+  background:var(--nav);
+  backdrop-filter:saturate(140%) blur(8px);-webkit-backdrop-filter:saturate(140%) blur(8px);
+  border-bottom-color:var(--line);
+  box-shadow:0 12px 28px -22px var(--shadow);
+}
 nav .wrap{display:flex;align-items:center;gap:24px;height:68px}
 
 /* Logo */
 .logo{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.12em;font-size:14px;text-transform:uppercase;flex-shrink:0}
 .logo-icon{
-  width:36px;height:36px;flex:none;color:var(--ink);
-  filter:drop-shadow(0 6px 12px var(--glow));
-  transition:transform .3s,filter .3s;
+  width:34px;height:34px;flex:none;color:var(--ink);
+  filter:drop-shadow(0 4px 10px var(--glow));
+  transition:transform .25s cubic-bezier(.22,1,.36,1),filter .25s;
 }
-.logo:hover .logo-icon{transform:rotate(-8deg) scale(1.08);filter:drop-shadow(0 10px 18px var(--glow))}
+.logo:hover .logo-icon{transform:translateY(-1px);filter:drop-shadow(0 8px 14px var(--glow))}
 
 /* Nav links */
 .nav-links{display:flex;gap:4px;list-style:none;font-size:14px;font-weight:500;color:var(--mut);margin-right:auto}
 .nav-links>li{position:relative}
 .nav-links>li>a,.nav-links>li>button{
-  padding:8px 14px;border-radius:10px;display:block;
+  padding:11px 14px;border-radius:10px;display:block;
   background:0;border:0;color:inherit;font-size:14px;font-weight:500;cursor:pointer;
   transition:color .2s,background .2s;white-space:nowrap;
 }
@@ -175,7 +193,9 @@ nav .wrap{display:flex;align-items:center;gap:24px;height:68px}
 }
 .dd a{display:flex;gap:12px;padding:10px;border-radius:14px;color:var(--ink);transition:background .2s}
 .dd a:hover{background:var(--bg2)}
-.dd-icon{font-style:normal;width:38px;height:38px;border-radius:12px;background:var(--bg2);display:grid;place-items:center;flex:none;font-size:16px}
+.dd-icon{width:34px;height:34px;border-radius:var(--r-md);background:var(--bg2);border:1px solid var(--line);display:grid;place-items:center;flex:none;color:var(--ink2);transition:.25s}
+.dd-icon svg{width:17px;height:17px}
+.dd a:hover .dd-icon{background:var(--acsoft);border-color:transparent;color:var(--ac)}
 .dd b{font-size:13px;display:block;font-weight:600}
 .dd small{font-size:12px;color:var(--mut);line-height:1.4;display:block}
 
@@ -189,7 +209,7 @@ nav .wrap{display:flex;align-items:center;gap:24px;height:68px}
   transition:transform .3s,border-color .3s,background .3s;
   flex-shrink:0;
 }
-.icon-btn:hover{transform:rotate(20deg);border-color:var(--ac)}
+.icon-btn:hover{border-color:var(--ac)}
 #th-btn{transition:transform .4s,border-color .3s}
 #th-btn.spinning{animation:spin-once .4s ease}
 @keyframes spin-once{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
@@ -211,7 +231,7 @@ nav .wrap{display:flex;align-items:center;gap:24px;height:68px}
   letter-spacing:.01em;
 }
 .btn-primary{
-  background:linear-gradient(135deg,var(--ac),var(--purple));
+  background:var(--acbtn);
   color:#fff;
   box-shadow:0 10px 32px var(--glow);
 }
@@ -219,78 +239,72 @@ nav .wrap{display:flex;align-items:center;gap:24px;height:68px}
   content:"";position:absolute;inset:0;
   background:linear-gradient(105deg,transparent 30%,rgba(255,255,255,.45) 50%,transparent 70%);
   transform:translateX(-120%);
-  animation:shimmer 3.5s ease-in-out infinite;
+  transition:transform .9s cubic-bezier(.2,.8,.2,1);
 }
-@keyframes shimmer{60%,100%{transform:translateX(120%)}}
-.btn-primary:hover{transform:translateY(-3px) scale(1.03);box-shadow:0 18px 44px var(--glow)}
+.btn-primary:hover::before{transform:translateX(120%)}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 14px 32px var(--glow)}
+.btn:active{transform:translateY(0) scale(.985)}
 .btn-ghost{
   background:transparent;color:var(--ink);
   border:1.5px solid var(--line);
 }
 .btn-ghost:hover{background:var(--card);border-color:var(--ac);color:var(--ac)}
 .btn-sm{padding:9px 20px;font-size:13px}
+.btn svg{width:15px;height:15px}
+.nav-dl{padding:9px 16px;font-size:12.5px}
 
 /* ═══════════════════════════════════════════
    HERO
 ═══════════════════════════════════════════ */
 .hero{
   position:relative;text-align:center;
-  padding:88px 0 48px;overflow:hidden;
+  padding:44px 0 40px;overflow:hidden;
+  background:radial-gradient(62% 46% at 50% 2%,var(--hero-wash),transparent 70%);
 }
-.hero-orb{
-  position:absolute;border-radius:50%;
-  filter:blur(100px);z-index:-1;pointer-events:none;
-  animation:orb-float 16s ease-in-out infinite alternate;
-}
-.orb1{width:600px;height:600px;background:var(--hero-orb1);left:0;top:-120px}
-.orb2{width:500px;height:500px;background:var(--hero-orb2);right:0;top:80px;animation-delay:-8s}
-.orb3{width:350px;height:350px;background:rgba(109,74,255,.08);left:40%;bottom:0;animation-delay:-4s}
-@keyframes orb-float{to{transform:translate(60px,50px) scale(1.18)}}
+.hero-orb{display:none}
 
 /* Live pill */
 .pill{
   display:inline-flex;gap:8px;align-items:center;
-  padding:7px 18px;border:1px solid var(--line);
+  padding:6px 15px;border:1px solid var(--line);
   border-radius:999px;background:var(--card);
   font-size:12px;font-weight:600;color:var(--mut);
-  box-shadow:0 4px 16px var(--shadow);
-  margin-bottom:28px;
+  box-shadow:var(--sh-1);
+  margin-bottom:20px;
 }
-.pill-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;animation:pulse 2s infinite}
-@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(34,197,94,.6)}100%{box-shadow:0 0 0 9px transparent}}
+.pill-dot{width:7px;height:7px;border-radius:50%;background:var(--ok)}
 
 /* Rotating word */
 #rot{color:var(--ac);display:inline-block;min-width:80px;text-align:left;transition:opacity .3s}
 
 h1{
   font-family:'Playfair Display',Georgia,serif;
-  font-size:clamp(44px,7.8vw,96px);
-  line-height:1.02;
-  margin:0 auto 24px;max-width:1020px;
+  font-size:clamp(38px,5.4vw,68px);
+  line-height:1.04;
+  margin:0 auto 18px;max-width:900px;
   font-weight:400;letter-spacing:-.025em;
 }
 .hero-lead{
-  font-size:clamp(16px,2.1vw,21px);color:var(--mut);
-  max-width:660px;margin:0 auto 36px;font-weight:400;
+  font-size:clamp(15px,1.55vw,17.5px);color:var(--mut);
+  max-width:700px;margin:0 auto 26px;font-weight:400;line-height:1.6;
 }
-.hero-cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
-.hero-meta{margin-top:16px;font-size:12px;color:var(--mut);letter-spacing:.01em}
+.hero-cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.hero-meta{margin-top:14px;font-size:12px;color:var(--mut);letter-spacing:.01em}
 
 /* Stage */
-.stage{perspective:1800px;margin-top:72px;position:relative}
+.stage{perspective:1800px;margin-top:56px;position:relative}
 .float-chip{
-  position:absolute;padding:10px 18px;border-radius:16px;
+  position:absolute;padding:8px 14px;border-radius:12px;
   background:var(--card);border:1px solid var(--line);
-  box-shadow:0 18px 40px -10px var(--shadow);
-  font-size:12px;font-weight:700;z-index:4;
-  animation:bob 5s ease-in-out infinite alternate;
-  backdrop-filter:blur(8px);
-  -webkit-backdrop-filter:blur(8px);
+  box-shadow:var(--sh-2);
+  font-size:11.5px;font-weight:700;z-index:4;
+  display:flex;align-items:center;gap:7px;
 }
-.fc1{left:-2%;top:24%;animation-delay:0s}
-.fc2{right:-2%;top:54%;animation-delay:-2s}
-.fc3{left:5%;bottom:-3%;animation-delay:-3.5s}
-@keyframes bob{to{transform:translateY(-16px)}}
+.float-chip svg{width:15px;height:15px;color:var(--ac)}
+.fc1{left:-1.5%;top:22%}
+.fc2{right:-1.5%;top:52%}
+.fc3{left:4%;bottom:-2%}
+@media(max-width:1080px){.float-chip{display:none}}
 
 /* Code window */
 .code-win{
@@ -308,26 +322,58 @@ h1{
   padding:13px 18px;background:#17151f;
   border-bottom:1px solid rgba(255,255,255,.07);
 }
-.win-dot{width:12px;height:12px;border-radius:50%;background:#ff5f57}
-.win-dot:nth-child(2){background:#febc2e}
-.win-dot:nth-child(3){background:#28c840}
-.win-bar span{margin-left:16px;font-size:11px;color:#8b87a0;padding:3px 12px;background:#0e0d14;border-radius:8px}
-.win-cols{display:grid;grid-template-columns:150px 1fr 270px;min-height:360px}
+.win-title{margin-left:16px;font-size:12px;color:#8b87a0;padding:3px 12px;background:#0e0d14;border-radius:8px}
+.win-tabs{display:none;gap:2px;padding:7px 10px;background:#17151f;border-bottom:1px solid rgba(255,255,255,.07)}
+.win-tabs button{
+  flex:1;padding:7px 6px;border:0;border-radius:8px;background:transparent;
+  color:#8b87a0;font:600 11.5px 'Plus Jakarta Sans',sans-serif;cursor:pointer;transition:.2s;
+}
+.win-tabs button[aria-selected="true"]{background:rgba(109,74,255,.3);color:#fff}
+.win-cols{
+  display:grid;grid-template-columns:180px minmax(0,1fr) 280px 200px;
+  grid-template-areas:"side code chat pv" "term term term term";
+}
+.win-side{grid-area:side}
+.win-code{grid-area:code}
+.win-chat{grid-area:chat}
+.win-preview{grid-area:pv}
+.win-term{
+  grid-area:term;padding:10px 20px 12px;background:#131119;
+  border-top:1px solid rgba(255,255,255,.07);
+  font:11.5px/1.7 'JetBrains Mono',ui-monospace,monospace;color:#9a95ad;
+}
+.win-term i{font-style:normal;color:#8b86aa}
+.win-term b{font-weight:400;color:#86efac}
+@media(max-width:1080px){
+  .win-cols{grid-template-columns:170px minmax(0,1fr) 260px;grid-template-areas:"side code chat" "term term term"}
+  .win-preview{display:none}
+}
+.win-preview{
+  border-left:1px solid rgba(255,255,255,.06);
+  padding:12px;font-size:11px;color:#8b87a0;
+  display:flex;flex-direction:column;gap:8px;overflow:hidden;
+}
+.win-preview>b{color:#d6d3e0;font-size:11px;letter-spacing:.1em;display:block}
+.pv-frame{flex:1;border:1px solid rgba(255,255,255,.09);border-radius:8px;background:#0e0d14;padding:8px;display:grid;gap:6px;align-content:start}
+.pv-frame i{display:block;height:7px;border-radius:3px;background:rgba(255,255,255,.12)}
+.pv-frame i.hl{background:rgba(109,74,255,.5);width:60%}
+.pv-frame i.btnish{background:rgba(34,197,94,.35);width:38%;height:12px}
+.pv-tag{font-size:10.5px;color:#8f8aa3;text-align:center}
 .win-side{
   padding:16px;border-right:1px solid rgba(255,255,255,.06);
-  font-size:11.5px;color:#8b87a0;
+  font-size:12px;color:#8b87a0;
 }
-.win-side b{color:#d6d3e0;display:block;margin-bottom:8px;font-size:11px;letter-spacing:.1em}
+.win-side b{color:#d6d3e0;display:block;margin-bottom:8px;font-size:11.5px;letter-spacing:.1em}
 .win-side div{padding:3px 9px;border-radius:7px;cursor:default}
 .win-side .active{background:rgba(109,74,255,.28);color:#fff}
 .win-code{padding:18px 20px}
-.code-line{white-space:pre;overflow:hidden;max-width:0;border-right:2px solid transparent}
+.code-line{white-space:pre;overflow:hidden;clip-path:inset(0 100% 0 0)}
 .go-anim .code-line{
-  animation:type-in 1s steps(44) forwards;
-  animation-delay:calc(var(--i) * .4s);
+  animation:type-in .7s steps(40) forwards;
+  animation-delay:calc(var(--i) * .22s);
 }
-@keyframes type-in{from{max-width:0;border-color:#c4a7ff}to{max-width:100%;border-color:transparent}}
-.ck{color:#c4a7ff}.cs{color:#86efac}.cc{color:#6b6880}.cf{color:#7dd3fc}.cn{color:#fda4af}.cln{color:#4a475c;margin-right:16px;user-select:none}
+@keyframes type-in{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
+.ck{color:#c4a7ff}.cs{color:#86efac}.cc{color:#8b86aa}.cf{color:#7dd3fc}.cn{color:#fda4af}.cln{color:#807ba0;margin-right:16px;user-select:none}
 .win-chat{
   border-left:1px solid rgba(255,255,255,.06);
   padding:14px;font:12px/1.6 'Plus Jakarta Sans',sans-serif;
@@ -338,8 +384,7 @@ h1{
 @keyframes pop-in{from{opacity:0;transform:translateY(12px) scale(.96)}to{opacity:1;transform:none}}
 .chat-msg{padding:10px 13px;border-radius:12px;background:#1d1b27;color:#cfcbe0;font-size:12px}
 .chat-msg.user{background:var(--purple);color:#fff;align-self:flex-end;max-width:94%}
-.typing::after{content:"";animation:dots 1.2s steps(4) infinite}
-@keyframes dots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}}
+.typing::after{content:" ···";color:#6b6880}
 .diff-block{border:1px solid rgba(255,255,255,.09);border-radius:12px;font:11px/1.65 'JetBrains Mono',monospace;overflow:hidden}
 .diff-block div{padding:2px 10px}
 .diff-block .add{background:rgba(34,197,94,.14);color:#86efac}
@@ -347,182 +392,219 @@ h1{
 .diff-actions{display:flex;gap:7px;padding:8px 10px;background:#17151f}
 .diff-actions span{padding:3px 11px;border-radius:8px;font:600 11px 'Plus Jakarta Sans',sans-serif;background:#2a2736;cursor:default}
 .diff-actions .ok{background:#22c55e;color:#06260f}
+.diff-actions span:last-child{background:transparent;color:#6b6880;margin-left:auto;padding:3px 0}
 .win-status{
-  display:flex;gap:20px;padding:7px 18px;
-  background:linear-gradient(90deg,var(--purple),var(--pink));
-  color:#fff;font:500 11px 'Plus Jakarta Sans',sans-serif;
+  display:flex;flex-wrap:wrap;gap:8px 20px;padding:7px 18px;
+  background:#17151f;border-top:1px solid rgba(255,255,255,.07);
+  color:#9a95ad;font:500 12px 'Plus Jakarta Sans',sans-serif;
 }
+.win-status span:first-child{margin-left:0}
+.win-cap{margin-left:auto;display:flex;gap:2px}
+.win-cap i{
+  width:44px;height:26px;display:grid;place-items:center;
+  font-style:normal;font-size:11px;color:#9a95ad;border-radius:6px;
+}
+.win-cap i:hover{background:rgba(255,255,255,.08);color:#fff}
+.win-cap i.x:hover{background:#c0392b;color:#fff}
 
 /* ═══════════════════════════════════════════
    MARQUEE
 ═══════════════════════════════════════════ */
-.mq-wrap{
-  overflow:hidden;margin-top:80px;
-  mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent);
-  -webkit-mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent);
-}
+.mq-wrap{margin-top:56px;text-align:center}
 .mq-wrap p{
-  text-align:center;font-size:11px;letter-spacing:.18em;
-  text-transform:uppercase;color:var(--mut);margin-bottom:20px;font-weight:700;
+  font-size:11.5px;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--mut);margin:0 auto 14px;font-weight:800;
 }
 .mq-track{
-  display:flex;gap:14px;width:max-content;
-  animation:marquee 36s linear infinite;
+  display:flex;flex-wrap:wrap;justify-content:center;gap:8px;
+  max-width:900px;margin:0 auto;
 }
-.mq-wrap:hover .mq-track{animation-play-state:paused}
-@keyframes marquee{to{transform:translateX(-50%)}}
 .mq-tag{
-  padding:11px 24px;border-radius:999px;
-  background:var(--tag-bg);border:1px solid var(--line);
-  font-weight:600;font-size:13px;color:var(--mut);
-  white-space:nowrap;transition:.25s;
+  padding:8px 15px;border-radius:10px;
+  background:var(--card);border:1px solid var(--line);
+  font-weight:600;font-size:12.5px;color:var(--ink2);
+  white-space:nowrap;transition:color .25s,border-color .25s,transform .25s;
 }
-.mq-tag:hover{border-color:var(--ac);color:var(--ac);transform:translateY(-2px)}
+.mq-tag:hover{border-color:var(--ac);color:var(--ac);transform:translateY(-1px)}
+[data-th="dark"] .mq-tag{background:var(--bg3)}
 
 /* ═══════════════════════════════════════════
    STATS
 ═══════════════════════════════════════════ */
 .stats{
-  display:grid;grid-template-columns:repeat(4,1fr);
-  gap:1px;background:var(--line);
-  border:1px solid var(--line);border-radius:28px;
-  overflow:hidden;margin-top:72px;
+  display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr;
+  gap:12px;margin-top:56px;
 }
 .stat-item{
-  background:var(--card);padding:34px 22px;text-align:center;
-  transition:background .3s;
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);
+  padding:20px 22px;text-align:left;display:flex;flex-direction:column;gap:6px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7),var(--sh-1);
 }
-.stat-item:hover{background:var(--bg2)}
+[data-th="dark"] .stat-item{box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--sh-1)}
 .stat-num{
-  display:block;font:600 52px 'Playfair Display',serif;
-  color:var(--ac);line-height:1.05;
+  display:block;font:600 40px/1 'Playfair Display',serif;
+  color:var(--ink);font-variant-numeric:tabular-nums;
 }
-.stat-label{font-size:13px;color:var(--mut);margin-top:4px;display:block}
+.stat-label{font-size:12.5px;color:var(--mut);line-height:1.45}
+.stat--lead{background:var(--acbtn);border-color:transparent}
+.stat--lead .stat-num{font-size:56px;color:#fff}
+.stat--lead .stat-label{color:rgba(255,255,255,.95)}
 
 /* ═══════════════════════════════════════════
    SECTIONS
 ═══════════════════════════════════════════ */
-section{padding:120px 0;position:relative;z-index:1}
+section{padding:clamp(76px,8.5vw,112px) 0;position:relative;z-index:1}
 .eyebrow{
-  font-size:11.5px;font-weight:800;letter-spacing:.22em;
-  text-transform:uppercase;color:var(--ac);
-  text-align:center;margin-bottom:14px;
+  font-size:11.5px;font-weight:800;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--mut);
+  text-align:center;margin-bottom:12px;
 }
 h2{
   font-family:'Playfair Display',Georgia,serif;
-  font-size:clamp(34px,5.2vw,64px);
-  line-height:1.06;text-align:center;
-  max-width:840px;margin:0 auto 18px;
+  font-size:clamp(28px,3.3vw,44px);
+  line-height:1.14;text-align:center;
+  max-width:760px;margin:0 auto 16px;
   font-weight:400;
 }
 .section-sub{
   text-align:center;color:var(--mut);
-  max-width:620px;margin:0 auto 60px;
-  font-size:clamp(15px,1.8vw,18px);
+  max-width:600px;margin:0 auto 44px;
+  font-size:clamp(14.5px,1.4vw,16.5px);line-height:1.65;
 }
 
 /* Divider band */
 .band{background:var(--bg2);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 
 /* ═══════════════════════════════════════════
-   BENTO GRID
+   FEATURES — signature cards + capability sheet
 ═══════════════════════════════════════════ */
-.bento{display:grid;grid-template-columns:repeat(6,1fr);gap:18px}
+.bento{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 .card{
   background:var(--card);border:1px solid var(--line);
-  border-radius:28px;padding:30px;
-  transition:transform .45s cubic-bezier(.2,.8,.2,1),border-color .3s,box-shadow .35s;
-  position:relative;overflow:hidden;
-  grid-column:span 2;
+  border-radius:var(--r-lg);padding:var(--sp-4);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7),var(--sh-1);
+  display:flex;flex-direction:column;position:relative;
+  transition:transform .28s cubic-bezier(.22,1,.36,1),border-color .25s,box-shadow .3s;
 }
-.card.w4{grid-column:span 4}
-.card.w3{grid-column:span 3}
-.card::before{
-  content:"";position:absolute;inset:0;
-  background:radial-gradient(420px circle at var(--mx,50%) var(--my,50%),var(--glow),transparent 60%);
-  opacity:0;transition:opacity .4s;pointer-events:none;
-  border-radius:inherit;
-}
-.card:hover{transform:translateY(-7px);border-color:var(--ac);box-shadow:0 28px 68px -20px var(--glow);animation:border-glow 2.4s ease-in-out infinite}
-.card:focus-within{border-color:var(--ac);box-shadow:0 0 0 3px var(--acsoft),0 20px 48px -24px var(--glow)}
-.card:hover::before{opacity:1}
+[data-th="dark"] .card{box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--sh-1)}
+.card:hover{transform:translateY(-2px);border-color:var(--ac);box-shadow:inset 0 1px 0 rgba(255,255,255,.7),var(--sh-hi)}
+[data-th="dark"] .card:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--sh-hi)}
+.card:focus-within{border-color:var(--ac);box-shadow:0 0 0 3px var(--acsoft)}
+.card-head{display:flex;align-items:center;gap:12px;margin-bottom:11px}
 .card-icon{
-  width:50px;height:50px;border-radius:16px;
-  background:var(--bg2);display:grid;place-items:center;
-  font-size:24px;margin-bottom:20px;
-  transition:transform .4s;
+  width:38px;height:38px;border-radius:var(--r-md);flex:none;
+  display:grid;place-items:center;background:var(--bg2);
+  border:1px solid var(--line);color:var(--ink2);
+  transition:color .25s,background .25s,border-color .25s;
 }
-.card:hover .card-icon{transform:scale(1.14) rotate(-8deg)}
-.card h3{font-size:18px;margin-bottom:8px;font-weight:700;line-height:1.3}
-.card p{font-size:14px;color:var(--mut);line-height:1.6}
-.mini{margin-top:22px;display:grid;gap:8px;font-size:12px}
-.mini div{padding:9px 13px;border-radius:12px;background:var(--bg2);color:var(--mut)}
-.mini .user-msg{background:var(--ac);color:#fff;justify-self:end}
-.mini .add-line{font:11px 'JetBrains Mono',monospace;background:rgba(34,197,94,.12);color:#15803d}
-.mini .del-line{font:11px 'JetBrains Mono',monospace;background:rgba(244,63,94,.1);color:#be123c}
-[data-th="dark"] .mini .add-line{color:#86efac}
-[data-th="dark"] .mini .del-line{color:#fda4af}
+.card-icon svg{width:19px;height:19px;display:block}
+.card:hover .card-icon{background:var(--acsoft);border-color:transparent;color:var(--ac)}
+.card h3{font-size:16px;font-weight:650;line-height:1.3;letter-spacing:-.011em}
+.card p{font-size:13.5px;color:var(--mut);line-height:1.6}
+
+/* in-card product demo */
+.demo{margin-top:auto;padding-top:var(--sp-3);display:grid;gap:4px;
+  font:11px/1.45 'JetBrains Mono',ui-monospace,monospace;color:var(--mut)}
+.d-row{display:flex;align-items:center;gap:8px;padding:5px 9px;border-radius:var(--r-sm);
+  background:var(--bg2);border:1px solid transparent;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.d-row.sel{border-color:var(--ac);background:var(--acsoft);color:var(--ink)}
+.d-row.del{background:color-mix(in oklab,var(--bad),transparent 90%);color:var(--bad)}
+.d-row.add{background:color-mix(in oklab,var(--ok),transparent 88%);color:var(--ok)}
+.d-sub{padding-left:18px}
+.d-lab{margin-left:auto;color:var(--ac);font-weight:700}
+.d-dot{width:7px;height:7px;border-radius:50%;border:1.5px solid var(--ac);background:var(--card);flex:none}
+.d-dot.on{background:var(--ac)}
+.d-link{width:13px;height:1.5px;background:var(--line);flex:none}
+.d-frame{border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;background:var(--bg2)}
+.d-tb{display:flex;gap:4px;padding:6px 8px;border-bottom:1px solid var(--line)}
+.d-tb i{width:5px;height:5px;border-radius:50%;background:var(--line)}
+.d-canvas{height:42px;padding:8px}
+.d-canvas b{display:block;height:6px;border-radius:3px;background:var(--line);margin-bottom:6px}
+.d-canvas b:nth-child(2){width:62%;background:color-mix(in oklab,var(--ac),transparent 55%)}
+
+/* capability sheet */
+.caps{
+  margin-top:14px;padding:2px var(--sp-4) 8px;
+  border:1px solid var(--line);border-radius:var(--r-lg);background:var(--card);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7),var(--sh-1);
+}
+[data-th="dark"] .caps{box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--sh-1)}
+.cap-group{padding-top:var(--sp-3)}
+.cap-label{display:flex;align-items:center;gap:12px;margin-bottom:1px;
+  font:700 11px/1.6 'Plus Jakarta Sans',sans-serif;letter-spacing:.16em;text-transform:uppercase;color:var(--mut)}
+.cap-label::after{content:"";flex:1;height:1px;background:var(--line)}
+.cap-items{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:28px}
+.cap{display:flex;gap:11px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--line)}
+.cap-items>.cap:nth-child(-n+2){border-top:0}
+.cap svg{width:17px;height:17px;margin-top:3px;color:var(--mut);transition:color .25s}
+.cap:hover svg{color:var(--ac)}
+.cap b{display:block;font-size:14px;font-weight:650;line-height:1.35}
+.cap em{display:block;font-style:normal;font-size:12.5px;color:var(--mut);line-height:1.5;margin-top:2px}
 
 /* ═══════════════════════════════════════════
    HOW IT WORKS STEPS
 ═══════════════════════════════════════════ */
-.steps-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;position:relative}
+.steps-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(24px,3.4vw,44px);position:relative}
 .steps-grid::before{
-  content:"";position:absolute;top:36px;left:16%;right:16%;
-  border-top:2px dashed var(--line);z-index:0;
+  content:"";position:absolute;top:20px;left:17%;right:17%;height:1px;z-index:0;
+  background:linear-gradient(90deg,transparent,var(--line) 22%,var(--ac) 50%,var(--line) 78%,transparent);
 }
 .step-card{text-align:center;position:relative;z-index:1}
 .step-num{
-  font:italic 700 28px 'Playfair Display',serif;
-  width:72px;height:72px;border-radius:50%;
-  background:var(--card);border:1.5px solid var(--line);
+  font:600 15px/1 'Playfair Display',serif;
+  width:40px;height:40px;border-radius:50%;
+  background:var(--card);border:1px solid var(--line);
   display:grid;place-items:center;
-  margin:0 auto 22px;color:var(--ac);
-  box-shadow:0 12px 32px var(--glow);
-  transition:.35s;
+  margin:0 auto 18px;color:var(--ac);
+  box-shadow:0 0 0 7px var(--bg2);
+  transition:border-color .25s,background .25s;
 }
-.step-card:hover .step-num{transform:scale(1.1);border-color:var(--ac);background:var(--acsoft)}
-.step-card h3{font-size:18px;font-weight:700;margin-bottom:8px}
-.step-card p{color:var(--mut);font-size:14px;max-width:280px;margin:auto;line-height:1.6}
+.step-card:hover .step-num{border-color:var(--ac);background:var(--acsoft)}
+.step-card h3{font-size:16px;font-weight:650;margin-bottom:6px}
+.step-card p{color:var(--mut);font-size:13.5px;max-width:300px;margin:auto;line-height:1.6}
 
 /* ═══════════════════════════════════════════
    AGENT TABS
 ═══════════════════════════════════════════ */
-.tabs{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:36px}
+.tabs{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-bottom:28px}
 .tab{
-  padding:10px 24px;border-radius:999px;
-  border:1.5px solid var(--line);background:var(--card);
-  font:600 13px inherit;color:var(--mut);
-  cursor:pointer;transition:.25s;
+  padding:8px 18px;border-radius:10px;
+  border:1px solid var(--line);background:var(--card);
+  font:600 13px 'Plus Jakarta Sans',sans-serif;color:var(--mut);
+  cursor:pointer;transition:color .2s,border-color .2s,background .2s;
 }
 .tab:hover{border-color:var(--ac);color:var(--ac)}
 .tab.active{background:var(--ink);color:var(--bg);border-color:var(--ink)}
-.panel{display:none;animation:panel-in .5s ease}
-.panel.active{display:grid;grid-template-columns:1fr 1fr;gap:52px;align-items:start;
+.panel{display:none}
+.panel.active{
+  display:grid;grid-template-columns:1fr 1fr;gap:36px;align-items:start;
   background:var(--card);border:1px solid var(--line);
-  border-radius:32px;padding:52px;
+  border-radius:var(--r-lg);padding:32px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7),var(--sh-1);
+  animation:panel-in .35s cubic-bezier(.22,1,.36,1);
 }
-@keyframes panel-in{from{opacity:0;transform:translateY(16px)}}
-.panel h3{font:400 36px 'Playfair Display',serif;line-height:1.15;margin-bottom:14px}
-.panel>div>p{color:var(--mut);margin-bottom:20px;font-size:15px;line-height:1.7}
-.panel ul{list-style:none;display:grid;gap:11px;font-size:14px}
+[data-th="dark"] .panel.active{box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--sh-1)}
+@keyframes panel-in{from{opacity:0;transform:translateY(8px)}}
+.panel h3{font:400 26px 'Playfair Display',serif;line-height:1.2;margin-bottom:12px}
+.panel>div>p{color:var(--mut);margin-bottom:18px;font-size:14.5px;line-height:1.65}
+.panel ul{list-style:none;display:grid;gap:9px;font-size:13.5px}
 .panel li::before{content:"✓ ";color:var(--ac);font-weight:800;margin-right:6px}
-.panel-vis{background:var(--bg);border:1px solid var(--line);border-radius:24px;padding:24px;display:grid;gap:12px;font-size:13px}
+.panel-vis{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-md);padding:16px;display:grid;gap:8px;font-size:13px}
 .vis-step{
-  display:flex;align-items:center;gap:13px;
-  padding:13px 16px;background:var(--card);
-  border:1px solid var(--line);border-radius:16px;
-  transition:.3s;
+  display:flex;align-items:center;gap:11px;
+  padding:11px 13px;background:var(--card);
+  border:1px solid var(--line);border-radius:var(--r-sm);
+  transition:border-color .25s,background .25s;
 }
-.panel.active .vis-step{animation:pop-in .5s backwards;animation-delay:calc(var(--n)*.13s)}
-.vis-step:hover{transform:translateX(5px);border-color:var(--ac)}
+.panel.active .vis-step{animation:pop-in .4s backwards cubic-bezier(.22,1,.36,1);animation-delay:calc(var(--n)*.07s)}
+.vis-step:hover{border-color:var(--ac);background:color-mix(in oklab,var(--card),var(--ac) 3%)}
 .vis-icon{
-  font-style:normal;width:28px;height:28px;
-  border-radius:50%;background:linear-gradient(135deg,var(--ac),var(--purple));
-  color:#fff;display:grid;place-items:center;
-  font-size:12px;font-weight:800;flex:none;
+  font-style:normal;width:26px;height:26px;
+  border-radius:8px;background:var(--ink);
+  color:var(--bg);display:grid;place-items:center;
+  font-size:11px;font-weight:800;flex:none;
 }
-.vis-step div b{font-size:14px;display:block}
+.vis-step div b{font-size:13.5px;display:block}
 .vis-step div small{display:block;color:var(--mut);font-size:12px}
 
 /* ═══════════════════════════════════════════
@@ -537,104 +619,98 @@ h2{
   margin-top:32px;gap:12px;
 }
 .flow-node{
-  padding:16px 18px;border-radius:18px;
+  padding:14px 16px;border-radius:var(--r-md);
   background:var(--card);border:1px solid var(--line);
   font-size:12px;font-weight:700;text-align:center;z-index:1;
 }
-.flow-node small{display:block;color:var(--mut);font-weight:400;font-size:11px;margin-top:2px}
+.flow-node small{display:block;color:var(--mut);font-weight:400;font-size:12px;margin-top:2px}
+.flow-node svg{width:18px;height:18px;margin:0 auto 6px;color:var(--ac)}
 .flow-line{
-  flex:1;height:2px;
-  background:repeating-linear-gradient(90deg,var(--ac) 0 7px,transparent 7px 14px);
+  flex:1;height:1px;align-self:center;
+  background:linear-gradient(90deg,transparent,var(--ac) 25%,var(--ac) 75%,transparent);
   position:relative;
 }
-.flow-dot{
-  position:absolute;top:-5px;width:12px;height:12px;
-  border-radius:50%;background:var(--ac);
-  box-shadow:0 0 14px var(--ac);
-  animation:flow-travel 2.8s linear infinite;
+.flow-line::after{
+  content:"";position:absolute;right:-1px;top:-3px;width:7px;height:7px;
+  border-top:1.5px solid var(--ac);border-right:1.5px solid var(--ac);transform:rotate(45deg);
 }
-@keyframes flow-travel{from{left:0}to{left:calc(100% - 12px)}}
-.privacy-list{display:grid;gap:16px}
+.privacy-list{display:grid;gap:12px}
 .privacy-item{
-  display:flex;gap:18px;align-items:flex-start;
+  display:flex;gap:16px;align-items:flex-start;
   background:var(--card);border:1px solid var(--line);
-  border-radius:20px;padding:20px 22px;
-  transition:.3s;
+  border-radius:var(--r-lg);padding:18px 20px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7),var(--sh-1);
+  transition:background .25s,border-color .25s;
 }
-.privacy-item:hover{transform:translateX(7px);border-color:var(--ac);box-shadow:4px 0 20px var(--glow)}
+[data-th="dark"] .privacy-item{box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--sh-1)}
+.privacy-item:hover{border-color:var(--ac);background:color-mix(in oklab,var(--card),var(--ac) 3%)}
 .pi-num{
-  font-style:normal;width:40px;height:40px;border-radius:50%;
-  display:grid;place-items:center;font-weight:800;
-  flex:none;background:var(--acsoft);color:var(--ac);
-  font-size:14px;
+  font-style:normal;width:34px;height:34px;border-radius:var(--r-md);
+  display:grid;place-items:center;font-weight:700;
+  flex:none;background:var(--bg2);border:1px solid var(--line);color:var(--ac);
+  font-size:13px;transition:.25s;
 }
-.pi-num{flex-shrink:0}
-.privacy-item h4{font-size:14px;font-weight:700;margin-bottom:3px}
-.privacy-item p{font-size:13px;color:var(--mut)}
+.privacy-item:hover .pi-num{background:var(--acsoft);border-color:transparent}
+.pi-num svg{width:17px;height:17px}
+.privacy-item h3{font-size:14.5px;font-weight:650;margin-bottom:3px}
+.privacy-item p{font-size:13px;color:var(--mut);line-height:1.55}
 
 /* ═══════════════════════════════════════════
    BETA CARD
 ═══════════════════════════════════════════ */
 .beta-card{
-  background:linear-gradient(135deg,var(--bg2),var(--bg3));
-  border:1px solid var(--line);border-radius:32px;
-  padding:52px;display:grid;grid-template-columns:1fr 1fr;gap:40px;
+  background:var(--card);
+  border:1px solid var(--line);border-radius:var(--r-lg);
+  padding:36px;display:grid;grid-template-columns:1fr 1fr;gap:36px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7),var(--sh-1);
 }
-[data-th="dark"] .beta-card{
-  background:linear-gradient(135deg,#1a1520,#120f18);
-  border-color:#2a2436;
-}
-.beta-card h3{font:400 34px 'Playfair Display',serif;margin-bottom:12px;line-height:1.2}
+[data-th="dark"] .beta-card{box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--sh-1)}
+.beta-card h2,.beta-card h3{font:400 26px 'Playfair Display',serif;margin-bottom:12px;line-height:1.25}
 .beta-card>div>p{font-size:14px;color:var(--mut);line-height:1.7}
-.beta-card ul{list-style:none;display:grid;gap:12px;margin-top:16px}
-.beta-card li{font-size:14px;display:flex;align-items:flex-start;gap:10px;color:var(--mut)}
-.beta-card li::before{content:"→";color:var(--ac);font-weight:800;flex-shrink:0;margin-top:1px}
+.beta-card ul{list-style:none;display:grid;gap:10px;margin-top:14px}
+.beta-card li{font-size:13.5px;display:flex;align-items:flex-start;gap:10px;color:var(--mut);line-height:1.55}
+.beta-card li::before{content:"→";color:var(--ac);font-weight:700;flex-shrink:0;margin-top:1px}
 
 /* ═══════════════════════════════════════════
    FAQ
 ═══════════════════════════════════════════ */
 .faq-item{
   background:var(--card);border:1px solid var(--line);
-  border-radius:20px;padding:22px 28px;
-  margin:0 auto 12px;max-width:800px;
-  transition:.3s;cursor:pointer;
+  border-radius:var(--r-md);padding:16px 20px;
+  margin:0 auto 10px;max-width:800px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7),var(--sh-1);
+  transition:border-color .25s,background .25s;cursor:pointer;
 }
+[data-th="dark"] .faq-item{box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--sh-1)}
 .faq-item[open]{border-color:var(--ac)}
 .faq-item summary{
-  cursor:pointer;font-weight:700;font-size:15px;
-  list-style:none;display:flex;justify-content:space-between;align-items:center;
+  cursor:pointer;font-weight:650;font-size:14.5px;
+  list-style:none;display:flex;justify-content:space-between;align-items:center;gap:16px;
   user-select:none;
 }
-.faq-item summary::after{content:"+";color:var(--ac);font-size:24px;line-height:1;transition:transform .3s;font-weight:300}
+.faq-item summary::after{content:"+";color:var(--ac);font-size:20px;line-height:1;transition:transform .25s cubic-bezier(.22,1,.36,1);font-weight:300}
 .faq-item[open] summary::after{transform:rotate(45deg)}
-.faq-item p{margin-top:14px;color:var(--mut);font-size:14px;line-height:1.75}
+.faq-item::details-content{opacity:0;transition:content-visibility .3s allow-discrete,opacity .28s,block-size .3s}
+.faq-item[open]::details-content{opacity:1}
+.faq-item p{margin-top:12px;color:var(--mut);font-size:13.5px;line-height:1.7}
 
 /* ═══════════════════════════════════════════
    FINAL CTA
 ═══════════════════════════════════════════ */
 .final-cta{
-  text-align:center;
-  background:linear-gradient(160deg,#3a1fa8,#6d4aff 55%,#c084fc);
-  color:#fff;border-radius:44px;padding:100px 28px;
-  position:relative;overflow:hidden;
+  text-align:center;color:var(--on-slab);border-radius:var(--r-lg);padding:clamp(56px,7vw,88px) 28px;
+  background:radial-gradient(120% 90% at 50% 0,color-mix(in oklab,var(--slab),var(--ac) 22%),var(--slab));
+  border:1px solid color-mix(in oklab,var(--slab),var(--on-slab) 16%);
+  box-shadow:0 40px 80px -50px var(--shadow);
+  position:relative;
 }
-[data-th="light"] .final-cta{
-  background:linear-gradient(160deg,#c0392b,#8e1a10 40%,#6d4aff);
-}
-.final-cta::before,.final-cta::after{
-  content:"";position:absolute;border-radius:50%;
-  background:rgba(255,255,255,.12);filter:blur(70px);
-  animation:orb-float 12s ease-in-out infinite alternate;
-  pointer-events:none;
-}
-.final-cta::before{width:500px;height:500px;left:-120px;top:-200px}
-.final-cta::after{width:400px;height:400px;right:-80px;bottom:-150px;animation-delay:-6s}
-.final-cta h2{color:#fff;position:relative;margin-bottom:18px;font-size:clamp(32px,5vw,64px)}
-.final-cta p{opacity:.9;max-width:540px;margin:0 auto 36px;position:relative;font-size:17px}
-.final-cta em{color:#fde68a;font-style:italic}
-.final-cta .btn-primary{background:#fff;color:#4c2fd6;box-shadow:0 16px 48px rgba(0,0,0,.25)}
-.final-cta .btn-primary:hover{box-shadow:0 24px 60px rgba(0,0,0,.3)}
-.final-who{margin-top:28px;font-size:13px;opacity:.85;position:relative}
+.final-cta h2{color:var(--on-slab);position:relative;margin-bottom:16px;font-size:clamp(28px,3.6vw,44px)}
+.final-cta p,.final-cta .final-note{color:color-mix(in oklab,var(--on-slab),var(--slab) 20%);max-width:540px;margin:0 auto 30px;position:relative;font-size:16px}
+.final-cta .final-note{font-size:12.5px;color:color-mix(in oklab,var(--on-slab),var(--slab) 34%);margin-top:14px;margin-bottom:0}
+.final-cta em{color:var(--ac2);font-style:italic}
+.final-cta .btn-primary{background:var(--on-slab);color:var(--slab);box-shadow:none}
+.final-cta .btn-primary:hover{transform:translateY(-1px);box-shadow:0 10px 24px -10px rgba(0,0,0,.4)}
+.final-who{margin-top:24px;font-size:13px;color:color-mix(in oklab,var(--on-slab),var(--slab) 30%);position:relative}
 
 /* ═══════════════════════════════════════════
    FOOTER
@@ -646,13 +722,13 @@ footer{
 }
 .footer-grid{display:grid;grid-template-columns:minmax(260px,1.5fr) repeat(3,minmax(120px,1fr));gap:36px}
 .footer-brand p{font-size:13px;color:var(--mut);max-width:300px;margin:14px 0 18px;line-height:1.7}
-.footer-col h5{
-  font-size:11px;letter-spacing:.18em;text-transform:uppercase;
+.footer-col h4{
+  font-size:12px;letter-spacing:.18em;text-transform:uppercase;
   margin-bottom:16px;font-weight:800;color:var(--ink);
 }
 .footer-col a{
   display:block;font-size:13px;color:var(--mut);
-  padding:6px 0;transition:color .2s,transform .25s;
+  padding:9px 0;transition:color .2s,transform .25s;
 }
 .footer-col a:hover{color:var(--ac);transform:translateX(4px)}
 .soc-links{display:flex;gap:8px}
@@ -669,10 +745,6 @@ footer{
   font-size:12px;color:var(--mut);
 }
 
-@keyframes border-glow{
-  0%,100%{border-color:var(--line);box-shadow:0 0 0 0 transparent}
-  50%{border-color:color-mix(in srgb,var(--ac) 55%,var(--line));box-shadow:0 0 0 3px var(--acsoft)}
-}
 @keyframes footer-rise{
   from{opacity:0;transform:translateY(18px)}
   to{opacity:1;transform:none}
@@ -690,23 +762,25 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
    BACK TO TOP
 ═══════════════════════════════════════════ */
 #top-btn{
-  position:fixed;right:24px;bottom:24px;
-  width:48px;height:48px;border-radius:50%;border:0;
-  background:linear-gradient(135deg,var(--ac),var(--purple));
-  color:#fff;font-size:20px;cursor:pointer;
-  box-shadow:0 10px 32px var(--glow);
-  opacity:0;transform:translateY(24px);
-  transition:.35s cubic-bezier(.2,.8,.2,1);z-index:90;
+  position:fixed;right:22px;bottom:22px;
+  width:44px;height:44px;border-radius:50%;
+  border:1px solid var(--line);
+  background:var(--card);
+  color:var(--ink);font-size:17px;cursor:pointer;
+  box-shadow:0 8px 22px -8px var(--shadow);
+  opacity:0;transform:translateY(18px);
+  transition:.3s cubic-bezier(.22,1,.36,1);z-index:90;
 }
 #top-btn.visible{opacity:1;transform:none}
-#top-btn:hover{transform:translateY(-4px) scale(1.06)}
+#top-btn:hover{border-color:var(--ac);color:var(--ac);transform:translateY(-2px)}
+@media(max-width:600px){#top-btn{right:14px;bottom:84px;width:40px;height:40px}}
 
 /* ═══════════════════════════════════════════
    SCROLL REVEAL
 ═══════════════════════════════════════════ */
 [data-reveal]{
-  opacity:0;transform:translateY(36px);
-  transition:opacity .9s cubic-bezier(.2,.8,.2,1),transform .9s cubic-bezier(.2,.8,.2,1);
+  opacity:0;transform:translateY(14px);
+  transition:opacity .6s cubic-bezier(.22,1,.36,1),transform .6s cubic-bezier(.22,1,.36,1);
 }
 [data-reveal].visible{opacity:1;transform:none}
 
@@ -714,7 +788,7 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
    RESPONSIVE
 ═══════════════════════════════════════════ */
 @media(max-width:960px){
-  .nav-links,.gh-btn,.nav-right .btn{display:none}
+  .nav-links,.gh-btn{display:none}
   #menu-btn{display:grid}
   .nav-links.open{
     display:flex;position:absolute;top:68px;left:0;right:0;
@@ -722,35 +796,116 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
     padding:18px 28px;border-bottom:1px solid var(--line);
     z-index:99;
   }
-  .nav-links.open .dd{display:none}
-  .bento{grid-template-columns:1fr 1fr}
-  .card,.card.w4,.card.w3{grid-column:span 1}
-  .win-cols{grid-template-columns:1fr}
-  .win-side,.win-chat,.float-chip{display:none}
+  .nav-links.open .dd{
+    display:flex;position:static;opacity:1;visibility:visible;transform:none;
+    width:auto;padding:0;border:0;box-shadow:none;background:transparent;pointer-events:auto;
+  }
+  .nav-links.open .dd-icon{display:none}
+  .nav-links.open .dd a{padding:8px 14px}
+  .win-tabs{display:flex}
+  .win-side{display:none}
+  .win-cols{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(250px,auto) auto;grid-template-areas:"code" "term"}
+  .win-code,.win-chat,.win-preview{display:none}
+  .win-code.is-active,.win-preview.is-active{display:block}
+  .win-chat.is-active,.win-preview.is-active{display:flex}
+  .win-code.is-active{grid-area:code}
+  .win-chat.is-active{grid-area:code}
+  .win-preview.is-active{grid-area:code}
+  .code-line{clip-path:none!important;animation:none!important}
+  .win-chat>*{opacity:1!important;animation:none!important}
   .panel.active,.two-col,.beta-card,.steps-grid{grid-template-columns:1fr;padding:32px;gap:32px}
   .steps-grid::before{display:none}
   .stats{grid-template-columns:1fr 1fr}
+  .stat--lead{grid-column:1/-1}
   .footer-grid{grid-template-columns:1fr 1fr}
   section{padding:80px 0}
   nav .wrap{justify-content:space-between}
   .nav-right{margin-left:auto}
 }
+@media(max-width:760px){
+  .bento{grid-template-columns:1fr}
+  .card p{font-size:13.5px}
+  /* Tighten the vertical rhythm — the hero stack alone was ~1450px tall here. */
+  .stage,.mq-wrap,.stats{margin-top:32px}
+  .mq-wrap p{margin-bottom:10px}
+  .mq-track{gap:6px}
+  .mq-tag{padding:6px 12px;font-size:11.5px;border-radius:9px}
+  .stats{gap:8px}
+  .stat-item{padding:14px 16px}
+  .stat--lead{padding:18px 20px}
+  .stat-num{font-size:34px}
+  .stat--lead .stat-num{font-size:42px}
+  .card{padding:18px}
+  .caps{margin-top:12px;padding:2px 16px 6px}
+  .cap{padding:10px 0}
+  section{padding:60px 0}
+}
 @media(max-width:600px){
   .bento{grid-template-columns:1fr}
+  .cap-items{grid-template-columns:1fr}
+  .cap-items>.cap{border-top:1px solid var(--line)}
+  .cap-items>.cap:first-child{border-top:0}
+  .caps{padding:2px 16px 6px}
   .footer-grid{grid-template-columns:1fr}
   footer{margin-top:64px;padding-top:42px}
   h1{font-size:clamp(38px,10vw,60px)}
+  .stats{grid-template-columns:1fr 1fr}
+  .nav-links.open a{padding:12px 14px}
+  .nav-links.open .dd{flex-direction:column;gap:2px}
+  body{padding-bottom:72px}
+  .m-dl{display:flex}
 }
+
+/* Mobile sticky download bar */
+.m-dl{
+  display:none;position:fixed;left:0;right:0;bottom:0;z-index:95;
+  align-items:center;justify-content:center;gap:10px;
+  padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+  background:var(--nav);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+  border-top:1px solid var(--line);
+}
+.m-dl .btn{width:100%;justify-content:center}
 @media(prefers-reduced-motion:reduce){
   *{animation:none!important;transition:none!important}
   [data-reveal],[data-reveal].visible{opacity:1!important;transform:none!important}
   .card:hover{transform:none}
-  .code-line{max-width:100%!important}
+  .code-line{clip-path:none!important}
   .win-chat>*{opacity:1!important}
 }
 </style>
+<script>
+try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');document.documentElement.dataset.th=t}catch(e){}
+</script>
+<noscript><style>[data-reveal]{opacity:1!important;transform:none!important}</style></noscript>
 </head>
 <body>
+
+<svg style="display:none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.2V18a1.6 1.6 0 0 0 1.6 1.6h14.8A1.6 1.6 0 0 0 21 18V9.4a1.6 1.6 0 0 0-1.6-1.6h-7.2L10 5.6A1.6 1.6 0 0 0 8.8 5H4.6A1.6 1.6 0 0 0 3 6.6Z"/></symbol>
+<symbol id="i-editor" viewBox="0 0 24 24"><path d="M4 5.5h16v13H4ZM12 5.5v13M6.5 9.5h3M6.5 13h3M14.5 9.5h3M14.5 13h2.5"/></symbol>
+<symbol id="i-nav" viewBox="0 0 24 24"><path d="M12 3.2v2.6M12 18.2v2.6M3.2 12h2.6M18.2 12h2.6M12 7.4a4.6 4.6 0 1 0 0 9.2 4.6 4.6 0 0 0 0-9.2ZM12 10.4a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2Z"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 5.8h16v10.4h-7.6L7.6 20v-3.8H4ZM8 9.6h8M8 12.6h5"/></symbol>
+<symbol id="i-command" viewBox="0 0 24 24"><path d="M9.6 9.6h4.8v4.8H9.6ZM9.6 9.6V7A2.5 2.5 0 1 0 7.1 9.5ZM14.4 9.6V7A2.5 2.5 0 1 1 16.9 9.5ZM9.6 14.4V17A2.5 2.5 0 1 1 7.1 14.5ZM14.4 14.4V17a2.5 2.5 0 1 0 2.5-2.5Z"/></symbol>
+<symbol id="i-agent" viewBox="0 0 24 24"><path d="M12 6.4V3.6M6.6 9.4h10.8a1.8 1.8 0 0 1 1.8 1.8v6a1.8 1.8 0 0 1-1.8 1.8H6.6a1.8 1.8 0 0 1-1.8-1.8v-6a1.8 1.8 0 0 1 1.8-1.8ZM9.4 13.4v1.4M14.6 13.4v1.4M3 12.6v2M21 12.6v2"/></symbol>
+<symbol id="i-at" viewBox="0 0 24 24"><path d="M16.2 12a4.2 4.2 0 1 1-4.2-4.2A4.2 4.2 0 0 1 16.2 12v1.8a1.8 1.8 0 0 0 3.6 0V12A7.6 7.6 0 1 0 15.6 18.6"/></symbol>
+<symbol id="i-team" viewBox="0 0 24 24"><path d="M12 3.6a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM5.4 16.2a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM18.6 16.2a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM12 7.6v3M12 10.6H6.6a1.4 1.4 0 0 0-1.4 1.4v2.8M12 10.6h5.4a1.4 1.4 0 0 1 1.4 1.4v2.8"/></symbol>
+<symbol id="i-mcp" viewBox="0 0 24 24"><path d="M9 3.4v4.2M15 3.4v4.2M6.4 7.6h11.2v3.4a5.6 5.6 0 0 1-11.2 0ZM12 16.6v4"/></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.6 12.2S6.2 6.4 12 6.4s9.4 5.8 9.4 5.8S17.8 18 12 18s-9.4-5.8-9.4-5.8ZM12 9.2a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z"/></symbol>
+<symbol id="i-terminal" viewBox="0 0 24 24"><path d="M3.4 5.4h17.2v13.2H3.4ZM6.6 9.6 9.2 12l-2.6 2.4M12.4 15h5"/></symbol>
+<symbol id="i-git" viewBox="0 0 24 24"><path d="M7 3.6a2.2 2.2 0 1 0 0 4.4A2.2 2.2 0 0 0 7 3.6ZM7 16a2.2 2.2 0 1 0 0 4.4A2.2 2.2 0 0 0 7 16ZM17 3.6a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 0 0 0-4.4ZM7 8v8M17 8v2.4a3.4 3.4 0 0 1-3.4 3.4H9.2"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><path d="M10.6 4.4a6.2 6.2 0 1 0 0 12.4 6.2 6.2 0 0 0 0-12.4ZM15.2 15.2 20.4 20.4"/></symbol>
+<symbol id="i-checkpoint" viewBox="0 0 24 24"><path d="M3.6 12a8.4 8.4 0 1 0 2.7-6.2M3.4 4.6v4h4M12 8v4.4l3.2 1.9"/></symbol>
+<symbol id="i-rules" viewBox="0 0 24 24"><path d="M6 3.4h8l4 4v13.2H6ZM14 3.4v4h4M9 12h6M9 15.4h6M9 8.6h2"/></symbol>
+<symbol id="i-github" viewBox="0 0 24 24"><path d="M12 15.4V4M8.6 7.4 12 4l3.4 3.4M4.4 14.6v3.4a2.4 2.4 0 0 0 2.4 2.4h10.4a2.4 2.4 0 0 0 2.4-2.4v-3.4"/></symbol>
+<symbol id="i-plugin" viewBox="0 0 24 24"><path d="M12 9.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6ZM12 3.4v3M12 17.6v3M3.4 12h3M17.6 12h3M5.8 5.8l2.1 2.1M16.1 16.1l2.1 2.1M18.2 5.8l-2.1 2.1M7.9 16.1l-2.1 2.1"/></symbol>
+<symbol id="i-update" viewBox="0 0 24 24"><path d="M12 3.4v11.2M8.6 11.2 12 14.6l3.4-3.4M4 16.4v2.2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2.2"/></symbol>
+<symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13.4 3 5.6 13.6h5.2L10 21l7.8-10.6h-5.2Z"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><path d="M6.4 10.4h11.2V20H6.4ZM8.6 10.4V7.6a3.4 3.4 0 0 1 6.8 0v2.8M12 13.6v2.6"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.4 20 6.4v5.4c0 5-8 8.8-8 8.8S4 16.8 4 11.8V6.4ZM9 11.8l2.2 2.2 4-4.4"/></symbol>
+<symbol id="i-scale" viewBox="0 0 24 24"><path d="M12 3.6v15.8M8 19.4h8M5.4 9.8 12 6.6l6.6 3.2M5.4 9.8 2.9 15a2.9 2.9 0 0 0 5 0ZM18.6 9.8 16.1 15a2.9 2.9 0 0 0 5 0Z"/></symbol>
+<symbol id="i-laptop" viewBox="0 0 24 24"><path d="M5 6.2h14v9.2H5ZM2.8 17.6h18.4M9.6 17.6h4.8"/></symbol>
+<symbol id="i-provider" viewBox="0 0 24 24"><path d="M7 18.6a4.1 4.1 0 0 1-.5-8.2 5.3 5.3 0 0 1 10.1-1.3 3.9 3.9 0 0 1 .5 7.7M12 10.6v6M9.8 14 12 11.8l2.2 2.2"/></symbol>
+</defs></svg>
 
 <!-- Progress bar -->
 <div id="pg"></div>
@@ -761,13 +916,14 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
 <!-- ═══════════════ ANNOUNCEMENT BAR ═══════════════ -->
 <div class="ann" id="ann-bar">
   ✨ ShadRox v0.0.5 · Windows desktop beta
-  <button aria-label="Dismiss" onclick="document.getElementById('ann-bar').remove()">×</button>
+  <a href="https://github.com/iamsouravmourya-jpg/ShadRox/releases">See what's new →</a>
+  <button aria-label="Dismiss announcement" onclick="document.getElementById('ann-bar').remove()">×</button>
 </div>
 
 <!-- ═══════════════ NAVIGATION ═══════════════ -->
 <nav id="main-nav">
   <div class="wrap">
-    <a href="#top" class="logo">
+    <a href="#" class="logo" aria-label="ShadRox — back to top">
       <svg class="logo-icon" viewBox="0 0 32 32" fill="none" aria-hidden="true">
         <path d="M6 7L16 3L26 7V16C26 22.5 16 29 16 29C16 29 6 22.5 6 16V7Z" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
         <path d="M20 11H13.5C12.1193 11 11 12.1193 11 13.5C11 14.8807 12.1193 16 13.5 16H18.5C19.8807 16 21 17.1193 21 18.5C21 19.8807 19.8807 21 18.5 21H11" stroke="#10b981" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -779,115 +935,124 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
 
     <ul class="nav-links" id="nav-links">
       <li>
-        <button>Product ▾</button>
+        <button aria-expanded="false" aria-haspopup="true">Product<span class="dd-caret" aria-hidden="true"> ▾</span></button>
         <div class="dd">
-          <a href="#features"><span class="dd-icon">⚡</span><span><b>Features</b><small>Editor, AI, preview, Git, terminal</small></span></a>
-          <a href="#agent"><span class="dd-icon">🤖</span><span><b>AI Agent</b><small>Bounded, reviewable tool loop</small></span></a>
-          <a href="#privacy"><span class="dd-icon">🔐</span><span><b>Privacy</b><small>Local-first and BYOK</small></span></a>
-          <a href="#how"><span class="dd-icon">🚀</span><span><b>How it works</b><small>Folder to commit in 3 steps</small></span></a>
+          <a href="#features"><span class="dd-icon" aria-hidden="true"><svg class="i"><use href="#i-bolt"/></svg></span><span><b>Features</b><small>Editor, AI, preview, Git, terminal</small></span></a>
+          <a href="#agent"><span class="dd-icon" aria-hidden="true"><svg class="i"><use href="#i-agent"/></svg></span><span><b>AI Agent</b><small>Bounded, reviewable tool loop</small></span></a>
+          <a href="#privacy"><span class="dd-icon" aria-hidden="true"><svg class="i"><use href="#i-lock"/></svg></span><span><b>Privacy</b><small>Local-first and BYOK</small></span></a>
+          <a href="#why"><span class="dd-icon" aria-hidden="true"><svg class="i"><use href="#i-scale"/></svg></span><span><b>Why not just…</b><small>Aider, Cline, cloud editors</small></span></a>
+          <a href="#how"><span class="dd-icon" aria-hidden="true"><svg class="i"><use href="#i-update"/></svg></span><span><b>How it works</b><small>Folder to commit in 3 steps</small></span></a>
         </div>
       </li>
       <li><a href="#agent">Agent</a></li>
       <li><a href="#privacy">Privacy</a></li>
-      <li><a href="#faq">FAQ</a></li>
       <li><a href="#beta">Download</a></li>
     </ul>
 
     <div class="nav-right">
-      <button class="icon-btn" id="th-btn" aria-label="Toggle theme">☾</button>
-      <a class="btn btn-primary btn-sm" href="https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.5-Setup.exe">⬇ Download</a>
-      <button class="icon-btn" id="menu-btn" aria-label="Menu">☰</button>
+      <button class="icon-btn" id="th-btn" aria-label="Toggle theme" aria-pressed="false">☾</button>
+      <a class="btn btn-primary btn-sm nav-dl" href="https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.5-Setup.exe"><svg class="i" aria-hidden="true"><use href="#i-update"/></svg>Download</a>
+      <button class="icon-btn" id="menu-btn" aria-label="Open menu" aria-expanded="false" aria-controls="nav-links">☰</button>
     </div>
   </div>
 </nav>
 
 <!-- ═══════════════ HERO ═══════════════ -->
-<header class="hero">
-  <div class="hero-orb orb1"></div>
-  <div class="hero-orb orb2"></div>
-  <div class="hero-orb orb3"></div>
-
+<header class="hero" id="top">
   <div class="wrap">
     <div class="pill visible" data-reveal>
       <span class="pill-dot"></span>
-      Beta v0.0.5 · <span id="rot">Editor</span>
+      Beta v0.0.5 · Windows 10 / 11 x64
     </div>
 
     <h1 class="visible" data-reveal>
-      Your project, code, AI &amp; preview —<br>
-      <span class="gt">in one workspace.</span>
+      Your project, your code, your AI —<br>
+      <span class="gt">one desktop workspace.</span>
     </h1>
 
     <p class="hero-lead visible" data-reveal>
-      A native desktop workspace for your local projects, with a code editor,
-      Markdown preview, BYOK AI chat, live project preview, Git tools and an
-      integrated terminal. Your files stay on your computer; only the prompt
-      and context you choose are sent to your AI provider.
+      ShadRox brings a focused code editor, AI chat that runs on your own key,
+      live project preview, Git tools and a real terminal into one native
+      Windows app. Your files stay on your computer; only the prompt and
+      context you choose are sent to your AI provider.
     </p>
 
     <div class="hero-cta visible" data-reveal>
       <a class="btn btn-primary" href="https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.5-Setup.exe">
-        ⬇ Download for Windows
+        <svg class="i" aria-hidden="true"><use href="#i-update"/></svg>Download for Windows
       </a>
-      <a class="btn btn-ghost" href="#features">
-        Explore features →
+      <a class="btn btn-ghost" href="#how">
+        See how it works →
       </a>
     </div>
-    <p class="hero-meta visible" data-reveal>Windows 10 / 11 · 64-bit · Bring your own key · Auto-updates</p>
+    <p class="hero-meta visible" data-reveal>Windows 10 / 11 · 64-bit · Google sign-in at first launch · Bring your own AI key · Auto-updates</p>
 
     <!-- Code Window Stage -->
     <div class="stage visible" data-reveal>
-      <div class="float-chip fc1">⌘K &nbsp;Inline AI edit</div>
-      <div class="float-chip fc2">🔀 Git built in</div>
-      <div class="float-chip fc3">👁️ Live preview</div>
+      <div class="float-chip fc1" aria-hidden="true"><svg class="i"><use href="#i-command"/></svg>⌘K inline AI edit</div>
+      <div class="float-chip fc2" aria-hidden="true"><svg class="i"><use href="#i-git"/></svg>Git built in</div>
+      <div class="float-chip fc3" aria-hidden="true"><svg class="i"><use href="#i-eye"/></svg>Live preview</div>
 
       <div class="code-win go-anim" id="code-win">
         <div class="win-bar">
-          <span class="win-dot"></span>
-          <span class="win-dot"></span>
-          <span class="win-dot"></span>
-          <span>ShadRox — my-project</span>
+          <span class="win-title" aria-hidden="true">ShadRox — my-project</span>
+          <span class="win-cap" aria-hidden="true"><i>—</i><i>□</i><i class="x">×</i></span>
+        </div>
+        <div class="win-tabs" role="tablist" aria-label="Workspace panes">
+          <button role="tab" aria-selected="true" data-pane="code">Editor</button>
+          <button role="tab" aria-selected="false" data-pane="chat">AI chat</button>
+          <button role="tab" aria-selected="false" data-pane="pv">Preview</button>
         </div>
         <div class="win-cols">
-          <div class="win-side">
+          <div class="win-side" aria-hidden="true">
             <b>EXPLORER</b>
-            <div>▾ src</div>
-            <div class="active">&nbsp;&nbsp;App.tsx</div>
-            <div>&nbsp;&nbsp;Preview.tsx</div>
-            <div>&nbsp;&nbsp;api.ts</div>
-            <div>▸ public</div>
-            <div>package.json</div>
+            <div>▾ src/</div>
+            <div class="active">&nbsp;&nbsp;App.tsx ●</div>
+            <div>&nbsp;&nbsp;PreviewPane.tsx ●</div>
+            <div>&nbsp;&nbsp;api/auth.ts</div>
+            <div>SHADROX.md</div>
           </div>
-          <div class="win-code">
-            <div class="code-line" style="--i:0"><span class="cln">1</span><span class="ck">import</span> { useState } <span class="ck">from</span> <span class="cs">"react"</span></div>
-            <div class="code-line" style="--i:1"><span class="cln">2</span></div>
-            <div class="code-line" style="--i:2"><span class="cln">3</span><span class="ck">export function</span> <span class="cf">App</span>() {</div>
-            <div class="code-line" style="--i:3"><span class="cln">4</span>  <span class="ck">const</span> [ready, setReady] = <span class="cf">useState</span>(<span class="cn">false</span>)</div>
-            <div class="code-line" style="--i:4"><span class="cln">5</span>  <span class="cc">// ⌘K — edit this with AI, right here</span></div>
-            <div class="code-line" style="--i:5"><span class="cln">6</span>  <span class="ck">return</span> (</div>
-            <div class="code-line" style="--i:6"><span class="cln">7</span>    &lt;<span class="cf">Workspace</span> mode=<span class="cs">"focus"</span> ready={ready} /&gt;</div>
-            <div class="code-line" style="--i:7"><span class="cln">8</span>  )</div>
-            <div class="code-line" style="--i:8"><span class="cln">9</span>}</div>
+          <div class="win-code is-active" data-pane-id="code">
+            <div class="code-line" style="--i:0"><span class="cln">1</span><span class="cc">// src/App.tsx</span></div>
+            <div class="code-line" style="--i:1"><span class="cln">2</span><span class="ck">import</span> { useWorkspace } <span class="ck">from</span> <span class="cs">"./useWorkspace"</span></div>
+            <div class="code-line" style="--i:2"><span class="cln">3</span></div>
+            <div class="code-line" style="--i:3"><span class="cln">4</span><span class="ck">export function</span> <span class="cf">App</span>() {</div>
+            <div class="code-line" style="--i:4"><span class="cln">5</span>  <span class="ck">const</span> { ready } = <span class="cf">useWorkspace</span>()</div>
+            <div class="code-line" style="--i:5"><span class="cln">6</span>  <span class="cc">// ⌘K on a selection → inline AI edit</span></div>
+            <div class="code-line" style="--i:6"><span class="cln">7</span>  <span class="ck">return</span> &lt;<span class="cf">Workspace</span> ready={ready} /&gt;</div>
+            <div class="code-line" style="--i:7"><span class="cln">8</span>}</div>
           </div>
-          <div class="win-chat">
-            <div class="chat-msg user" style="--d:3.5s">Add a loading state to App</div>
-            <div class="chat-msg" style="--d:4.8s">Reading App.tsx<span class="typing"></span></div>
-            <div class="diff-block" style="--d:6.8s">
-              <div class="del">- ready={ready}</div>
-              <div class="add">+ ready={ready}</div>
-              <div class="add">+ loading={!ready}</div>
+          <div class="win-chat" data-pane-id="chat">
+            <div class="chat-msg user" style="--d:2.6s">@App.tsx add a loading state</div>
+            <div class="chat-msg" style="--d:3.4s">Reading 2 files · round 3/12<span class="typing"></span></div>
+            <div class="diff-block" style="--d:4.6s">
+              <div class="del">-   return &lt;Workspace ready={ready} /&gt;</div>
+              <div class="add">+   if (!ready) return &lt;Skeleton /&gt;</div>
+              <div class="add">+   return &lt;Workspace ready={ready} /&gt;</div>
               <div class="diff-actions">
                 <span class="ok">✓ Accept</span>
                 <span>Reject</span>
+                <span>2 files · agent</span>
               </div>
             </div>
           </div>
+          <div class="win-preview" data-pane-id="pv">
+            <b>PREVIEW</b>
+            <div class="pv-frame">
+              <i class="hl"></i><i></i><i></i><i class="btnish"></i>
+            </div>
+            <span class="pv-tag">localhost:5173 · click-to-source</span>
+          </div>
+          <div class="win-term" aria-hidden="true">
+            <div><i>PS D:\dev\my-project&gt;</i> npm run dev</div>
+            <div><b>VITE</b> ready in 412 ms · localhost:5173</div>
+          </div>
         </div>
         <div class="win-status">
-          <span>⎇ main</span>
-          <span>0 errors</span>
+          <span>⎇ main · 1 modified</span>
+          <span>0 errors 0 warnings</span>
           <span>TypeScript</span>
-          <span>Preview :5173</span>
+          <span>Gemini · BYOK</span>
         </div>
       </div>
     </div>
@@ -900,21 +1065,21 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
 
     <!-- Stats -->
     <div class="stats visible" data-reveal>
-      <div class="stat-item">
+      <div class="stat-item stat--lead">
         <b class="stat-num" data-count="0">0</b>
-        <span class="stat-label">project files synced to cloud</span>
+        <span class="stat-label">project files kept in cloud storage — the app opens the folder on your disk</span>
       </div>
       <div class="stat-item">
         <b class="stat-num" data-count="3">0</b>
-        <span class="stat-label">AI provider types supported</span>
+        <span class="stat-label">AI provider types: Gemini, Groq, OpenAI-compatible</span>
       </div>
       <div class="stat-item">
         <b class="stat-num" data-count="5">0</b>
-        <span class="stat-label">agent team roles</span>
+        <span class="stat-label">agent roles in a multi-step team run</span>
       </div>
       <div class="stat-item">
-        <b class="stat-num" data-count="17">0</b>
-        <span class="stat-label">core features in one window</span>
+        <b class="stat-num" data-count="18">0</b>
+        <span class="stat-label">tools wired into one window</span>
       </div>
     </div>
   </div>
@@ -924,9 +1089,10 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
 <section id="features">
   <div class="wrap">
     <p class="eyebrow" data-reveal>Everything in one place</p>
-    <h2 class="serif" data-reveal>Stop switching windows.<br><em>Start shipping.</em></h2>
-    <p class="section-sub" data-reveal>Open a local folder, explore and edit files, review AI-proposed changes, then preview and run your project without leaving the workspace.</p>
+    <h2 class="serif" data-reveal>Stop switching windows.<br><em>Keep every tool in one app.</em></h2>
+    <p class="section-sub" data-reveal>Four things ShadRox does end to end — and the rest of the workspace, listed.</p>
     <div class="bento" id="bento-grid"></div>
+    <div class="caps" id="cap-grid"></div>
   </div>
 </section>
 
@@ -945,7 +1111,7 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
       <div class="step-card" data-reveal>
         <div class="step-num">2</div>
         <h3>Ask, then review</h3>
-        <p>Chat, press Ctrl+K or run an agent. Every proposed change shows up as a diff first — nothing is silently written.</p>
+        <p>Chat, press Ctrl+K or run an agent. Every proposed change shows up as a diff first — you accept or reject.</p>
       </div>
       <div class="step-card" data-reveal>
         <div class="step-num">3</div>
@@ -953,6 +1119,9 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
         <p>Preview it live, test in the terminal, and commit with an AI-written message right inside the app.</p>
       </div>
     </div>
+    <p style="text-align:center;margin-top:48px" data-reveal>
+      <a class="btn btn-ghost" href="https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.5-Setup.exe"><svg class="i" aria-hidden="true"><use href="#i-update"/></svg>Download for Windows</a>
+    </p>
   </div>
 </section>
 
@@ -961,20 +1130,20 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
   <div class="wrap">
     <p class="eyebrow" data-reveal>The agent</p>
     <h2 class="serif" data-reveal>An AI that <em>shows its work.</em></h2>
-    <p class="section-sub" data-reveal>Bounded, reviewable and honest about its limits. Nothing is written silently.</p>
+    <p class="section-sub" data-reveal>Bounded, reviewable and honest about its limits.</p>
 
-    <div class="tabs" data-reveal>
-      <button class="tab active" data-panel="0">Agent loop</button>
-      <button class="tab" data-panel="1">Autonomous runs</button>
-      <button class="tab" data-panel="2">Agent teams</button>
-      <button class="tab" data-panel="3">MCP &amp; rules</button>
+    <div class="tabs" role="tablist" aria-label="Agent capabilities" data-reveal>
+      <button class="tab active" role="tab" aria-selected="true" data-panel="0">Agent loop</button>
+      <button class="tab" role="tab" aria-selected="false" data-panel="1">Autonomous runs</button>
+      <button class="tab" role="tab" aria-selected="false" data-panel="2">Agent teams</button>
+      <button class="tab" role="tab" aria-selected="false" data-panel="3">MCP &amp; rules</button>
     </div>
 
     <!-- Panel 0 -->
-    <div class="panel active" data-panel-content="0">
+    <div class="panel active" role="tabpanel" aria-label="Agent capabilities 1" data-panel-content="0">
       <div>
         <h3 class="serif">Reads first.<br><em>Then proposes.</em></h3>
-        <p>Multi-round tool use with native provider calls where supported. Requests can include a compact repo map to help the agent understand the project.</p>
+        <p>The agent reads your project — files, search, diagnostics, Git — and proposes changes as diffs you accept or reject. Requests can include a compact repo map so it understands the codebase before touching anything.</p>
         <ul>
           <li>Read-only tools: list, read, search, diagnostics, Git, outlines</li>
           <li>Five tool rounds by default, with up to six calls per round</li>
@@ -991,7 +1160,7 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
     </div>
 
     <!-- Panel 1 -->
-    <div class="panel" data-panel-content="1">
+    <div class="panel" role="tabpanel" aria-label="Agent capabilities 2" data-panel-content="1">
       <div>
         <h3 class="serif">Plan. Patch.<br><em>Verify. Repair.</em></h3>
         <p>Big goals become a task DAG of milestones. Each is verified with diagnostics, and failures get a repair brief. Still beta — review the results.</p>
@@ -1010,7 +1179,7 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
     </div>
 
     <!-- Panel 2 -->
-    <div class="panel" data-panel-content="2">
+    <div class="panel" role="tabpanel" aria-label="Agent capabilities 3" data-panel-content="2">
       <div>
         <h3 class="serif">A small team,<br><em>with boundaries.</em></h3>
         <p>A Coordinator splits the goal and assigns specialists. Each brief carries file ownership so agents stay out of each other's way.</p>
@@ -1029,7 +1198,7 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
     </div>
 
     <!-- Panel 3 -->
-    <div class="panel" data-panel-content="3">
+    <div class="panel" role="tabpanel" aria-label="Agent capabilities 4" data-panel-content="3">
       <div>
         <h3 class="serif">Your tools.<br><em>Your rules.</em></h3>
         <p>Connect Model Context Protocol servers with approval for every external tool call, and teach the agent your conventions once via rule files.</p>
@@ -1049,6 +1218,29 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
   </div>
 </section>
 
+<!-- ═══════════════ WHY NOT THE OTHERS ═══════════════ -->
+<section id="why">
+  <div class="wrap">
+    <p class="eyebrow" data-reveal>Why not just…</p>
+    <h2 class="serif" data-reveal>Aider and Cline are <em>powerful.</em><br>They also need an IDE around them.</h2>
+    <p class="section-sub" data-reveal>Same agent discipline and bring-your-own-key pricing — plus the editor, preview, Git UI and terminal the terminal-based tools leave out.</p>
+    <div class="privacy-list" style="max-width:800px;margin:0 auto" data-reveal>
+      <div class="privacy-item">
+        <span class="pi-num" aria-hidden="true">vs</span>
+        <div><h3>Aider · Cline</h3><p>Strong agents, no workspace. ShadRox adds the editor, live preview, Git tools and terminal around the same bounded, review-and-accept loop.</p></div>
+      </div>
+      <div class="privacy-item">
+        <span class="pi-num" aria-hidden="true">vs</span>
+        <div><h3>Cloud AI editors</h3><p>Requests go from your machine straight to the provider you configure — not through a middleman server. Point it at Ollama or LM Studio and nothing leaves your PC.</p></div>
+      </div>
+      <div class="privacy-item">
+        <span class="pi-num" aria-hidden="true">vs</span>
+        <div><h3>Editor + plugin stacks</h3><p>One native app instead of six extensions. Open a folder and the explorer, chat, preview and shell are already wired together.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ═══════════════ PRIVACY ═══════════════ -->
 <section id="privacy" class="band">
   <div class="wrap two-col">
@@ -1057,27 +1249,27 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
       <h2 class="serif">Local-first.<br><em>By design.</em></h2>
       <p style="color:var(--mut);margin-bottom:8px;font-size:15px">ShadRox edits real files on your disk. Only the prompt and context you choose go to the provider you picked. Your key never touches ShadRox servers.</p>
       <div class="data-flow">
-        <div class="flow-node">💻 Your computer<small>files · key · rules</small></div>
-        <div class="flow-line"><div class="flow-dot"></div></div>
-        <div class="flow-node">🧠 Your provider<small>prompt + context</small></div>
+        <div class="flow-node"><svg class="i" aria-hidden="true"><use href="#i-laptop"/></svg>Your computer<small>files · key · rules</small></div>
+        <div class="flow-line"></div>
+        <div class="flow-node"><svg class="i" aria-hidden="true"><use href="#i-provider"/></svg>Your provider<small>prompt + context</small></div>
       </div>
     </div>
     <div class="privacy-list" data-reveal>
       <div class="privacy-item">
         <span class="pi-num">1</span>
-        <div><h4>🗂️ Files stay on your computer</h4><p>No cloud project sync, ever. Your codebase is yours.</p></div>
+        <div><h3>Files stay on your computer</h3><p>No ShadRox cloud workspace and no project sync. The app opens the folder you pick.</p></div>
       </div>
       <div class="privacy-item">
         <span class="pi-num">2</span>
-        <div><h4>🔐 Keys in OS-backed encrypted storage</h4><p>Sent straight to your provider — not to us.</p></div>
+        <div><h3>Keys in OS-backed encrypted storage</h3><p>Your provider key is sent with the request to the provider you configured — never to ShadRox.</p></div>
       </div>
       <div class="privacy-item">
         <span class="pi-num">3</span>
-        <div><h4>✅ Approval-gated commands</h4><p>Assistant-initiated commands use a credential-scrubbed environment.</p></div>
+        <div><h3>Guarded commands</h3><p>Risky delete-style commands (rm, del, Remove-Item…) hit a deny-list that forces an explicit approval dialog before anything runs.</p></div>
       </div>
       <div class="privacy-item">
         <span class="pi-num">4</span>
-        <div><h4>🧾 Reviewable changes</h4><p>Unsafe patches are held for review. Nothing is silent.</p></div>
+        <div><h3>Reviewable changes</h3><p>Edits arrive as diffs. Unsafe patches are held for review instead of written in place.</p></div>
       </div>
     </div>
   </div>
@@ -1088,17 +1280,22 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
   <div class="wrap">
     <div class="beta-card" data-reveal>
       <div>
-        <h3 class="serif">Beta, and <em>honest</em> about it.</h3>
+        <h2 class="serif">Beta, and <em>honest</em> about it.</h2>
         <p>ShadRox is beta software, not a mature replacement for a general-purpose IDE. Agent output and model-generated edits can be incorrect, so review changes and keep backups for important work.</p>
       </div>
-      <ul>
-        <li>Review every AI diff and keep Git or backups for important work</li>
-        <li>Windows builds are unsigned — SmartScreen may show a warning</li>
-        <li>Google sign-in is required to enter the app</li>
-        <li>Agent, autonomous run, team, plugin, and automation features are evolving</li>
-        <li>Preview support depends on your project and installed runtimes</li>
-        <li>Plan and credit-meter screens are previews; public payments are not enabled</li>
-      </ul>
+      <div>
+        <ul>
+          <li>Review every AI diff and keep Git or backups for important work</li>
+          <li>Google sign-in is required to enter the app</li>
+          <li>Agent, autonomous run, team, plugin, and automation features are evolving</li>
+          <li>Preview support depends on your project and installed runtimes</li>
+          <li>Plan and credit-meter screens are previews; public payments are not enabled</li>
+        </ul>
+        <p style="margin-top:24px">
+          <a class="btn btn-primary btn-sm" href="https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.5-Setup.exe"><svg class="i" aria-hidden="true"><use href="#i-update"/></svg>Download for Windows</a>
+        </p>
+        <p style="margin-top:10px;font-size:12px;color:var(--mut)">Windows shows a SmartScreen warning for unsigned builds — More → Run anyway.</p>
+      </div>
     </div>
   </div>
 </section>
@@ -1110,6 +1307,9 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
     <h2 class="serif" data-reveal>Quick <em>answers.</em></h2>
     <p class="section-sub" data-reveal>Everything you need to know before you download.</p>
     <div id="faq-list"></div>
+    <p style="text-align:center;margin-top:36px" data-reveal>
+      <a class="btn btn-primary" href="https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.5-Setup.exe"><svg class="i" aria-hidden="true"><use href="#i-update"/></svg>Download for Windows</a>
+    </p>
   </div>
 </section>
 
@@ -1120,8 +1320,9 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
       <h2 class="serif">Open a folder.<br><em>Start building.</em></h2>
       <p>Download the Windows beta, add a provider key, and bring your local project workflow into one window.</p>
       <a class="btn btn-primary" href="https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.5-Setup.exe">
-        ⬇ Download for Windows
+        <svg class="i" aria-hidden="true"><use href="#i-update"/></svg>Download for Windows
       </a>
+      <p class="final-note">Free during beta · Google sign-in at first launch · Unsigned build: open SmartScreen's More → Run anyway.</p>
       <div class="final-who">Built by <strong>Sourav Maurya</strong>, a solo developer from Delhi, India 🇮🇳</div>
     </div>
   </div>
@@ -1132,7 +1333,7 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
   <div class="wrap">
     <div class="footer-grid">
       <div class="footer-brand">
-        <a href="#top" class="logo">
+        <a href="#" class="logo" aria-label="ShadRox — back to top">
           <svg class="logo-icon" viewBox="0 0 32 32" fill="none" aria-hidden="true">
             <path d="M6 7L16 3L26 7V16C26 22.5 16 29 16 29C16 29 6 22.5 6 16V7Z" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
             <path d="M20 11H13.5C12.1193 11 11 12.1193 11 13.5C11 14.8807 12.1193 16 13.5 16H18.5C19.8807 16 21 17.1193 21 18.5C21 19.8807 19.8807 21 18.5 21H11" stroke="#10b981" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1149,20 +1350,20 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
         </div>
       </div>
       <div class="footer-col">
-        <h5>Explore</h5>
+        <h4>Explore</h4>
         <a href="#features">Features</a>
         <a href="#agent">AI Agent</a>
         <a href="#how">How it works</a>
         <a href="#privacy">Privacy</a>
       </div>
       <div class="footer-col">
-        <h5>Get ShadRox</h5>
+        <h4>Get ShadRox</h4>
         <a href="https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.5-Setup.exe">Download for Windows</a>
         <a href="https://github.com/iamsouravmourya-jpg/ShadRox/releases">All releases</a>
         <a href="#faq">Frequently asked questions</a>
       </div>
       <div class="footer-col">
-        <h5>About</h5>
+        <h4>About</h4>
         <a href="https://www.shadrox.cyou">shadrox.cyou</a>
         <a href="https://www.linkedin.com/in/sourav-maurya-45b272377">About the maker</a>
         <a href="https://github.com/iamsouravmourya-jpg/ShadRox/issues">Report an issue</a>
@@ -1175,11 +1376,18 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
   </div>
 </footer>
 
+<!-- Mobile sticky download bar -->
+<div class="m-dl">
+  <a class="btn btn-primary btn-sm" href="https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.5-Setup.exe"><svg class="i" aria-hidden="true"><use href="#i-update"/></svg>Download for Windows</a>
+</div>
+
 <!-- Back to top -->
 <button id="top-btn" aria-label="Back to top">↑</button>
 
 <!-- ═══════════════ SCRIPTS ═══════════════ -->
 <script>
+const reducedMotion = matchMedia('(prefers-reduced-motion:reduce)').matches;
+
 /* ── Theme ── */
 const root = document.documentElement;
 const thBtn = document.getElementById('th-btn');
@@ -1188,6 +1396,7 @@ try { theme = localStorage.getItem('shadrox-theme') || (matchMedia('(prefers-col
 const applyTheme = v => {
   root.dataset.th = v;
   thBtn.textContent = v === 'dark' ? '☀' : '☾';
+  thBtn.setAttribute('aria-pressed', String(v === 'dark'));
   try { localStorage.setItem('shadrox-theme', v); } catch(e){}
 };
 applyTheme(theme);
@@ -1201,88 +1410,110 @@ thBtn.onclick = () => {
 const pg = document.getElementById('pg');
 const nav = document.getElementById('main-nav');
 const topBtn = document.getElementById('top-btn');
-window.addEventListener('scroll', () => {
+let scrollQueued = false;
+const onScroll = () => {
   const y = scrollY, h = document.documentElement.scrollHeight - innerHeight;
-  pg.style.width = (y / h * 100) + '%';
+  pg.style.transform = 'scaleX(' + (h > 0 ? y / h : 0) + ')';
   nav.classList.toggle('scrolled', y > 10);
   topBtn.classList.toggle('visible', y > 700);
+  scrollQueued = false;
+};
+window.addEventListener('scroll', () => {
+  if (!scrollQueued) { scrollQueued = true; requestAnimationFrame(onScroll); }
 }, { passive: true });
+onScroll();
 topBtn.onclick = () => scrollTo({ top: 0, behavior: 'smooth' });
 
 /* ── Mobile menu ── */
 const menuBtn = document.getElementById('menu-btn');
 const navLinks = document.getElementById('nav-links');
-menuBtn.onclick = () => navLinks.classList.toggle('open');
-navLinks.querySelectorAll('a').forEach(a => a.onclick = () => navLinks.classList.remove('open'));
-
-/* ── Cursor glow ── */
-const cur = document.getElementById('cur');
-if (matchMedia('(hover:hover) and (min-width:960px)').matches) {
-  window.addEventListener('mousemove', e => {
-    cur.style.left = e.clientX + 'px';
-    cur.style.top = e.clientY + 'px';
-  }, { passive: true });
-} else { cur.style.display = 'none'; }
-
-/* ── Card spotlight effect ── */
-document.addEventListener('mousemove', e => {
-  const c = e.target.closest && e.target.closest('.card');
-  if (c) {
-    const r = c.getBoundingClientRect();
-    c.style.setProperty('--mx', (e.clientX - r.left) + 'px');
-    c.style.setProperty('--my', (e.clientY - r.top) + 'px');
+const setMenu = open => {
+  navLinks.classList.toggle('open', open);
+  menuBtn.setAttribute('aria-expanded', String(open));
+  menuBtn.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+};
+menuBtn.onclick = () => setMenu(!navLinks.classList.contains('open'));
+navLinks.querySelectorAll('a').forEach(a => a.onclick = () => setMenu(false));
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    setMenu(false);
+    document.querySelectorAll('.dd').forEach(d => { d.style.opacity=''; d.style.visibility=''; });
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   }
 });
 
-/* ── Rotating word in hero ── */
-const words = ['Editor', 'AI chat', 'Preview', 'Git', 'Terminal'];
-let wi = 0;
-const rotEl = document.getElementById('rot');
-setInterval(() => {
-  rotEl.style.opacity = '0';
-  setTimeout(() => {
-    rotEl.textContent = words[++wi % words.length];
-    rotEl.style.opacity = '1';
-  }, 300);
-}, 2400);
+/* ── Cursor glow ── */
+const cur = document.getElementById('cur');
+if (matchMedia('(hover:hover) and (min-width:960px)').matches && !reducedMotion) {
+  let tx = innerWidth / 2, ty = innerHeight / 2, cx = tx, cy = ty, glowRaf = 0;
+  addEventListener('mousemove', e => {
+    tx = e.clientX; ty = e.clientY;
+    cur.style.opacity = '1';
+    if (!glowRaf) glowRaf = requestAnimationFrame(stepGlow);
+  }, { passive: true });
+  function stepGlow() {
+    cx += (tx - cx) * .14; cy += (ty - cy) * .14;
+    cur.style.transform = 'translate3d(' + cx + 'px,' + cy + 'px,0)';
+    glowRaf = Math.abs(tx - cx) + Math.abs(ty - cy) > .5 ? requestAnimationFrame(stepGlow) : 0;
+  }
+} else { cur.style.display = 'none'; }
 
-/* ── Bento features ── */
-const features = [
-  ['📁','Project Explorer','Open a local folder or selected files, browse the workspace tree, and create, rename or delete files and folders. Files load as you open them.','w4',''],
-  ['✏️','Editor & Markdown preview','CodeMirror 6 editing, split editor groups, pinned and reorderable tabs, quick open, outline, inline completions, and Markdown source/preview.','',''],
-  ['🔍','Code navigation','TypeScript diagnostics, go-to-definition, find references, rename, quick fixes, semantic highlighting, and workspace symbols where supported.','',''],
-  ['💬','AI chat and queue','Gemini, Groq, or a custom OpenAI-compatible endpoint. Queue follow-ups, dictate prompts, and review proposed changes before applying.','w4',
-   '<div class="mini"><div class="user-msg">Add a loading state</div><div class="del-line">- ready={ready}</div><div class="add-line">+ loading={!ready}</div></div>'],
-  ['⌘','Command palette & quick edit','Fuzzy-find files, symbols, and commands. Select code and press Ctrl+K for an inline AI edit; use ghost-text completions.','',''],
-  ['🤖','Bounded AI agent','Read-only workspace tools inspect files, search, diagnostics, Git, and outlines. Proposed edits use a guarded patch/review/apply flow with turn limits.','w4',''],
-  ['🚀','Multi-step runs & agent teams','Plan larger goals into tasks, verify milestones, and coordinate specialist roles. These beta workflows can make mistakes—review important work.','',''],
-  ['🔌','MCP servers','Connect user-configured Model Context Protocol servers. External tool calls require approval.','',''],
-  ['👁️','Local project preview','Preview Markdown, static sites, detected Node projects, and Python, Go, PHP, Java, or .NET backends. Support depends on the project and installed runtimes.','w4',''],
-  ['📟','Integrated terminal','Interactive shell rooted in the workspace with multiple sessions and split panes. Assistant-initiated commands use a separate approval-gated path.','',''],
-  ['🔀','Source control','Inspect staged and unstaged diffs, stage changes, switch local branches, resolve conflicts, and create AI-assisted commit messages.','w4',
-   '<div class="mini"><div class="add-line">✓ 3 files staged</div><div>feat: add loading state to App</div></div>'],
-  ['🔎','Workspace search & replace','Search files on disk and in buffers, review matching results, and replace selected or matching text.','',''],
-  ['⏮️','Checkpoints','Review assistant checkpoints and restore earlier workspace content.','',''],
-  ['📝','Rules & skills','Load project conventions from SHADROX.md, AGENTS.md, QODER.md, .cursorrules, and .shadrox/rules; keep reusable skills in .shadrox/skills.','w3',''],
-  ['🔗','GitHub integration','Validate a GitHub token and push code from the app. Repository creation is available through the API layer.','',''],
-  ['🔧','Plugins & automations','Use declarative workspace plugins and scheduled or webhook-triggered automations. These features are evolving in beta.','',''],
-  ['🔄','Auto-updates','ShadRox checks for releases and installs downloaded updates when you restart or quit.','w3','']
+/* ── Features: four signature cards + capability sheet ── */
+const icon = id => `<svg class="i" aria-hidden="true"><use href="#${id}"/></svg>`;
+const dExplorer = '<div class="demo"><div class="d-row">▾ src/</div><div class="d-row d-sub">▾ api/</div><div class="d-row d-sub sel">auth.ts</div><div class="d-row">SHADROX.md</div></div>';
+const dDiff = '<div class="demo"><div class="d-row sel">Add a loading state to App</div><div class="d-row del">- ready={ready}</div><div class="d-row add">+ loading={!ready}</div><div class="d-row">Accept · Reject</div></div>';
+const dAgent = '<div class="demo"><div class="d-row sel">1 · list dir, read 4 files<span class="d-lab">read-only</span></div><div class="d-row">2 · search "ready" · diagnostics</div><div class="d-row">3 · patch → held for review</div><div class="d-row">round cap 12 · repo map attached</div></div>';
+const dPreview = '<div class="demo"><div class="d-frame"><div class="d-tb"><i></i><i></i><i></i></div><div class="d-canvas"><b></b><b></b></div></div><div class="d-row sel">click element → App.tsx:41</div></div>';
+
+const signature = [
+  ['i-folder','Project Explorer','Open a local folder or selected files, browse the workspace tree, and create, rename or delete them. Files load from your disk.','',dExplorer],
+  ['i-chat','AI chat you review','Gemini, Groq or a custom OpenAI-compatible endpoint. Queue follow-ups, and every proposed change arrives as a diff you accept or reject.','',dDiff],
+  ['i-agent','Bounded agent','Read-only inspection tools, a fixed cap on tool rounds, and patches held for review — it never edits files behind your back.','',dAgent],
+  ['i-eye','Local preview','Markdown, static sites and detected Node, Python, Go, PHP, Java or .NET backends. Click an element to jump to the code that renders it.','',dPreview]
 ];
-document.getElementById('bento-grid').innerHTML = features.map(f =>
-  `<div class="card ${f[3]}" data-reveal>
-    <div class="card-icon">${f[0]}</div>
-    <h3>${f[1]}</h3>
-    <p>${f[2]}</p>
-    ${f[4]}
+const caps = [
+  ['Edit',[
+    ['i-editor','Editor & Markdown','CodeMirror 6, split groups, pinned and reorderable tabs.'],
+    ['i-nav','Code navigation','TypeScript diagnostics, go-to-definition, find references.'],
+    ['i-command','Command palette · Ctrl+K','Fuzzy-find files and commands; AI edit on a selection.'],
+    ['i-search','Search & replace','Across files and open buffers, results reviewed first.']
+  ]],
+  ['AI',[
+    ['i-at','@-mention context','@api/auth.ts, @folder, @problems, @git-changes.'],
+    ['i-team','Multi-step runs & teams','Plan goals into tasks, verify milestones. Beta.'],
+    ['i-mcp','MCP servers','Model Context Protocol servers; calls need approval.'],
+    ['i-rules','Rules & skills','SHADROX.md, AGENTS.md, .cursorrules, reusable skills.']
+  ]],
+  ['Run',[
+    ['i-terminal','Integrated terminal','Interactive shell in the workspace, sessions and splits.'],
+    ['i-git','Source control','Stage diffs, switch branches, AI commit messages.'],
+    ['i-checkpoint','Checkpoints','Review assistant checkpoints, restore earlier state.'],
+    ['i-update','Auto-updates','Checks on start, installs when you restart.']
+  ]],
+  ['Ship',[
+    ['i-github','GitHub integration','Validate a token, create repos, push from the app.'],
+    ['i-plugin','Plugins & automations','Workspace plugins, scheduled or webhook triggers. Beta.']
+  ]]
+];
+document.getElementById('bento-grid').innerHTML = signature.map(f =>
+  `<div class="card" data-reveal>
+    <div class="card-head"><span class="card-icon">${icon(f[0])}</span><h3>${f[1]}</h3></div>
+    <p>${f[2]}</p>${f[4]}
+  </div>`
+).join('');
+document.getElementById('cap-grid').innerHTML = caps.map(([label, items]) =>
+  `<div class="cap-group" data-reveal>
+    <div class="cap-label">${label}</div>
+    <div class="cap-items">${items.map(c =>
+      `<div class="cap">${icon(c[0])}<div><b>${c[1]}</b><em>${c[2]}</em></div></div>`).join('')}
+    </div>
   </div>`
 ).join('');
 
 /* ── Marquee ── */
 const techs = ['Google Gemini','Groq','OpenAI-compatible','Ollama','LM Studio','MCP servers','Electron 44','React 19','CodeMirror 6','xterm.js','Vite 8','Supabase'];
 const mq = document.getElementById('mq-track');
-mq.innerHTML = [...Array(2)].map(() =>
-  techs.map(t => `<span class="mq-tag">${t}</span>`).join('')
-).join('');
+mq.innerHTML = techs.map(t => `<span class="mq-tag">${t}</span>`).join('');
 
 /* ── FAQ ── */
 const faqs = [
@@ -1294,7 +1525,7 @@ const faqs = [
   ['Where is my AI key stored?', 'The desktop app stores provider keys in OS-backed encrypted storage. AI requests go from your machine to the configured provider; the key is not sent to ShadRox.'],
   ['Can I preview any project?', 'ShadRox supports Markdown, static sites, detected Node web projects, and detected Python, Go, PHP, Java, and .NET backends. The project runtime must be installed, and not every configuration is supported.'],
   ['Can the agent make changes on its own?', 'Agent tools for inspecting your workspace are read-only. File edits go through a guarded patch and review flow; unsafe changes are held for review. Agent and autonomous workflows are beta, so inspect results and keep backups.'],
-  ['Are billing and credits enabled?', 'No. The plan and credit-meter screens are an early preview; public payment processing is not enabled in this beta.'],
+  ['Are billing and credits enabled?', 'No. The plan and credit-meter screens are an early preview; public payment processing is not enabled in this beta. Announced plans are Starter (₹399 + GST) and Pro (₹999 + GST); today you use the app with your own AI key at no charge from ShadRox.'],
   ['How do updates work?', 'The app checks for a newer release on start, downloads it in the background, and installs it when you restart or quit.']
 ];
 document.getElementById('faq-list').innerHTML = faqs.map(q =>
@@ -1322,53 +1553,51 @@ setTimeout(observeAll, 50);
 /* ── Count-up stats ── */
 const countObserver = new IntersectionObserver(entries => {
   entries.forEach(e => {
-    if (e.isIntersecting) {
-      const el = e.target;
-      const target = +el.dataset.count;
-      if (target === 0) { el.textContent = '0'; return; }
-      let frame = 0;
-      const tick = setInterval(() => {
-        el.textContent = Math.round(target * (++frame / 30));
-        if (frame >= 30) clearInterval(tick);
-      }, 35);
-      countObserver.unobserve(el);
-    }
+    if (!e.isIntersecting) return;
+    const el = e.target, target = +el.dataset.count;
+    countObserver.unobserve(el);
+    if (reducedMotion || target === 0) { el.textContent = String(target); return; }
+    const t0 = performance.now(), dur = 900, ease = t => 1 - Math.pow(1 - t, 3);
+    const step = now => {
+      const p = Math.min(1, (now - t0) / dur);
+      el.textContent = String(Math.round(target * ease(p)));
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
   });
 });
 document.querySelectorAll('[data-count]').forEach(el => countObserver.observe(el));
 
 /* ── Agent tabs ── */
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.onclick = () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    document.querySelector(`[data-panel-content="${tab.dataset.panel}"]`).classList.add('active');
+const tabs = [...document.querySelectorAll('.tab')];
+const selectTab = tab => {
+  tabs.forEach(t => {
+    t.classList.toggle('active', t === tab);
+    t.setAttribute('aria-selected', String(t === tab));
+  });
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelector(`[data-panel-content="${tab.dataset.panel}"]`).classList.add('active');
+};
+tabs.forEach((tab, i) => {
+  tab.onclick = () => selectTab(tab);
+  tab.onkeydown = e => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    e.preventDefault();
+    const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+    next.focus();
+    selectTab(next);
   };
 });
 
-/* ── Code window 3-D tilt ── */
-if (matchMedia('(hover:hover) and (min-width:960px)').matches) {
-  const stage = document.querySelector('.stage');
-  const cw = document.getElementById('code-win');
-  if (stage && cw) {
-    stage.addEventListener('mousemove', e => {
-      const r = cw.getBoundingClientRect();
-      const x = (e.clientX - r.left) / r.width - 0.5;
-      const y = (e.clientY - r.top) / r.height - 0.5;
-      cw.style.transform = `rotateY(${x * 6}deg) rotateX(${-y * 6}deg)`;
-    });
-    stage.addEventListener('mouseleave', () => cw.style.transform = '');
-  }
-}
-
-/* ── Code window replay ── */
-const codeWin = document.getElementById('code-win');
-setInterval(() => {
-  codeWin.classList.remove('go-anim');
-  void codeWin.offsetWidth;
-  codeWin.classList.add('go-anim');
-}, 16000);
+/* ── Hero window panes (narrow screens) ── */
+const winTabs = [...document.querySelectorAll('.win-tabs [role="tab"]')];
+const winPanes = [...document.querySelectorAll('[data-pane-id]')];
+winTabs.forEach(tab => {
+  tab.onclick = () => {
+    winTabs.forEach(t => t.setAttribute('aria-selected', String(t === tab)));
+    winPanes.forEach(p => p.classList.toggle('is-active', p.dataset.paneId === tab.dataset.pane));
+  };
+});
 </script>
 </body>
 </html>
