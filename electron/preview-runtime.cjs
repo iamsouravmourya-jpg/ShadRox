@@ -222,9 +222,10 @@ function getRunArgs(manager, script, scriptCommand, portOverride) {
   const extra = [];
   if (/\b(vite|astro|nuxt|angular|webpack-dev-server|webpack|parcel)\b/.test(command)) {
     extra.push('--host', '127.0.0.1');
-  } else if (isNext) {
-    extra.push('--hostname', '127.0.0.1');
   }
+  // Next.js deliberately gets no --hostname: bound to its own default it serves
+  // the HMR websocket from the same origin the pane loads, so hot reload keeps
+  // working in preview instead of being blocked as a cross-origin request.
   // Appended last so it wins over the port the script pins for itself, but
   // only for CLIs that parse the flag; `node server.js --port 4000` would just
   // add ignored argv entries while the PORT env override below does the work.
@@ -327,8 +328,10 @@ function isPortBusy(port) {
 function parsePreviewUrl(text) {
   const matches = text.match(/https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\[::\]):\d+(?:\/[^\s]*)?/gi);
   if (!matches || matches.length === 0) return null;
+  // Keep the host the server printed: Next.js treats 127.0.0.1 as a foreign
+  // origin and silently blocks its own HMR websocket, so a rewritten URL made
+  // hot reload dead in the preview pane.
   return matches[matches.length - 1]
-    .replace('localhost', '127.0.0.1')
     .replace('0.0.0.0', '127.0.0.1')
     .replace('[::1]', '127.0.0.1')
     .replace('[::]', '127.0.0.1')
@@ -418,6 +421,92 @@ function isProcessAlive(pid) {
     return true;
   } catch (error) {
     return error?.code === 'EPERM';
+  }
+}
+
+/**
+ * Dev servers ShadRox spawned are remembered in a JSON file so a *next*
+ * session can clean them up. `before-quit` stops previews on a normal exit,
+ * but a force-killed app leaves `npm run dev` trees behind holding the port;
+ * the pane then points at a dead server after relaunch. PIDs only, resolved
+ * against the same project root, so foreign servers are never touched.
+ */
+function readOrphanEntries(orphansFile) {
+  if (!orphansFile) return [];
+  try {
+    const parsed = JSON.parse(require('node:fs').readFileSync(orphansFile, 'utf8'));
+    return Array.isArray(parsed?.entries) ? parsed.entries : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeOrphanEntries(orphansFile, entries) {
+  if (!orphansFile) return;
+  try {
+    require('node:fs').writeFileSync(orphansFile, JSON.stringify({ entries: entries.slice(-30) }));
+  } catch { /* best-effort registry */ }
+}
+
+function normalizeProjectRoot(value) {
+  return path.resolve(value).replace(/[\\/]+$/, '').toLowerCase();
+}
+
+function recordOrphanChild(orphansFile, pid, root) {
+  if (!orphansFile || !Number.isSafeInteger(pid)) return;
+  const entries = readOrphanEntries(orphansFile).filter((entry) => isProcessAlive(entry.pid));
+  entries.push({ pid, root: path.resolve(root), createdAt: Date.now() });
+  writeOrphanEntries(orphansFile, entries);
+}
+
+function forgetOrphanChild(orphansFile, pid) {
+  if (!orphansFile) return;
+  writeOrphanEntries(orphansFile, readOrphanEntries(orphansFile).filter((entry) => entry.pid !== pid));
+}
+
+function killProcessTree(pid, spawnProcess = spawn) {
+  return new Promise((resolve) => {
+    const killer = spawnProcess('taskkill.exe', ['/pid', String(pid), '/t', '/f'], {
+      windowsHide: true,
+      stdio: 'ignore'
+    });
+    killer.once('error', resolve);
+    killer.once('close', resolve);
+  });
+}
+
+/** Kill dev servers a previous ShadRox session left behind for this project. */
+async function reapOrphanedPreviews(orphansFile, root, spawnProcess) {
+  if (!orphansFile) return 0;
+  const target = normalizeProjectRoot(root);
+  const entries = readOrphanEntries(orphansFile).filter((entry) => isProcessAlive(entry.pid));
+  let killed = 0;
+  for (const entry of entries) {
+    if (normalizeProjectRoot(entry.root) !== target) continue;
+    await killProcessTree(entry.pid, spawnProcess);
+    killed += 1;
+  }
+  writeOrphanEntries(orphansFile, entries.filter((entry) => normalizeProjectRoot(entry.root) !== target));
+  return killed;
+}
+
+/**
+ * Next.js records its running dev server in `.next/dev/lock`. When ShadRox is
+ * force-killed the server can die without removing the lock, and the next
+ * `next dev` refuses to start ("existing server at ...") while the preview
+ * pane keeps pointing at a dead port. When the recorded PID is gone the lock
+ * is stale: remove it so the project can start again.
+ */
+async function removeStaleNextDevLock(root, isNextCommand) {
+  if (!isNextCommand) return false;
+  const lockPath = path.join(root, '.next', 'dev', 'lock');
+  try {
+    const lock = JSON.parse(await fs.readFile(lockPath, 'utf8'));
+    if (!Number.isSafeInteger(lock.pid) || lock.pid <= 0 || isProcessAlive(lock.pid)) return false;
+    await fs.unlink(lockPath);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -516,7 +605,8 @@ function createPreviewRuntime({
   spawnProcess = spawn,
   onOutput = () => {},
   onBackendOutput = () => {},
-  readyTimeout = 60_000
+  readyTimeout = 60_000,
+  orphansFile = null
 } = {}) {
   const processes = new Map();
   // Backend plans run beside a frontend preview, so they get their own map and
@@ -568,7 +658,7 @@ function createPreviewRuntime({
     onBackendOutput({ workspaceId, type, message: text });
   }
 
-  function spawnCommand(manager, args, root, env, { cmdShim = true } = {}) {
+  function spawnCommand(manager, args, root, env, { cmdShim = true, skipLoopbackHost = false } = {}) {
     const windows = process.platform === 'win32';
     const useShim = windows && cmdShim;
     const executable = useShim ? (process.env.ComSpec || 'cmd.exe') : manager;
@@ -590,9 +680,10 @@ function createPreviewRuntime({
         /^(HTTP|HTTPS)_PROXY$/i.test(key)
       )
     );
+    const loopbackHost = skipLoopbackHost ? {} : { HOST: '127.0.0.1', HOSTNAME: '127.0.0.1' };
     return spawnProcess(executable, commandArgs, {
       cwd: root,
-      env: { ...safeEnv, BROWSER: 'none', HOST: '127.0.0.1', HOSTNAME: '127.0.0.1', ...env },
+      env: { ...safeEnv, BROWSER: 'none', ...loopbackHost, ...env },
       shell: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
@@ -741,6 +832,7 @@ function createPreviewRuntime({
         const finish = () => {
           if (finished) return;
           finished = true;
+          forgetOrphanChild(orphansFile, record.child.pid);
           emit(workspaceId, 'stopped', 'Local preview stopped.');
           resolve(true);
         };
@@ -842,14 +934,25 @@ function createPreviewRuntime({
         `Starting on port ${portOverride} instead.`);
     }
 
+    const isNextCommand = /\bnext\b/i.test(script.command);
+    if (await removeStaleNextDevLock(root, isNextCommand)) {
+      emit(workspaceId, 'status', 'Removed a stale Next.js dev-server lock left by a previous session.');
+    }
+    const orphanCount = await reapOrphanedPreviews(orphansFile, root, spawnProcess);
+    if (orphanCount > 0) {
+      emit(workspaceId, 'status', `Terminated ${orphanCount} leftover preview server(s) from a previous ShadRox session.`);
+    }
+
     const child = spawnCommand(
       manager,
       getRunArgs(manager, script, script.command, portOverride),
       root,
-      portOverride ? { PORT: String(portOverride) } : undefined
+      portOverride ? { PORT: String(portOverride) } : undefined,
+      { skipLoopbackHost: isNextCommand }
     );
     const record = { child, url: null, rejectReady: null };
     processes.set(workspaceId, record);
+    recordOrphanChild(orphansFile, child.pid, root);
     emit(workspaceId, 'status', `Running "${manager} run ${script.name}"...`);
 
     return new Promise((resolve, reject) => {
@@ -1216,6 +1319,9 @@ module.exports = {
   findAvailableDevPort,
   findNextFreeDevPort,
   findExistingNextDevServer,
+  removeStaleNextDevLock,
+  reapOrphanedPreviews,
+  recordOrphanChild,
   findFreePort,
   isPortBusy,
   portOfUrl,

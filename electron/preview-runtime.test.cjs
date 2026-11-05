@@ -6,7 +6,7 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { PassThrough } = require('node:stream');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const test = require('node:test');
 const {
   createPreviewRuntime,
@@ -21,6 +21,9 @@ const {
   findAvailableDevPort,
   findNextFreeDevPort,
   findExistingNextDevServer,
+  removeStaleNextDevLock,
+  reapOrphanedPreviews,
+  recordOrphanChild,
   isPortBusy,
   hasHmrSupport,
   parsePreviewUrl,
@@ -178,9 +181,9 @@ test('binds recognized web dev servers to localhost and extracts local preview U
   );
   assert.deepEqual(
     getRunArgs('npm', { name: 'dev' }, 'next dev'),
-    ['run', 'dev', '--', '--hostname', '127.0.0.1']
+    ['run', 'dev']
   );
-  assert.equal(parsePreviewUrl('Local: http://localhost:5173/'), 'http://127.0.0.1:5173/');
+  assert.equal(parsePreviewUrl('Local: http://localhost:5173/'), 'http://localhost:5173/');
   assert.equal(parsePreviewUrl('http://0.0.0.0:8080/'), 'http://127.0.0.1:8080/');
   assert.equal(parsePreviewUrl('https://example.com:443/'), null);
   assert.equal(hasHmrSupport('vite --port 5173'), true);
@@ -195,9 +198,11 @@ test('relocates a dev server whose pinned port is already taken', async () => {
   assert.equal(getScriptPort('next dev'), null);
 
   // The override is appended after the script's own flags so it wins.
+  // Next gets no forced hostname: it binds localhost itself and serves HMR
+  // from the same origin the preview pane loads.
   assert.deepEqual(
     getRunArgs('npm', { name: 'dev' }, 'next dev -p 3000', 3001),
-    ['run', 'dev', '--', '--hostname', '127.0.0.1', '-p', '3001']
+    ['run', 'dev', '--', '-p', '3001']
   );
   assert.deepEqual(
     getRunArgs('npm', { name: 'dev' }, 'vite', 5174),
@@ -758,4 +763,44 @@ test('runs a real local Node web project and serves it through the preview URL',
     }
   }
   assert.fail("Stopping the preview did not shut down the project's server.");
+});
+
+test('removes a stale Next.js dev lock whose recorded PID is dead', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-nextlock-'));
+  const lockDir = path.join(root, '.next', 'dev');
+  await fs.mkdir(lockDir, { recursive: true });
+  const dead = spawnSync(process.execPath, ['-e', '']).pid;
+  const lockPath = path.join(lockDir, 'lock');
+  await fs.writeFile(lockPath, JSON.stringify({ pid: dead, port: 3000, appUrl: 'http://localhost:3000' }));
+
+  assert.equal(await removeStaleNextDevLock(root, true), true);
+  await assert.rejects(fs.access(lockPath));
+
+  // A live PID keeps its lock; unrelated commands never touch the lock.
+  const live = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { windowsHide: true, stdio: 'ignore' });
+  await fs.writeFile(lockPath, JSON.stringify({ pid: live.pid, port: 3000, appUrl: 'http://localhost:3000' }));
+  assert.equal(await removeStaleNextDevLock(root, true), false);
+  assert.equal(await removeStaleNextDevLock(root, false), false);
+  assert.equal(await fs.readFile(lockPath, 'utf8').then(() => true), true);
+  try { live.kill(); } catch {}
+});
+
+test('reaps only orphaned preview servers recorded for the same project', { skip: process.platform !== 'win32' }, async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-orphan-'));
+  const other = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-orphan-other-'));
+  const registry = path.join(root, 'orphans.json');
+  const stray = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { windowsHide: true, stdio: 'ignore' });
+  recordOrphanChild(registry, stray.pid, root);
+  recordOrphanChild(registry, stray.pid, other);
+  try {
+    const killed = await reapOrphanedPreviews(registry, root);
+    assert.equal(killed, 1);
+    await new Promise((resolve) => stray.once('exit', resolve));
+    assert.equal(stray.exitCode !== null, true);
+    const entries = JSON.parse(await fs.readFile(registry, 'utf8')).entries;
+    assert.equal(entries.filter((entry) => entry.root === other).length, 1);
+    assert.equal(entries.filter((entry) => entry.root === root).length, 0);
+  } finally {
+    try { stray.kill(); } catch {}
+  }
 });
