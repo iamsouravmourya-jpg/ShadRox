@@ -793,9 +793,12 @@ test('reaps only orphaned preview servers recorded for the same project', { skip
   recordOrphanChild(registry, stray.pid, root);
   recordOrphanChild(registry, stray.pid, other);
   try {
+    // Attach before the kill: taskkill can finish first, and a once('exit')
+    // listener added after an already-fired event never resolves.
+    const exited = new Promise((resolve) => stray.once('exit', resolve));
     const killed = await reapOrphanedPreviews(registry, root);
     assert.equal(killed, 1);
-    await new Promise((resolve) => stray.once('exit', resolve));
+    await exited;
     assert.equal(stray.exitCode !== null, true);
     const entries = JSON.parse(await fs.readFile(registry, 'utf8')).entries;
     assert.equal(entries.filter((entry) => entry.root === other).length, 1);
