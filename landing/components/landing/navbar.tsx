@@ -29,23 +29,27 @@ export function Logo() {
         {/* Shield body */}
         <path
           d="M18 3L5 8v9c0 7.5 5.6 14.5 13 16.5C25.4 31.5 31 24.5 31 17V8L18 3z"
-          fill="url(#shield-grad)"
+          fill="#0b0f1c"
+          stroke="#e2e8f0"
+          strokeWidth="1.8"
+          strokeLinejoin="round"
         />
         {/* S-curve accent */}
         <path
           d="M23 12H15a2.5 2.5 0 000 5h6a2.5 2.5 0 010 5h-7"
-          stroke="#ffffff"
+          stroke="url(#s-grad)"
           strokeWidth="2.4"
           strokeLinecap="round"
           strokeLinejoin="round"
         />
         {/* Corner dots */}
-        <circle cx="15" cy="12" r="1.5" fill="#34d399" />
-        <circle cx="22" cy="22" r="1.5" fill="#34d399" />
+        <circle cx="15" cy="12" r="1.5" fill="#a78bfa" />
+        <circle cx="22" cy="22" r="1.5" fill="#22d3ee" />
         <defs>
-          <linearGradient id="shield-grad" x1="5" y1="3" x2="31" y2="33" gradientUnits="userSpaceOnUse">
-            <stop stopColor="#6d4aff"/>
-            <stop offset="1" stopColor="#ec4899"/>
+          <linearGradient id="s-grad" x1="14" y1="12" x2="23" y2="22" gradientUnits="userSpaceOnUse">
+            <stop stopColor="#8b5cf6"/>
+            <stop offset="0.55" stopColor="#6366f1"/>
+            <stop offset="1" stopColor="#22d3ee"/>
           </linearGradient>
         </defs>
       </svg>
