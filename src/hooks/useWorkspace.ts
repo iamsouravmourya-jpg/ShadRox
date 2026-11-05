@@ -178,6 +178,7 @@ interface UseWorkspaceResult {
   markCheckpoint: (messageId: string, label: string, machine?: boolean, onlyIfIdle?: boolean, turn?: boolean) => Promise<string | null>;
   finishMachineCheckpoint: (id: string | null) => Promise<void>;
   inspectMachineCheckpoint: (id: string) => Promise<void>;
+  exportDeltaReceipt: (id: string) => Promise<string>;
   /** `ok` = the state was restored; `partial` = restored, but some steps failed. */
   restoreCheckpoint: (id: string) => Promise<{ ok: boolean; partial: boolean }>;
   /** What restoring would do to the current buffers, so a restore is never blind. */
@@ -1616,6 +1617,21 @@ export function useWorkspace(): UseWorkspaceResult {
     }
   }, []);
 
+  const exportDeltaReceipt = useCallback(async (id: string): Promise<string> => {
+    const checkpoint = checkpoints.find((entry) => entry.id === id);
+    if (!checkpoint?.machine) return 'This checkpoint is not a machine turn; only Machine Delta receipts can be exported.';
+    const desktop = getDesktopBridge();
+    const nativeId = desktopWorkspaceIdRef.current;
+    if (!desktop || !nativeId) return 'Machine receipts need the desktop workspace that captured this turn; it is not open.';
+    try {
+      const exported = await desktop.exportMachineReceipt(nativeId, id);
+      const verdict = await desktop.verifyMachineReceipt(nativeId, exported.receiptId);
+      return `${verdict.message} Written to ${exported.filePath}${exported.partial ? ' (partial capture — see omissions).' : ''}`;
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Delta receipt export failed.';
+    }
+  }, [checkpoints]);
+
   const finishMachineCheckpoint = useCallback(async (id: string | null) => {
     if (!id) return;
     // Buffer-only turns have no native snapshot to finish, but they still hold
@@ -1881,6 +1897,7 @@ export function useWorkspace(): UseWorkspaceResult {
       markCheckpoint,
       finishMachineCheckpoint,
       inspectMachineCheckpoint,
+      exportDeltaReceipt,
       restoreCheckpoint,
       previewCheckpointDiff,
       rollbackToCheckpoint
@@ -1944,6 +1961,7 @@ export function useWorkspace(): UseWorkspaceResult {
       markCheckpoint,
       finishMachineCheckpoint,
       inspectMachineCheckpoint,
+      exportDeltaReceipt,
       restoreCheckpoint,
       previewCheckpointDiff,
       rollbackToCheckpoint

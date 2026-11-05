@@ -5204,6 +5204,7 @@ export default function App() {
             onCloseCheckpoint={() => setActiveCheckpointId(null)}
             checkpointDiff={checkpointDiff}
             checkpointDiffLoading={checkpointDiffLoading}
+            onExportDeltaReceipt={workspace.exportDeltaReceipt}
             patchSets={patchSets}
             autoApplyChanges={autoApplyChanges}
             onToggleAutoApply={toggleAutoApplyChanges}

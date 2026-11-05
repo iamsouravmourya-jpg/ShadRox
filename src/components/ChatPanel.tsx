@@ -109,6 +109,7 @@ interface ChatPanelProps {
   onCloseCheckpoint: () => void;
   checkpointDiff: CheckpointDiff | null;
   checkpointDiffLoading: boolean;
+  onExportDeltaReceipt?: (checkpointId: string) => Promise<string>;
   patchSets: PatchSet[];
   autoApplyChanges: boolean;
   onToggleAutoApply: () => void;
@@ -844,6 +845,7 @@ export function ChatPanel({
   onCloseCheckpoint,
   checkpointDiff,
   checkpointDiffLoading,
+  onExportDeltaReceipt,
   patchSets,
   autoApplyChanges,
   onToggleAutoApply,
@@ -1629,6 +1631,7 @@ export function ChatPanel({
             onClose={onCloseCheckpoint}
             diff={checkpointDiff}
             diffLoading={checkpointDiffLoading}
+            onExportReceipt={onExportDeltaReceipt}
           />
         </div>
       )}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { AlertTriangle, ChevronLeft, ChevronRight, History, Loader2, RotateCcw, X } from 'lucide-react';
+import { AlertTriangle, ChevronLeft, ChevronRight, FileDown, History, Loader2, RotateCcw, X } from 'lucide-react';
 import type { CheckpointDiff } from '../lib/checkpointDiff';
 import { describeCheckpointDiff } from '../lib/checkpointDiff';
 import type { CheckpointMeta } from '../lib/history';
@@ -23,6 +23,7 @@ export interface TimelineSliderProps {
   /** What restoring the selected checkpoint would do, computed by the host. */
   diff?: CheckpointDiff | null;
   diffLoading?: boolean;
+  onExportReceipt?: (checkpointId: string) => Promise<string>;
 }
 
 const CONFIRM_WINDOW_MS = 4000;
@@ -50,10 +51,13 @@ export function TimelineSlider({
   onClose,
   disabled,
   diff,
-  diffLoading
+  diffLoading,
+  onExportReceipt
 }: TimelineSliderProps) {
   const [internalId, setInternalId] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [receiptBusy, setReceiptBusy] = useState(false);
+  const [receiptResult, setReceiptResult] = useState<{ id: string; message: string } | null>(null);
 
   const points = useMemo(() => buildTimeline(checkpoints), [checkpoints]);
   const chronological = useMemo(() => [...points].reverse(), [points]);
@@ -174,6 +178,16 @@ export function TimelineSlider({
     }
     setConfirming(false);
     onRestore(selected.id);
+  };
+
+  const handleExportReceipt = async () => {
+    if (!selected || !selected.machine || !onExportReceipt || receiptBusy) return;
+    setReceiptBusy(true);
+    try {
+      setReceiptResult({ id: selected.id, message: await onExportReceipt(selected.id) });
+    } finally {
+      setReceiptBusy(false);
+    }
   };
 
   const selectedLabel = selected ? truncateCheckpointLabel(selected.label) || 'Checkpoint' : '';
@@ -335,6 +349,24 @@ export function TimelineSlider({
                     <ul className="mt-1 space-y-1">{machine.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
                   </details>
                 </>}
+                {onExportReceipt && selected.machine && (
+                  <div className="pt-0.5">
+                    <button
+                      type="button"
+                      onClick={handleExportReceipt}
+                      disabled={blocked || receiptBusy}
+                      className="flex items-center gap-1.5 rounded-lg border border-white/15 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-neutral-300 transition-colors hover:border-emerald-400/40 hover:text-emerald-200 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {receiptBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileDown className="h-3 w-3" />}
+                      {receiptBusy ? 'Writing receipt' : 'Export delta receipt'}
+                    </button>
+                    {receiptResult?.id === selected.id && (
+                      <p role="status" className="mt-1 whitespace-normal break-words text-[9.5px] leading-snug text-neutral-400">
+                        {receiptResult.message}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             ) : diffLoading ? (
               <p className="flex items-center gap-1.5 font-mono text-[10px] text-neutral-500">

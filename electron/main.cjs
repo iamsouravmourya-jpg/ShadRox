@@ -52,8 +52,9 @@ const { resolveTerminalPlan, systemEnvironment, clampTerminalSize, normalizeTerm
 const { createMcpClient, validateServerConfig, isSafeHttpUrl } = require('./mcp-client.cjs');
 const { detectRuntime, planDualPreview } = require('./runtime-adapters.cjs');
 const { createAutomationWebhook } = require('./automation-webhook.cjs');
-const { createMachineDelta } = require('./machine-delta.cjs');
+const { createMachineDelta, LIMITS: MACHINE_LIMITS } = require('./machine-delta.cjs');
 const { createMachineGit } = require('./machine-git.cjs');
+const { createMachineReceipt } = require('./machine-receipt.cjs');
 
 const PREVIEW_SCHEME = 'shadrox-preview';
 const APP_BACKGROUND = '#090a0d';
@@ -125,6 +126,12 @@ const machineDelta = createMachineDelta({
   }),
   prepareGitRestore: machineGit.prepare,
   stopOwnedPreview: (id, identity) => previewRuntime.stopOwnedPreview(id, identity)
+});
+const machineReceipt = createMachineReceipt({
+  access: workspaceAccess,
+  receiptsDir: path.join(app.getPath('userData'), 'machine-receipts'),
+  getReport: (id, checkpointId) => machineDelta.inspect(id, checkpointId),
+  limits: MACHINE_LIMITS
 });
 
 const PREVIEW_ENTRY_CANDIDATES = [
@@ -1619,6 +1626,14 @@ function registerIpcHandlers() {
   ipcMain.handle('machine:inspect', (event, workspaceId, checkpointId) => {
     assertTrustedRenderer(event);
     return machineDelta.inspect(workspaceId, checkpointId);
+  });
+  handleMachineSensitive('machine:export-receipt', async (event, workspaceId, checkpointId) => {
+    assertTrustedRenderer(event);
+    return machineReceipt.exportReceipt(workspaceId, checkpointId);
+  });
+  handleMachineSensitive('machine:verify-receipt', async (event, workspaceId, receiptId) => {
+    assertTrustedRenderer(event);
+    return machineReceipt.verifyReceipt(workspaceId, receiptId);
   });
   ipcMain.handle('machine:restore', async (event, workspaceId, checkpointId) => {
     assertTrustedRenderer(event);
