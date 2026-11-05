@@ -94,7 +94,8 @@ const mcpClients = new Map();
 const previewStartGenerations = new Map();
 const previewRuntime = createPreviewRuntime({
   onOutput: (output) => mainWindow?.webContents.send('preview:output', output),
-  onBackendOutput: (output) => mainWindow?.webContents.send('preview:backend-output', output)
+  onBackendOutput: (output) => mainWindow?.webContents.send('preview:backend-output', output),
+  orphansFile: path.join(app.getPath('userData'), 'preview-orphans.json')
 });
 const typeScriptService = createTypeScriptService({
   getWorkspace: (id) => workspaceAccess.getWorkspace(id)
