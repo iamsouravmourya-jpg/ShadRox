@@ -27,7 +27,6 @@ import { DEFAULT_MAX_TOOL_ROUNDS, runToolRounds } from './lib/agent/toolLoop';
 import { CHAT_PROMPT_CORE, TOOL_DISCIPLINE_RULES } from './lib/agent/promptDiscipline';
 import { expandChatMentions } from './lib/chat/contextMentions';
 import { parseToolBlocks, stripToolBlocks } from './lib/agent/toolProtocol';
-import { findFileEditingCommand, formatCommandRiskNotice } from './lib/agent/commandGuard';
 import { runAgentTurn } from './lib/agents/turnRunner';
 import { bundleDocument, bundleProject, canBundle, describeBundleError } from './lib/bundler';
 import {
@@ -2535,108 +2534,111 @@ export default function App() {
         return { applied: [], failures: applyPlan.failures.map((failure) => `${failure.path}: ${failure.reason}`) };
       }
 
-      const jobs = applyPlan.jobs;
-      const applied = applyAtomicJobs(jobs, (updates) => workspace.applyFilePatches(updates));
-      const withLanded = applyPlan.patches.map((patch) =>
-        patch.status === 'applied' && applied.includes(patch.path)
-          ? { ...patch, landed: patch.path }
-          : patch
-      );
-      commit(withLanded);
-
-      const outcome = await saveFilesAtomicWithHooks(applied);
-      if (outcome.failed && outcome.written === 0) {
-        workspace.applyFilePatches(revertAtomicJobs(jobs));
-        const reverted = withLanded.map((patch) => {
-          if (!patch.landed || !applied.includes(patch.landed)) return patch;
-          const job = jobs.find((candidate) => candidate.path === patch.landed);
-          if (job?.created) {
-            return {
-              ...patch,
-              status: 'failed' as const,
-              disk: 'failed' as const,
-              failure: 'Rolled back on disk',
-              diskMessage: outcome.message ?? undefined
-            };
-          }
-          return { ...patch, status: 'reverted' as const, disk: 'failed' as const, diskMessage: outcome.message ?? undefined };
-        });
-        commit(reverted);
-        announce(outcome.message ?? 'The change set was not saved and was rolled back.', 7000);
-        return {
-          applied: [],
-          failures: applied.map((path) => `${path}: the change set was rolled back — ${outcome.message ?? 'not saved'}`)
-        };
-      }
-
-      const disk: ReviewPatch['disk'] = outcome.written > 0 ? 'saved' : 'buffer';
-      commit(withLanded.map((patch) =>
-        patch.landed ? { ...patch, disk, diskMessage: outcome.message ?? undefined } : patch
-      ));
-      // Billed only once the change actually landed — a rejected or rolled-back
-      // patch costs the user nothing beyond the turn they already paid for.
-      if (withLanded.some((patch) => patch.landed)) recordCreditSpend(plan, 'codeEdit');
-      announce(
-        outcome.written > 0
-          ? `${outcome.written} file${outcome.written === 1 ? '' : 's'} applied as one change set.`
-          : outcome.message ?? 'Applied in the editor only — the files were not saved to disk.',
-        outcome.written > 0 ? 3500 : 6000
-      );
-      if (applied.length > 0) {
-        const staticChecksPassed = changeSetVerdict?.ok === true;
-        const boundariesPassed = changeSetVerdict !== null &&
-          !changeSetVerdict.issues.some((issue) => issue.code === 'PATH_OUTSIDE_WORKSPACE');
-        const uniqueApplied = new Set(applied.map((item) => item.toLowerCase())).size;
-        const diskSavePassed = !outcome.failed && outcome.written === uniqueApplied;
-        const checks = [
-          {
-            name: 'Static syntax validation',
-            ok: staticChecksPassed,
-            details: changeSetVerdict
-              ? `${changeSetVerdict.checked} supported file(s) checked; ${changeSetVerdict.skipped.length} skipped`
-              : 'Not run'
-          },
-          {
-            name: 'Workspace boundary check',
-            ok: boundariesPassed,
-            details: changeSetVerdict ? 'No path escaped the opened workspace' : 'Not run'
-          },
-          {
-            name: 'Disk persistence',
-            ok: diskSavePassed,
-            details: diskSavePassed
-              ? `${outcome.written} file(s) confirmed saved`
-              : `${outcome.written} of ${uniqueApplied} file(s) saved${outcome.message ? `: ${outcome.message}` : ''}`
-          }
-        ];
-        const passed = checks.every((check) => check.ok);
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === messageId
-              ? {
-                  ...msg,
-                  verificationResult: {
-                    passed,
-                    checks,
-                    summary: passed
-                      ? `${outcome.written} file(s) saved and checked`
-                      : `Failed: ${checks.filter((check) => !check.ok).map((check) => check.name).join(', ')}`
-                  }
-                }
-              : msg
-          )
+      const editCheckpoint = await workspace.markCheckpoint(messageId, 'Apply reviewed changes', true, true);
+      try {
+        const jobs = applyPlan.jobs;
+        const applied = applyAtomicJobs(jobs, (updates) => workspace.applyFilePatches(updates));
+        const withLanded = applyPlan.patches.map((patch) =>
+          patch.status === 'applied' && applied.includes(patch.path)
+            ? { ...patch, landed: patch.path }
+            : patch
         );
-        const createdPaths = jobs.filter((job) => job.created).map((job) => job.path);
-        if (createdPaths.length > 0) {
-          await workspace.noteCheckpointCreated(createdPaths);
-          // New files are invisible until the explorer re-reads their directory.
-          for (const directory of new Set(createdPaths.map((path) => path.split('/').slice(0, -1).join('/')))) {
-            void workspace.loadDirectory(directory);
-          }
+        commit(withLanded);
+
+        const outcome = await saveFilesAtomicWithHooks(applied);
+        if (outcome.failed && outcome.written === 0) {
+          workspace.applyFilePatches(revertAtomicJobs(jobs));
+          const reverted = withLanded.map((patch) => {
+            if (!patch.landed || !applied.includes(patch.landed)) return patch;
+            const job = jobs.find((candidate) => candidate.path === patch.landed);
+            if (job?.created) {
+              return {
+                ...patch,
+                status: 'failed' as const,
+                disk: 'failed' as const,
+                failure: 'Rolled back on disk',
+                diskMessage: outcome.message ?? undefined
+              };
+            }
+            return { ...patch, status: 'reverted' as const, disk: 'failed' as const, diskMessage: outcome.message ?? undefined };
+          });
+          commit(reverted);
+          announce(outcome.message ?? 'The change set was not saved and was rolled back.', 7000);
+          return {
+            applied: [],
+            failures: applied.map((path) => `${path}: the change set was rolled back — ${outcome.message ?? 'not saved'}`)
+          };
         }
-        void healAfterApply(messageId, applied, jobs, beforeDiagnostics);
-      }
-      return { applied, failures: [] };
+
+        const disk: ReviewPatch['disk'] = outcome.written > 0 ? 'saved' : 'buffer';
+        commit(withLanded.map((patch) =>
+          patch.landed ? { ...patch, disk, diskMessage: outcome.message ?? undefined } : patch
+        ));
+        // Billed only once the change actually landed — a rejected or rolled-back
+        // patch costs the user nothing beyond the turn they already paid for.
+        if (withLanded.some((patch) => patch.landed)) recordCreditSpend(plan, 'codeEdit');
+        announce(
+          outcome.written > 0
+            ? `${outcome.written} file${outcome.written === 1 ? '' : 's'} applied as one change set.`
+            : outcome.message ?? 'Applied in the editor only — the files were not saved to disk.',
+          outcome.written > 0 ? 3500 : 6000
+        );
+        if (applied.length > 0) {
+          const staticChecksPassed = changeSetVerdict?.ok === true;
+          const boundariesPassed = changeSetVerdict !== null &&
+            !changeSetVerdict.issues.some((issue) => issue.code === 'PATH_OUTSIDE_WORKSPACE');
+          const uniqueApplied = new Set(applied.map((item) => item.toLowerCase())).size;
+          const diskSavePassed = !outcome.failed && outcome.written === uniqueApplied;
+          const checks = [
+            {
+              name: 'Static syntax validation',
+              ok: staticChecksPassed,
+              details: changeSetVerdict
+                ? `${changeSetVerdict.checked} supported file(s) checked; ${changeSetVerdict.skipped.length} skipped`
+                : 'Not run'
+            },
+            {
+              name: 'Workspace boundary check',
+              ok: boundariesPassed,
+              details: changeSetVerdict ? 'No path escaped the opened workspace' : 'Not run'
+            },
+            {
+              name: 'Disk persistence',
+              ok: diskSavePassed,
+              details: diskSavePassed
+                ? `${outcome.written} file(s) confirmed saved`
+                : `${outcome.written} of ${uniqueApplied} file(s) saved${outcome.message ? `: ${outcome.message}` : ''}`
+            }
+          ];
+          const passed = checks.every((check) => check.ok);
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === messageId
+                ? {
+                    ...msg,
+                    verificationResult: {
+                      passed,
+                      checks,
+                      summary: passed
+                        ? `${outcome.written} file(s) saved and checked`
+                        : `Failed: ${checks.filter((check) => !check.ok).map((check) => check.name).join(', ')}`
+                    }
+                  }
+                : msg
+            )
+          );
+          const createdPaths = jobs.filter((job) => job.created).map((job) => job.path);
+          if (createdPaths.length > 0) {
+            await workspace.noteCheckpointCreated(createdPaths);
+            // New files are invisible until the explorer re-reads their directory.
+            for (const directory of new Set(createdPaths.map((path) => path.split('/').slice(0, -1).join('/')))) {
+              void workspace.loadDirectory(directory);
+            }
+          }
+          await healAfterApply(messageId, applied, jobs, beforeDiagnostics);
+        }
+        return { applied, failures: [] };
+      } finally { await workspace.finishMachineCheckpoint(editCheckpoint); }
     },
     [workspace, desktop, nativeWorkspaceId, announce, healAfterApply, plan, saveFilesAtomicWithHooks]
   );
@@ -2829,11 +2831,11 @@ export default function App() {
    * review, auto-applying when the user opted in. One patch set per message.
    */
   const applyPatchesFromReply = useCallback(
-    (
+    async (
       messageId: string,
       fullReply: string,
       mode: RefineModeMeta,
-      options: { replace?: boolean; onFailures?: (failures: string[]) => void; onUnmapped?: () => void } = {}
+      options: { replace?: boolean; onFailures?: (failures: string[]) => void | Promise<void>; onUnmapped?: () => void | Promise<void> } = {}
     ) => {
       if (!options.replace && patchSets.some((set) => set.messageId === messageId)) return;
 
@@ -2854,7 +2856,7 @@ export default function App() {
         const looksLikeEdit = fullReply.includes('<<<<<<< ORIGINAL');
         if (scan.unmapped > 0 && looksLikeEdit) {
           if (options.onUnmapped) {
-            options.onUnmapped();
+            await options.onUnmapped();
             return;
           }
           setToast('Response contained code blocks without explicit file paths — changes were not applied.');
@@ -2884,9 +2886,8 @@ export default function App() {
 
       setToast(`Verifying ${review.length} file(s)…`);
       window.setTimeout(() => setToast(null), 4000);
-      void applyReviewSet(messageId, review).then((outcome) => {
-        if (outcome.failures.length > 0) options.onFailures?.(outcome.failures);
-      });
+      const outcome = await applyReviewSet(messageId, review);
+      if (outcome.failures.length > 0) await options.onFailures?.(outcome.failures);
     },
     [patchSets, workspace, autoApplyChanges, applyReviewSet]
   );
@@ -3089,12 +3090,12 @@ export default function App() {
     let runRepair: (failures: string[]) => Promise<void> = async () => {};
     let runUnmappedRepair: () => Promise<void> = async () => {};
 
-    const applyReplyPatches = () => {
+    const applyReplyPatches = async () => {
       if (applied) return;
       applied = true;
-      applyPatchesFromReply(modelMessage.id, reply, mode, {
-        onFailures: (failures) => { void runRepair(failures); },
-        onUnmapped: () => { void runUnmappedRepair(); }
+      await applyPatchesFromReply(modelMessage.id, reply, mode, {
+        onFailures: runRepair,
+        onUnmapped: runUnmappedRepair
       });
     };
 
@@ -3126,7 +3127,7 @@ export default function App() {
       // the in-memory state correct.
     };
 
-    void workspace.markCheckpoint(modelMessage.id, text);
+    const machineCheckpoint = await workspace.markCheckpoint(modelMessage.id, text);
 
     const turnUsage = {
       tokens: 0,
@@ -3254,7 +3255,7 @@ export default function App() {
         ]);
         const corrected = stripToolBlocks(repair.text);
         if (!controller.signal.aborted && corrected.trim()) {
-          applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true });
+          await applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true });
         }
       } finally {
         setIsGenerating(false);
@@ -3289,7 +3290,7 @@ export default function App() {
         ]);
         const corrected = stripToolBlocks(correction.text);
         if (!controller.signal.aborted && corrected.trim()) {
-          applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true });
+          await applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true });
         }
       } finally {
         setIsGenerating(false);
@@ -3395,11 +3396,14 @@ export default function App() {
       if (controller.signal.aborted) return;
       markInterrupted(error instanceof Error ? error.message : 'Unknown error');
     } finally {
-      setIsGenerating(false);
-      setActiveStatusMessage(null);
-      chatDispatchLockRef.current = false;
-      abortRef.current = null;
-      if (streamCompleted) applyReplyPatches();
+      try { if (streamCompleted) await applyReplyPatches(); }
+      finally {
+        await workspace.finishMachineCheckpoint(machineCheckpoint);
+        setIsGenerating(false);
+        setActiveStatusMessage(null);
+        chatDispatchLockRef.current = false;
+        abortRef.current = null;
+      }
     }
   }, [
     input,
@@ -3440,7 +3444,10 @@ export default function App() {
   const runBudget: RunBudget = DEFAULT_RUN_BUDGET;
 
   const autonomyCheckpoint = useCallback(
-    (goal: string) => workspace.markCheckpoint(makeId('run'), `Run: ${goal}`),
+    // Run-level bookmark: buffer-only by design and never closed by a finish
+    // call, so it must not occupy the idle gate that keeps nested applies from
+    // double-snapshotting a live machine turn.
+    (goal: string) => workspace.markCheckpoint(makeId('run'), `Run: ${goal}`, false, false, false),
     [workspace]
   );
 
@@ -3500,85 +3507,87 @@ export default function App() {
         system
       });
       let credits = 0;
-
-      const outcome = await runAgentTurn({
-        instruction,
-        expectedFiles: request.milestone.expectedFiles,
-        applyPolicy: request.applyPolicy,
-        signal: request.signal,
-        systemInstruction: fit.systemInstruction,
-        maxToolRounds: DEFAULT_MAX_TOOL_ROUNDS,
-        ports: {
-          workspaceId: nativeWorkspaceId,
-          external: mcpToolHandleRef.current ?? undefined,
-          buildMessages: () => fit.messages,
-          runToolRounds,
-          extractPatches: (text) => extractUnifiedPatches(text, workspace.files),
-          readFile: async (path) => {
-            const canonical = normalizeSlashes(path).toLowerCase();
-            const buffered = workspace.files.find((file) => normalizeSlashes(file.name).toLowerCase() === canonical);
-            if (buffered) return buffered.content;
-            const existsOnDisk = workspace.workspace?.diskFileTree?.some(
-              (entry) => normalizeSlashes(entry.path).toLowerCase() === canonical
-            ) ?? false;
-            if (!existsOnDisk || !desktop || !nativeWorkspaceId) return null;
-            return (await desktop.readFile(nativeWorkspaceId, path)).content;
-          },
-          writePatches: async (patches) => {
-            const review: ReviewPatch[] = patches.map((patch) => ({
-              path: patch.path,
-              kind: patch.kind,
-              blocks: patch.kind === 'searchReplace' ? patch.blocks : undefined,
-              content: patch.kind === 'rewrite' ? patch.content : undefined,
-              status: 'pending'
-            }));
-            return applyReviewSet(makeId('run'), review, { allowDestructive: true });
-          },
-          stream: async (messages) => {
-            let text = '';
-            let error: string | null = null;
-            try {
-              await streamChat({
-                provider: byok.activeProvider,
-                baseUrl: byok.baseUrl,
-                model: byok.selectedModel,
-                apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
-                messages,
-                systemInstruction: fit.systemInstruction,
-                temperature: byok.temperature,
-                thinking: mode.thinking,
-                signal: request.signal
-              }, {
-                onDelta: (chunk) => { text += chunk; },
-                onDone: (info) => {
-                  const spent = creditsForTurn(info.model, {
-                    inputTokens: info.inputTokens,
-                    outputTokens: info.outputTokens
-                  });
-                  credits += spent;
-                  settleTurnCredits(plan, spent, 'chatter');
-                },
-                onError: (message) => { error = message; }
-              });
-            } catch (cause) {
-              error = cause instanceof Error ? cause.message : String(cause);
-            }
-            return { text, error };
-          },
-          measureCredits: () => credits
-        }
-      });
-      return {
-        reply: outcome.reply,
-        patchesApplied: outcome.applied.length,
-        patchFailures: outcome.error ? [...outcome.patchFailures, outcome.error] : outcome.patchFailures,
-        creditsSpent: outcome.creditsSpent,
-        aborted: outcome.aborted || Boolean(outcome.error),
-        stopped: outcome.stopped,
-        filesRead: outcome.filesRead,
-        touchedFiles: outcome.applied,
-        pendingReview: outcome.pendingReview
-      };
+      const machineCheckpoint = await workspace.markCheckpoint(makeId('run'), instruction);
+      try {
+        const outcome = await runAgentTurn({
+          instruction,
+          expectedFiles: request.milestone.expectedFiles,
+          applyPolicy: request.applyPolicy,
+          signal: request.signal,
+          systemInstruction: fit.systemInstruction,
+          maxToolRounds: DEFAULT_MAX_TOOL_ROUNDS,
+          ports: {
+            workspaceId: nativeWorkspaceId,
+            external: mcpToolHandleRef.current ?? undefined,
+            buildMessages: () => fit.messages,
+            runToolRounds,
+            extractPatches: (text) => extractUnifiedPatches(text, workspace.files),
+            readFile: async (path) => {
+              const canonical = normalizeSlashes(path).toLowerCase();
+              const buffered = workspace.files.find((file) => normalizeSlashes(file.name).toLowerCase() === canonical);
+              if (buffered) return buffered.content;
+              const existsOnDisk = workspace.workspace?.diskFileTree?.some(
+                (entry) => normalizeSlashes(entry.path).toLowerCase() === canonical
+              ) ?? false;
+              if (!existsOnDisk || !desktop || !nativeWorkspaceId) return null;
+              return (await desktop.readFile(nativeWorkspaceId, path)).content;
+            },
+            writePatches: async (patches) => {
+              const review: ReviewPatch[] = patches.map((patch) => ({
+                path: patch.path,
+                kind: patch.kind,
+                blocks: patch.kind === 'searchReplace' ? patch.blocks : undefined,
+                content: patch.kind === 'rewrite' ? patch.content : undefined,
+                status: 'pending'
+              }));
+              return applyReviewSet(makeId('run'), review, { allowDestructive: true });
+            },
+            stream: async (messages) => {
+              let text = '';
+              let error: string | null = null;
+              try {
+                await streamChat({
+                  provider: byok.activeProvider,
+                  baseUrl: byok.baseUrl,
+                  model: byok.selectedModel,
+                  apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
+                  messages,
+                  systemInstruction: fit.systemInstruction,
+                  temperature: byok.temperature,
+                  thinking: mode.thinking,
+                  signal: request.signal
+                }, {
+                  onDelta: (chunk) => { text += chunk; },
+                  onDone: (info) => {
+                    const spent = creditsForTurn(info.model, {
+                      inputTokens: info.inputTokens,
+                      outputTokens: info.outputTokens
+                    });
+                    credits += spent;
+                    settleTurnCredits(plan, spent, 'chatter');
+                  },
+                  onError: (message) => { error = message; }
+                });
+              } catch (cause) {
+                error = cause instanceof Error ? cause.message : String(cause);
+              }
+              return { text, error };
+            },
+            measureCredits: () => credits
+          }
+        });
+        return {
+          reply: outcome.reply,
+          patchesApplied: outcome.applied.length,
+          patchFailures: outcome.error ? [...outcome.patchFailures, outcome.error] : outcome.patchFailures,
+          creditsSpent: outcome.creditsSpent,
+          aborted: outcome.aborted || Boolean(outcome.error),
+          stopped: outcome.stopped,
+          filesRead: outcome.filesRead,
+          touchedFiles: outcome.applied,
+          pendingReview: outcome.pendingReview
+        };
+      } finally { await workspace.finishMachineCheckpoint(machineCheckpoint); }
     },
     [
       byok.useShadRoxKey,
@@ -3590,8 +3599,7 @@ export default function App() {
       plan,
       activeModel,
       buildSystemContext,
-      workspace.files,
-      workspace.workspace,
+      workspace,
       desktop,
       nativeWorkspaceId,
       applyReviewSet
@@ -3624,31 +3632,17 @@ export default function App() {
             declinedReason: 'No folder is open, so no terminal is available.'
           };
         }
-        // Cline's command blacklist (ported in lib/agent/commandGuard): a
-        // command that can modify files never runs on the silent proof-command
-        // path — it raises an explicit danger approval carrying the detected
-        // reason, and a decline flows back as the engine's declinedReason.
-        const risk = findFileEditingCommand(argv);
-        if (risk) {
-          const proceed = await confirmAction({
-            title: `Run this command? ${risk} can modify files`,
-            body: formatCommandRiskNotice(argv, risk),
-            confirmLabel: 'Allow once',
-            cancelLabel: 'Block command',
-            tone: 'danger'
-          });
-          if (!proceed) {
-            return {
-              argv,
-              exitCode: null,
-              stdoutTail: '',
-              stderrTail: '',
-              timedOut: false,
-              declinedReason: `the command was not approved: ${risk} can modify files`
-            };
-          }
-        }
         const result = await desktop.runCommand(nativeWorkspaceId, argv);
+        if (result.deniedReason) {
+          return {
+            argv,
+            exitCode: null,
+            stdoutTail: result.stdout,
+            stderrTail: result.stderr,
+            timedOut: false,
+            declinedReason: result.deniedReason
+          };
+        }
         return {
           argv,
           exitCode: result.exitCode,
@@ -4522,17 +4516,28 @@ export default function App() {
 
   const handleRestoreCheckpoint = useCallback(
     async (checkpointId: string) => {
+      if (chatDispatchLockRef.current) return;
       setRestoringCheckpointId(checkpointId);
-      const ok = await workspace.restoreCheckpoint(checkpointId);
-      setRestoringCheckpointId(null);
-      if (ok) {
-        setCheckpointNonce((previous) => previous + 1);
-        setToast('Workspace restored to checkpoint state');
-        window.setTimeout(() => setToast(null), 3000);
-      }
+      try {
+        const result = await workspace.restoreCheckpoint(checkpointId);
+        if (result.ok) {
+          setCheckpointNonce((previous) => previous + 1);
+          const isMachine = Boolean(workspace.checkpoints.find((entry) => entry.id === checkpointId)?.machine);
+          setToast(isMachine
+            ? result.partial
+              ? 'Rewind was partial: the captured files came back on disk, but some steps did not finish — see the timeline limits.'
+              : 'Captured changes rewound on disk. See timeline for limits.'
+            : 'Editor buffers restored; save to persist them on disk.');
+          window.setTimeout(() => setToast(null), 3000);
+        }
+      } finally { setRestoringCheckpointId(null); }
     },
     [workspace]
   );
+
+  useEffect(() => {
+    if (activeCheckpointId) void workspace.inspectMachineCheckpoint(activeCheckpointId);
+  }, [activeCheckpointId, checkpointNonce, workspace.inspectMachineCheckpoint]);
 
   /**
    * The history rail previews a restore instead of performing it, so the diff is

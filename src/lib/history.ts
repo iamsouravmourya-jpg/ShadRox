@@ -17,6 +17,7 @@ export interface Checkpoint {
   label: string;
   createdAt: number;
   files: Array<{ name: string; hash: string }>;
+  machine?: boolean;
   /** Paths a run created after this checkpoint; a rollback removes them again. */
   createdPaths?: string[];
 }
@@ -28,6 +29,8 @@ export interface CheckpointMeta {
   label: string;
   createdAt: number;
   fileCount: number;
+  machine?: boolean;
+  machineReport?: import('./machine/delta').MachineDelta | null;
 }
 
 const DB_NAME = 'shadrox-history';
@@ -107,6 +110,7 @@ export async function saveCheckpoint(input: {
   messageId: string;
   label: string;
   files: WorkspaceFile[];
+  machine?: boolean;
 }): Promise<CheckpointMeta | null> {
   const db = await openDb();
   if (!db) return null;
@@ -121,6 +125,7 @@ export async function saveCheckpoint(input: {
     messageId: input.messageId,
     label: input.label.trim().slice(0, FIELD_LABEL_CHARS) || 'Checkpoint',
     createdAt: Date.now(),
+    machine: input.machine,
     files: hashed
   };
 
@@ -141,7 +146,8 @@ export async function saveCheckpoint(input: {
     messageId: checkpoints.messageId,
     label: checkpoints.label,
     createdAt: checkpoints.createdAt,
-    fileCount: hashed.length
+    fileCount: hashed.length,
+    machine: checkpoints.machine
   };
 }
 
@@ -157,7 +163,8 @@ export async function listCheckpoints(workspacePath: string): Promise<Checkpoint
       messageId: row.messageId,
       label: row.label,
       createdAt: row.createdAt,
-      fileCount: row.files.length
+      fileCount: row.files.length,
+      machine: row.machine
     }))
     .sort((a, b) => b.createdAt - a.createdAt);
 }

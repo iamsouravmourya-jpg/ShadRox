@@ -3,6 +3,7 @@ import { AlertTriangle, ChevronLeft, ChevronRight, History, Loader2, RotateCcw, 
 import type { CheckpointDiff } from '../lib/checkpointDiff';
 import { describeCheckpointDiff } from '../lib/checkpointDiff';
 import type { CheckpointMeta } from '../lib/history';
+import { machineRestoreReason } from '../lib/machine/delta';
 import {
   buildTimeline,
   describeCheckpoint,
@@ -77,6 +78,8 @@ export function TimelineSlider({
   const isRestoringSelected = Boolean(restoringId) && Boolean(selected) && restoringId === selected?.id;
   const busy = Boolean(restoringId);
   const blocked = Boolean(disabled) || busy;
+  const machine = selected?.machineReport;
+  const machineReason = selected?.machine ? machineRestoreReason(machine) : null;
 
   // The rail scrolls when a run is long; the fades and nudge buttons below are
   // what make that reachable instead of invisible overflow.
@@ -100,10 +103,9 @@ export function TimelineSlider({
   };
 
   const sideCounts = useMemo(() => diffSince(points, selected ? selected.id : null), [points, selected]);
-  const summary =
-    sideCounts.newer > 0
-      ? `Restoring here reverts ${sideCounts.newer} later change${sideCounts.newer === 1 ? '' : 's'}`
-      : 'Restoring here is the current state';
+  const summary = selected?.machine
+    ? 'Rewind only this turn’s captured changes, if disk state still matches.'
+    : 'Legacy checkpoint: restores editor buffers only, not machine state.';
 
   useEffect(() => {
     setConfirming(false);
@@ -165,7 +167,7 @@ export function TimelineSlider({
   };
 
   const handleRestoreClick = () => {
-    if (!selected || blocked) return;
+    if (!selected || blocked || machineReason) return;
     if (!confirming) {
       setConfirming(true);
       return;
@@ -312,8 +314,29 @@ export function TimelineSlider({
             </p>
           </div>
 
-          <div className="min-h-0 flex-1 px-3 pb-1 pt-2">
-            {diffLoading ? (
+          <div className="shrink-0 px-3 pb-1 pt-2">
+            {selected?.machine ? (
+              <div className="space-y-1.5 text-[10px] text-neutral-400" aria-label="Machine Delta">
+                <p className="font-medium text-emerald-300">Machine Delta · {machine?.state ?? 'unavailable'}</p>
+                {machineReason && <p role="status" className="text-amber-200">{machineReason}</p>}
+                {machine && <>
+                  <ul className="space-y-0.5 font-mono">
+                    {machine.files.map((file) => <li key={file.path}>{file.kind}: {file.path}{file.dependency ? ' · dependency manifest/lockfile' : ''}</li>)}
+                  </ul>
+                  <p>Git: {machine.git.before?.head?.slice(0, 8) ?? 'unavailable'} → {machine.git.after?.head?.slice(0, 8) ?? 'unavailable'} · {machine.git.changed ? 'changed' : 'unchanged'}{!machine.git.reversible ? ' · observed, not revertable' : ''}</p>
+                  <p>Branch: {machine.git.before?.branch ?? 'none'} → {machine.git.after?.branch ?? 'none'} · dirty: {String(machine.git.before?.dirty ?? false)} → {String(machine.git.after?.dirty ?? false)}</p>
+                  <p>Owned previews started: {machine.previews.started.map((item) => `${item.kind} :${item.port ?? 'starting'}`).join(', ') || 'none'}</p>
+                  <p>Owned previews stopped: {machine.previews.stopped.map((item) => `${item.kind} :${item.port ?? '?'}`).join(', ') || 'none'} · observed, not revertable</p>
+                  <p>Terminals: {machine.terminals.before.length} → {machine.terminals.after.length} · observed, not revertable</p>
+                  {[...machine.terminals.before, ...machine.terminals.after.filter((item) => !machine.terminals.before.some((before) => before.id === item.id))].map((item) => <p key={item.id}>Launch cwd ({item.mode}): {item.launchCwd}</p>)}
+                  <p>{machine.environment}</p>
+                  <p>Runtime: {Object.entries(machine.tools).map(([name, value]) => `${name}: ${value}`).join(' · ')}</p>
+                  <details><summary className="cursor-pointer">Scope and limits — not a full-machine restore</summary>
+                    <ul className="mt-1 space-y-1">{machine.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
+                  </details>
+                </>}
+              </div>
+            ) : diffLoading ? (
               <p className="flex items-center gap-1.5 font-mono text-[10px] text-neutral-500">
                 <Loader2 className="h-3 w-3 animate-spin" />
                 Comparing files
@@ -365,7 +388,7 @@ export function TimelineSlider({
             <button
               type="button"
               onClick={handleRestoreClick}
-              disabled={blocked || !selected}
+              disabled={blocked || !selected || Boolean(machineReason)}
               className={`ml-auto flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[10px] font-medium transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 ${
                 confirming
                   ? 'border-amber-400/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
@@ -379,7 +402,7 @@ export function TimelineSlider({
               ) : (
                 <RotateCcw className="h-3 w-3" />
               )}
-              {isRestoringSelected ? 'Restoring…' : confirming ? 'Confirm restore' : 'Restore this checkpoint'}
+              {isRestoringSelected ? 'Restoring…' : confirming ? 'Confirm restore' : selected?.machine ? 'Rewind captured changes' : 'Restore editor buffers'}
             </button>
           </div>
         </>

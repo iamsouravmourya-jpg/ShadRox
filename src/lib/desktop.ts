@@ -109,6 +109,7 @@ export interface DesktopCommandResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  deniedReason?: string;
 }
 
 /** Read-only snapshot of the workspace's git state, from the main process. */
@@ -418,6 +419,10 @@ export interface ShadRoxDesktopAPI {
   stageFiles: (workspaceId: string, files: DesktopWrite[]) => Promise<StagedTransaction>;
   commitTransaction: (workspaceId: string, transactionId: string) => Promise<DesktopSaveResult>;
   discardTransaction: (workspaceId: string, transactionId: string) => Promise<void>;
+  beginMachineTurn: (workspaceId: string, checkpointId: string) => Promise<import('./machine/delta').MachineDelta | null>;
+  finishMachineTurn: (workspaceId: string, checkpointId: string) => Promise<import('./machine/delta').MachineDelta | null>;
+  inspectMachineTurn: (workspaceId: string, checkpointId: string) => Promise<import('./machine/delta').MachineDelta | null>;
+  restoreMachineTurn: (workspaceId: string, checkpointId: string) => Promise<{ ok: boolean; message: string; report: import('./machine/delta').MachineDelta }>;
   /** Static pre-apply check of proposed file contents (syntax, JSON, markup). */
   verifyChangeSet: (workspaceId: string, files: VerifyChangeFile[]) => Promise<VerifyChangeResult>;
   runCommand: (workspaceId: string, command: string) => Promise<DesktopCommandResult>;
