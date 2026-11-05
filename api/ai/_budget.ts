@@ -7,7 +7,7 @@ import {
   trimMessagesToBudget,
   type BudgetedMessage
 } from '../../src/lib/contextBudget.js';
-import { resolveContextWindow } from '../../src/lib/modelCapabilities.js';
+import { resolveCapabilities } from '../../src/lib/modelCapabilities.js';
 import type { ProviderId } from './_types.js';
 
 export interface BudgetedRequest {
@@ -37,11 +37,11 @@ export function budgetRequest(
   messages: BudgetedMessage[],
   rawSystemInstruction?: string
 ): BudgetedRequest {
-  const contextWindow = resolveContextWindow(provider, model);
+  const { contextWindow, maxOutput } = resolveCapabilities(provider, model);
   // messageBudgetChars() is the input budget in characters: the window minus the
   // output reservation. Cap the instruction to a share of that so the history
   // still gets room, and never above the global ceiling.
-  const inputBudgetChars = messageBudgetChars(contextWindow);
+  const inputBudgetChars = messageBudgetChars(contextWindow, maxOutput);
   const systemCap = Math.min(
     MAX_SYSTEM_INSTRUCTION_CHARS,
     Math.max(MIN_BUDGET_CHARS, Math.floor(inputBudgetChars * 0.6))
@@ -53,7 +53,7 @@ export function budgetRequest(
 
   const systemTokens = systemInstruction ? estimateTokens(systemInstruction) : 0;
   const effectiveWindow = Math.max(1_000, contextWindow - systemTokens);
-  const trimmed = trimMessagesToBudget(messages, effectiveWindow);
+  const trimmed = trimMessagesToBudget(messages, effectiveWindow, maxOutput);
 
   return {
     messages: trimmed.messages,

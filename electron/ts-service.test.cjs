@@ -174,6 +174,40 @@ test('outline lists declarations with nesting and document order', async () => {
   }
 });
 
+test('exported contracts are derived from TypeScript symbols and widen literal values', async () => {
+  const root = createFixture();
+  fs.writeFileSync(path.join(root, 'src', 'constants.ts'), 'export const label = "ok";\n');
+  const service = createService(root);
+  try {
+    const [contract, constants] = await service.exportedContracts('ws', ['src/math.ts', 'src/constants.ts']);
+    assert.equal(contract.file, 'src/math.ts');
+    assert.deepEqual(contract.exports.map((entry) => entry.name), ['add', 'Point']);
+    assert.match(contract.exports.find((entry) => entry.name === 'add').signature, /add: \(a: number, b: number\) => number/);
+    assert.match(contract.exports.find((entry) => entry.name === 'Point').signature, /interface Point[\s\S]*x: number/);
+    assert.equal(constants.exports[0].signature, 'label: string');
+  } finally {
+    service.closeWorkspace('ws');
+  }
+});
+
+test('exported contracts honor unsaved buffers and reject paths outside the workspace', async () => {
+  const root = createFixture();
+  const service = createService(root);
+  try {
+    const [contract] = await service.exportedContracts('ws', ['src/main.ts'], [{
+      path: 'src/main.ts',
+      content: 'export const draft = "unsaved";\n'
+    }]);
+    assert.deepEqual(contract.exports, [{ name: 'draft', signature: 'draft: string' }]);
+    await assert.rejects(
+      () => service.exportedContracts('ws', ['../outside.ts']),
+      /outside the opened workspace/i
+    );
+  } finally {
+    service.closeWorkspace('ws');
+  }
+});
+
 test('go-to-definition resolves across files', async () => {
   const root = createFixture();
   const service = createService(root);

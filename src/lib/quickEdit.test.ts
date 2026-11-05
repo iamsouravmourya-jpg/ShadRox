@@ -68,6 +68,20 @@ test('the prompt tells the model to touch only the selected region', () => {
   assert.match(prompt, /Instruction: make it async/);
 });
 
+test('file snippets in inline-edit prompts are scrubbed before provider handoff', () => {
+  const token = `ghp_${'A'.repeat(36)}`;
+  const { prompt } = buildQuickEditPrompt({
+    filePath: 'a.ts',
+    language: 'typescript',
+    above: '',
+    selected: `const API_KEY = "${token}";`,
+    below: '',
+    instruction: 'keep the assignment'
+  });
+  assert.ok(!prompt.includes(token));
+  assert.match(prompt, /API_KEY = \[REDACTED_SECRET\]/);
+});
+
 /* ------------------------------------------------------------------ *
  * Temperature: the user's setting has to reach the model — clamped.
  * ------------------------------------------------------------------ */

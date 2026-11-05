@@ -187,6 +187,11 @@ export interface ReferenceLocation {
   endCharacter: number;
 }
 
+export interface ExportedContract {
+  file: string;
+  exports: Array<{ name: string; signature: string }>;
+}
+
 export interface OutlineSymbol {
   name: string;
   kind: string;
@@ -457,6 +462,12 @@ export interface ShadRoxDesktopAPI {
     character: number,
     overrides?: TsFileOverride[]
   ) => Promise<ReferenceLocation[]>;
+  /** Type-checker-derived public contracts for workspace-relative source files. */
+  exportedContracts: (
+    workspaceId: string,
+    paths: string[],
+    overrides?: TsFileOverride[]
+  ) => Promise<ExportedContract[]>;
   /** Renames a symbol and every reference the language service can reach. */
   rename: (
     workspaceId: string,

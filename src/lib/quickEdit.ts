@@ -4,6 +4,7 @@
  * are ported from Void's inline edit flow.
  */
 import { streamChat } from './ai';
+import { scrubWorkspaceText } from './envSafety';
 import type { ProviderId } from './providers';
 
 const CONTEXT_LINES = 28;
@@ -60,9 +61,9 @@ export function buildQuickEditPrompt(context: QuickEditContext): { systemInstruc
       'If the instruction cannot be satisfied, return the selected code unchanged.',
     prompt:
       `File: ${context.filePath} (${context.language})\n\n` +
-      `<ABOVE>\n${context.above}\n</ABOVE>\n\n` +
-      `<SELECTED>\n${context.selected}\n</SELECTED>\n\n` +
-      `<BELOW>\n${context.below}\n</BELOW>\n\n` +
+      `<ABOVE>\n${scrubWorkspaceText(context.above)}\n</ABOVE>\n\n` +
+      `<SELECTED>\n${scrubWorkspaceText(context.selected)}\n</SELECTED>\n\n` +
+      `<BELOW>\n${scrubWorkspaceText(context.below)}\n</BELOW>\n\n` +
       `Instruction: ${context.instruction}\n\n` +
       'Replacement code for <SELECTED> only:'
   };

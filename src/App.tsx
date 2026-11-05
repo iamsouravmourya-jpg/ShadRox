@@ -87,7 +87,7 @@ import {
 import { resolveContextWindow } from './lib/modelCapabilities';
 import { PREVIEW_BASE_STYLE, PREVIEW_ERROR_BRIDGE, previewCapabilityMessage, resolvePreviewDocument } from './lib/preview';
 import { buildChunksForTesting, buildRepoMap, renderRetrievedChunks, retrieveContext, retrieveContextSemantic } from './lib/retrieval';
-import { repoMapBudgetFor } from './lib/repoMap';
+import { repoMapBudgetFor, selectDependentFiles } from './lib/repoMap';
 import { buildRepoMap as buildRankedRepoMap } from './lib/agent/repoMap';
 import { createTransformersEmbedder, getActiveEmbedder, isTransformersAvailable, setActiveEmbedder } from './lib/localEmbeddings';
 import {
@@ -1805,6 +1805,49 @@ export default function App() {
           signaturesByFile: repoMapFiles.signatures,
           openTabs: [...new Set([workspace.activeFile?.name, ...selectedFiles].filter((name): name is string => Boolean(name)))]
         }) : '';
+        const editTargets = [...new Set([
+          workspace.activeFile?.name,
+          ...selectedFiles
+        ].filter((name): name is string => Boolean(name)))];
+        const dependentFiles = selectDependentFiles(
+          repoMapFiles.files,
+          editTargets,
+          repoMapFiles.signatures,
+          6
+        );
+        const scriptDependents = dependentFiles.filter(({ file }) =>
+          /\.(?:[cm]?ts|tsx|[cm]?js|jsx)$/i.test(file)
+        );
+        const desktop = getDesktopBridge();
+        if (nativeWorkspaceId && desktop && scriptDependents.length > 0) {
+          const dependentPaths = scriptDependents.map(({ file }) => file);
+          const overrides = dependentPaths.flatMap((file) => {
+            const active = workspace.activeFile && normalizeSlashes(workspace.activeFile.name) === file
+              ? workspace.activeFile
+              : workspace.files.find((candidate) => normalizeSlashes(candidate.name) === file);
+            return active ? [{ path: file, content: active.content }] : [];
+          });
+          try {
+            const contracts = await desktop.exportedContracts(nativeWorkspaceId, dependentPaths, overrides);
+            const sections = contracts.flatMap((contract) => {
+              const dependency = scriptDependents.find(({ file }) => file === contract.file);
+              const signatures = contract.exports.slice(0, 8).map(({ signature }) => `  ${signature}`);
+              return signatures.length > 0
+                ? [`${contract.file} (uses ${dependency?.symbols.join(', ') || 'workspace API'}):`, ...signatures]
+                : [];
+            });
+            if (sections.length > 0) {
+              const rendered = sections.join('\n');
+              core.push(
+                'DIRECT DOWNSTREAM CONTRACTS — TypeScript type-checker exports from files that use the queued edit target:',
+                rendered.length > 8_000 ? `${rendered.slice(0, 7_900)}\n… additional contracts omitted` : rendered
+              );
+            }
+          } catch (error) {
+            console.warn('[shadrox] downstream contract context unavailable', error);
+            core.push('DOWNSTREAM CONTRACTS: TypeScript contract extraction failed; dependent contracts were omitted.');
+          }
+        }
         if (signatureMap) {
           core.push(
             'REPO MAP — the folder as a reference graph, ranked by PageRank over it: the most-referenced definitions first, with their real lines. Files here are listed by shape only; read one before editing it:',
