@@ -8,6 +8,7 @@ import {
   mapCandidates,
   rankFiles,
   repoMapBudgetFor,
+  selectDependentFiles,
   type MapInputFile
 } from './repoMap';
 
@@ -57,6 +58,19 @@ test('edges follow real imports, so ranking has something to walk', () => {
   assert.ok(app?.out.has('src/helper.ts'), 'a relative import creates an edge');
   assert.ok(!app?.out.has('src/standalone.ts'));
   assert.ok(graph.get('src/helper.ts')?.refs.has('helper'), 'the defining file records who reads its symbol');
+});
+
+test('queued files surface direct consumers and the exported symbols they use', () => {
+  const files = [
+    file('src/math.ts', 'export function add(a: number, b: number): number { return a + b; }'),
+    file('src/main.ts', "import { add } from './math';\nexport function total() { return add(1, 2); }"),
+    file('src/other.ts', UNRELATED)
+  ];
+  assert.deepEqual(selectDependentFiles(files, ['src/math.ts']), [{
+    file: 'src/main.ts',
+    symbols: ['add'],
+    weight: 5
+  }]);
 });
 
 test('personalization pulls the referenced file up over an unrelated hub', () => {

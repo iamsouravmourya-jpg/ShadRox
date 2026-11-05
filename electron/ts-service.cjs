@@ -17,6 +17,9 @@ const MAX_SCRIPT_BYTES = 2 * 1024 * 1024;
 const MAX_DECLARATION_BYTES = 32 * 1024 * 1024;
 const MAX_DIAGNOSTICS = 500;
 const MAX_NAVIGATION_RESULTS = 100;
+const MAX_EXPORTED_CONTRACT_FILES = 16;
+const MAX_EXPORTED_CONTRACTS_PER_FILE = 20;
+const MAX_EXPORTED_TYPE_CHARS = 400;
 const MAX_OUTLINE_DEPTH = 3;
 /** A rename can touch every reference in the project, so it gets its own cap. */
 const MAX_RENAME_EDITS = 500;
@@ -754,6 +757,49 @@ function createSession(ts, root) {
       }).filter(Boolean);
     },
 
+    exportedContracts(relativePaths, overrideList) {
+      if (!Array.isArray(relativePaths) || relativePaths.length > MAX_EXPORTED_CONTRACT_FILES) {
+        throw new Error(`At most ${MAX_EXPORTED_CONTRACT_FILES} workspace files may be requested.`);
+      }
+      prepare(overrideList);
+      const contracts = [];
+      for (const relativePath of [...new Set(relativePaths)]) {
+        if (typeof relativePath !== 'string') throw new Error('Every contract path must be a string.');
+        const sourceFile = requestSourceFile(relativePath);
+        const program = service.getProgram();
+        if (!program) throw new Error('The TypeScript project is unavailable.');
+        const checker = program.getTypeChecker();
+        const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
+        const exports = moduleSymbol ? checker.getExportsOfModule(moduleSymbol) : [];
+        const entries = exports
+          .slice()
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .slice(0, MAX_EXPORTED_CONTRACTS_PER_FILE)
+          .map((symbol) => {
+            const declaration = symbol.declarations?.[0] ?? symbol.valueDeclaration ?? sourceFile;
+            const interfaceDeclaration = symbol.declarations?.find(ts.isInterfaceDeclaration);
+            let rawType = symbol.flags & ts.SymbolFlags.Type
+              ? checker.getDeclaredTypeOfSymbol(symbol)
+              : checker.getTypeOfSymbolAtLocation(symbol, declaration);
+            const typeAlias = symbol.declarations?.find(ts.isTypeAliasDeclaration);
+            if (typeAlias) rawType = checker.getTypeFromTypeNode(typeAlias.type);
+            const widenedType = checker.getBaseTypeOfLiteralType(checker.getWidenedType(rawType));
+            const renderedType = checker.typeToString(widenedType, sourceFile);
+            const signature = interfaceDeclaration
+              ? interfaceDeclaration.getText(sourceFile)
+              : `${symbol.name}: ${renderedType}`;
+            return {
+              name: symbol.name,
+              signature: signature.length > MAX_EXPORTED_TYPE_CHARS
+                ? `${signature.slice(0, MAX_EXPORTED_TYPE_CHARS - 1)}…`
+                : signature
+            };
+          });
+        contracts.push({ file: relativePath.replace(/\\/g, '/'), exports: entries });
+      }
+      return contracts;
+    },
+
     rename(relativePath, line, character, newName, overrideList) {
       prepare(overrideList);
       const requested = typeof newName === 'string' ? newName.trim() : '';
@@ -909,7 +955,7 @@ function createSession(ts, root) {
 }
 
 const WORKER_METHODS = new Set([
-  'diagnostics', 'definition', 'references', 'rename', 'codeActions', 'semanticTokens', 'outline', 'symbols'
+  'diagnostics', 'definition', 'references', 'exportedContracts', 'rename', 'codeActions', 'semanticTokens', 'outline', 'symbols'
 ]);
 
 function createWorkerSession(root) {
@@ -1023,6 +1069,8 @@ function createTypeScriptService({ getWorkspace }) {
       call(workspaceId, 'definition', [relativePath, line, character, overrides]),
     references: (workspaceId, relativePath, line, character, overrides) =>
       call(workspaceId, 'references', [relativePath, line, character, overrides]),
+    exportedContracts: (workspaceId, relativePaths, overrides) =>
+      call(workspaceId, 'exportedContracts', [relativePaths, overrides]),
     rename: (workspaceId, relativePath, line, character, newName, overrides) =>
       call(workspaceId, 'rename', [relativePath, line, character, newName, overrides]),
     codeActions: (workspaceId, relativePath, startLine, startCharacter, endLine, endCharacter, overrides) =>

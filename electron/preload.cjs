@@ -45,6 +45,7 @@ const shadroxDesktop = Object.freeze({
   diagnostics: (id, overrides, files) => ipcRenderer.invoke('ts:diagnostics', id, overrides, files),
   definition: (id, path, line, character, overrides) => ipcRenderer.invoke('ts:definition', id, path, line, character, overrides),
   references: (id, path, line, character, overrides) => ipcRenderer.invoke('ts:references', id, path, line, character, overrides),
+  exportedContracts: (id, paths, overrides) => ipcRenderer.invoke('ts:exported-contracts', id, paths, overrides),
   rename: (id, path, line, character, newName, overrides) => ipcRenderer.invoke('ts:rename', id, path, line, character, newName, overrides),
   codeActions: (id, path, startLine, startCharacter, endLine, endCharacter, overrides) =>
     ipcRenderer.invoke('ts:code-actions', id, path, startLine, startCharacter, endLine, endCharacter, overrides),

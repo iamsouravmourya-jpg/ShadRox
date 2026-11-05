@@ -1,4 +1,5 @@
 import type { ToolCall } from './tools';
+import { scrubWorkspaceText } from '../envSafety';
 
 /**
  * The wire format for a tool round.
@@ -128,8 +129,8 @@ export function serializeResults(results: Array<{ name: string; ok: boolean; con
   return `\`\`\`${RESULT_FENCE}\n${JSON.stringify(payload, null, 1)}\n\`\`\``;
 }
 
-function markUntrustedData(content: string): string {
-  const escaped = content
+export function markUntrustedData(content: string): string {
+  const escaped = scrubWorkspaceText(content)
     .replaceAll(UNTRUSTED_DATA_BEGIN, `\\${UNTRUSTED_DATA_BEGIN}`)
     .replaceAll(UNTRUSTED_DATA_END, `\\${UNTRUSTED_DATA_END}`);
   return `${UNTRUSTED_DATA_BEGIN}\n${escaped}\n${UNTRUSTED_DATA_END}`;

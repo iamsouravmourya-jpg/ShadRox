@@ -90,10 +90,17 @@ const REDACT_PATTERNS: RegExp[] = [
   // `key=`/`apiKey=` style query pairs, with or without a trailing delimiter.
   /\b[a-z0-9_-]*api[_-]?key\s*[:=]\s*[^\s"',}&]+/gi,
   /\bkey\s*=\s*[^\s"',}&]+/gi,
+  // Labeled pairs whose names do not contain "key": a GitHub error quotes the
+  // token bare, so a pair-shaped rule alone leaves the credential intact.
+  /\b(?:access[_-]?key[_-]?id|secret[_-]?access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|personal[_-]?access[_-]?token)\s*[:=]\s*[^\s"',}&]+/gi,
   /\bAIza[0-9A-Za-z_-]{4,}/g,
   /\bAQ\.[0-9A-Za-z_-]{4,}/g,
   /\bgsk_[0-9A-Za-z_-]{4,}/g,
   /\bsk-[0-9A-Za-z_-]{4,}/g,
+  // GitHub token families and AWS access-key IDs are matched on shape: upstream
+  // error text embeds them without any surrounding `name=value` syntax.
+  /\b(?:gh[pousr]_[0-9A-Za-z]{20,}|github_pat_[0-9A-Za-z_]{20,})/g,
+  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
   /\bbearer\s+[0-9A-Za-z._-]{8,}/gi,
   // Never describe the outgoing request line — it is where the key lives.
   /\bhttps?:\/\/\S+/gi

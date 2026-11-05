@@ -19,6 +19,9 @@
  * errors and never rewrites.
  */
 
+import { markUntrustedData } from '../agent/toolProtocol';
+import { scrubWorkspaceText } from '../envSafety';
+
 /**
  * Mention regex (ported verbatim from cline's context-mentions.ts):
  * - `@` — the mention must start with '@'.
@@ -115,7 +118,7 @@ async function resolveMention(
       if (!body) return null;
       return {
         phrase: 'Workspace Problems (see below for diagnostics)',
-        block: `<problems>\n${clipBlock(body, maxCharsPerBlock)}\n</problems>`
+        block: `<problems>\n${markUntrustedData(clipBlock(scrubWorkspaceText(body), maxCharsPerBlock))}\n</problems>`
       };
     }
     if (token === 'git-changes') {
@@ -124,7 +127,7 @@ async function resolveMention(
       if (!body) return null;
       return {
         phrase: 'Working directory changes (see below for details)',
-        block: `<git_changes>\n${clipBlock(body, maxCharsPerBlock)}\n</git_changes>`
+        block: `<git_changes>\n${markUntrustedData(clipBlock(scrubWorkspaceText(body), maxCharsPerBlock))}\n</git_changes>`
       };
     }
     // @terminal is in the grammar but this app has no read-only terminal
@@ -141,7 +144,7 @@ async function resolveMention(
         const listing = entries.length > 0 ? entries.join('\n') : '(empty folder)';
         return {
           phrase: `'${relPath}' (see below for folder content)`,
-          block: `<folder_content path="${escapeAttr(relPath)}">\n${clipBlock(listing, maxCharsPerBlock)}\n</folder_content>`
+          block: `<folder_content path="${escapeAttr(relPath)}">\n${markUntrustedData(clipBlock(scrubWorkspaceText(listing), maxCharsPerBlock))}\n</folder_content>`
         };
       }
       if (!sources.readFile) return null;
@@ -149,7 +152,7 @@ async function resolveMention(
       if (content === null || content === undefined) return null;
       return {
         phrase: `'${relPath}' (see below for file content)`,
-        block: `<file_content path="${escapeAttr(relPath)}">\n${content.length > 0 ? clipBlock(content, maxCharsPerBlock) : '(empty file)'}\n</file_content>`
+        block: `<file_content path="${escapeAttr(relPath)}">\n${markUntrustedData(clipBlock(scrubWorkspaceText(content.length > 0 ? content : '(empty file)'), maxCharsPerBlock))}\n</file_content>`
       };
     }
     return null;

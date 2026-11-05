@@ -23,12 +23,22 @@ A native desktop workspace for working on local projects with an editor, Markdow
 
 > **ShadRox is beta software (v0.0.6).** It is not a mature replacement for a general-purpose IDE. Agent output and model-generated edits can be incorrect — inspect proposed changes and keep backups or use Git for important work.
 
-**New in v0.0.6**
+**In the v0.0.6 release**
 - **Assistant shell access.** The agent can run a command in the opened folder and read its real exit code and output, so it can start a build, run tests, or stop a process instead of guessing.
 - **Verified writes.** After applying edits, ShadRox re-reads the files and only reports a save when the bytes on disk actually changed.
 - **Redesigned replies.** Assistant answers render as cards with headings, tables, quotes, editor-style code blocks, and one-click copy.
 - **Self-healing preview.** Preview servers left behind by a force-closed app and stale Next.js dev locks are detected and cleaned up automatically the next time the same project starts, so ports stop getting stuck.
 - **New logo.** A refreshed shield-and-ribbon mark ships across the app, installer, and [landing page](https://www.shadrox.cyou).
+
+**Additional implementation in this source checkout**
+
+The repository includes work beyond the downloadable v0.0.6 release. Some of it is still uncommitted, so these changes are not necessarily present in an installer:
+- **Workspace consent tracking.** Reopening a recent folder now verifies the path was previously opened via a system dialog; unknown paths prompt a confirmation before mounting.
+- **Human approval for agent commands.** Assistant-issued shell commands ask for an explicit, one-time approval in the desktop app; the workspace is checked again before the approved command runs.
+- **Credential scrubbing.** Provider error messages and agent command environments are scrubbed for GitHub tokens, AWS access keys, and other credential-shaped values.
+- **Model-aware context budgets.** A best-effort model capability registry supplies context-window and output limits used when fitting prompts.
+- **Machine Delta core.** Bounded snapshot, inspect, and explicit restore plumbing covers captured workspace files, selected local Git state, and ShadRox-owned previews. This is not a full-machine restore, and a user-facing UI is not wired up yet.
+- **DAP debug rails.** Debug Adapter Protocol framing, session lifecycle, and adapter infrastructure are present; breakpoint and call-stack UI is not implemented yet.
 
 ## What is ShadRox?
 
@@ -56,6 +66,8 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 | 📝 | **Rules & skills** | Load project conventions from `SHADROX.md`, `AGENTS.md`, `QODER.md`, `.cursorrules`, and `.shadrox/rules/*.md`; reusable skills live under `.shadrox/skills/`. |
 | 🔗 | **GitHub integration** | Validate tokens and push code from the app; a repository-creation endpoint ships with the API layer. |
 | 🔧 | **Plugins & automations** | Use declarative workspace plugins and scheduled or webhook-triggered automations. |
+| ⏪ | **Machine Delta core** | Main-process snapshot, inspection, and explicit restore primitives for bounded workspace, local Git, and ShadRox-owned preview changes. Not a full-machine restore; the renderer UI is not wired up yet. |
+| 🐛 | **Debug rails (DAP)** | Debug Protocol framing and session/adapter infrastructure are in place. Breakpoint and call-stack UI is not implemented yet. |
 | 🔄 | **Auto-updates** | The app checks for releases and installs downloaded updates when you restart or quit. |
 
 ## Architecture
@@ -71,6 +83,7 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 │  ┌──────────┐  ┌────────────┐  ┌──────────────────────────────┐  │
 │  │ Updater   │  │ Git Ops    │  │ Automation Webhook           │  │
 │  │(auto-update)│ │(create/push)│  │ (scheduler + HTTP triggers)  │  │
+│  │ Workspace consent · command approval · Machine Delta core       │
 │  └──────────┘  └────────────┘  └──────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
               ▲ IPC (context-isolated, preload bridge) ▼
@@ -274,7 +287,7 @@ npm run dev:landing
 
 ```
 shadrox/
-├── electron/           # Main process: IPC, preview runtime, terminal, security, MCP, updater
+├── electron/           # Main process: IPC, workspace consent, command approval, preview, terminal, MCP, updater
 ├── src/
 │   ├── components/      # React UI: editor, chat, preview, terminal, settings, explorer
 │   ├── hooks/           # React hooks
@@ -284,6 +297,8 @@ shadrox/
 │       ├── autonomy/     # Autonomous engine: DAG, run-loop, confinement, budget
 │       ├── automations/ # Schedulers, webhooks, declarative automations
 │       ├── editor/      # Search/replace, hunks, semantic tokens, references
+│       ├── debug/       # DAP protocol framing and adapter/session rails (no debugger UI yet)
+│       ├── machine/     # Machine Delta support modules
 │       ├── plugins/     # Plugin manifest, loader, hook engine
 │       ├── preview/     # Preview instrumentation experiments (shipped click-to-source lives in src/lib/previewSource.ts)
 │       └── terminal/    # Terminal sessions, ring buffer, dock height

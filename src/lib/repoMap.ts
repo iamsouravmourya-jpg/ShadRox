@@ -494,6 +494,49 @@ export function buildGraph(
   return graph;
 }
 
+export interface DependentFileContext {
+  file: string;
+  symbols: string[];
+  weight: number;
+}
+
+/** Selects direct consumers of queued files from the same reference graph as the repo map. */
+export function selectDependentFiles(
+  files: readonly MapInputFile[],
+  targetPaths: readonly string[],
+  signaturesByFile?: ReadonlyMap<string, Signature[]>,
+  limit = 8
+): DependentFileContext[] {
+  if (files.length === 0 || targetPaths.length === 0 || limit <= 0) return [];
+
+  const graph = buildGraph(files, signaturesByFile);
+  const targets = new Set(targetPaths.map(normalizePath));
+  const consumers = new Map<string, { weight: number; symbols: Set<string> }>();
+
+  for (const target of targets) {
+    const node = graph.get(target);
+    if (!node) continue;
+    for (const [symbol, readers] of node.refs) {
+      for (const [file, count] of readers) {
+        if (targets.has(file)) continue;
+        const entry = consumers.get(file) ?? { weight: 0, symbols: new Set<string>() };
+        entry.weight += count;
+        entry.symbols.add(symbol);
+        consumers.set(file, entry);
+      }
+    }
+  }
+
+  return [...consumers]
+    .map(([file, entry]) => ({
+      file,
+      symbols: [...entry.symbols].sort(),
+      weight: entry.weight
+    }))
+    .sort((a, b) => b.weight - a.weight || a.file.localeCompare(b.file))
+    .slice(0, limit);
+}
+
 export function indexSignatures(files: readonly MapInputFile[]): Map<string, Signature[]> {
   const out = new Map<string, Signature[]>();
   for (const file of files) out.set(normalizePath(file.name), extractSignatures(file.name, file.content));

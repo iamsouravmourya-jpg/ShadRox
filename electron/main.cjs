@@ -10,6 +10,12 @@ const chokidar = require('chokidar');
 let pty = null;
 try { pty = require('node-pty'); } catch { /* PTY support may be unavailable in an unbuilt development install. */ }
 const { createWorkspaceAccess } = require('./workspace.cjs');
+const { runWithCommandApproval } = require('./command-approval.cjs');
+const {
+  createWorkspaceConsent,
+  resolveFileReopen,
+  resolveFolderReopen
+} = require('./workspace-consent.cjs');
 const {
   buildGitArgv,
   buildIsolatedGitEnv,
@@ -78,6 +84,7 @@ protocol.registerSchemesAsPrivileged([{
 }]);
 
 const workspaceAccess = createWorkspaceAccess();
+const workspaceConsent = createWorkspaceConsent();
 const workspaceWatchers = new Map();
 const terminalSessions = new Map();
 let activeWorkspaceId = null;
@@ -1470,9 +1477,15 @@ function registerAuthHandlers() {
  * 1-click recent reopen and a second launch's command-line folder.
  */
 async function openFolderWorkspace(rootPath) {
-  await previewRuntime.stopAll();
-  const previousWorkspaceId = activeWorkspaceId;
   const opened = await workspaceAccess.openFolder(rootPath);
+  try {
+    await workspaceConsent.grantFolder(opened.rootPath);
+    await previewRuntime.stopAll();
+  } catch (error) {
+    workspaceAccess.closeWorkspace(opened.workspaceId);
+    throw error;
+  }
+  const previousWorkspaceId = activeWorkspaceId;
   if (previousWorkspaceId) {
     stopWorkspaceServices(previousWorkspaceId);
     workspaceAccess.closeWorkspace(previousWorkspaceId);
@@ -1511,16 +1524,21 @@ function registerIpcHandlers() {
       filters: [{ name: 'Code and text files', extensions: ['*'] }]
     });
     if (result.canceled || result.filePaths.length === 0) return null;
-    await previewRuntime.stopAll();
     const previousWorkspaceId = activeWorkspaceId;
     const opened = await workspaceAccess.openFiles(result.filePaths);
-    if (opened) {
-      if (previousWorkspaceId) {
-        stopWorkspaceServices(previousWorkspaceId);
-        workspaceAccess.closeWorkspace(previousWorkspaceId);
-      }
-      activeWorkspaceId = opened.workspaceId;
+    if (!opened) return null;
+    try {
+      await workspaceConsent.grantFiles(opened.filePaths);
+      await previewRuntime.stopAll();
+    } catch (error) {
+      workspaceAccess.closeWorkspace(opened.workspaceId);
+      throw error;
     }
+    if (previousWorkspaceId) {
+      stopWorkspaceServices(previousWorkspaceId);
+      workspaceAccess.closeWorkspace(previousWorkspaceId);
+    }
+    activeWorkspaceId = opened.workspaceId;
     return opened;
   });
 
@@ -1528,18 +1546,18 @@ function registerIpcHandlers() {
     assertTrustedRenderer(event);
     if (!target || typeof target !== 'object') throw new Error('Invalid recent workspace.');
 
-    await previewRuntime.stopAll();
-    const previousWorkspaceId = activeWorkspaceId;
-
     if (target.kind === 'folder') {
       if (typeof target.path !== 'string' || target.path.length === 0) {
         throw new Error('This recent folder has no stored location.');
       }
-      const stat = await fs.promises.stat(target.path).catch(() => null);
-      if (!stat?.isDirectory()) {
-        throw new Error('That folder no longer exists. It may have been moved, renamed, or deleted.');
-      }
-      return openFolderWorkspace(target.path);
+      const selectedPath = await resolveFolderReopen(target.path, workspaceConsent, () =>
+        dialog.showOpenDialog(mainWindow, {
+          title: 'Select a workspace folder to reopen',
+          properties: ['openDirectory']
+        })
+      );
+      if (!selectedPath) return null;
+      return openFolderWorkspace(selectedPath);
     }
 
     if (target.kind === 'file') {
@@ -1547,12 +1565,28 @@ function registerIpcHandlers() {
         ? target.filePaths.filter((entry) => typeof entry === 'string' && entry.length > 0)
         : [];
       if (filePaths.length === 0) throw new Error('This recent entry has no stored file paths.');
-      for (const filePath of filePaths) {
+      const selectedPaths = await resolveFileReopen(filePaths, workspaceConsent, () =>
+        dialog.showOpenDialog(mainWindow, {
+          title: 'Select code files to reopen',
+          properties: ['openFile', 'multiSelections'],
+          filters: [{ name: 'Code and text files', extensions: ['*'] }]
+        })
+      );
+      if (!selectedPaths) return null;
+      for (const filePath of selectedPaths) {
         const stat = await fs.promises.stat(filePath).catch(() => null);
         if (!stat?.isFile()) throw new Error(`${path.basename(filePath)} no longer exists.`);
       }
-      const opened = await workspaceAccess.openFiles(filePaths);
+      const previousWorkspaceId = activeWorkspaceId;
+      const opened = await workspaceAccess.openFiles(selectedPaths);
       if (!opened) throw new Error('Those files could not be reopened.');
+      try {
+        await workspaceConsent.grantFiles(opened.filePaths);
+        await previewRuntime.stopAll();
+      } catch (error) {
+        workspaceAccess.closeWorkspace(opened.workspaceId);
+        throw error;
+      }
       if (previousWorkspaceId) {
         stopWorkspaceServices(previousWorkspaceId);
         workspaceAccess.closeWorkspace(previousWorkspaceId);
@@ -1945,11 +1979,30 @@ function registerIpcHandlers() {
       throw new Error('Enter a command between 1 and 5000 characters.');
     }
 
-    // The renderer asks before this is ever reached: a command from the assistant
-    // or a plugin shows an inline Run control in the dock, and a second native
-    // dialog on top of that choice only gets dismissed.
     const started = Date.now();
-    const run = await executeCommand(command, workspace.root);
+    const approval = await runWithCommandApproval({
+      workspaceId,
+      command,
+      workspace,
+      showApproval: async ({ command: approvedCommand, cwd }) => {
+        const choice = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          buttons: ['Block command', 'Run once'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+          title: 'Approve command execution',
+          message: 'An agent or workspace action is requesting a shell command.',
+          detail: `Review the exact command and working directory. Commands can read, modify, or execute files in this workspace.\n\n${approvedCommand}\n\nWorking directory:\n${cwd}`
+        });
+        return choice.response === 1;
+      },
+      getWorkspace: (id) => workspaceAccess.getWorkspace(id),
+      runCommand: executeCommand
+    });
+    const run = approval.approved
+      ? approval.result
+      : { stdout: '', stderr: approval.reason, exitCode: 1, deniedReason: approval.reason };
     mainWindow?.webContents.send('terminal:run', {
       workspaceId,
       command,
@@ -2122,6 +2175,11 @@ function registerIpcHandlers() {
   ipcMain.handle('ts:references', async (event, workspaceId, relativePath, line, character, overrides) => {
     assertTrustedRenderer(event);
     return typeScriptService.references(workspaceId, relativePath, line, character, overrides);
+  });
+
+  ipcMain.handle('ts:exported-contracts', async (event, workspaceId, relativePaths, overrides) => {
+    assertTrustedRenderer(event);
+    return typeScriptService.exportedContracts(workspaceId, relativePaths, overrides);
   });
 
   ipcMain.handle('ts:rename', async (event, workspaceId, relativePath, line, character, newName, overrides) => {

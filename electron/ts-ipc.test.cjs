@@ -10,6 +10,7 @@ const channels = [
   { channel: 'ts:diagnostics', method: 'diagnostics' },
   { channel: 'ts:definition', method: 'definition' },
   { channel: 'ts:references', method: 'references' },
+  { channel: 'ts:exported-contracts', method: 'exportedContracts' },
   { channel: 'ts:outline', method: 'outline' },
   { channel: 'ts:workspace-symbols', method: 'workspaceSymbols' }
 ];

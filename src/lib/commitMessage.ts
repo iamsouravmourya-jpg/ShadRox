@@ -4,6 +4,7 @@
  * browser so the feature works everywhere.
  */
 import { getDesktopBridge } from './desktop';
+import { scrubWorkspaceText } from './envSafety';
 import type { ProviderId } from './providers';
 
 export interface CommitAiOptions {
@@ -47,7 +48,12 @@ export async function generateCommitMessage(
   const response = await fetch('/api/ai/commit-message', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...source, ...ai })
+    body: JSON.stringify({
+      status: scrubWorkspaceText(source.status),
+      diff: scrubWorkspaceText(source.diff),
+      log: scrubWorkspaceText(source.log),
+      ...ai
+    })
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data?.error || 'Commit message generation failed.');

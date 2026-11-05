@@ -124,6 +124,19 @@ test('a successful completion is served from cache on the next keystroke', async
   }
 });
 
+test('completion code context is scrubbed before the provider request', async () => {
+  clearFimCache();
+  const token = `ghp_${'A'.repeat(36)}`;
+  const fetchStub = stubFetch(async () => okResponse('  = 1;'));
+  try {
+    await requestFimCompletion(CONTEXT, `const API_KEY = "${token}";`, '');
+    assert.ok(!fetchStub.bodies[0].prefix.includes(token));
+    assert.match(fetchStub.bodies[0].prefix, /API_KEY = \[REDACTED_SECRET\]/);
+  } finally {
+    fetchStub.restore();
+  }
+});
+
 test('an auth failure is not cached, so Tab can work again after the key is fixed', async () => {
   clearFimCache();
   let failing = true;

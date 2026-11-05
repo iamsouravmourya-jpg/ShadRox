@@ -129,6 +129,26 @@ test('retrieval that would blow the window is dropped, not sent', () => {
   assert.ok(estimateTokens(fit.system.text) + tokensOf(historyChars) <= contextWindow);
 });
 
+test('automatically included core, retrieved chunks, and file excerpts are scrubbed', () => {
+  const github = `ghp_${'A'.repeat(36)}`;
+  const aws = 'AKIAABCDEFGHIJKLMNOP';
+  const fit = fitSystemContext(makeSystem({
+    core: ['Authorization: Bearer ' + 'b'.repeat(24)],
+    chunks: [`cloud credential ${aws}`],
+    files: [{
+      label: 'Active file (src/config.ts):',
+      language: 'ts',
+      content: `export const API_KEY = "${github}";`,
+      maxChars: 1_000
+    }]
+  }), 10_000);
+
+  for (const secret of [github, aws, 'Bearer ' + 'b'.repeat(24)]) {
+    assert.ok(!fit.text.includes(secret), fit.text);
+  }
+  assert.match(fit.text, /API_KEY = \[REDACTED_SECRET\]/);
+});
+
 test('degrades in priority order: chunks, then file excerpt, then truncate', () => {
   const cap = systemInstructionBudgetChars(8_000);
   // Core fills most of the cap, so *both* the chunks and the file must go.

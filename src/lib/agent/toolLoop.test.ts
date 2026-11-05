@@ -558,12 +558,12 @@ test('the chat can run a real command and reads its exit code and output', async
   });
 });
 
-test('a command that can modify files is held without confirm: true', async () => {
-  let ran = false;
+test('a command denied by the native approval gate is reported as refused', async () => {
+  let requested = false;
   await withBridge({
     runCommand: async () => {
-      ran = true;
-      return { stdout: '', stderr: '', exitCode: 0 };
+      requested = true;
+      return { stdout: '', stderr: 'Command was not approved.', exitCode: 1, deniedReason: 'Command was not approved.' };
     }
   }, async () => {
     const model = scripted([toolBlock([{ name: 'run_command', args: { command: 'rm -rf src' } }]), 'I did not touch it.']);
@@ -573,8 +573,9 @@ test('a command that can modify files is held without confirm: true', async () =
       aborted: () => false,
       stream: model.stream
     });
-    assert.equal(ran, false, 'the guard stopped the command before the shell');
+    assert.equal(requested, true, 'the command reached the main-process approval boundary');
     assert.equal(result.activity[0].ok, false);
     assert.equal(result.activity[0].refused, true);
+    assert.match(result.activity[0].output ?? '', /not approved/);
   });
 });

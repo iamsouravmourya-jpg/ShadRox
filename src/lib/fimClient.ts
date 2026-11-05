@@ -18,6 +18,8 @@
  *    switching provider, base URL, model or key starts clean.
  */
 
+import { scrubWorkspaceText } from './envSafety';
+
 export interface FimRequestContext {
   provider: string;
   /** Base URL of a BYOK custom endpoint; ignored by the built-in providers. */
@@ -168,7 +170,9 @@ export async function requestFimCompletion(
   suffix: string,
   signal?: AbortSignal
 ): Promise<FimResult> {
-  const key = fimCacheKey(context, prefix, suffix);
+  const safePrefix = scrubWorkspaceText(prefix);
+  const safeSuffix = scrubWorkspaceText(suffix);
+  const key = fimCacheKey(context, safePrefix, safeSuffix);
   const hit = cache.get(key);
   if (hit) return hit;
 
@@ -198,8 +202,8 @@ export async function requestFimCompletion(
           model: context.model,
           apiKey: context.apiKey,
           language: context.language,
-          prefix,
-          suffix
+          prefix: safePrefix,
+          suffix: safeSuffix
         })
       });
       if (!response.ok) {

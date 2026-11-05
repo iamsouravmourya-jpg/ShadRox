@@ -40,14 +40,23 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
-/** Tokens kept aside so the model always has room to answer. */
-export function reservedOutputTokens(contextWindow: number): number {
+/** Tokens kept aside so the model always has room to answer.
+ *
+ * When the caller knows the model's hard `maxOutput` ceiling (from
+ * `resolveCapabilities`), that value is used directly — it is always more
+ * accurate than "half the window". The floor still applies so we never
+ * reserve less than `RESERVED_OUTPUT_FLOOR_TOKENS`.
+ */
+export function reservedOutputTokens(contextWindow: number, maxOutput?: number): number {
+  if (maxOutput !== undefined && maxOutput > 0) {
+    return Math.max(maxOutput, RESERVED_OUTPUT_FLOOR_TOKENS);
+  }
   return Math.max(Math.floor(contextWindow / 2), RESERVED_OUTPUT_FLOOR_TOKENS);
 }
 
 /** Maximum characters the request (messages) may occupy for a given model. */
-export function messageBudgetChars(contextWindow: number): number {
-  const reserved = reservedOutputTokens(contextWindow);
+export function messageBudgetChars(contextWindow: number, maxOutput?: number): number {
+  const reserved = reservedOutputTokens(contextWindow, maxOutput);
   return Math.max((contextWindow - reserved) * CHARS_PER_TOKEN, MIN_BUDGET_CHARS);
 }
 
@@ -66,12 +75,16 @@ function indexMultiplier(index: number, count: number): number {
 /**
  * Trims message history into the model's budget using Void's weighted greedy
  * algorithm. Returns a new array; the input is never mutated.
+ *
+ * Pass `maxOutput` (from `resolveCapabilities`) so the output reservation uses
+ * the real per-model ceiling rather than the "half the window" heuristic.
  */
 export function trimMessagesToBudget(
   messages: BudgetedMessage[],
-  contextWindow: number
+  contextWindow: number,
+  maxOutput?: number,
 ): TrimResult {
-  const budget = messageBudgetChars(contextWindow);
+  const budget = messageBudgetChars(contextWindow, maxOutput);
   const result = messages.map((message) => ({ ...message }));
   let total = result.reduce((sum, message) => sum + message.content.length, 0);
   let trimmed = 0;
@@ -134,6 +147,8 @@ export function capSystemInstruction(text: string, maxChars = MAX_SYSTEM_INSTRUC
  * arithmetic on the client so we never send a request we already know is too
  * big, and degrades the instruction instead of failing.
  * ------------------------------------------------------------------ */
+
+import { scrubWorkspaceText } from './envSafety';
 
 /** Share of the input budget the system instruction may occupy (server parity). */
 export const SYSTEM_INSTRUCTION_RATIO = 0.6;
@@ -210,13 +225,13 @@ function renderFile(excerpt: SystemFileExcerpt, content: string, truncated: bool
  * Never throws and never returns something over budget.
  */
 export function fitSystemContext(system: SystemContext, maxChars: number): FittedSystemContext {
-  const core = system.core.filter((section) => section.trim().length > 0);
-  let kept = system.chunks.slice();
+  const core = system.core.map(scrubWorkspaceText).filter((section) => section.trim().length > 0);
+  let kept = system.chunks.map(scrubWorkspaceText);
   const files = system.files.map((excerpt) => ({
     excerpt,
-    content: excerpt.content.slice(0, excerpt.maxChars),
+    content: scrubWorkspaceText(excerpt.content).slice(0, excerpt.maxChars),
     // The excerpt as the caller asked for it, before any budget was applied.
-    wanted: Math.min(excerpt.content.length, excerpt.maxChars)
+    wanted: Math.min(scrubWorkspaceText(excerpt.content).length, excerpt.maxChars)
   }));
 
   const render = () => {
@@ -334,4 +349,3 @@ export function contextFitNotice(fit: ChatRequestFit, modelLabel?: string): stri
 
   return `Context window is full${modelLabel ? ` for ${modelLabel}` : ''}: ${parts.join(' + ')} to make room for the reply.`;
 }
-
