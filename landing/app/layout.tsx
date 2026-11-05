@@ -7,9 +7,8 @@ const SITE_URL = 'https://www.shadrox.cyou'
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: 'ShadRox — Your project, code, AI, and preview in one workspace',
-  description: 'A native desktop workspace for local projects with a code editor, Markdown preview, BYOK AI chat, project preview, Git tools, and an integrated terminal.',
-  keywords: ['ShadRox', 'AI coding workspace', 'desktop IDE', 'BYOK', 'Electron', 'local-first', 'Sourav Maurya'],
+  title: 'ShadRox — Project files, editor, AI chat, preview, Git and terminal in one Windows app',
+  description: 'A native Windows workspace for local projects: focused code editor, bring-your-own-key AI chat, live project preview, Git tools and an integrated terminal. Files stay on your computer; only the context you choose goes to your AI provider.',
   authors: [{ name: 'Sourav Maurya', url: 'https://github.com/iamsouravmourya-jpg' }],
   creator: 'Sourav Maurya',
   publisher: 'ShadRox',
@@ -18,15 +17,15 @@ export const metadata: Metadata = {
     type: 'website',
     url: SITE_URL,
     siteName: 'ShadRox',
-    title: 'ShadRox — Your project, code, AI, and preview in one workspace',
-    description: 'A native desktop workspace for local projects with a code editor, Markdown preview, BYOK AI chat, project preview, Git tools, and an integrated terminal.',
-    images: [{ url: '/icon-512.png', width: 512, height: 512, alt: 'ShadRox logo' }],
+    title: 'ShadRox — Project files, editor, AI chat, preview, Git and terminal in one Windows app',
+    description: 'A native Windows workspace for local projects. Files stay on your computer; only the context you choose goes to your AI provider.',
+    images: [{ url: '/og.png', width: 1200, height: 630, alt: 'ShadRox — project files, editor, AI chat, preview, Git and terminal in one Windows app' }],
   },
   twitter: {
-    card: 'summary',
-    title: 'ShadRox — Your project, code, AI, and preview in one workspace',
-    description: 'A native desktop workspace for local projects with a code editor, Markdown preview, BYOK AI chat, project preview, Git tools, and an integrated terminal.',
-    images: ['/icon-512.png'],
+    card: 'summary_large_image',
+    title: 'ShadRox — Project files, editor, AI chat, preview, Git and terminal in one Windows app',
+    description: 'A native Windows workspace for local projects. Files stay on your computer; only the context you choose goes to your AI provider.',
+    images: ['/og.png'],
   },
   icons: {
     icon: [
@@ -81,48 +80,13 @@ const jsonLd = {
       applicationCategory: 'DeveloperApplication',
       operatingSystem: 'Windows 10, Windows 11 (64-bit)',
       softwareVersion: '0.0.5',
+      dateModified: '2026-11-05',
       url: SITE_URL,
       downloadUrl: 'https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.5-Setup.exe',
+      offers: { '@type': 'Offer', price: '0', priceCurrency: 'INR', availability: 'https://schema.org/InStock' },
       image: `${SITE_URL}/icon-512.png`,
       author: { '@id': `${SITE_URL}/#sourav-maurya` },
       description: 'A native desktop workspace for local projects with a code editor, Markdown preview, BYOK AI chat, project preview, Git tools, and an integrated terminal.',
-    },
-    {
-      '@type': 'FAQPage',
-      mainEntity: [
-        {
-          '@type': 'Question',
-          name: 'Who is behind ShadRox?',
-          acceptedAnswer: {
-            '@type': 'Answer',
-            text: 'ShadRox is a solo project built and maintained by Sourav Maurya, a full-stack developer and AI engineer based in Delhi, India.',
-          },
-        },
-        {
-          '@type': 'Question',
-          name: 'Can I download ShadRox now?',
-          acceptedAnswer: {
-            '@type': 'Answer',
-            text: 'Yes. The Download for Windows button links to the latest beta installer for Windows 10 or 11, 64-bit. Google sign-in is required when you first open the app. Windows may show a SmartScreen warning because the installer is not code-signed.',
-          },
-        },
-        {
-          '@type': 'Question',
-          name: 'Does ShadRox store my project in the cloud?',
-          acceptedAnswer: {
-            '@type': 'Answer',
-            text: 'No. The desktop workspace opens and edits project files on your computer. There is no ShadRox cloud project sync. When you ask the AI for help, the prompt and the project context you include are sent to the provider you selected.',
-          },
-        },
-        {
-          '@type': 'Question',
-          name: 'Which AI providers are supported?',
-          acceptedAnswer: {
-            '@type': 'Answer',
-            text: 'The current app supports Gemini, Groq, and custom OpenAI-compatible endpoints, including compatible local gateways. Model availability and limits depend on your provider account.',
-          },
-        },
-      ],
     },
   ],
 }
