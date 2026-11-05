@@ -428,6 +428,8 @@ export interface ShadRoxDesktopAPI {
   finishMachineTurn: (workspaceId: string, checkpointId: string) => Promise<import('./machine/delta').MachineDelta | null>;
   inspectMachineTurn: (workspaceId: string, checkpointId: string) => Promise<import('./machine/delta').MachineDelta | null>;
   restoreMachineTurn: (workspaceId: string, checkpointId: string) => Promise<{ ok: boolean; message: string; report: import('./machine/delta').MachineDelta }>;
+  exportMachineReceipt: (workspaceId: string, checkpointId: string) => Promise<import('./machine/receipt').MachineReceiptExport>;
+  verifyMachineReceipt: (workspaceId: string, receiptId: string) => Promise<import('./machine/receipt').MachineReceiptVerification>;
   /** Static pre-apply check of proposed file contents (syntax, JSON, markup). */
   verifyChangeSet: (workspaceId: string, files: VerifyChangeFile[]) => Promise<VerifyChangeResult>;
   runCommand: (workspaceId: string, command: string) => Promise<DesktopCommandResult>;
