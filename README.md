@@ -8,20 +8,25 @@
 
 A native desktop workspace for working on local projects with an editor, Markdown preview, BYOK AI chat, project preview, Git tools, and an integrated terminal.
 
-[![Version](https://img.shields.io/badge/version-0.0.5-violet?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
+[![Version](https://img.shields.io/badge/version-0.0.6-violet?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0d0f13?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
 [![License](https://img.shields.io/badge/license-Proprietary-orange?style=flat-square)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-44-47848F?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-[Download for Windows](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.5-Setup.exe) · [All Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Report an Issue](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
+[Download for Windows](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.6-Setup.exe) · [All Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Report an Issue](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
 
 </div>
 
 ---
 
-> **ShadRox is beta software (v0.0.5).** It is not a mature replacement for a general-purpose IDE. Agent output and model-generated edits can be incorrect — inspect proposed changes and keep backups or use Git for important work.
+> **ShadRox is beta software (v0.0.6).** It is not a mature replacement for a general-purpose IDE. Agent output and model-generated edits can be incorrect — inspect proposed changes and keep backups or use Git for important work.
+
+**New in v0.0.6**
+- **Assistant shell access.** The agent can run a command in the opened folder and read its real exit code and output, so it can start a build, run tests, or stop a process instead of guessing.
+- **Verified writes.** After applying edits, ShadRox re-reads the files and only reports a save when the bytes on disk actually changed.
+- **Redesigned replies.** Assistant answers render as cards with headings, tables, quotes, editor-style code blocks, and one-click copy.
 
 ## What is ShadRox?
 
@@ -36,9 +41,9 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 | 📁 | **Project Explorer** | Open a local folder or selected files, browse the workspace tree, and create, rename, or delete files and folders. Files are loaded as you open them. |
 | ✏️ | **Editor & Markdown preview** | CodeMirror 6 editing, split editor groups, pinned/reorderable tabs, quick open, outline, inline completions, and a one-click source/preview toggle for Markdown files. |
 | 🔍 | **Code navigation** | TypeScript diagnostics, go-to-definition, find references, rename, quick fixes, semantic highlighting, and workspace symbol search where supported. |
-| 💬 | **AI chat and queue** | Use Gemini, Groq, or a custom OpenAI-compatible endpoint. Queue follow-up messages while a turn is running; inspect proposed file changes and review supported diffs before applying. Dictate prompts with voice input. |
+| 💬 | **AI chat and queue** | Use Gemini, Groq, or a custom OpenAI-compatible endpoint. Replies render as cards with headings, tables, quotes, and copyable code blocks. Queue follow-up messages while a turn is running; inspect proposed file changes and review supported diffs before applying. Dictate prompts with voice input. |
 | ⌘ | **Command palette & quick edit** | Fuzzy-find files, workspace symbols, and commands from one palette; select code and press Ctrl+K for an inline AI edit; accept ghost-text completions powered by server-side FIM. |
-| 🤖 | **Bounded agent loop** | Multi-round tool use with native provider calls where supported and a text-protocol fallback. Built-in workspace tools list directories, read files, search names and text, inspect diagnostics and Git state, and outline files; every request also carries a compact repo map as context. Turns have tool and iteration limits. |
+| 🤖 | **Bounded agent loop** | Multi-round tool use with native provider calls where supported and a text-protocol fallback. Built-in workspace tools list directories, read files, search names and text, inspect diagnostics and Git state, outline files, and run one shell command with its real exit code; every request also carries a compact repo map as context. Turns have tool and iteration limits. |
 | 🚀 | **Multi-step runs and teams** | Plan larger work as tasks, run verification/repair stages, or coordinate specialist roles. These workflows are still beta; review results and keep backups. |
 | 🔌 | **MCP servers** | Connect user-configured Model Context Protocol servers. External tool calls require approval. |
 | 👁️ | **Local preview** | Preview Markdown, static sites, detected Node web projects, and Python/Go/PHP/Java/.NET backends in the app. Preview support and click-to-source depend on the project and server. |
@@ -106,17 +111,20 @@ Project files are edited locally on your disk. Only the prompt and the context y
 
 The agent is more than a one-shot text patch parser. It can request bounded rounds of workspace tools, receive their results, and continue reasoning.
 
-**Built-in workspace tools (read-only):**
+**Built-in workspace tools:**
 - Directory listing
 - File reads
 - Filename and text search
 - Diagnostics
 - Git state
 - File outlines
+- One shell command per call (`run_command`)
+
+`run_command` runs in the opened folder and returns the real exit code, stdout, and stderr, so the agent can start a build, run tests, inspect Git, or stop a process (including a server holding a port) instead of claiming a result it never saw. A command that can create, modify, or delete files — `rm`, `mv`, `git commit`, an install, output redirection to a file — is refused unless the model passes `confirm: true`, which it is instructed to use only when you asked for that change. Every assistant command and its result is echoed into the terminal panel.
 
 The model can also update its task plan and finish a turn explicitly. A turn is limited to **five tool rounds** by default, with up to six calls in a round.
 
-**File changes** are proposed through ShadRox's patch format and sent through a patch/review/apply pipeline — they are never arbitrary model-issued filesystem writes. Changes that are unsafe to apply automatically (edits to files the turn did not read, destructive rewrites) are held for review rather than silently written.
+**File changes** are proposed through ShadRox's patch format and sent through a patch/review/apply pipeline — they are never arbitrary model-issued filesystem writes. Changes that are unsafe to apply automatically (edits to files the turn did not read, destructive rewrites) are held for review rather than silently written. After applying, the app re-reads each file and reports a save only if the content on disk matches the proposed result.
 
 > Providers with native function calling use it for tool requests; ShadRox normalizes those calls into its bounded tool contract. A ShadRox-formatted text protocol is the fallback for providers that do not support native tools. The loop is an early implementation and can make mistakes.
 
@@ -186,7 +194,7 @@ The beta runs on **Bring Your Own Key (BYOK)**. Add a provider key in Settings; 
 
 Opening a project workspace automatically starts its detected preview script and may install missing dependencies. Check the detected project and run script before opening an untrusted workspace. Click-to-source works for static pages served through ShadRox, not external dev servers.
 
-The **integrated terminal** is an interactive shell rooted in the workspace with your computer's environment. Assistant-initiated commands use a separate approval-gated path with a credential-scrubbed environment — they do not get an interactive session.
+The **integrated terminal** is an interactive shell rooted in the workspace with your computer's environment. Assistant-initiated commands use a separate approval-gated path with a credential-scrubbed environment — they do not get an interactive session. The agent's `run_command` tool goes through that path too: one non-interactive command at a time, captured exit code and output, and an extra `confirm: true` gate before anything that can modify files.
 
 ## Tech Stack
 
@@ -315,7 +323,7 @@ Google sign-in through Supabase is required to enter the app. Supabase stores ac
 ## Beta Limitations
 
 - This is **beta software.** Agent output and model-generated edits can be incorrect; inspect diffs and retain backups.
-- Provider-native tool calls are used where supported, with ShadRox's text protocol as a fallback. Built-in workspace tools are read-only; edits use the patch pipeline.
+- Provider-native tool calls are used where supported, with ShadRox's text protocol as a fallback. Reads and inspections are unguarded; file edits go through the patch pipeline, and shell commands that can mutate files require the explicit `confirm: true` gate. The command guard is a blacklist, not a sandbox — it can miss indirect mutations.
 - Agent loops, autonomous runs, teams, plugins, and automations are evolving features; verify important work yourself.
 - Preview support is **project-dependent**; not every language, framework, or server configuration can be run in the preview pane.
 - Google sign-in and Supabase configuration are required for the desktop app. BYOK keys and access to models are the user's responsibility.
@@ -394,6 +402,6 @@ ShadRox is proprietary software. Copyright (c) 2026 Sourav Maurya. All rights re
 
 Built with care by [Sourav Maurya](https://github.com/iamsouravmourya-jpg)
 
-[Download](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.5-Setup.exe) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Issues](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
+[Download](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.6-Setup.exe) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Issues](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
 
 </div>
