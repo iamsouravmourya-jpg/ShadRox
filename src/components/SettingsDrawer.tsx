@@ -12,7 +12,6 @@ import {
   Loader2,
   Lock,
   Plus,
-  RotateCcw,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -27,6 +26,8 @@ import {
   getLockedPlanIds,
   getPlanEntitlementNote,
   getPlanMeta,
+  getPlanPriceDisplay,
+  getPlanStateLabel,
   isPlanSelectable
 } from '../lib/plans';
 import { isSharedKeyEligible } from '../lib/sharedKeyPolicy';
@@ -34,7 +35,7 @@ import { confirmAction } from '../lib/confirm';
 import { McpToolsSection } from './settings/McpToolsSection';
 import { PluginsSection } from './settings/PluginsSection';
 import { AutomationsSection } from './settings/AutomationsSection';
-import { getMonthlyUsage, resetMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
+import { getMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
 import type {
   GitHubRepo,
   GitHubUser,
@@ -276,13 +277,15 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
           </button>
         </header>
 
-        {/* Tabs */}
-        <nav className="shrink-0 flex overflow-x-auto border-b border-white/[0.07]">
+        {/* Tabs — wrapped rather than scrolled so every section stays reachable
+            at 1440px, where a single row used to clip the last tab. */}
+        <nav aria-label="Settings sections" className="flex shrink-0 flex-wrap border-b border-white/[0.07]">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               type="button"
               onClick={() => onTabChange(tab.id)}
+              aria-current={activeTab === tab.id ? 'page' : undefined}
               className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2.5 text-center text-xs transition-colors cursor-pointer ${
                 activeTab === tab.id
                   ? 'border-violet-300 font-medium text-white'
@@ -576,15 +579,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     <ShieldCheck className="w-3.5 h-3.5 text-violet-300" />
                     Quota tracked per calendar month
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => resetMonthlyUsage()}
-                    title="Reset credit counter for testing"
-                    className="flex items-center gap-1 text-[10px] text-neutral-500 hover:text-white transition-colors cursor-pointer"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    Reset Quota (Test)
-                  </button>
+                  <span className="font-mono text-[10px] text-neutral-600">resets on the 1st</span>
                 </div>
               </section>
 
@@ -616,36 +611,45 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 </div>
               )}
 
-              {/* Plans Tier Cards */}
+              {/* Plans Tier Cards — beta state, not a shop. */}
               <section className="space-y-3">
+                <p className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-[11px] leading-relaxed text-neutral-400">
+                  Beta — every feature is unlocked on this build and nothing here is for sale.
+                  There is no checkout: choosing a tier only flips the plan recorded on this device.
+                </p>
                 {PLANS.map((entry) => {
                   const isCurrent = entry.id === plan;
                   const selectable = isPlanSelectable(entry.id);
+                  const price = getPlanPriceDisplay(entry.id);
                   return (
                     <div
                       key={entry.id}
                       className={`rounded-2xl border p-4 transition-colors ${
                         isCurrent
                           ? 'border-violet-300/30 bg-violet-500/[.06]'
-                          : entry.popular
+                          : selectable
                             ? 'border-amber-500/25 bg-amber-500/[.04]'
                             : 'border-white/[0.07] bg-white/[0.02]'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <span className="text-sm font-semibold text-white">{entry.label}</span>
                             {isCurrent && (
                               <span className="rounded border border-violet-300/25 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-violet-300">
                                 Current
                               </span>
                             )}
-                            {entry.popular && !isCurrent && (
-                              <span className="rounded border border-amber-500/30 bg-amber-500/[.08] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300">
-                                Popular
-                              </span>
-                            )}
+                            <span
+                              className={`rounded border px-1.5 py-0.5 text-[9px] uppercase tracking-wide ${
+                                selectable
+                                  ? 'border-amber-500/30 bg-amber-500/[.08] text-amber-300'
+                                  : 'border-white/10 text-neutral-500'
+                              }`}
+                            >
+                              {getPlanStateLabel(entry.id)}
+                            </span>
                           </div>
                           <div className="text-[11px] text-violet-300 font-mono mt-0.5">
                             {Number.isFinite(entry.creditsPerMonth)
@@ -655,8 +659,8 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                         </div>
 
                         <div className="text-right shrink-0">
-                          <div className="text-sm font-mono font-bold text-white">{entry.price}</div>
-                          <div className="text-[9px] text-neutral-400">{entry.gstNote}</div>
+                          <div className="text-sm font-mono font-bold text-white">{price.headline}</div>
+                          <div className="text-[9px] text-neutral-400">{price.note}</div>
                         </div>
                       </div>
 
@@ -686,17 +690,17 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                               ? 'border border-white/10 text-neutral-500 bg-white/[.02] cursor-not-allowed'
                               : entry.id === 'free'
                                 ? 'border border-white/10 text-neutral-300 hover:bg-white/[.06] cursor-pointer'
-                                : 'bg-violet-300 text-[#16121f] hover:bg-violet-200 cursor-pointer'
+                                : 'border border-amber-400/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20 cursor-pointer'
                         }`}
                       >
                         {!selectable && !isCurrent && <Lock className="w-3 h-3" />}
                         {isCurrent
-                          ? 'Current Plan Active'
+                          ? 'Plan active on this device'
                           : !selectable
                             ? 'Locked during beta'
                             : entry.id === 'free'
                               ? 'Switch to Free (BYOK)'
-                              : `Upgrade to ${entry.label}`}
+                              : `Select ${entry.label} (beta, no charge)`}
                       </button>
                       {selectable && !isCurrent && Number.isFinite(entry.creditsPerMonth) && (
                         <p className="mt-1.5 text-[10px] leading-relaxed text-neutral-500">{BETA_UPGRADE_NOTE}</p>
@@ -745,6 +749,40 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   </div>
                 )}
               </section>
+
+              {/* Disconnected state used to be a single row and ~600px of blank
+                  panel. Spell out what the connection does instead. */}
+              {!githubUser && (
+                <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-3">
+                  <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">What connecting does</h3>
+                  <ul className="mt-2 space-y-2 text-[11px] leading-relaxed text-neutral-400">
+                    <li className="flex gap-2">
+                      <span className="mt-0.5 font-mono text-neutral-600">1</span>
+                      <span>The token is only used for two calls: list your repositories, and push one commit. Nothing else leaves this app.</span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="mt-0.5 font-mono text-neutral-600">2</span>
+                      <span>It lives in this window's memory for the session and is not written to disk, localStorage or the workspace.</span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="mt-0.5 font-mono text-neutral-600">3</span>
+                      <span>
+                        A push uploads the {workspaceFiles.length} file buffer{workspaceFiles.length === 1 ? '' : 's'} the
+                        editor currently holds — open some files first if the count looks short.
+                      </span>
+                    </li>
+                  </ul>
+                  <a
+                    href="https://github.com/settings/tokens/new?scopes=repo&description=ShadRox"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-3 inline-flex items-center gap-1.5 text-[11px] text-violet-300 transition-colors hover:text-violet-200"
+                  >
+                    Create a `repo` token on GitHub
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </section>
+              )}
 
               {githubUser && (
                 <>
@@ -821,7 +859,24 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 </p>
               </section>
 
-              {/* Add Secret Form */}
+              {/* Where a secret actually goes — the honest scope, not a blank panel. */}
+              <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-3">
+                <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">Where a secret goes</h3>
+                <ul className="mt-2 space-y-1.5 text-[11px] leading-relaxed text-neutral-400">
+                  <li className="flex gap-2">
+                    <Check className="mt-0.5 h-3 w-3 shrink-0 text-violet-400" />
+                    <span>Injected into the in-app preview bundle as <code className="font-mono text-violet-200">process.env</code> / <code className="font-mono text-violet-200">import.meta.env</code>.</span>
+                  </li>
+                  <li className="flex gap-2">
+                    <Check className="mt-0.5 h-3 w-3 shrink-0 text-violet-400" />
+                    <span>Their names (never values) are listed to the model so it can write code that reads them.</span>
+                  </li>
+                  <li className="flex gap-2">
+                    <X className="mt-0.5 h-3 w-3 shrink-0 text-neutral-600" />
+                    <span>Not written to <code className="font-mono">.env</code>, not sent to GitHub push, and not passed to the terminal — restarting ShadRox clears the vault.</span>
+                  </li>
+                </ul>
+              </section>
               <section>
                 <h3 className="text-[11px] uppercase tracking-wider text-neutral-500 flex items-center gap-1.5">
                   <Lock className="w-3 h-3" />

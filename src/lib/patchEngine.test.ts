@@ -4,6 +4,7 @@ import {
 	applySearchReplaceBlocks,
 	assessRewriteRisk,
 	computeClinePatchChanges,
+	extractUnifiedPatchScan,
 	extractUnifiedPatches,
 	findBlockRange,
 	formatApplyFailure,
@@ -13,7 +14,7 @@ import {
 	resolvePatchContent
 } from './patchEngine';
 import { countDiffLines, makeUnifiedDiff } from './patch/clineUiDiff';
-import { clineSectionsToPatches, parseClinePatchSections } from './patch/clinePatchApply';
+import { clineSectionsToPatches, parseClinePatchSections, refusalReason } from './patch/clinePatchApply';
 
 const SR_SAMPLE = [
   '<<<<<<< ORIGINAL',
@@ -721,4 +722,100 @@ test('ported from Cline: makeUnifiedDiff renders whole-file and fragment diffs w
   assert.ok(fragment.includes('@@ … @@'), 'fragments must not fabricate line-1 positions');
 
   assert.deepEqual(countDiffLines(whole), { additions: 1, deletions: 1 });
+});
+
+/* -------------------------------------------------------------------------- *
+ * Regressions from the packaged app: duplicate paths, silent empty bodies,
+ * and refused deletions that surfaced as a generic "text not found".
+ * -------------------------------------------------------------------------- */
+
+test('the same file emitted twice yields ONE patch and the LAST block wins', () => {
+  const reply = [
+    '```ts path=test.txt',
+    'export const value = 1;',
+    '```',
+    '',
+    'Adding the file again after a tool round:',
+    '',
+    '```ts path=test.txt',
+    'export const value = 2;',
+    '```'
+  ].join('\n');
+
+  const patches = extractUnifiedPatches(reply, []);
+  assert.equal(patches.length, 1, 'one row per file, not one per re-emitted block');
+  assert.equal(patches[0].kind, 'rewrite');
+  assert.equal((patches[0] as { content: string }).content, 'export const value = 2;');
+});
+
+test('path spelling variants (case, ./, backslashes) still count as one file', () => {
+  const sr = (updated: string) =>
+    ['<<<<<<< ORIGINAL', 'const old = 1;', '=======', updated, '>>>>>>> UPDATED'].join('\n');
+  const reply = [
+    '```ts path=src/App.tsx',
+    sr('const next = 2;'),
+    '```',
+    '',
+    '```ts path=./src\\App.tsx',
+    sr('const next = 3;'),
+    '```'
+  ].join('\n');
+
+  const patches = extractUnifiedPatches(reply, [{ name: 'src/App.tsx', content: 'const old = 1;\n' }]);
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].path, 'src/App.tsx', 'the first spelling is kept');
+  const resolved = resolvePatchContent(patches[0], 'const old = 1;\n');
+  assert.equal(resolved.content, 'const next = 3;\n', 'the later block is the final state');
+});
+
+test('a declared file with an empty body is reported, never silently dropped', () => {
+  const scan = extractUnifiedPatchScan('```ts path=test.txt\n```', []);
+  assert.equal(scan.patches.length, 1, 'the declared path still reaches review');
+  assert.equal(scan.rejected.length, 1);
+  assert.equal(scan.rejected[0].path, 'test.txt');
+  assert.equal(scan.rejected[0].code, 'EMPTY_BODY');
+  assert.match(scan.rejected[0].reason, /deletion/i);
+
+  // Nothing is written: the refusal block never matches, and the reason is
+  // carried out of resolvePatchContent instead of a generic anchor failure.
+  const onDisk = 'still here\n';
+  const resolved = resolvePatchContent(scan.patches[0], onDisk);
+  assert.equal(resolved.content, onDisk);
+  assert.equal(resolved.refusal?.code, 'EMPTY_BODY');
+  assert.match(resolved.refusal?.reason ?? '', /left untouched/);
+  assert.match(resolved.refusal?.reason ?? '', /file tree|ask the agent/);
+});
+
+test('an empty body with no resolvable path stays unmapped (no invented target)', () => {
+  const scan = extractUnifiedPatchScan('```ts\n```', []);
+  assert.deepEqual(scan.patches, []);
+  assert.deepEqual(scan.rejected, []);
+});
+
+test('a Cline Delete File refusal is typed and says what to do instead', () => {
+  const scan = extractUnifiedPatchScan(
+    '```diff\n*** Begin Patch\n*** Delete File: src/gone.ts\n*** End Patch\n```',
+    [{ name: 'src/gone.ts', content: 'export const gone = 1;\n' }]
+  );
+  assert.equal(scan.patches.length, 1);
+  assert.equal(scan.rejected.length, 1);
+  assert.equal(scan.rejected[0].code, 'DELETE_NOT_A_PATCH');
+  assert.match(scan.rejected[0].reason, /Deletion is not applied from a patch/);
+  assert.match(scan.rejected[0].reason, /file tree/);
+  assert.match(scan.rejected[0].reason, /ask the agent/);
+
+  const onDisk = 'export const gone = 1;\n';
+  const resolved = resolvePatchContent(scan.patches[0], onDisk);
+  assert.equal(resolved.content, onDisk, 'zero bytes: a deletion is never invented from a patch');
+  assert.equal(resolved.refusal?.code, 'DELETE_NOT_A_PATCH');
+  assert.match(resolved.refusal?.reason ?? '', /src\/gone\.ts was left untouched/);
+});
+
+test('refusalReason reads the typed marker and ignores ordinary SEARCH blocks', () => {
+  assert.equal(refusalReason({ original: 'const a = 1;', updated: 'const b = 2;' }), null);
+  const parsed = refusalReason({
+    original: '[apply-patch refused: MOVE_NOT_SUPPORTED: rename by hand]',
+    updated: ''
+  });
+  assert.deepEqual(parsed, { code: 'MOVE_NOT_SUPPORTED', reason: 'rename by hand' });
 });

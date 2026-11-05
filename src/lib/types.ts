@@ -86,6 +86,7 @@ export interface ChatMessage {
     output?: string;
     durationMs?: number;
     stage?: 'reading' | 'planning' | 'editing' | 'checking' | 'completed' | 'failed';
+    refused?: boolean;
   }>;
   /** Live status during execution (e.g. "Reading src/App.tsx...", "Running checks..."). */
   activeStatus?: string;

@@ -13,8 +13,8 @@ import { FINISH_TOOL_NAME, parseFinishArguments } from './finishTool';
  * drives a chat turn and a headless autonomous milestone, and the tests can drive
  * it with a scripted fake instead of a paid provider call.
  *
- * Disk tools stay read-only; the only other thing that runs here is an external
- * MCP tool the user configured, handed in as `external`.
+ * Disk tools stay explicit; the only processes that run here are the one-line
+ * shell command the user asked for and an external MCP tool they configured.
  */
 export const DEFAULT_MAX_TOOL_ROUNDS = 5;
 export const MAX_CALLS_PER_ROUND = 6;
@@ -41,6 +41,8 @@ export interface ToolActivity {
   output?: string;
   durationMs?: number;
   stage?: 'reading' | 'planning' | 'editing' | 'checking' | 'completed' | 'failed';
+  /** The guard stopped the call before it ran; nothing failed on disk. */
+  refused?: boolean;
 }
 
 export interface ToolLoopResult {
@@ -103,7 +105,7 @@ function toActivity(call: ToolCall, outcome: ToolOutcome, durationMs?: number): 
     stage = 'failed';
   } else if (call.name === 'update_tasks') {
     stage = 'planning';
-  } else if (call.name === 'problems' || call.name === 'git_state') {
+  } else if (call.name === 'problems' || call.name === 'git_state' || call.name === 'run_command') {
     stage = 'checking';
   } else if (call.name === 'finish') {
     stage = 'completed';
@@ -117,7 +119,8 @@ function toActivity(call: ToolCall, outcome: ToolOutcome, durationMs?: number): 
     input: call.args,
     output: outcome.content ? (outcome.content.length > 2000 ? `${outcome.content.slice(0, 2000)}... [truncated]` : outcome.content) : undefined,
     durationMs,
-    stage
+    stage,
+    refused: outcome.refused
   };
 }
 

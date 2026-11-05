@@ -1,4 +1,5 @@
 import React from 'react';
+import { Check, Copy } from 'lucide-react';
 
 /**
  * Chat replies come back as markdown, and a model asked for a report answers in
@@ -46,7 +47,9 @@ export type MarkdownBlock =
   | { kind: 'bullet'; text: string }
   | { kind: 'ordered'; index: number; text: string }
   | { kind: 'table'; header: string[]; rows: string[][] }
-  | { kind: 'code'; lines: string[] }
+  | { kind: 'code'; lines: string[]; lang?: string }
+  | { kind: 'quote'; text: string }
+  | { kind: 'rule' }
   | { kind: 'space' }
   | { kind: 'paragraph'; text: string };
 
@@ -69,6 +72,7 @@ export function parseMarkdownBlocks(content: string): MarkdownBlock[] {
     const trimmed = line.trim();
 
     if (trimmed.startsWith('```')) {
+      const info = trimmed.slice(3).trim();
       const code: string[] = [];
       index += 1;
       while (index < lines.length && !lines[index].trim().startsWith('```')) {
@@ -76,18 +80,40 @@ export function parseMarkdownBlocks(content: string): MarkdownBlock[] {
         index += 1;
       }
       index += 1;
-      if (code.length > 0) blocks.push({ kind: 'code', lines: code });
+      if (code.length > 0) {
+        // Only a bare language tag is a language; `path=src/a.ts` style info
+        // lines belong to the patch extractor, not to a label.
+        const tag = info.split(/\s+/)[0]?.toLowerCase() ?? '';
+        if (/^[a-z0-9+#._-]{1,20}$/.test(tag)) blocks.push({ kind: 'code', lines: code, lang: tag });
+        else blocks.push({ kind: 'code', lines: code });
+      }
       continue;
     }
 
-    const heading = /^(#{1,3}) (.*)$/.exec(trimmed);
+    const heading = /^(#{1,3})\s+(.*?)(?:\s+#+)?$/.exec(trimmed);
     if (heading) {
       blocks.push({ kind: 'heading', level: heading[1].length as 1 | 2 | 3, text: heading[2] });
       index += 1;
       continue;
     }
 
-    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      blocks.push({ kind: 'rule' });
+      index += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith('>')) {
+      const quote: string[] = [];
+      while (index < lines.length && lines[index].trim().startsWith('>')) {
+        quote.push(lines[index].trim().replace(/^>\s?/, ''));
+        index += 1;
+      }
+      blocks.push({ kind: 'quote', text: quote.join(' ') });
+      continue;
+    }
+
+    if (trimmed.startsWith('- ') || trimmed.startsWith('* ') || trimmed.startsWith('+ ')) {
       blocks.push({ kind: 'bullet', text: trimmed.slice(2) });
       index += 1;
       continue;
@@ -132,7 +158,10 @@ function inlineNodes(tokens: InlineToken[], keyPrefix: string): React.ReactNode[
     const key = `${keyPrefix}-${position}`;
     if (token.kind === 'code') {
       return (
-        <code key={key} className="bg-neutral-800 text-violet-200 rounded px-1 py-px font-mono text-[11px]">
+        <code
+          key={key}
+          className="rounded-[5px] border border-white/[0.07] bg-white/[0.06] px-1.5 py-px font-mono text-[10.5px] text-violet-200"
+        >
           {token.value}
         </code>
       );
@@ -146,7 +175,13 @@ function inlineNodes(tokens: InlineToken[], keyPrefix: string): React.ReactNode[
     }
     if (token.kind === 'link') {
       return (
-        <a key={key} href={token.href} target="_blank" rel="noreferrer" className="text-violet-300 underline">
+        <a
+          key={key}
+          href={token.href}
+          target="_blank"
+          rel="noreferrer"
+          className="text-violet-300 underline decoration-violet-400/35 underline-offset-2 transition-colors hover:text-violet-200 hover:decoration-violet-300"
+        >
           {token.label}
         </a>
       );
@@ -155,81 +190,137 @@ function inlineNodes(tokens: InlineToken[], keyPrefix: string): React.ReactNode[
   });
 }
 
-/** Handles headings, bullet and numbered lists, tables, fenced code and inline marks. */
+/** Fenced block with a quiet header (language + copy) — like a real editor card. */
+function CodeBlock({ code, lang }: { code: string; lang?: string }) {
+  const [copied, setCopied] = React.useState(false);
+  const timer = React.useRef<number | null>(null);
+
+  React.useEffect(() => () => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+  }, []);
+
+  const copy = () => {
+    if (!navigator.clipboard) return;
+    void navigator.clipboard
+      .writeText(code)
+      .then(() => {
+        setCopied(true);
+        if (timer.current !== null) window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => setCopied(false), 1400);
+      })
+      .catch(() => {});
+  };
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-white/[0.07] bg-ink-950/80">
+      <div className="flex items-center justify-between gap-2 border-b border-white/[0.05] bg-white/[0.025] px-2.5 py-1">
+        <span className="font-mono text-[9.5px] uppercase tracking-wider text-neutral-500">{lang ?? 'code'}</span>
+        <button
+          type="button"
+          onClick={copy}
+          title="Copy this block"
+          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9.5px] text-neutral-500 transition-colors hover:bg-white/[0.05] hover:text-neutral-200 cursor-pointer"
+        >
+          {copied ? <Check className="size-2.5 text-emerald-400" /> : <Copy className="size-2.5" />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre className="overflow-x-auto p-3 font-mono text-[11.5px] leading-relaxed text-neutral-200">
+        <code>{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+/** Handles headings, lists, tables, quotes, rules, fenced code and inline marks. */
 export function renderMarkdownContent(content: string): React.ReactNode {
   const blocks = parseMarkdownBlocks(content).map((block, idx) => {
-    if (block.kind === 'space') return <div key={idx} className="h-1" />;
+    if (block.kind === 'space') return null;
 
     if (block.kind === 'code') {
-      return (
-        <pre
-          key={idx}
-          className="bg-neutral-950 border border-neutral-800 rounded-lg p-3 overflow-x-auto text-[11px] leading-relaxed text-neutral-200 font-mono"
-        >
-          <code>{block.lines.join('\n')}</code>
-        </pre>
-      );
+      return <div key={idx} className="mt-2.5"><CodeBlock code={block.lines.join('\n')} lang={block.lang} /></div>;
     }
 
     if (block.kind === 'heading') {
       const text = inlineNodes(parseInline(block.text), `h-${idx}`);
       if (block.level === 1) {
         return (
-          <h1 key={idx} className="text-base font-bold text-white border-b border-neutral-800 pb-1">
+          <h1 key={idx} className="mt-4 border-b border-white/[0.07] pb-1.5 text-[15px] font-semibold tracking-tight text-white">
             {text}
           </h1>
         );
       }
       if (block.level === 2) {
         return (
-          <h2 key={idx} className="text-sm font-semibold text-violet-300">
+          <h2 key={idx} className="mt-3.5 flex items-center gap-2 text-[13px] font-semibold tracking-tight text-neutral-100">
+            <span className="h-3 w-[2px] shrink-0 rounded-full bg-gradient-to-b from-violet-400 to-indigo-400" />
             {text}
           </h2>
         );
       }
       return (
-        <h3 key={idx} className="text-xs font-semibold text-neutral-200">
+        <h3 key={idx} className="mt-3 text-[12.5px] font-semibold text-neutral-200">
           {text}
         </h3>
       );
     }
 
+    if (block.kind === 'rule') {
+      return <div key={idx} className="my-3.5 h-px bg-gradient-to-r from-transparent via-white/[0.10] to-transparent" />;
+    }
+
+    if (block.kind === 'quote') {
+      return (
+        <blockquote
+          key={idx}
+          className="mt-2.5 rounded-r-lg border-l-2 border-violet-400/35 bg-white/[0.025] py-1.5 pl-3 pr-2.5 text-neutral-400"
+        >
+          {inlineNodes(parseInline(block.text), `q-${idx}`)}
+        </blockquote>
+      );
+    }
+
     if (block.kind === 'bullet') {
       return (
-        <div key={idx} className="flex items-start gap-2 pl-1 text-neutral-300">
-          <span className="text-violet-300 font-bold">•</span>
-          <span>{inlineNodes(parseInline(block.text), `b-${idx}`)}</span>
+        <div key={idx} className="mt-1.5 flex items-start gap-2.5">
+          <span className="mt-[7px] size-1 shrink-0 rounded-full bg-violet-400/80" />
+          <span className="min-w-0 flex-1">{inlineNodes(parseInline(block.text), `b-${idx}`)}</span>
         </div>
       );
     }
 
     if (block.kind === 'ordered') {
       return (
-        <div key={idx} className="flex items-start gap-2 pl-1 text-neutral-300">
-          <span className="text-violet-300 font-mono text-[11px] tabular-nums pt-px">{block.index}.</span>
-          <span>{inlineNodes(parseInline(block.text), `o-${idx}`)}</span>
+        <div key={idx} className="mt-1.5 flex items-start gap-2.5">
+          <span className="w-4 shrink-0 pt-px text-right font-mono text-[10.5px] tabular-nums text-violet-300/90">
+            {block.index}
+          </span>
+          <span className="min-w-0 flex-1">{inlineNodes(parseInline(block.text), `o-${idx}`)}</span>
         </div>
       );
     }
 
     if (block.kind === 'table') {
       return (
-        <div key={idx} className="overflow-x-auto border border-neutral-800 rounded-lg">
-          <table className="w-full text-[11px] leading-relaxed border-collapse">
+        <div key={idx} className="mt-2.5 overflow-x-auto rounded-xl border border-white/[0.07]">
+          <table className="w-full border-collapse text-[11px] leading-relaxed">
             <thead>
-              <tr className="bg-neutral-900 text-neutral-200">
+              <tr className="bg-white/[0.035]">
                 {block.header.map((cell, column) => (
-                  <th key={column} className="text-left font-semibold px-2 py-1 border-b border-neutral-800">
+                  <th
+                    key={column}
+                    className="border-b border-white/[0.07] px-2.5 py-1.5 text-left text-[9.5px] font-semibold uppercase tracking-wider text-neutral-400"
+                  >
                     {inlineNodes(parseInline(cell), `th-${idx}-${column}`)}
                   </th>
                 ))}
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-white/[0.05]">
               {block.rows.map((row, rowIdx) => (
-                <tr key={rowIdx} className="text-neutral-300">
+                <tr key={rowIdx} className="text-neutral-300 transition-colors hover:bg-white/[0.02]">
                   {row.map((cell, column) => (
-                    <td key={column} className="px-2 py-1 align-top border-b border-neutral-900">
+                    <td key={column} className="px-2.5 py-1.5 align-top">
                       {inlineNodes(parseInline(cell), `td-${idx}-${rowIdx}-${column}`)}
                     </td>
                   ))}
@@ -242,13 +333,17 @@ export function renderMarkdownContent(content: string): React.ReactNode {
     }
 
     return (
-      <p key={idx} className="text-neutral-300 leading-relaxed">
+      <p key={idx} className="mt-2 text-neutral-300">
         {inlineNodes(parseInline(block.text), `p-${idx}`)}
       </p>
     );
   });
 
-  return <div className="space-y-1.5 font-sans text-xs break-words">{blocks}</div>;
+  return (
+    <div className="break-words font-sans text-[12.5px] leading-[1.7] text-neutral-300 [&>*:first-child]:mt-0">
+      {blocks}
+    </div>
+  );
 }
 
 /** A deliberate full-file rewrite requested by the model. */
@@ -421,6 +516,7 @@ export function extractFilePatches(content: string, files: KnownFile[] = []): Pa
 export function maskFileWrites(content: string, files: KnownFile[] = []): string {
   const lines = content.split('\n');
   const output: string[] = [];
+  const masked = new Set<string>();
   let index = 0;
 
   while (index < lines.length) {
@@ -453,13 +549,19 @@ export function maskFileWrites(content: string, files: KnownFile[] = []): string
     const target = resolveTarget(info, context, body, files);
 
     if (target) {
+      const key = target.toLowerCase();
       const known = files.some((file) => file.name === target);
       const hasSearchReplace = body.includes('<<<<<<< ORIGINAL');
-      output.push(
-        hasSearchReplace
-          ? `- ${target} — patched via search/replace, open in code editor`
-          : `- ${target} — ${known ? 'updated' : 'created'}, open in code editor`
-      );
+      // Two fences for one path are two edits, not two files: the Changes list
+      // already shows both, so a second bullet would only read as a duplicate.
+      if (!masked.has(key)) {
+        masked.add(key);
+        output.push(
+          hasSearchReplace
+            ? `- ${target} — patched via search/replace, open in code editor`
+            : `- ${target} — ${known ? 'updated' : 'created'}, open in code editor`
+        );
+      }
     } else {
       output.push(lines[index], ...bodyLines);
       if (terminated) output.push(lines[close]);

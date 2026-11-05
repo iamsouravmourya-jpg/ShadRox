@@ -2352,7 +2352,10 @@ async function createWindow() {
   });
 
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
-    callback(webContents === mainWindow?.webContents && details.isMainFrame && permission === 'media');
+    // Copy controls in the renderer (reply copy, code-block copy) need the
+    // async clipboard write grant; without it every copy silently failed.
+    const allowed = permission === 'media' || permission === 'clipboard-sanitized-write';
+    callback(webContents === mainWindow?.webContents && details.isMainFrame && allowed);
   });
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());

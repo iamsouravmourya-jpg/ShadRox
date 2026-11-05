@@ -98,6 +98,8 @@ interface ChatPanelProps {
   pinnedSymbols: PinnedSymbol[];
   onPinnedSymbolsChange: (symbols: PinnedSymbol[]) => void;
   workspaceFiles: WorkspaceFile[];
+  /** Every file in the folder tree, not just the open tabs: powers @-mention and attach. */
+  workspaceAllFiles?: Array<{ name: string }>;
   checkpoints: CheckpointMeta[];
   onRestoreCheckpoint: (id: string) => void;
   restoringCheckpointId: string | null;
@@ -333,7 +335,9 @@ function ToolCard({ tool }: ToolCardProps) {
     completed: { label: 'DONE', tone: 'text-emerald-300 border-emerald-400/25 bg-emerald-500/10' },
     failed: { label: 'FAIL', tone: 'text-rose-300 border-rose-400/25 bg-rose-500/10' }
   };
-  const config = stageStyles[stage] || { label: 'TOOL', tone: 'text-neutral-300 border-white/10 bg-white/[0.04]' };
+  const config = tool.refused
+    ? { label: 'HELD', tone: 'text-amber-300 border-amber-400/25 bg-amber-500/10' }
+    : stageStyles[stage] || { label: 'TOOL', tone: 'text-neutral-300 border-white/10 bg-white/[0.04]' };
 
   return (
     <div className="rounded-lg border border-white/[0.06] bg-ink-950/80 transition-colors hover:border-white/[0.12]">
@@ -357,7 +361,9 @@ function ToolCard({ tool }: ToolCardProps) {
               {tool.durationMs}ms
             </span>
           )}
-          {tool.ok ? (
+          {tool.refused ? (
+            <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+          ) : tool.ok ? (
             <Check className="w-3.5 h-3.5 text-emerald-400" />
           ) : (
             <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
@@ -398,7 +404,8 @@ function ToolCard({ tool }: ToolCardProps) {
 function ToolActivityFeed({ tools, streaming }: { tools: NonNullable<ChatMessage['toolActivity']>; streaming?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const totalDuration = tools.reduce((acc, t) => acc + (t.durationMs ?? 0), 0);
-  const failedCount = tools.filter((t) => !t.ok).length;
+  const failedCount = tools.filter((t) => !t.ok && !t.refused).length;
+  const heldCount = tools.filter((t) => t.refused).length;
 
   return (
     <div className="mb-2 rounded-xl border border-white/[0.08] bg-white/[0.02] p-2.5 text-[11px]">
@@ -417,6 +424,11 @@ function ToolActivityFeed({ tools, streaming }: { tools: NonNullable<ChatMessage
           {failedCount > 0 && (
             <span className="rounded-full border border-rose-500/30 bg-rose-500/10 px-1.5 py-px text-[9px] text-rose-300">
               {failedCount} failed
+            </span>
+          )}
+          {heldCount > 0 && (
+            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-px text-[9px] text-amber-300">
+              {heldCount} held
             </span>
           )}
           {streaming && <Loader2 className="w-3 h-3 animate-spin text-violet-300" />}
@@ -482,7 +494,7 @@ function TaskPlanView({ plan, streaming, approval, onApprove, onReject }: TaskPl
               ) : task.status === 'blocked' ? (
                 <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
               ) : task.status === 'doing' ? (
-                <Loader2 className={`w-3.5 h-3.5 text-violet-300${streaming ? ' animate-spin' : ''}`} />
+                <Loader2 className={`w-3.5 h-3.5 ${streaming ? 'text-violet-300 animate-spin' : 'text-neutral-500'}`} />
               ) : (
                 <span className="block size-2 rounded-full border border-neutral-600 bg-neutral-800 ml-1 mt-1" />
               )}
@@ -823,6 +835,7 @@ export function ChatPanel({
   pinnedSymbols,
   onPinnedSymbolsChange,
   workspaceFiles,
+  workspaceAllFiles = [],
   checkpoints,
   onRestoreCheckpoint,
   restoringCheckpointId,
@@ -859,6 +872,11 @@ export function ChatPanel({
   activeStatusMessage = null
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const modelTriggerRef = useRef<HTMLButtonElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
+  const modeMenuRef = useRef<HTMLDivElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
@@ -887,6 +905,32 @@ export function ChatPanel({
       setUsage(getMonthlyUsage(plan));
     });
   }, [plan]);
+
+  /** One dismissal path for every chat popover: outside click and Escape. */
+  useEffect(() => {
+    if (!isModelMenuOpen && !isAttachMenuOpen && !isModeMenuOpen && !isContextOpen) return;
+    const inside = (ref: { current: HTMLElement | null }, target: EventTarget | null) =>
+      Boolean(ref.current && target instanceof Node && ref.current.contains(target));
+    const closeOthers = (event: PointerEvent) => {
+      if (!inside(modelMenuRef, event.target) && !inside(modelTriggerRef, event.target)) setIsModelMenuOpen(false);
+      if (!inside(attachMenuRef, event.target)) setIsAttachMenuOpen(false);
+      if (!inside(modeMenuRef, event.target)) setIsModeMenuOpen(false);
+      if (!inside(contextMenuRef, event.target)) setIsContextOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setIsModelMenuOpen(false);
+      setIsAttachMenuOpen(false);
+      setIsModeMenuOpen(false);
+      setIsContextOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOthers);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', closeOthers);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isModelMenuOpen, isAttachMenuOpen, isModeMenuOpen, isContextOpen]);
 
   useEffect(() => {
     if (speech.transcript) onInputChange(speech.transcript);
@@ -927,17 +971,21 @@ export function ChatPanel({
       });
     }
 
-    for (const file of workspaceFiles) {
+    const mentionFiles = workspaceAllFiles.length > 0 ? workspaceAllFiles : workspaceFiles;
+    for (const file of mentionFiles) {
       if (attached.has(file.name) || !file.name.toLowerCase().includes(query)) continue;
       items.push({ id: `file:${file.name}`, kind: 'file', label: file.name, file: file.name });
     }
 
     const rank = (item: MentionItem) => (item.label.toLowerCase().startsWith(query) ? 0 : 1);
     return items.sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label)).slice(0, 8);
-  }, [mentionQuery, workspaceFiles, attachedFiles, symbols, pinnedSymbols]);
+  }, [mentionQuery, workspaceFiles, workspaceAllFiles, attachedFiles, symbols, pinnedSymbols]);
   const activeMention = mentionMatches.length > 0
     ? mentionMatches[Math.min(mentionIndex, mentionMatches.length - 1)]
     : null;
+  // The folder tree, not the open tabs: the user attaches a file they have not opened yet.
+  const attachableFiles = (workspaceAllFiles.length > 0 ? workspaceAllFiles : workspaceFiles)
+    .filter((file) => !attachedFiles.includes(file.name));
 
   const closeMention = () => {
     setMentionQuery(null);
@@ -1012,6 +1060,7 @@ export function ChatPanel({
       <header className="h-12 shrink-0 flex items-center justify-between px-3 border-b border-white/[0.07]">
         <button
           type="button"
+          ref={modelTriggerRef}
           onClick={() => setIsModelMenuOpen((open) => !open)}
           disabled={models.length === 0}
           title={activeModel ? activeModel.label : 'Select Model'}
@@ -1049,7 +1098,7 @@ export function ChatPanel({
             </span>
           </button>
 
-          <div className="relative">
+          <div ref={contextMenuRef} className="relative">
             <button
               type="button"
               onClick={() => setIsContextOpen((open) => !open)}
@@ -1128,7 +1177,7 @@ export function ChatPanel({
 
       {/* Model Selector Dropdown */}
       {isModelMenuOpen && (
-        <div className="shrink-0 max-h-64 overflow-y-auto border-b border-white/[0.07] bg-ink-950">
+        <div ref={modelMenuRef} className="shrink-0 max-h-64 overflow-y-auto border-b border-white/[0.07] bg-ink-950">
           {models.length === 0 ? (
             <button
               type="button"
@@ -1230,13 +1279,13 @@ export function ChatPanel({
             key={message.id}
             className={`flex flex-col ${message.role === 'user' ? 'items-end' : 'items-start'}`}
           >
-            <div className="flex items-center gap-1.5 mb-1 px-1 text-[10px] text-neutral-500">
-              <span className="uppercase font-semibold tracking-wider">
-                {message.role === 'user' ? 'You' : 'ShadRox'}
-              </span>
-              <span>·</span>
-              <span>{message.timestamp}</span>
-            </div>
+            {message.role === 'user' && (
+              <div className="flex items-center gap-1.5 mb-1 px-1 text-[10px] text-neutral-500">
+                <span className="uppercase font-semibold tracking-wider">You</span>
+                <span>·</span>
+                <span>{message.timestamp}</span>
+              </div>
+            )}
 
             {message.attachments && message.attachments.length > 0 && (
               <div className="mb-1 flex flex-wrap gap-1">
@@ -1252,11 +1301,26 @@ export function ChatPanel({
             )}
 
             {message.role === 'user' ? (
-              <div className="max-w-[85%] rounded-2xl rounded-br-md border border-violet-300/15 bg-violet-500/[.10] px-3.5 py-2.5 text-neutral-100 leading-relaxed whitespace-pre-wrap">
+              <div className="max-w-[85%] rounded-2xl rounded-br-md border border-violet-300/15 bg-gradient-to-b from-violet-500/[0.14] to-violet-500/[0.07] px-3.5 py-2.5 text-neutral-100 leading-relaxed whitespace-pre-wrap shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
                 {message.content}
               </div>
             ) : (
-              <div className="max-w-[95%] text-neutral-200 leading-relaxed">
+              <div className="relative w-full max-w-[96%] overflow-hidden rounded-2xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.012)_42%,rgba(255,255,255,0.008))] shadow-[0_1px_0_rgba(255,255,255,0.03)_inset,0_14px_36px_-24px_rgba(0,0,0,0.9)]">
+                <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-violet-400/35 to-transparent" />
+                <div className="px-3.5 pb-2.5 pt-3">
+                  <div className="mb-2.5 flex items-center gap-2">
+                    <span className="grid size-5 shrink-0 place-items-center rounded-md bg-gradient-to-br from-violet-500 to-indigo-600 text-white shadow-[0_2px_10px_-2px_rgba(139,92,246,0.7)]">
+                      <Sparkles className="size-3" />
+                    </span>
+                    <span className="text-[11px] font-semibold tracking-tight text-neutral-100">ShadRox</span>
+                    <span className="font-mono text-[10px] text-neutral-600">{message.timestamp}</span>
+                    {message.streaming && (
+                      <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-violet-400/20 bg-violet-500/10 px-1.5 py-px text-[9px] font-medium tracking-wide text-violet-200">
+                        <span className="size-1 animate-pulse rounded-full bg-violet-300" />
+                        writing
+                      </span>
+                    )}
+                  </div>
                 {message.orchestration && <OrchestrationCard message={message} onStop={onStop} />}
 
                 {message.taskPlan && message.taskPlan.length > 0 && (
@@ -1294,12 +1358,15 @@ export function ChatPanel({
                   const patchSet = patchSets.find((set) => set.messageId === message.id);
                   if (!patchSet || message.streaming) return null;
                   const pendingCount = patchSet.patches.filter((patch) => patch.status === 'pending').length;
+                  const fileCount = new Set(patchSet.patches.map((patch) => patch.path.toLowerCase())).size;
+                  const editCount = patchSet.patches.length;
                   return (
                     <div className="mt-2 rounded-xl border border-white/[0.08] bg-white/[0.02] p-2.5 text-[11px]">
                       <div className="mb-1.5 flex items-center justify-between gap-2">
                         <div className="flex items-center gap-1.5 text-neutral-300 font-medium">
                           <FileDiff className="w-3.5 h-3.5 text-violet-300 shrink-0" />
-                          Changes · {patchSet.patches.length} file{patchSet.patches.length > 1 ? 's' : ''}
+                          Changes · {fileCount} file{fileCount === 1 ? '' : 's'}
+                          {editCount > fileCount ? ` · ${editCount} edits` : ''}
                         </div>
                         <div className="flex items-center gap-2">
                           <label
@@ -1454,7 +1521,7 @@ export function ChatPanel({
                 })()}
 
                 {!message.streaming && (message.content || message.id === lastAssistantId) && (
-                  <div className="mt-2 flex flex-wrap items-center gap-3 text-[10px] text-neutral-500">
+                  <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-white/[0.06] pt-2 text-[10px] text-neutral-500">
                     {message.content && (
                       <button
                         type="button"
@@ -1519,6 +1586,7 @@ export function ChatPanel({
                     )}
                   </div>
                 )}
+                </div>
               </div>
             )}
           </div>
@@ -1825,7 +1893,7 @@ export function ChatPanel({
           <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2">
             <div className="flex min-w-0 flex-auto flex-wrap items-center gap-1.5">
               {/* Work Mode Dropdown (Replaces old template option with Code, Plan, Complex) */}
-              <div className="relative">
+              <div ref={modeMenuRef} className="relative">
                 <button
                   type="button"
                   onClick={() => setIsModeMenuOpen((open) => !open)}
@@ -1879,19 +1947,23 @@ export function ChatPanel({
               </div>
 
               {/* Attach File */}
-              <div className="relative">
+              <div ref={attachMenuRef} className="relative">
                 <button
                   type="button"
                   onClick={() => setIsAttachMenuOpen((open) => !open)}
-                  disabled={workspaceFiles.length === 0}
-                  title="Attach file context"
+                  disabled={attachableFiles.length === 0}
+                  title={attachableFiles.length === 0
+                    ? (workspaceAllFiles.length === 0 && workspaceFiles.length === 0
+                        ? 'Open a folder to attach files'
+                        : 'Every workspace file is already attached')
+                    : 'Attach file context'}
                   className="shrink-0 p-1.5 text-neutral-500 hover:text-white disabled:opacity-40 transition-colors cursor-pointer"
                 >
                   <Paperclip className="w-3.5 h-3.5" />
                 </button>
                 {isAttachMenuOpen && (
-                  <div className="absolute bottom-8 left-0 z-10 max-h-48 w-48 overflow-y-auto rounded-xl border border-white/[0.09] bg-ink-900/95 py-1 shadow-2xl backdrop-blur-xl">
-                    {workspaceFiles.map((file) => (
+                  <div className="absolute bottom-8 left-0 z-10 max-h-64 w-64 overflow-y-auto rounded-xl border border-white/[0.09] bg-ink-900/95 py-1 shadow-2xl backdrop-blur-xl">
+                    {attachableFiles.map((file) => (
                       <button
                         key={file.name}
                         type="button"
@@ -1920,6 +1992,14 @@ export function ChatPanel({
                 >
                   {speech.isListening ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
                 </button>
+              )}
+              {speech.error && (
+                <span
+                  title={speech.error.message}
+                  className="max-w-36 shrink-0 truncate rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-[9.5px] text-amber-300"
+                >
+                  {speech.error.message}
+                </span>
               )}
 
               {/* Refine prompt button */}

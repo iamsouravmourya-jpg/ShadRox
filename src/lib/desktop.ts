@@ -98,6 +98,11 @@ export interface VerifyChangeResult {
   checked: number;
   issues: VerifyChangeIssue[];
   skipped: string[];
+  /** Per-file outcome, including why a file was skipped or rejected. */
+  skippedDetails?: Array<{ path: string; status: 'skipped' | 'rejected' | 'checked'; skipped?: boolean; reason?: string; code?: string }>;
+  /** Named checks so a failure can say exactly what failed. */
+  checks?: Array<{ id: string; name: string; ok: boolean; ran: boolean; failures: number; details: string }>;
+  failedChecks?: string[];
 }
 
 export interface DesktopCommandResult {

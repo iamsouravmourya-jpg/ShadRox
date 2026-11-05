@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
-import { AlertTriangle, History, Loader2, RotateCcw, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { AlertTriangle, ChevronLeft, ChevronRight, History, Loader2, RotateCcw, X } from 'lucide-react';
 import type { CheckpointDiff } from '../lib/checkpointDiff';
 import { describeCheckpointDiff } from '../lib/checkpointDiff';
 import type { CheckpointMeta } from '../lib/history';
 import {
   buildTimeline,
-  checkpointAtRatio,
   describeCheckpoint,
   diffSince,
   timelinePosition,
@@ -36,9 +35,10 @@ const KIND_GLYPH: Record<string, { mark: string; tone: string; word: string }> =
 };
 
 /**
- * Compact visual history rail. Nodes run oldest -> newest left to right, the
- * range input snaps to whole checkpoints, and restoring is a deliberate
- * two-step action so a mis-click cannot wipe later work.
+ * Compact visual history rail. Nodes run oldest -> newest left to right and are
+ * the only way to pick a checkpoint; a long run scrolls inside the rail with
+ * visible edge fades and nudge buttons, plus arrow-key selection. Restoring
+ * stays a deliberate two-step action so a mis-click cannot wipe later work.
  */
 export function TimelineSlider({
   checkpoints,
@@ -74,11 +74,30 @@ export function TimelineSlider({
   }, [chronological, selected]);
 
   const selectedRatio = count <= 1 || selectedIndex < 0 ? 0.5 : selectedIndex / (count - 1);
-  const sliderMax = Math.max(0, count - 1);
-  const sliderValue = selectedIndex < 0 ? sliderMax : selectedIndex;
-  const isRestoringSelected = Boolean(restoringId) && Boolean(selected) && restoringId === selected.id;
+  const isRestoringSelected = Boolean(restoringId) && Boolean(selected) && restoringId === selected?.id;
   const busy = Boolean(restoringId);
   const blocked = Boolean(disabled) || busy;
+
+  // The rail scrolls when a run is long; the fades and nudge buttons below are
+  // what make that reachable instead of invisible overflow.
+  const railRef = useRef<HTMLDivElement>(null);
+  const [railOverflow, setRailOverflow] = useState({ start: false, end: false });
+
+  const syncRailOverflow = useCallback(() => {
+    const rail = railRef.current;
+    if (!rail) return;
+    const max = rail.scrollWidth - rail.clientWidth;
+    setRailOverflow({
+      start: rail.scrollLeft > 4,
+      end: max > 4 && rail.scrollLeft < max - 4
+    });
+  }, []);
+
+  const nudgeRail = (direction: -1 | 1) => {
+    const rail = railRef.current;
+    if (!rail) return;
+    rail.scrollBy({ left: direction * Math.max(80, rail.clientWidth * 0.6), behavior: 'smooth' });
+  };
 
   const sideCounts = useMemo(() => diffSince(points, selected ? selected.id : null), [points, selected]);
   const summary =
@@ -96,17 +115,53 @@ export function TimelineSlider({
     return () => window.clearTimeout(timer);
   }, [confirming]);
 
+  // Overflow state has to follow resizes and new checkpoints, not just scrolling.
+  useEffect(() => {
+    syncRailOverflow();
+    const rail = railRef.current;
+    if (!rail || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => syncRailOverflow());
+    observer.observe(rail);
+    return () => observer.disconnect();
+  }, [count, syncRailOverflow]);
+
+  // The selected marker is the keyboard cursor too, so keep it on screen.
+  useEffect(() => {
+    const marker = railRef.current?.querySelector<HTMLElement>('[data-selected="true"]');
+    marker?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    syncRailOverflow();
+  }, [selected?.id, syncRailOverflow]);
+
   const selectPoint = (id: string) => {
     if (blocked) return;
     setInternalId(id);
     if (onSelect) onSelect(id);
   };
 
-  const handleSliderChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const index = Number(event.target.value);
-    const ratio = sliderMax > 0 ? index / sliderMax : 1;
-    const nearest = checkpointAtRatio(points, ratio);
-    if (nearest) selectPoint(nearest.id);
+  const stepSelection = (delta: number) => {
+    if (count === 0 || blocked) return;
+    const from = selectedIndex < 0 ? count - 1 : selectedIndex;
+    const next = chronological[Math.min(count - 1, Math.max(0, from + delta))];
+    if (next) selectPoint(next.id);
+  };
+
+  const handleRailKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      const step = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0;
+      if (step === 0) {
+        const target = event.key === 'Home' ? chronological[0] : chronological[count - 1];
+        if (target) selectPoint(target.id);
+      } else {
+        stepSelection(step);
+      }
+      return;
+    }
+    if (event.key === 'PageUp' || event.key === 'PageDown') {
+      event.preventDefault();
+      const rail = railRef.current;
+      if (rail) rail.scrollBy({ left: (event.key === 'PageUp' ? -1 : 1) * rail.clientWidth * 0.8, behavior: 'smooth' });
+    }
   };
 
   const handleRestoreClick = () => {
@@ -167,62 +222,90 @@ export function TimelineSlider({
           </div>
 
           <div className="shrink-0 px-3 pt-2">
-            <div className="overflow-x-auto px-2 pb-0.5">
-              <div
-                className="relative h-6"
-                style={{ minWidth: `${Math.max(160, count * RAIL_NODE_SPACING)}px` }}
+            <div className="relative flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => nudgeRail(-1)}
+                disabled={!railOverflow.start}
+                title="Scroll to older checkpoints"
+                aria-label="Scroll timeline to older checkpoints"
+                className="shrink-0 rounded p-0.5 text-neutral-500 transition-colors hover:text-white disabled:pointer-events-none disabled:opacity-25 cursor-pointer"
               >
-                <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-white/15" />
-                <div
-                  className="absolute left-0 top-1/2 h-px -translate-y-1/2 bg-emerald-400/40"
-                  style={{ width: `${selectedRatio * 100}%` }}
-                />
-                {chronological.map((checkpoint, index) => {
-                  const isSelected = Boolean(selected) && checkpoint.id === selected.id;
-                  const isRestoring = Boolean(restoringId) && restoringId === checkpoint.id;
-                  return (
-                    <button
-                      key={checkpoint.id}
-                      type="button"
-                      onClick={() => selectPoint(checkpoint.id)}
-                      disabled={blocked}
-                      aria-label={`${checkpoint.label} · ${describeCheckpoint(checkpoint)}`}
-                      aria-pressed={isSelected}
-                      title={`${checkpoint.label} · ${describeCheckpoint(checkpoint)}`}
-                      style={{ left: `${timelinePosition(index, count) * 100}%` }}
-                      className={`absolute top-1/2 z-10 flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full transition-colors cursor-pointer disabled:cursor-not-allowed ${
-                        isSelected ? 'text-emerald-300' : 'text-neutral-500 hover:text-neutral-200'
-                      }`}
-                    >
-                      {isRestoring ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <span
-                          className={`h-2 w-2 rounded-full border ${
-                            isSelected
-                              ? 'border-emerald-300 bg-emerald-400 shadow-[0_0_0_3px_rgba(52,211,153,0.15)]'
-                              : 'border-neutral-500 bg-neutral-800'
-                          }`}
-                        />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
 
-            <input
-              type="range"
-              aria-label="Checkpoint timeline"
-              aria-valuetext={selected ? `${selectedLabel}, ${describeCheckpoint(selected)}` : undefined}
-              min={0}
-              max={sliderMax}
-              step={1}
-              value={sliderValue}
-              disabled={blocked}
-              onChange={handleSliderChange}
-              className="mt-0.5 h-1 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
-            />
+              <div
+                ref={railRef}
+                onScroll={syncRailOverflow}
+                onKeyDown={handleRailKeyDown}
+                tabIndex={0}
+                role="group"
+                aria-label="Checkpoint markers (arrow keys move between checkpoints)"
+                className="relative min-w-0 flex-1 overflow-x-auto rounded px-2 pb-1 outline-none focus-visible:ring-1 focus-visible:ring-violet-300/40"
+              >
+                <div
+                  className="relative h-6"
+                  style={{ minWidth: `${Math.max(160, count * RAIL_NODE_SPACING)}px` }}
+                >
+                  <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-white/15" />
+                  <div
+                    className="absolute left-0 top-1/2 h-px -translate-y-1/2 bg-emerald-400/40"
+                    style={{ width: `${selectedRatio * 100}%` }}
+                  />
+                  {chronological.map((checkpoint, index) => {
+                    const isSelected = Boolean(selected) && checkpoint.id === selected?.id;
+                    const isRestoring = Boolean(restoringId) && restoringId === checkpoint.id;
+                    return (
+                      <button
+                        key={checkpoint.id}
+                        type="button"
+                        onClick={() => selectPoint(checkpoint.id)}
+                        disabled={blocked}
+                        data-selected={isSelected ? 'true' : undefined}
+                        aria-label={`${checkpoint.label} · ${describeCheckpoint(checkpoint)}`}
+                        aria-pressed={isSelected}
+                        title={`${checkpoint.label} · ${describeCheckpoint(checkpoint)}`}
+                        style={{ left: `${timelinePosition(index, count) * 100}%` }}
+                        className={`absolute top-1/2 z-10 flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full transition-colors cursor-pointer disabled:cursor-not-allowed ${
+                          isSelected ? 'text-emerald-300' : 'text-neutral-500 hover:text-neutral-200'
+                        }`}
+                      >
+                        {isRestoring ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <span
+                            className={`h-2 w-2 rounded-full border ${
+                              isSelected
+                                ? 'border-emerald-300 bg-emerald-400 shadow-[0_0_0_3px_rgba(52,211,153,0.15)]'
+                                : 'border-neutral-500 bg-neutral-800'
+                            }`}
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => nudgeRail(1)}
+                disabled={!railOverflow.end}
+                title="Scroll to newer checkpoints"
+                aria-label="Scroll timeline to newer checkpoints"
+                className="shrink-0 rounded p-0.5 text-neutral-500 transition-colors hover:text-white disabled:pointer-events-none disabled:opacity-25 cursor-pointer"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+
+              {/* Edge fades sit on the wrapper, not the scroll content. */}
+              {railOverflow.start && (
+                <div className="pointer-events-none absolute inset-y-0 left-5 w-6 bg-gradient-to-r from-neutral-900 to-transparent" />
+              )}
+              {railOverflow.end && (
+                <div className="pointer-events-none absolute inset-y-0 right-5 w-6 bg-gradient-to-l from-neutral-900 to-transparent" />
+              )}
+            </div>
 
             <p className="mt-1 truncate text-[10px] text-neutral-500" title={summary}>
               {summary}

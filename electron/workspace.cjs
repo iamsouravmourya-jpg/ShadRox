@@ -96,7 +96,9 @@ function isPreviewAsset(fileName) {
 }
 
 function isIgnoredFile(fileName) {
-  if (fileName.startsWith('.')) return true;
+  // Env files are where configuration lives; a coding agent that cannot see
+  // them answers "not configured" questions wrong. Other dotfiles stay hidden.
+  if (fileName.startsWith('.') && !fileName.startsWith('.env')) return true;
   const ext = path.extname(fileName).toLowerCase();
   return BINARY_EXTENSIONS.has(ext) && !isPreviewAsset(fileName);
 }
@@ -643,7 +645,10 @@ function createWorkspaceAccess() {
     const options = rawOptions && typeof rawOptions === 'object' ? rawOptions : {};
     const query = typeof options.query === 'string' ? options.query : '';
     if (query.length < 2) return { matches: [], truncated: false, filesScanned: 0, error: 'A search query needs at least 2 characters.' };
-    const limit = Math.min(Math.max(Number.isSafeInteger(options.limit) ? options.limit : 60, 1), 200);
+    const limit = Math.min(Math.max(Number.isSafeInteger(options.limit) ? options.limit : 200, 1), 400);
+    // One chatty README must never starve the rest of the repo out of the
+    // global cap, so each file contributes at most `perFile` lines.
+    const perFile = Math.min(Math.max(Number.isSafeInteger(options.perFile) ? options.perFile : 3, 1), 50);
     const namesOnly = options.namesOnly === true;
     const include = (Array.isArray(options.include)
       ? options.include
@@ -671,14 +676,18 @@ function createWorkspaceAccess() {
     };
 
     const matches = [];
+    const matchesByFile = new Map();
+    let perFileCapped = 0;
     let visited = 0;
     let bytesRead = 0;
     let capped = false;
     const pushLineMatches = (childPath, content) => {
       const lines = content.split(/\r?\n/);
+      let added = 0;
       for (let index = 0; index < lines.length && matches.length < limit; index += 1) {
         const hit = findIn(lines[index]);
         if (!hit) continue;
+        if (added >= perFile) { perFileCapped += 1; break; }
         const start = Math.max(0, hit.index - 60);
         matches.push({
           path: childPath,
@@ -686,7 +695,9 @@ function createWorkspaceAccess() {
           column: hit.index + 1,
           preview: lines[index].slice(start, hit.index + hit.length + 140).trim().slice(0, 240)
         });
+        added += 1;
       }
+      if (added > 0) matchesByFile.set(childPath, added);
       return matches.length >= limit;
     };
 
@@ -715,10 +726,15 @@ function createWorkspaceAccess() {
       return { matches, truncated: capped, filesScanned: visited, error: null };
     }
 
+    // Breadth-first: every top-level directory is opened before any of its
+    // children, so a match-heavy folder early in the listing cannot starve the
+    // rest of the repo out of the global cap.
     const pending = [''];
+    let cursor = 0;
+    let dirsSkipped = [];
 
-    while (pending.length > 0 && matches.length < limit) {
-      const relative = pending.pop();
+    while (cursor < pending.length && matches.length < limit) {
+      const relative = pending[cursor++];
       let entries;
       try {
         entries = await fs.readdir(relative ? path.join(workspace.root, relative) : workspace.root, { withFileTypes: true });
@@ -727,7 +743,8 @@ function createWorkspaceAccess() {
       }
       for (const entry of entries) {
         if (visited >= MAX_SEARCH_ENTRIES) { capped = true; break; }
-        if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+        if (entry.isSymbolicLink()) continue;
+        if (entry.name.startsWith('.') && !(entry.isFile() && entry.name.startsWith('.env'))) continue;
         const childPath = relative ? `${relative}/${entry.name}` : entry.name;
         if (entry.isDirectory()) {
           if (!IGNORED_DIRECTORIES.has(entry.name)) pending.push(childPath);
@@ -757,7 +774,18 @@ function createWorkspaceAccess() {
         if (pushLineMatches(childPath, content)) { capped = true; break; }
       }
     }
-    return { matches: matches.slice(0, limit), truncated: capped, filesScanned: visited, error: null };
+    // Whatever is still queued was never opened. Reporting it is what lets the
+    // caller say "partial answer" instead of passing a truncated result off as
+    // exhaustive.
+    if (matches.length >= limit && cursor < pending.length) dirsSkipped = pending.slice(cursor);
+    return {
+      matches: matches.slice(0, limit),
+      truncated: capped || perFileCapped > 0,
+      filesScanned: visited,
+      matchesByFile: Object.fromEntries(matchesByFile),
+      dirsSkipped,
+      error: null
+    };
   }
 
   async function saveFiles(workspaceId, requestedFiles) {

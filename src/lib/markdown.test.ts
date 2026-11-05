@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { parseInline, parseMarkdownBlocks } from './markdown';
+import { maskFileWrites, parseInline, parseMarkdownBlocks } from './markdown';
 
 test('bold, inline code and links become runs instead of literal markers', () => {
   const tokens = parseInline('**Sabse bada risk:** `credits.ts` dekh [docs](https://example.com/a)');
@@ -84,4 +84,16 @@ test('a real reply parses without losing any line of substance', () => {
     .filter((block) => block.kind !== 'space')
     .map((block) => block.kind);
   assert.deepEqual(blocks, ['paragraph', 'paragraph', 'bullet', 'ordered', 'table']);
+});
+
+test('two writes to one path leave one bullet, two paths leave two', () => {
+  const onePath = maskFileWrites(
+    ['```ts path=src/a.ts', 'export const a = 1;', '```', '', '```ts path=src/a.ts', 'export const a = 2;', '```'].join('\n')
+  );
+  assert.equal(onePath.split('\n').filter((line) => line.startsWith('- ')).length, 1, onePath);
+
+  const twoPaths = maskFileWrites(
+    ['```ts path=src/a.ts', 'export const a = 1;', '```', '', '```ts path=src/b.ts', 'export const b = 1;', '```'].join('\n')
+  );
+  assert.equal(twoPaths.split('\n').filter((line) => line.startsWith('- ')).length, 2, twoPaths);
 });

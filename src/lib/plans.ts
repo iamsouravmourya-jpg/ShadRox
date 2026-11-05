@@ -138,6 +138,28 @@ export function getPlanEntitlementNote(plan: PlanTier, sharedKeyEligible: boolea
 export const BETA_UPGRADE_NOTE =
   'Beta: nothing is charged and no payment is taken yet — this only flips your plan on this device.';
 
+/**
+ * What the plan card may put where a price goes. No payment integration exists
+ * in this repo, so a paid tier is listed at ₹0 today and the catalogue price is
+ * shown only as a label, never as something that can be bought.
+ */
+export function getPlanPriceDisplay(plan: PlanTier): { headline: string; note: string } {
+  const meta = getPlanMeta(plan);
+  if (!Number.isFinite(meta.creditsPerMonth)) {
+    return { headline: meta.price, note: meta.gstNote };
+  }
+  return {
+    headline: '₹0 during beta',
+    note: `Listed at ${meta.price} — no payment is integrated in this build.`
+  };
+}
+
+/** One honest word for a tier's state, used as the card badge. */
+export function getPlanStateLabel(plan: PlanTier): string {
+  if (!Number.isFinite(getPlanMeta(plan).creditsPerMonth)) return 'Free forever';
+  return isPlanSelectable(plan) ? 'Beta — all features unlocked' : 'Locked during beta';
+}
+
 export function getPlanMeta(plan: PlanTier): PlanMeta {
   return PLANS.find((entry) => entry.id === plan) || PLANS[0];
 }

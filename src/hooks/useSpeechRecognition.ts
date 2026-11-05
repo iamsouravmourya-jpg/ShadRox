@@ -1,22 +1,61 @@
 import { useEffect, useRef, useState } from 'react';
 
+/** Why dictation stopped before it produced text. */
+export type SpeechErrorCode =
+  | 'not-supported'
+  | 'not-allowed'
+  | 'service-not-allowed'
+  | 'audio-capture'
+  | 'no-speech'
+  | 'network'
+  | 'aborted'
+  | 'language-not-supported'
+  | 'unknown';
+
+/** A dictation failure the UI can actually show, instead of a silent console.warn. */
+export interface SpeechRecognitionError {
+  code: SpeechErrorCode;
+  message: string;
+}
+
 interface UseSpeechRecognitionResult {
   isSupported: boolean;
   isListening: boolean;
   transcript: string;
+  /** Non-null while the last attempt failed; cleared on the next `start`. */
+  error: SpeechRecognitionError | null;
   start: () => void;
   stop: () => void;
   reset: () => void;
 }
 
+const ERROR_MESSAGES: Record<SpeechErrorCode, string> = {
+  'not-supported': 'Voice dictation is not available in this build. Type the message instead.',
+  'not-allowed': 'Microphone permission was denied. Allow the mic for ShadRox, then try again.',
+  'service-not-allowed': 'The system speech service refused this request. Check the microphone privacy settings.',
+  'audio-capture': 'No microphone was found. Connect one and try again.',
+  'no-speech': 'No speech was detected. Try again and speak after the mic turns red.',
+  network: 'The speech service could not be reached. Check your connection and try again.',
+  aborted: 'Dictation stopped before anything was heard.',
+  'language-not-supported': 'This language is not supported by the system speech service.',
+  unknown: 'Voice dictation failed. Type the message instead.'
+};
+
+function toSpeechError(raw: unknown): SpeechRecognitionError {
+  const code = typeof raw === 'string' && raw in ERROR_MESSAGES ? (raw as SpeechErrorCode) : 'unknown';
+  return { code, message: ERROR_MESSAGES[code] };
+}
+
 /**
  * Thin wrapper over the Web Speech API. Kept in a hook so voice state does not
- * leak into the chat component.
+ * leak into the chat component. Every failure surfaces through `error` so the
+ * mic button can say what went wrong.
  */
 export function useSpeechRecognition(lang = 'hi-IN'): UseSpeechRecognitionResult {
   const recognitionRef = useRef<any>(null);
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
+  const [error, setError] = useState<SpeechRecognitionError | null>(null);
   const isSupported = typeof window !== 'undefined' && Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
 
   useEffect(() => {
@@ -31,6 +70,7 @@ export function useSpeechRecognition(lang = 'hi-IN'): UseSpeechRecognitionResult
     recognition.onstart = () => {
       setIsListening(true);
       setTranscript('');
+      setError(null);
     };
 
     recognition.onresult = (event: any) => {
@@ -42,7 +82,7 @@ export function useSpeechRecognition(lang = 'hi-IN'): UseSpeechRecognitionResult
     };
 
     recognition.onerror = (event: any) => {
-      console.warn('[shadrox] speech error', event.error);
+      setError(toSpeechError(event?.error));
       setIsListening(false);
     };
 
@@ -61,13 +101,25 @@ export function useSpeechRecognition(lang = 'hi-IN'): UseSpeechRecognitionResult
   }, [isSupported, lang]);
 
   const start = () => {
-    if (!recognitionRef.current) return;
+    if (!isSupported) {
+      setError(toSpeechError('not-supported'));
+      return;
+    }
+    if (!recognitionRef.current) {
+      setError(toSpeechError('unknown'));
+      return;
+    }
     setTranscript('');
+    setError(null);
     try {
       recognitionRef.current.start();
       setIsListening(true);
-    } catch (error) {
-      console.warn('[shadrox] could not start speech recognition', error);
+    } catch (startError) {
+      // `start()` throws when the recogniser is already running; anything else
+      // is a real failure the user should see.
+      const message = startError instanceof Error ? startError.message : String(startError);
+      if (!/already started/i.test(message)) setError(toSpeechError('unknown'));
+      setIsListening(false);
     }
   };
 
@@ -83,5 +135,5 @@ export function useSpeechRecognition(lang = 'hi-IN'): UseSpeechRecognitionResult
 
   const reset = () => setTranscript('');
 
-  return { isSupported, isListening, transcript, start, stop, reset };
+  return { isSupported, isListening, transcript, error, start, stop, reset };
 }

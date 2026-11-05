@@ -7,6 +7,7 @@ import {
   type AtomicPlan,
   type AtomicPlanFailure
 } from './atomicApply';
+import { extractUnifiedPatches } from './patchEngine';
 import type { ReviewPatch, WorkspaceFile } from './types';
 
 const file = (name: string, content: string): WorkspaceFile => ({ name, content, language: 'typescript' });
@@ -188,4 +189,68 @@ test('patches that already left review are left untouched by the plan', () => {
   assert.equal(plan.jobs.length, 1);
   assert.deepEqual(plan.patches.map((patch) => patch.status), ['applied', 'rejected', 'applied']);
   assert.equal(plan.patches[2].originalContent, 'old');
+});
+
+/* -------------------------------------------------------------------------- *
+ * One operation per path, and refusals that stay readable all the way to the
+ * plan result (real reports: "Changes · 2 files" for one created file, and a
+ * deletion that was announced as done while nothing happened).
+ * -------------------------------------------------------------------------- */
+
+const pending = (patch: { path: string; kind: 'rewrite' | 'searchReplace'; content?: string; blocks?: Array<{ original: string; updated: string }> }): ReviewPatch =>
+  ({ ...patch, status: 'pending' } as ReviewPatch);
+
+test('two pending patches for one path collapse to a single job; the last one wins', () => {
+  const files = [file('src/a.ts', 'const a = 1;\n')];
+  const plan = planAtomicApply(
+    [searchReplace('src/a.ts', 'const a = 1;', 'const A = 1;'), rewrite('SRC/A.TS', 'const B = 2;\n')],
+    files
+  );
+
+  assert.equal(plan.ok, true);
+  assert.equal(plan.jobs.length, 1, 'one job per path — no duplicate write, no "2 files" row');
+  assert.equal(plan.jobs[0].path, 'src/a.ts');
+  assert.equal(plan.jobs[0].content, 'const B = 2;\n');
+  assert.deepEqual(plan.patches.map((patch) => patch.status), ['rejected', 'applied']);
+  assert.match(plan.patches[0].failure ?? '', /Superseded by a later patch/);
+});
+
+test('a created file emitted twice plans as ONE created job', () => {
+  const plan = planAtomicApply(
+    [rewrite('test.txt', 'first'), rewrite('test.txt', 'second')],
+    [file('src/a.ts', '')]
+  );
+
+  assert.equal(plan.ok, true);
+  assert.equal(plan.jobs.length, 1);
+  assert.equal(plan.jobs[0].created, true);
+  assert.equal(plan.jobs[0].content, 'second');
+});
+
+test('a refused Cline delete reaches the plan failure with its typed reason, not "text not found"', () => {
+  const onDisk = 'export const gone = 1;\n';
+  const patches = extractUnifiedPatches(
+    '```diff\n*** Begin Patch\n*** Delete File: src/gone.ts\n*** End Patch\n```',
+    [{ name: 'src/gone.ts', content: onDisk }]
+  ).map(pending);
+
+  const plan = planAtomicApply(patches, [file('src/gone.ts', onDisk)]);
+  assert.equal(plan.ok, false);
+  assert.equal(plan.jobs.length, 0);
+  assert.equal(failuresOf(plan)[0].code, 'DELETE_NOT_A_PATCH');
+  assert.match(failuresOf(plan)[0].reason, /Deletion is not applied from a patch/);
+  assert.match(plan.patches[0].failure ?? '', /file tree/);
+  assert.doesNotMatch(plan.patches[0].failure ?? '', /text not found/);
+});
+
+test('an empty declared body is a named plan failure instead of a success-shaped no-op', () => {
+  const onDisk = 'keep me\n';
+  const patches = extractUnifiedPatches('```ts path=test.txt\n```', []).map(pending);
+
+  const plan = planAtomicApply(patches, [file('test.txt', onDisk)]);
+  assert.equal(plan.ok, false, 'silence is what let the app "confirm" a deletion that never happened');
+  assert.equal(plan.jobs.length, 0);
+  assert.equal(failuresOf(plan)[0].code, 'EMPTY_BODY');
+  assert.match(failuresOf(plan)[0].reason, /left untouched/);
+  assert.match(failuresOf(plan)[0].reason, /deletion/i);
 });
