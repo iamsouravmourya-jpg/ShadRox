@@ -26,6 +26,29 @@ test('a milestone that declares no files may not write any', () => {
   assert.match(refused[0], /declared no files to edit/);
 });
 
+test('plugin and automation manifests stay outside the agent-writable set', () => {
+  const { allowed, refused } = confinePatches(
+    [
+      { path: '.shadrox/plugins/demo/plugin.json' },
+      { path: '.shadrox/automations.json' },
+      { path: 'src/app.ts' }
+    ],
+    ['.shadrox/plugins/demo/plugin.json', '.shadrox/automations.json', 'src/app.ts']
+  );
+  assert.deepEqual(allowed.map((patch) => patch.path), ['src/app.ts']);
+  assert.equal(refused.length, 2);
+  assert.match(refused[0], /cannot alter plugin or automation manifests/);
+});
+
+test('protected paths are recognized after separator and traversal normalization', () => {
+  const { allowed, refused } = confinePatches(
+    [{ path: 'src\\..\\.shadrox\\plugins\\demo\\plugin.json' }],
+    ['.shadrox/plugins/demo/plugin.json']
+  );
+  assert.deepEqual(allowed, []);
+  assert.equal(refused.length, 1);
+});
+
 test('an empty patch list is a no-op', () => {
   const { allowed, refused } = confinePatches([], ['src/a.ts']);
   assert.deepEqual(allowed, []);

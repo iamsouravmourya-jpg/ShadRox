@@ -10,6 +10,7 @@
  */
 
 import { normalizeRelativePath } from './ports';
+import { isProtectedAgentWritePath } from '../agents/applyPolicy';
 
 export interface ConfinablePatch {
   path: string;
@@ -29,6 +30,10 @@ export function confinePatches<T extends ConfinablePatch>(
   const refused: string[] = [];
 
   for (const patch of patches) {
+    if (isProtectedAgentWritePath(patch.path)) {
+      refused.push(`${patch.path}: refused — agent turns cannot alter plugin or automation manifests`);
+      continue;
+    }
     if (allowedPaths.has(normalizeRelativePath(patch.path))) {
       allowed.push(patch);
       continue;

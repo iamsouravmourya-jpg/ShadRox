@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { CheckCircle, Loader2, RefreshCw } from 'lucide-react';
 import { getDesktopBridge } from '../../lib/desktop';
 import {
+  hashPluginManifest,
   notifyWorkspaceConfigChanged,
   readPluginConsent,
   setPluginEnabled
@@ -30,6 +31,8 @@ export interface PluginsSectionProps {
   workspaceRoot?: string | null;
 }
 
+type PluginView = LoadedPlugin & { manifestHash: string; consentChanged: boolean };
+
 const LAYOUT = ['.shadrox/', '  plugins/', '    my-plugin/', '      plugin.json'].join('\n');
 
 /** Absolute paths from the bridge still have to resolve inside the workspace. */
@@ -49,7 +52,7 @@ function describeWhen(when: PluginHookWhen): string {
 }
 
 export function PluginsSection({ workspaceId, workspaceRoot }: PluginsSectionProps) {
-  const [plugins, setPlugins] = useState<LoadedPlugin[]>([]);
+  const [plugins, setPlugins] = useState<PluginView[]>([]);
   const [errors, setErrors] = useState<PluginLoadError[]>([]);
   const [scanIssues, setScanIssues] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -83,7 +86,21 @@ export function PluginsSection({ workspaceId, workspaceRoot }: PluginsSectionPro
       const manifests = entries.filter((entry) => manifestPaths.includes(entry.path));
       const loaded = loadPlugins(manifests);
       const consent = readPluginConsent(workspaceRoot);
-      setPlugins(loaded.plugins.map((plugin) => ({ ...plugin, enabled: consent.has(plugin.manifest.id) })));
+      const byPath = new Map(manifests.map((entry) => [entry.path, entry.content]));
+      setPlugins(await Promise.all(loaded.plugins.map(async (plugin) => {
+        const content = byPath.get(plugin.sourcePath);
+        if (content === undefined) {
+          throw new Error(`Plugin manifest content was unavailable for ${plugin.sourcePath}.`);
+        }
+        const manifestHash = await hashPluginManifest(content);
+        const storedHash = consent.get(plugin.manifest.id);
+        return {
+          ...plugin,
+          manifestHash,
+          enabled: storedHash === manifestHash,
+          consentChanged: storedHash !== undefined && storedHash !== manifestHash
+        };
+      })));
       setErrors(loaded.errors);
       setScanIssues(result.errors ?? []);
     } catch (cause) {
@@ -97,7 +114,7 @@ export function PluginsSection({ workspaceId, workspaceRoot }: PluginsSectionPro
     void load();
   }, [load]);
 
-  const toggle = async (plugin: LoadedPlugin) => {
+  const toggle = async (plugin: PluginView) => {
     if (!workspaceRoot) {
       setScanError('Open a folder workspace before enabling plugins.');
       return;
@@ -105,13 +122,15 @@ export function PluginsSection({ workspaceId, workspaceRoot }: PluginsSectionPro
     setScanError(null);
     setToggling(plugin.manifest.id);
     try {
-      setPluginEnabled(workspaceRoot, plugin.manifest.id, !plugin.enabled);
+      setPluginEnabled(workspaceRoot, plugin.manifest.id, !plugin.enabled, plugin.manifestHash);
       setPlugins((previous) =>
         previous.map((entry) =>
           entry.manifest.id === plugin.manifest.id ? { ...entry, enabled: !entry.enabled } : entry
         )
       );
       notifyWorkspaceConfigChanged();
+    } catch (cause) {
+      setScanError(errorMessage(cause));
     } finally {
       setToggling(null);
     }
@@ -209,6 +228,11 @@ export function PluginsSection({ workspaceId, workspaceRoot }: PluginsSectionPro
                 </div>
                 {plugin.manifest.description && (
                   <p className="text-[11px] leading-relaxed text-neutral-400">{plugin.manifest.description}</p>
+                )}
+                {plugin.consentChanged && !plugin.enabled && (
+                  <p className="text-[11px] text-amber-300">
+                    This manifest changed since you enabled it. Review its updated actions and enable it again to re-consent.
+                  </p>
                 )}
                 <ul className="space-y-1">
                   {plugin.manifest.hooks.map((hook, index) => (
