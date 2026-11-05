@@ -27,6 +27,8 @@ A native desktop workspace for working on local projects with an editor, Markdow
 - **Assistant shell access.** The agent can run a command in the opened folder and read its real exit code and output, so it can start a build, run tests, or stop a process instead of guessing.
 - **Verified writes.** After applying edits, ShadRox re-reads the files and only reports a save when the bytes on disk actually changed.
 - **Redesigned replies.** Assistant answers render as cards with headings, tables, quotes, editor-style code blocks, and one-click copy.
+- **Self-healing preview.** Preview servers left behind by a force-closed app and stale Next.js dev locks are detected and cleaned up automatically the next time the same project starts, so ports stop getting stuck.
+- **New logo.** A refreshed shield-and-ribbon mark ships across the app, installer, and [landing page](https://www.shadrox.cyou).
 
 ## What is ShadRox?
 
