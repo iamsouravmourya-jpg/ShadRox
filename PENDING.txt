@@ -1,0 +1,25 @@
+PENDING — ShadRox (2026-11-05)
+
+README update ho gaya (v0.0.6 bullets: self-healing preview + new logo), commit + push done.
+Ye sab abhi bacha hai:
+
+1. BIG-TASK BATTERY (naya exe, CDP port 9555 pe launch hua hai, IGNOU CODER khula hai)
+   - T2: FAQ task via chat (data file + accordion + about page + npm run build)
+   - Rollback / checkpoint test (chat "undo" + UI timeline restore)
+   - Delete-file via chat
+   - Git commit via chat (confirm gate click)
+   - Deep report chat me (Hinglish)
+
+2. RELEASE
+   - Rebuilt installer publish karna hai GitHub Releases pe:
+     C:\Users\WorkSpace\AppData\Local\Temp\shadrox-dist-061\ShadRox-v0.0.6-Setup.exe
+     + shadrox-0.0.6-x64.nsis.7z (web installer dono chahiye)
+   - Purana v0.0.6 exe Releases se delete (workflow: sirf latest installer rahega)
+
+3. USER DECISIONS (bina pooche kuch nahi karunga)
+   - app/about/page.tsx me "Built with ShadRox" line — rakhna hai ya revert?
+   - IGNOU CODER test artifacts (test.txt, README sections, .shadrox/, SHADROX_SMOKE_TEST_v0.0.4.txt) — delete karu?
+
+4. OPTIONAL (landing polish)
+   - beta-cta.tsx / workspace-mockup.tsx me purani palette accents (#6d4aff/#ec4899) naye logo palette se match karna
+   - Landing iframe SEO debt (inline content) — deferred
