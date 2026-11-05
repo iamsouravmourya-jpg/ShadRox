@@ -63,6 +63,18 @@ export interface PatchProposal extends StagedTransaction {
   base: WorkspaceFile[];
 }
 
+/**
+ * One workspace path as the attach picker needs it: names only, no contents.
+ * Derived from the disk tree, so it lists the whole folder instead of the tabs
+ * that happen to be open.
+ */
+export interface WorkspaceTreeEntry {
+  /** Workspace-relative path, same shape as `WorkspaceFile.name`. */
+  name: string;
+  /** Bytes on disk (0 for a path the watcher just reported) or buffer length. */
+  size: number;
+}
+
 interface UseWorkspaceResult {
   directoryPages: Record<string, DirectoryPage>;
   loadingDirectories: string[];
@@ -85,6 +97,12 @@ interface UseWorkspaceResult {
   changeRevision: number;
   workspace: WorkspaceFolder | null;
   files: WorkspaceFile[];
+  /**
+   * Every path the workspace holds — the disk tree plus any buffer the tree has
+   * not caught up with — as `{ name, size }`. Deliberately separate from `files`
+   * (the loaded/open tabs, which the chat context depends on).
+   */
+  allFiles: WorkspaceTreeEntry[];
   activeFile: WorkspaceFile | null;
   activeFileIndex: number;
   /** Binary assets mounted from disk, keyed by workspace-relative path. */
@@ -201,6 +219,21 @@ export function useWorkspace(): UseWorkspaceResult {
   const [checkpoints, setCheckpoints] = useState<CheckpointMeta[]>([]);
 
   const files = workspace?.files ?? EMPTY_FILES;
+  /**
+   * The whole workspace, not just the open tabs. A folder mount keeps its file
+   * list in `diskFileTree` (paths + sizes, contents unread); single-file mounts
+   * and freshly created buffers only exist in `files`, so both are merged.
+   */
+  const allFiles = useMemo<WorkspaceTreeEntry[]>(() => {
+    const byPath = new Map<string, WorkspaceTreeEntry>();
+    for (const entry of workspace?.diskFileTree ?? []) {
+      byPath.set(entry.path, { name: entry.path, size: entry.size });
+    }
+    for (const file of files) {
+      if (!byPath.has(file.name)) byPath.set(file.name, { name: file.name, size: file.content.length });
+    }
+    return [...byPath.values()].sort((left, right) => left.name.localeCompare(right.name));
+  }, [workspace?.diskFileTree, files]);
   // CodeEditor renders `files[activeFileIndex] ?? files[0]`, so a document is on
   // screen even while no index is selected. Keystrokes must land in that same
   // file, otherwise the edit lives only in the CodeMirror doc. Both sides use
@@ -755,6 +788,75 @@ export function useWorkspace(): UseWorkspaceResult {
     await refreshDiskFile(name, action);
   }, [refreshDiskFile]);
 
+  /**
+   * Folds fs-watcher deltas into the flat tree a folder mount captured once.
+   * Without this a file deleted (or created) by the agent stayed in
+   * `diskFileTree` forever, because nothing re-lists the whole folder.
+   */
+  const applyDiskTreeChanges = useCallback((changes: WorkspaceChange['changes']) => {
+    if (changes.length === 0) return;
+    setWorkspace((previous) => {
+      const tree = previous?.diskFileTree;
+      if (!previous || !tree) return previous;
+      let next = tree;
+      const removed = changes.filter((change) => change.kind === 'unlink' || change.kind === 'unlinkDir');
+      if (removed.length > 0) {
+        const gone = (path: string) => removed.some((change) => change.kind === 'unlinkDir'
+          ? path === change.path || path.startsWith(`${change.path}/`)
+          : path === change.path);
+        const kept = next.filter((entry) => !gone(entry.path));
+        if (kept.length !== next.length) next = kept;
+      }
+      const added = changes.filter((change) => change.kind === 'add');
+      if (added.length > 0) {
+        const known = new Set(next.map((entry) => entry.path));
+        // Size is unknown until the next full list; 0 is what listWorkspaceFiles
+        // also reports for a path it could not stat.
+        const fresh = added.filter((change) => !known.has(change.path)).map((change) => ({ path: change.path, size: 0 }));
+        if (fresh.length > 0) next = [...next, ...fresh].sort((left, right) => left.path.localeCompare(right.path));
+      }
+      if (next === tree) return previous;
+      return {
+        ...previous,
+        diskFileTree: next,
+        diskFileCount: previous.diskFileCountTruncated ? previous.diskFileCount : next.length
+      };
+    });
+  }, []);
+
+  /**
+   * A tracked file disappeared from disk. A clean buffer is dropped and its tab
+   * closed so the editor cannot keep showing contents that no longer exist; a
+   * buffer with local edits is kept and flagged instead, because closing it
+   * would silently throw the user's work away.
+   */
+  const dropDeletedBuffer = useCallback((name: string) => {
+    const current = filesRef.current;
+    const index = current.findIndex((file) => file.name === name);
+    if (index < 0) return;
+    if (current[index].content !== baselineRef.current[name]) {
+      deletedPaths.current.add(name);
+      setConflicts((previous) => [...new Set([...previous, name])]);
+      setDiskMessage(`${name} was deleted on disk. Your unsaved edits are still in the editor — save to recreate it, or close the tab to discard them.`);
+      return;
+    }
+    const next = current.filter((file) => file.name !== name);
+    filesRef.current = next;
+    delete baselineRef.current[name];
+    setDiskBaseline({ ...baselineRef.current });
+    setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
+    setEditorGroups((previous) => previous.map((group) => ({
+      ...group,
+      tabs: group.tabs.filter((path) => path !== name),
+      pinnedTabs: group.pinnedTabs.filter((path) => path !== name),
+      activePath: group.activePath === name ? null : group.activePath
+    })));
+    setSelectedFileIndex((selected) => selected === -1 ? -1 : selected > index ? selected - 1 : selected === index ? Math.min(index, next.length - 1) : selected);
+    setConflicts((previous) => previous.filter((path) => path !== name));
+    deletedPaths.current.delete(name);
+    setDiskMessage(`${name} was deleted on disk — its tab is closed.`);
+  }, []);
+
   useEffect(() => {
     const desktop = getDesktopBridge();
     const id = workspace?.nativeWorkspaceId;
@@ -769,12 +871,15 @@ export function useWorkspace(): UseWorkspaceResult {
       queued = [];
       const parents = new Set(changes.map(({ path }) => path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''));
       for (const parent of parents) if (pagesRef.current[parent]) void loadDirectory(parent);
+      // The explorer counts and attach list read `diskFileTree`, which a folder
+      // mount only fills once. Apply the watcher's deltas so a delete or a file
+      // the agent created shows up no matter who made the change.
+      applyDiskTreeChanges(changes);
       for (const file of filesRef.current) {
         const change = [...changes].reverse().find((entry) => entry.path === file.name || (entry.kind === 'unlinkDir' && file.name.startsWith(`${entry.path}/`)));
         if (change) {
           if (change.kind === 'unlink' || change.kind === 'unlinkDir') {
-            deletedPaths.current.add(file.name);
-            setConflicts((previous) => [...new Set([...previous, file.name])]);
+            dropDeletedBuffer(file.name);
           } else {
             deletedPaths.current.delete(file.name);
             void refreshDiskFile(file.name);
@@ -790,7 +895,7 @@ export function useWorkspace(): UseWorkspaceResult {
       timer = setTimeout(flush, 150);
     });
     return () => { disposed = true; clearTimeout(timer); unsubscribe(); };
-  }, [workspace?.nativeWorkspaceId, loadDirectory, refreshDiskFile]);
+  }, [workspace?.nativeWorkspaceId, loadDirectory, refreshDiskFile, applyDiskTreeChanges, dropDeletedBuffer]);
 
   const selectFile = useCallback((index: number, groupIndex = activeEditorGroup) => {
     fileRequest.current += 1;
@@ -1379,6 +1484,8 @@ export function useWorkspace(): UseWorkspaceResult {
       }
       setConflicts((previous) => previous.filter((name) => name !== clean));
       deletedPaths.current.delete(clean);
+      // Refresh the explorer immediately instead of waiting for the watcher.
+      applyDiskTreeChanges([{ path: clean, kind: removed.kind === 'directory' ? 'unlinkDir' : 'unlink' }]);
       void loadDirectory(clean.split('/').slice(0, -1).join('/'));
       setDiskMessage(`Deleted ${removed.kind === 'directory' ? 'folder' : 'file'} ${clean}.`);
       return true;
@@ -1386,7 +1493,7 @@ export function useWorkspace(): UseWorkspaceResult {
       setDiskMessage(`Could not delete ${clean}: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
-  }, [loadDirectory]);
+  }, [loadDirectory, applyDiskTreeChanges]);
 
   const revertActiveFile = useCallback(async () => {
     const file = filesRef.current[activeFileIndex];
@@ -1605,6 +1712,7 @@ export function useWorkspace(): UseWorkspaceResult {
       changeRevision,
       workspace,
       files,
+      allFiles,
       activeFile,
       activeFileIndex,
       assets,
@@ -1666,6 +1774,7 @@ export function useWorkspace(): UseWorkspaceResult {
       changeRevision,
       workspace,
       files,
+      allFiles,
       activeFile,
       activeFileIndex,
       assets,

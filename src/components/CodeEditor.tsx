@@ -326,6 +326,108 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+export interface PathPromptRequest {
+  title: string;
+  description: string;
+  initialValue: string;
+  placeholder: string;
+  confirmLabel: string;
+  onSubmit: (value: string) => void;
+}
+
+/**
+ * In-app replacement for window.prompt. `ConfirmHost` is confirm-only (no text
+ * field) and belongs to another owner, so rename/create use this dialog styled
+ * from the same tokens: rounded-panel, ink-900, white/10 border. It never blocks
+ * the renderer and Escape/backdrop cancel like every other dialog in the app.
+ */
+export function PathPromptDialog({
+  request,
+  onCancel
+}: {
+  request: PathPromptRequest;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(request.initialValue);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.focus();
+    // Select the file name but keep the parent path, so a rename starts editable.
+    const slash = request.initialValue.lastIndexOf('/');
+    input.setSelectionRange(slash + 1, request.initialValue.length);
+  }, [request.initialValue]);
+
+  const submit = () => {
+    const next = value.trim();
+    if (!next) return;
+    request.onSubmit(next);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-4 backdrop-blur-sm"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onCancel();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={request.title}
+        className="w-full max-w-sm rounded-panel border border-white/10 bg-ink-900 p-4 shadow-sheet"
+        onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+      >
+        <h2 className="text-sm font-semibold text-neutral-100">{request.title}</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-neutral-400">{request.description}</p>
+        <input
+          ref={inputRef}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              submit();
+            }
+          }}
+          placeholder={request.placeholder}
+          spellCheck={false}
+          autoComplete="off"
+          aria-label={request.title}
+          className="mt-3 w-full rounded-xl border border-white/[0.09] bg-ink-950 px-3 py-2 font-mono text-xs text-neutral-100 outline-none transition-colors placeholder:text-neutral-600 focus:border-violet-300/40"
+        />
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-neutral-300 transition-colors hover:bg-white/[0.08] hover:text-white cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!value.trim()}
+            className="rounded-xl bg-violet-500 px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-violet-400 disabled:opacity-40 cursor-pointer"
+          >
+            {request.confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Bridge diagnostics are 0-based line/character (same as CodeMirror). Positions
  * are clamped to the current document so a response computed against an older
@@ -476,6 +578,8 @@ export function CodeEditor({
   const quickFixRequestId = useRef(0);
   /** One-line, dismissible notice about why Tab may be doing nothing. */
   const [dismissedCompletionHint, setDismissedCompletionHint] = useState<string | null>(null);
+  /** Rename / New Folder input; replaces the blocking window.prompt. */
+  const [pathPrompt, setPathPrompt] = useState<PathPromptRequest | null>(null);
   const fimHealth = useSyncExternalStore(subscribeFimHealth, getFimHealth);
 
   const dirty = useMemo(() => new Set(dirtyFiles), [dirtyFiles]);
@@ -1108,9 +1212,19 @@ export function CodeEditor({
 
   const handleRename = () => {
     if (!activeFile) return;
-    const next = window.prompt('Rename file (workspace-relative path):', activeFile.name);
-    if (!next || !next.trim() || next.trim() === activeFile.name) return;
-    onRenameFile(activeFile.name, next.trim());
+    const current = activeFile.name;
+    setPathPrompt({
+      title: 'Rename file',
+      description: 'Workspace-relative path. The file is moved on disk and its tab follows.',
+      initialValue: current,
+      placeholder: 'src/utils/helper.ts',
+      confirmLabel: 'Rename',
+      onSubmit: (next) => {
+        setPathPrompt(null);
+        if (next === current) return;
+        onRenameFile(current, next);
+      }
+    });
   };
 
   const parentFolderForNew = () => {
@@ -1121,14 +1235,19 @@ export function CodeEditor({
   const handleNewFolder = () => {
     if (!onCreateDirectory) return;
     const parent = parentFolderForNew();
-    const next = window.prompt(
-      `New folder${parent ? ` in ${parent}` : ''} (workspace-relative path):`,
-      parent ? `${parent}/` : ''
-    );
-    if (!next) return;
-    const clean = next.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
-    if (!clean || clean === parent) return;
-    void onCreateDirectory(!clean.includes('/') && parent ? `${parent}/${clean}` : clean);
+    setPathPrompt({
+      title: parent ? `New folder in ${parent}` : 'New folder',
+      description: 'Workspace-relative path. Dot-names and generated folders are refused by the bridge.',
+      initialValue: parent ? `${parent}/` : '',
+      placeholder: 'src/components',
+      confirmLabel: 'Create folder',
+      onSubmit: (next) => {
+        setPathPrompt(null);
+        const clean = next.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+        if (!clean || clean === parent) return;
+        void onCreateDirectory(!clean.includes('/') && parent ? `${parent}/${clean}` : clean);
+      }
+    });
   };
 
   const handleDeleteEntry = async (path: string, label: string, kind: 'file' | 'folder') => {
@@ -1211,6 +1330,14 @@ export function CodeEditor({
         </div>
       )}
 
+      {pathPrompt && (
+        <PathPromptDialog
+          key={`${pathPrompt.title}:${pathPrompt.initialValue}`}
+          request={pathPrompt}
+          onCancel={() => setPathPrompt(null)}
+        />
+      )}
+
       {/* Left Column: Vertical Files Explorer Sidebar */}
       <div
         className={`${
@@ -1235,6 +1362,7 @@ export function CodeEditor({
                 onClick={() => setIsOutlineOpen((open) => !open)}
                 aria-pressed={isOutlineOpen}
                 title={isOutlineOpen ? 'Hide document outline' : 'Show document outline'}
+                aria-label={isOutlineOpen ? 'Hide document outline' : 'Show document outline'}
                 className={`p-1 transition-colors cursor-pointer ${
                   isOutlineOpen ? 'text-violet-300' : 'text-neutral-400 hover:text-white'
                 }`}
@@ -1246,6 +1374,7 @@ export function CodeEditor({
               type="button"
               onClick={onNewFile}
               title="Create new file"
+              aria-label="Create new file"
               className="p-1 text-neutral-400 hover:text-white transition-colors cursor-pointer"
             >
               <FilePlus className="w-3.5 h-3.5" />
@@ -1255,6 +1384,7 @@ export function CodeEditor({
                 type="button"
                 onClick={handleNewFolder}
                 title="Create new folder"
+                aria-label="Create new folder"
                 className="p-1 text-neutral-400 hover:text-white transition-colors cursor-pointer"
               >
                 <FolderPlus className="w-3.5 h-3.5" />
@@ -1264,6 +1394,7 @@ export function CodeEditor({
               type="button"
               onClick={handleDownloadZip}
               title="Export workspace as ZIP"
+              aria-label="Export workspace as ZIP"
               className="p-1 text-neutral-400 hover:text-white transition-colors cursor-pointer"
             >
               <Archive className="w-3.5 h-3.5" />
@@ -1286,6 +1417,8 @@ export function CodeEditor({
               <button
                 type="button"
                 onClick={() => setFileFilter('')}
+                title="Clear file filter"
+                aria-label="Clear file filter"
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 text-neutral-600 hover:text-white cursor-pointer"
               >
                 <X className="w-3 h-3" />
@@ -1533,6 +1666,7 @@ export function CodeEditor({
                 type="button"
                 onClick={handleCopy}
                 title="Copy Code"
+                aria-label={hasCopied ? 'Copied to clipboard' : 'Copy file contents'}
                 className="flex items-center gap-1 rounded-lg border border-white/[0.09] px-2 py-1 text-[11px] text-neutral-400 transition-colors hover:border-white/[0.14] hover:text-white cursor-pointer"
               >
                 {hasCopied ? (
@@ -1548,6 +1682,7 @@ export function CodeEditor({
                 type="button"
                 onClick={handleDownloadFile}
                 title="Download this file"
+                aria-label="Download this file"
                 className="rounded-lg border border-white/[0.09] p-1 text-neutral-400 transition-colors hover:border-white/[0.14] hover:text-white cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
@@ -1559,6 +1694,7 @@ export function CodeEditor({
                     type="button"
                     onClick={handleRename}
                     title="Rename file on disk"
+                    aria-label="Rename file on disk"
                     className="rounded-lg border border-white/[0.09] p-1 text-neutral-400 transition-colors hover:border-white/[0.14] hover:text-white cursor-pointer"
                   >
                     <Pencil className="w-3.5 h-3.5" />
@@ -1568,6 +1704,7 @@ export function CodeEditor({
                     onClick={handleRevert}
                     disabled={!isDirty}
                     title="Discard local edits and reload from disk"
+                    aria-label="Discard local edits and reload from disk"
                     className="rounded-lg border border-white/[0.09] p-1 text-neutral-400 transition-colors hover:border-amber-300/40 hover:text-amber-300 disabled:opacity-30 cursor-pointer"
                   >
                     <Undo2 className="w-3.5 h-3.5" />

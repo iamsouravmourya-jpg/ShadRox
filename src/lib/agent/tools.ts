@@ -1,4 +1,6 @@
 import { getDesktopBridge } from '../desktop';
+import { publishTerminalDockEvent } from '../terminal/echoChannel';
+import { findFileEditingCommand } from './commandGuard';
 import { describeFinish } from './finishTool';
 import { MCP_TOOL_PREFIX } from './mcpTools';
 import type { ExternalToolDefinition } from './mcpTools';
@@ -30,6 +32,8 @@ export interface ToolOutcome {
   content: string;
   /** Present when the tool itself refused, as opposed to failing mid-read. */
   error?: string;
+  /** A guard said no. The call never touched the disk, so it is not a failed operation. */
+  refused?: boolean;
 }
 
 const MAX_TOOL_OUTPUT_CHARS = 24_000;
@@ -58,6 +62,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     parameters: 'query: string (required), include?: string (path glob like "src/**/*.ts"), regex?: boolean, limit?: number'
   },
   {
+    name: 'delete_file',
+    description: 'Delete one file from disk, or remove an empty folder. Refuses non-empty folders. The result is verified against the filesystem; never claim a delete you did not see succeed.',
+    parameters: 'path: string (required, workspace-relative), confirm: true (required)'
+  },
+  {
     name: 'problems',
     description: 'Real compiler diagnostics for the project or for named files.',
     parameters: 'paths?: string[] (workspace-relative; omit for the whole project)'
@@ -66,6 +75,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'git_state',
     description: 'Working-tree status and diff, so you can see what already changed.',
     parameters: 'none'
+  },
+  {
+    name: 'run_command',
+    description: 'Run one shell command in the opened folder and return its real exit code, stdout and stderr. Use it for builds, tests, git inspection, and processes (including stopping one). Never claim a command result you did not see here.',
+    parameters: 'command: string (required, one line), confirm?: true (required when the command can delete or modify files)'
   },
   {
     name: 'outline',
@@ -128,6 +142,24 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
     additionalProperties: false
   },
   git_state: { type: 'object', properties: {}, additionalProperties: false },
+  run_command: {
+    type: 'object',
+    properties: {
+      command: { type: 'string', description: 'One shell command to run in the opened folder.' },
+      confirm: { type: 'boolean', description: 'Set true only when the command may delete or modify files and the user asked for that.' }
+    },
+    required: ['command'],
+    additionalProperties: false
+  },
+  delete_file: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Workspace-relative path of the file to delete.' },
+      confirm: { type: 'boolean', description: 'Must be true. Set it only when the user asked for this exact deletion.' }
+    },
+    required: ['path', 'confirm'],
+    additionalProperties: false
+  },
   outline: {
     type: 'object',
     properties: { path: { type: 'string', description: 'Workspace-relative file path.' } },
@@ -188,7 +220,7 @@ export function isControlTool(name: string): boolean {
 /** The instruction block that teaches the model to use the tools. */
 export function describeTools(maxRounds: number, external: ExternalToolDefinition[] = [], notes: string[] = []): string[] {
   const lines = [
-    'WORKSPACE TOOLS — you have live read access to the opened folder. Do not guess what a file contains.',
+    'WORKSPACE TOOLS — you have live read access to the opened folder and can run commands in it. Do not guess what a file contains or what a command prints.',
     'When you need to see something before answering, reply with ONLY this block and nothing else:',
     '```shadrox:tools',
     '[{"name":"read_file","args":{"path":"src/main.ts"}}]',
@@ -196,6 +228,8 @@ export function describeTools(maxRounds: number, external: ExternalToolDefinitio
     'The array holds up to 6 calls and they run in parallel. ShadRox answers in the next turn inside a ```shadrox:results block, then you continue.',
     'You get ' + maxRounds + ' tool rounds per answer. Ask for several files in one round instead of one per round.',
     'Rules: never invent a path — read it or list it first. Prefer search_text and find_files to locate code, then read only what you need. Paths must stay inside the workspace. Never invent a tool name either: use only the names listed below.',
+    'DELETING: only delete_file removes something. An empty path= block deletes nothing, and an edit block cannot remove a file. Never say a file was deleted unless delete_file returned a verified result.',
+    'COMMANDS: only run_command executes a shell command, inside the opened folder. It returns the real exit code and output, so never claim a command ran, passed or killed anything unless run_command showed you the result. A command that can modify files is refused without confirm: true — set it only when the user asked for that change.',
     'When you have enough to answer, write the answer as normal text (with any path= edit blocks) and emit no tool block.',
     'PLAN: for a request with several steps, open the turn with update_tasks holding one short subject per step, mark the step you start with "doing" and the step you leave with "done". A single-step request needs no plan.',
     describeFinish(),
@@ -240,11 +274,15 @@ function clip(content: string): string {
 }
 
 function refusal(message: string): ToolOutcome {
-  return { ok: false, content: '', error: message };
+  return { ok: false, content: '', error: message, refused: true };
 }
 
 /** Names a call for the UI: `read_file src/a.ts` rather than a blob of JSON. */
 export function summarizeCall(call: ToolCall): string {
+  if (call.name === 'run_command') {
+    const command = asString(call.args.command) ?? '';
+    return `run_command · ${command.slice(0, MAX_PREVIEW_CHARS)}`;
+  }
   const path = asString(call.args.path) ?? asString(call.args.query) ?? asString(call.args.include);
   if (path) return `${call.name} · ${path.slice(0, MAX_PREVIEW_CHARS)}`;
   if (call.name.startsWith(MCP_TOOL_PREFIX)) {
@@ -336,6 +374,26 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         const body = [...grouped].map(([path, lines]) => `${path}\n${lines.map((line) => `  ${line}`).join('\n')}`).join('\n');
         return { ok: true, content: clip(`${body}${result.truncated ? '\n(truncated — refine the query or add an include pattern)' : ''}`) };
       }
+      case 'delete_file': {
+        const path = asString(call.args.path);
+        if (!path) return refusal('delete_file needs a path.');
+        if (asBoolean(call.args.confirm) !== true) {
+          return refusal('delete_file needs confirm: true. Only delete when the user asked for this exact file.');
+        }
+        const deleted = await desktop.deletePath(workspaceId, path);
+        // A delete that did not happen must never be reported as done.
+        let stillThere = false;
+        try {
+          await desktop.readFile(workspaceId, path);
+          stillThere = true;
+        } catch {
+          stillThere = false;
+        }
+        if (stillThere) {
+          return { ok: false, content: '', error: `${deleted.path} is still on disk after the delete call. Nothing was removed.` };
+        }
+        return { ok: true, content: `Deleted ${deleted.kind} ${deleted.path} — verified gone from disk.` };
+      }
       case 'problems': {
         const paths = asStringArray(call.args.paths);
         const result = await desktop.diagnostics(workspaceId, undefined, paths);
@@ -348,6 +406,36 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         const status = await desktop.gitRead(workspaceId);
         if (!status.isRepo) return { ok: true, content: 'This folder is not a git repository.' };
         return { ok: true, content: clip(`status:\n${status.status}\n\ndiff:\n${status.diff}`) };
+      }
+      case 'run_command': {
+        const command = asString(call.args.command);
+        if (!command) return refusal('run_command needs a command.');
+        if (command.length > 2_000) return refusal('run_command takes one command under 2000 characters.');
+        if (/[\r\n]/.test(command)) return refusal('run_command takes a single line. Run one command at a time.');
+        const risk = findFileEditingCommand(command);
+        if (risk && asBoolean(call.args.confirm) !== true) {
+          return refusal(`That command can modify files (${risk}). Call run_command again with confirm: true only if the user asked for it.`);
+        }
+        publishTerminalDockEvent({ kind: 'command', command, source: 'assistant' });
+        const started = Date.now();
+        const result = await desktop.runCommand(workspaceId, command);
+        publishTerminalDockEvent({
+          kind: 'result',
+          command,
+          source: 'assistant',
+          exitCode: result.exitCode,
+          durationMs: Date.now() - started,
+          stdout: result.stdout,
+          stderr: result.stderr
+        });
+        const body = [
+          `$ ${command}`,
+          result.stdout.trim() || '(no stdout)',
+          ...(result.stderr.trim() ? [`[stderr]\n${result.stderr.trim()}`] : []),
+          `exit ${result.exitCode}`,
+          'The command ran on disk; this output is the real result.'
+        ].join('\n');
+        return { ok: result.exitCode === 0, content: clip(body), ...(result.exitCode === 0 ? {} : { error: `Exit code ${result.exitCode}` }) };
       }
       case 'outline': {
         const path = asString(call.args.path);

@@ -488,19 +488,63 @@ export function parseClinePatchSections(patchText: string): ClineParsedSections 
 	return sections;
 }
 
+/**
+ * Why a Cline operation was refused. Typed so the failure survives every layer
+ * (patch block -> plan failure -> UI toast) instead of degrading into the
+ * generic "text not found" that a missing anchor also produces.
+ */
+export type ClineRefusalCode =
+	/** `*** Delete File:` — the apply pipeline has no delete kind. */
+	| "DELETE_NOT_A_PATCH"
+	/** `*** Move to:` — a rename is a delete plus a create. */
+	| "MOVE_NOT_SUPPORTED"
+	/** `*** Add File:` over a path that already exists. */
+	| "ADD_FILE_EXISTS"
+	/** A hunk with no context lines to anchor on. */
+	| "HUNK_UNANCHORED"
+	/** The apply_patch body could not be parsed at all. */
+	| "PARSE_ERROR"
+	/** A fence that declared a file and then wrote no body (a deletion). */
+	| "EMPTY_BODY";
+
 export type ClinePatchEntry =
 	| { path: string; kind: "searchReplace"; blocks: Array<{ original: string; updated: string }> }
 	| { path: string; kind: "rewrite"; content: string }
-	| { path: string; kind: "refuse"; reason: string };
+	| { path: string; kind: "refuse"; reason: string; code: ClineRefusalCode };
+
+const REFUSAL_PREFIX = "[apply-patch refused:";
 
 /**
  * SEARCH text for a patchEngine refusal: a block no file contains, so
  * resolvePatchContent reports `not-found` and atomicApply writes zero bytes
  * with the reason surfaced in the plan failure.
+ *
+ * The code is embedded in the marker (`[apply-patch refused: CODE: reason]`)
+ * so `refusalReason` can recover it later; it is still a string no file
+ * contains, so the zero-byte guarantee is unchanged.
  */
-export function refusalBlock(reason: string): { original: string; updated: string } {
-	const marker = `[apply-patch refused: ${reason}]`;
+export function refusalBlock(
+	reason: string,
+	code?: ClineRefusalCode,
+): { original: string; updated: string } {
+	const marker = `${REFUSAL_PREFIX} ${code ? `${code}: ` : ""}${reason}]`;
 	return { original: marker, updated: "" };
+}
+
+/**
+ * Reads back a refusal created by `refusalBlock`. Returns null for an ordinary
+ * SEARCH block. `code` lets the UI say *why* a patch is blocked instead of
+ * showing a failed anchor.
+ */
+export function refusalReason(
+	block: { original: string; updated: string },
+): { code: ClineRefusalCode | "REFUSED"; reason: string } | null {
+	const text = (block.original ?? "").trim();
+	if (!text.startsWith(REFUSAL_PREFIX) || !text.endsWith("]")) return null;
+	const inner = text.slice(REFUSAL_PREFIX.length, -1).trim();
+	const match = /^([A-Z][A-Z0-9_]*):\s*([\s\S]+)$/.exec(inner);
+	if (!match) return { code: "REFUSED", reason: inner };
+	return { code: match[1] as ClineRefusalCode, reason: match[2] };
 }
 
 /**
@@ -579,6 +623,7 @@ export function clineSectionsToPatches(
 			entries.push({
 				path: add.path,
 				kind: "refuse",
+				code: "ADD_FILE_EXISTS",
 				reason: `Add File Error: File already exists: ${add.path}`,
 			});
 			continue;
@@ -595,6 +640,7 @@ export function clineSectionsToPatches(
 			entries.push({
 				path: update.path,
 				kind: "refuse",
+				code: "MOVE_NOT_SUPPORTED",
 				reason: `Move to ${update.movePath} is not supported by the ShadRox apply pipeline — rename the file manually and re-request the edit`,
 			});
 			continue;
@@ -603,7 +649,12 @@ export function clineSectionsToPatches(
 		for (const hunk of update.hunks) {
 			const converted = hunkToBlocks(hunk);
 			if (converted.kind === "refuse") {
-				entries.push({ path: update.path, kind: "refuse", reason: converted.reason });
+				entries.push({
+					path: update.path,
+					kind: "refuse",
+					code: "HUNK_UNANCHORED",
+					reason: converted.reason,
+				});
 				blocks.length = 0;
 				break;
 			}
@@ -617,7 +668,10 @@ export function clineSectionsToPatches(
 		entries.push({
 			path,
 			kind: "refuse",
-			reason: "Delete File is not a patch kind in the ShadRox apply pipeline — delete it from the file tree",
+			code: "DELETE_NOT_A_PATCH",
+			// Deletion has no patch kind: the pipeline only ever writes contents.
+			// Say so plainly — this reason reaches the review card and the toast.
+			reason: `Deletion is not applied from a patch, so ${path} was left untouched. Delete it from the file tree, or ask the agent to delete it.`,
 		});
 	}
 

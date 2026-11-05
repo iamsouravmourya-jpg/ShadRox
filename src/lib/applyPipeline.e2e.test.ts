@@ -444,3 +444,48 @@ test('a never-opened plain file in a folder workspace is really read from disk b
       'adjacent files are untouched');
   });
 });
+
+/* -------------------------------------------------------------------------- *
+ * Reported from the packaged .exe:
+ *  - one created file showed as "Changes · 2 files" because the same block was
+ *    re-emitted across two tool rounds;
+ *  - "I have deleted test.txt" was accepted while the file stayed on disk,
+ *    because an empty declared body produced zero patches and zero errors.
+ * -------------------------------------------------------------------------- */
+
+test('a block re-emitted for the same file plans ONE job and the later state wins', async () => {
+  await withPipeline({ 'src/App.tsx': APP_V1 }, async (pipeline, root) => {
+    const reply = [
+      fence('src/App.tsx', srBlock('  const old = 1;', '  const old = 2;')),
+      '',
+      'Re-emitting the same edit after a tool round:',
+      '',
+      fence('src/App.tsx', srBlock('  const old = 1;', '  const old = 42;'))
+    ].join('\n');
+
+    const plan = await pipeline.planFor(reply);
+    assert.ok(plan.ok, JSON.stringify(plan.failures ?? plan.issues));
+    assert.equal((plan.patches ?? []).length, 1, 'the review set must not claim two files');
+    assert.equal((plan.jobs ?? []).length, 1, 'one write per file');
+
+    const turn = await pipeline.applyReply(reply);
+    assert.equal(turn.blocked, null, JSON.stringify(turn.failures ?? turn.issues));
+    assert.equal(turn.outcome.written, 1);
+    assert.equal(
+      await fs.readFile(path.join(root, 'src', 'App.tsx'), 'utf8'),
+      'export function App() {\n  const old = 42;\n  return old;\n}\n'
+    );
+  });
+});
+
+test('a fence that declares a file and writes nothing is refused with a reason, never silently accepted', async () => {
+  await withPipeline({ 'notes/todo.txt': 'first\n' }, async (pipeline, root) => {
+    // `path=` is the shape the model used when it "deleted" test.txt.
+    const turn = await pipeline.applyReply('``` path=notes/todo.txt\n```');
+
+    assert.equal(turn.blocked, 'plan', 'a declared deletion must not be a success-shaped no-op');
+    assert.match(turn.failures[0].reason, /left untouched/);
+    assert.match(turn.failures[0].reason, /deletions are not applied from a patch/i);
+    assert.equal(await fs.readFile(path.join(root, 'notes', 'todo.txt'), 'utf8'), 'first\n');
+  });
+});

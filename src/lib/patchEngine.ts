@@ -4,7 +4,9 @@ import {
 	clineSectionsToPatches,
 	parseClinePatchSections,
 	refusalBlock,
+	refusalReason,
 	type ClinePatchEntry,
+	type ClineRefusalCode,
 } from './patch/clinePatchApply';
 import { PATCH_MARKERS, DiffError } from './patch/clinePatchParser';
 
@@ -469,6 +471,23 @@ function scanFencedBlocks(content: string): BlockScan[] {
   return blocks;
 }
 
+/** A declared file operation the patch pipeline could not express. */
+export interface RejectedPatch {
+  path: string;
+  code: ClineRefusalCode;
+  /** User-readable reason; safe to show in a toast or a review row. */
+  reason: string;
+}
+
+export interface UnifiedPatchScan {
+  patches: UnifiedPatch[];
+  rejected: RejectedPatch[];
+}
+
+function patchPathKey(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+}
+
 /**
  * Pulls every intended file change out of a reply: S/R blocks inside fenced
  * code blocks become searchReplace patches, other fenced bodies become
@@ -480,9 +499,35 @@ function scanFencedBlocks(content: string): BlockScan[] {
  * becomes searchReplace/rewrite patches per file through the same engine;
  * operations the pipeline cannot express (Delete, Move) and parse failures
  * become guaranteed-refusal patches, never silent drops.
+ *
+ * Two rules stop a reply from turning into a lie about what happened:
+ *  - ONE patch per file. A model that re-emits the same block in two tool
+ *    rounds used to produce two review rows for one file ("Changes · 2
+ *    files" for a single create). The LAST block for a path wins, because it
+ *    reflects the model's final state; earlier duplicates are dropped.
+ *  - A fence that names a file and writes nothing is a deletion attempt, not a
+ *    no-op. It used to `continue` silently, so "I deleted test.txt" produced
+ *    zero patches, zero errors and no verification. It now becomes a refusal
+ *    patch (the plan fails with a readable reason) and is reported in
+ *    `rejected` so a caller can surface it directly.
  */
-export function extractUnifiedPatches(content: string, files: KnownFile[] = []): UnifiedPatch[] {
-  const patches: UnifiedPatch[] = [];
+export function extractUnifiedPatchScan(content: string, files: KnownFile[] = []): UnifiedPatchScan {
+  const entries: Array<{ patch: UnifiedPatch; rejected?: RejectedPatch }> = [];
+  const indexByPath = new Map<string, number>();
+
+  const add = (patch: UnifiedPatch, rejected?: RejectedPatch) => {
+    const key = patchPathKey(patch.path);
+    const existing = indexByPath.get(key);
+    if (existing === undefined) {
+      indexByPath.set(key, entries.length);
+      entries.push({ patch, rejected });
+      return;
+    }
+    // Same file named twice: keep the later block (final state) but the first
+    // path spelling, so the review row label stays stable.
+    const firstPath = entries[existing].patch.path;
+    entries[existing] = { patch: { ...patch, path: firstPath }, rejected };
+  };
 
   for (const block of scanFencedBlocks(content)) {
     if (!block.terminated) continue;
@@ -492,7 +537,9 @@ export function extractUnifiedPatches(content: string, files: KnownFile[] = []):
     let context = block.context;
 
     if (looksLikeClinePatch(body)) {
-      patches.push(...clinePatchBodyToUnifiedPatches(body, info, context, files));
+      for (const entry of clinePatchBodyToUnifiedPatches(body, info, context, files)) {
+        add(entry.patch, entry.rejected);
+      }
       continue;
     }
 
@@ -504,20 +551,36 @@ export function extractUnifiedPatches(content: string, files: KnownFile[] = []):
       context = `${context} ${firstLine}`;
     }
 
-    if (!body.trim()) continue;
+    if (!body.trim()) {
+      const target = resolveTarget(info, context, body, files);
+      if (!target) continue;
+      const reason = `The reply declared ${target} but supplied an empty body. An empty body is a deletion, and deletions are not applied from a patch — the file was left untouched. Delete it from the file tree, or ask the agent to delete it.`;
+      add(
+        { path: target, kind: 'searchReplace', blocks: [refusalBlock(reason, 'EMPTY_BODY')] },
+        { path: target, code: 'EMPTY_BODY', reason }
+      );
+      continue;
+    }
 
     const blocks = parseSearchReplaceBlocks(body);
     if (blocks.length > 0) {
       const target = resolveTarget(info, context, body, files);
-      if (target) patches.push({ path: target, kind: 'searchReplace', blocks });
+      if (target) add({ path: target, kind: 'searchReplace', blocks });
       continue;
     }
 
     const target = resolveTarget(info, context, body, files);
-    if (target) patches.push({ path: target, kind: 'rewrite', content: body });
+    if (target) add({ path: target, kind: 'rewrite', content: body });
   }
 
-  return patches;
+  const rejected: RejectedPatch[] = [];
+  for (const entry of entries) if (entry.rejected) rejected.push(entry.rejected);
+  return { patches: entries.map((entry) => entry.patch), rejected };
+}
+
+/** The patches a reply intends, deduplicated by path. See extractUnifiedPatchScan. */
+export function extractUnifiedPatches(content: string, files: KnownFile[] = []): UnifiedPatch[] {
+  return extractUnifiedPatchScan(content, files).patches;
 }
 
 /** True when any line of the body carries an apply_patch file operation marker. */
@@ -549,7 +612,7 @@ function clinePatchBodyToUnifiedPatches(
   info: string,
   context: string,
   files: KnownFile[]
-): UnifiedPatch[] {
+): Array<{ patch: UnifiedPatch; rejected?: RejectedPatch }> {
   const contents: Record<string, string> = {};
   for (const file of files) contents[file.name] = file.content;
 
@@ -561,18 +624,27 @@ function clinePatchBodyToUnifiedPatches(
     // A malformed or unanchorable patch must still BLOCK the plan; it can
     // never be dropped quietly, or the model claims edits that did not land.
     const target = resolveTarget(info, context, body, files) ?? canonicalPatchPath('apply-patch', files);
-    return [{ path: target, kind: 'searchReplace', blocks: [refusalBlock(error.message)] }];
+    return [{
+      patch: { path: target, kind: 'searchReplace', blocks: [refusalBlock(error.message, 'PARSE_ERROR')] },
+      rejected: { path: target, code: 'PARSE_ERROR', reason: error.message }
+    }];
   }
 
-  const patches: UnifiedPatch[] = [];
+  const patches: Array<{ patch: UnifiedPatch; rejected?: RejectedPatch }> = [];
   for (const entry of entries) {
     const target = canonicalPatchPath(entry.path, files);
     if (entry.kind === 'rewrite') {
-      patches.push({ path: target, kind: 'rewrite', content: entry.content });
+      patches.push({ patch: { path: target, kind: 'rewrite', content: entry.content } });
     } else if (entry.kind === 'searchReplace') {
-      patches.push({ path: target, kind: 'searchReplace', blocks: entry.blocks });
+      patches.push({ patch: { path: target, kind: 'searchReplace', blocks: entry.blocks } });
     } else {
-      patches.push({ path: target, kind: 'searchReplace', blocks: [refusalBlock(entry.reason)] });
+      // A refused operation stays a guaranteed-refusal patch (zero bytes) and
+      // is ALSO reported as a typed rejection, so callers can explain it
+      // without having to run the planner first.
+      patches.push({
+        patch: { path: target, kind: 'searchReplace', blocks: [refusalBlock(entry.reason, entry.code)] },
+        rejected: { path: target, code: entry.code, reason: entry.reason }
+      });
     }
   }
   return patches;
@@ -581,16 +653,24 @@ function clinePatchBodyToUnifiedPatches(
 /**
  * Computes the final file content for a patch against the file's CURRENT
  * content. Search/replace failures leave the file untouched and are reported.
+ *
+ * A patch that carries a refusal block (deletion, move, unanchorable hunk,
+ * empty body) still resolves to the unchanged content and `not-found`, but it
+ * also reports `refusal` with the typed code and the human reason, so the
+ * planner can say *why* instead of the generic "text not found" that a merely
+ * stale anchor produces.
  */
 export function resolvePatchContent(
   patch: { kind: 'rewrite' | 'searchReplace'; content?: string; blocks?: SearchReplaceBlock[] },
   currentContent: string
-): { content: string; failures: ApplyFailure[] } {
+): { content: string; failures: ApplyFailure[]; refusal?: { code: string; reason: string } } {
   if (patch.kind === 'rewrite') {
     return { content: patch.content ?? '', failures: [] };
   }
-  const result = applySearchReplaceBlocks(currentContent, patch.blocks ?? []);
-  return { content: result.content, failures: result.failures };
+  const blocks = patch.blocks ?? [];
+  const result = applySearchReplaceBlocks(currentContent, blocks);
+  const refusal = blocks.map((block) => refusalReason(block)).find((found) => found !== null) ?? undefined;
+  return { content: result.content, failures: result.failures, refusal };
 }
 
 /**

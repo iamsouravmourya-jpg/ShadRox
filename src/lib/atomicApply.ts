@@ -13,6 +13,12 @@ import type { ReviewPatch, WorkspaceFile } from './types';
 export interface AtomicPlanFailure {
   path: string;
   reason: string;
+  /**
+   * Stable machine-readable cause when the pipeline knows one (a refused
+   * deletion, a superseded duplicate, a destructive rewrite...). The UI uses it
+   * to explain *which* check failed instead of "some checks did not pass".
+   */
+  code?: string;
 }
 
 export interface AtomicPlanJob {
@@ -46,6 +52,18 @@ export function planAtomicApply(
   options: { allowDestructive?: boolean } = {}
 ): AtomicPlan {
   const nextPatches = patches.map((patch) => ({ ...patch }));
+  // One operation per path: when the same file is named twice (a model that
+  // re-emits a block across two tool rounds), only the LAST pending patch is
+  // planned — it reflects the final state. Without this the plan carried two
+  // jobs for one file and the review card said "2 files" for a single create.
+  const lastPendingIndex = new Map<string, number>();
+  nextPatches.forEach((patch, index) => {
+    if (patch.status !== 'pending') return;
+    const key = normalizePath(patch.path).toLowerCase();
+    if (!isSafePath(key)) return;
+    lastPendingIndex.set(key, index);
+  });
+
   const jobs: AtomicPlanJob[] = [];
   const failures: AtomicPlanFailure[] = [];
   const jobIndexes: number[] = [];
@@ -54,14 +72,23 @@ export function planAtomicApply(
     if (patch.status !== 'pending') return;
 
     const target = normalizePath(patch.path);
-    const fail = (path: string, reason: string) => {
-      failures.push({ path, reason });
+    const fail = (path: string, reason: string, code?: string) => {
+      const failure: AtomicPlanFailure = code ? { path, reason, code } : { path, reason };
+      failures.push(failure);
       patch.status = 'failed';
       patch.failure = `Blocked: ${path}: ${reason}`;
     };
 
     if (!isSafePath(target)) {
-      fail(target || patch.path, 'not a workspace-relative path');
+      fail(target || patch.path, 'not a workspace-relative path', 'PATH_UNSAFE');
+      return;
+    }
+
+    if (lastPendingIndex.get(target.toLowerCase()) !== index) {
+      // Not an error: the later patch to this file supersedes this one. Marking
+      // it rejected keeps the review row honest instead of leaving it pending.
+      patch.status = 'rejected';
+      patch.failure = `Superseded by a later patch to ${target} in the same change set`;
       return;
     }
 
@@ -78,7 +105,7 @@ export function planAtomicApply(
       if (!options.allowDestructive) {
         const risk = assessRewriteRisk(path, content, current.content);
         if (risk) {
-          fail(path, stripPathPrefix(path, risk));
+          fail(path, stripPathPrefix(path, risk), 'DESTRUCTIVE_REWRITE');
           return;
         }
       }
@@ -88,13 +115,19 @@ export function planAtomicApply(
     }
 
     if (!current) {
-      fail(path, 'file is not in the workspace');
+      fail(path, 'file is not in the workspace', 'FILE_NOT_LOADED');
       return;
     }
 
     const resolved = resolvePatchContent(patch, current.content);
+    if (resolved.refusal) {
+      // A typed refusal (deletion, move, empty body): zero bytes, but the
+      // reason is carried through instead of surfacing as a stale anchor.
+      fail(path, resolved.refusal.reason, resolved.refusal.code);
+      return;
+    }
     if (resolved.failures.length > 0) {
-      fail(path, formatApplyFailure(resolved.failures[0]));
+      fail(path, formatApplyFailure(resolved.failures[0]), 'ANCHOR_NOT_FOUND');
       return;
     }
     jobs.push({ path, content: resolved.content, originalContent: current.content, created: false });

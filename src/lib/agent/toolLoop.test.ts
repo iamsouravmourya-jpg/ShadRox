@@ -495,6 +495,21 @@ test('an MCP error is a failed activity, and the turn keeps going', async () => 
   assert.equal(result.text, 'The server is out of quota.');
 });
 
+test('a guard refusal is marked as held, not as a failed operation', async () => {
+  const model = scripted([
+    toolBlock([{ name: 'read_file', args: {} }]),
+    'I need a path before I can read anything.'
+  ]);
+  const result = await runToolRounds({
+    messages: baseMessages,
+    workspaceId: 'ws',
+    aborted: () => false,
+    stream: model.stream
+  });
+  assert.equal(result.activity[0].ok, false);
+  assert.equal(result.activity[0].refused, true, 'the guard stopped the call before it ran');
+});
+
 test('tool activity records stage, durationMs, input, output, and emits onStatus', async () => {
   const statusUpdates: string[] = [];
   await withBridge({
@@ -520,3 +535,46 @@ test('tool activity records stage, durationMs, input, output, and emits onStatus
   });
 });
 
+
+test('the chat can run a real command and reads its exit code and output', async () => {
+  const ran: string[] = [];
+  await withBridge({
+    runCommand: async (_id: string, command: string) => {
+      ran.push(command);
+      return { stdout: ' 3000  4242\n', stderr: '', exitCode: 0 };
+    }
+  }, async () => {
+    const model = scripted([toolBlock([{ name: 'run_command', args: { command: 'netstat -ano | findstr :3000' } }]), 'Port 3000 is held by PID 4242.']);
+    const result = await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      stream: model.stream
+    });
+    assert.deepEqual(ran, ['netstat -ano | findstr :3000']);
+    assert.equal(result.activity[0].ok, true);
+    assert.equal(result.activity[0].stage, 'checking');
+    assert.match(result.activity[0].output ?? '', /PID|3000/);
+  });
+});
+
+test('a command that can modify files is held without confirm: true', async () => {
+  let ran = false;
+  await withBridge({
+    runCommand: async () => {
+      ran = true;
+      return { stdout: '', stderr: '', exitCode: 0 };
+    }
+  }, async () => {
+    const model = scripted([toolBlock([{ name: 'run_command', args: { command: 'rm -rf src' } }]), 'I did not touch it.']);
+    const result = await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      stream: model.stream
+    });
+    assert.equal(ran, false, 'the guard stopped the command before the shell');
+    assert.equal(result.activity[0].ok, false);
+    assert.equal(result.activity[0].refused, true);
+  });
+});

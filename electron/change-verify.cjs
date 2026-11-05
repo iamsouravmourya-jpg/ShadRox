@@ -15,7 +15,7 @@
  * in electron/ts-service.cjs):
  *
  *   {
- *     ok: boolean,                 // true only when there is no error issue
+ *     ok: boolean,                 // true only when no named check failed
  *     checked: number,             // files that were actually verified
  *     issues: Array<{
  *       path: string,              // workspace-relative, forward slashes
@@ -25,9 +25,32 @@
  *       code: string,              // 'TS####', 'JSON_PARSE_ERROR', ...
  *       message: string
  *     }>,
- *     skipped: string[]            // paths not verified: unknown extension,
+ *     skipped: string[],           // paths not verified: unknown extension,
  *                                  // empty content, or over a size limit
+ *     results: Array<{             // one entry per proposed file, so a
+ *                                  // skipped file is reported AS skipped
+ *       path: string,
+ *       status: 'checked' | 'skipped' | 'rejected',
+ *       skipped: boolean,          // explicit: true only when no check ran
+ *       check?: string,            // which static check ran, when one did
+ *       reason?: string,           // human reason for skipping/refusing
+ *       code?: string              // 'EMPTY_CONTENT', 'NO_STATIC_CHECK', ...
+ *     }>,
+ *     checks: Array<{              // NAMED checks: the UI can say which one
+ *       id: string,                // failed instead of "some checks did not pass"
+ *       name: string,
+ *       ok: boolean,
+ *       ran: boolean,              // false: nothing to check (not a failure)
+ *       failures: number,
+ *       details: string
+ *     }>,
+ *     failedChecks: string[]       // ids of the checks that actually failed
  *   }
+ *
+ * Nothing here flags a plain-text file. A file with no static checker (e.g. a
+ * newly created notes.txt) is `skipped: true` with code NO_STATIC_CHECK, its
+ * named check reports `ran: false, ok: true`, and `ok` stays true — "not
+ * applicable" must never read as "did not pass".
  *
  * Limits, and the rule for each one:
  *   - more than maxFiles entries: rejected by throwing (malformed input shape)
@@ -62,6 +85,22 @@ const JSON_EXTENSIONS = new Set(['.json', '.jsonc']);
 const STYLE_EXTENSIONS = new Set(['.css', '.scss', '.less']);
 
 const OUTSIDE_WORKSPACE_MESSAGE = 'outside the opened workspace';
+
+/** Named checks, so the caller can report the one that failed. */
+const CHECK_LABELS = Object.freeze({
+  pathBoundary: 'Workspace boundary',
+  contentShape: 'Change shape',
+  sizeLimits: 'Size limits',
+  staticSyntax: 'Static syntax validation',
+  reportLimit: 'Issue report limit'
+});
+
+function staticCheckName(extension) {
+  if (SCRIPT_EXTENSIONS.has(extension)) return 'TypeScript/JavaScript syntax';
+  if (JSON_EXTENSIONS.has(extension)) return 'JSON parse';
+  if (STYLE_EXTENSIONS.has(extension)) return 'Stylesheet braces';
+  return 'HTML structure';
+}
 
 let cachedTypeScript = null;
 
@@ -449,8 +488,20 @@ function verifyChangeSet(options) {
 
   const issues = [];
   const skipped = [];
+  const results = [];
   let checked = 0;
   let totalBytes = 0;
+  let boundaryFailures = 0;
+  let shapeFailures = 0;
+  let sizeFailures = 0;
+  let syntaxFailures = 0;
+  const skippedWhileChecking = [];
+
+  const skip = (path, reason, code) => {
+    skipped.push(path);
+    skippedWhileChecking.push({ path, reason, code });
+    results.push({ path, status: 'skipped', skipped: true, reason, code });
+  };
 
   for (const entry of files) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
@@ -459,6 +510,14 @@ function verifyChangeSet(options) {
 
     const resolved = resolveWorkspaceRelativePath(root, entry.path);
     if (!resolved) {
+      boundaryFailures += 1;
+      results.push({
+        path: displayPath(entry.path),
+        status: 'rejected',
+        skipped: false,
+        reason: OUTSIDE_WORKSPACE_MESSAGE,
+        code: 'PATH_OUTSIDE_WORKSPACE'
+      });
       issues.push({
         path: displayPath(entry.path),
         line: 0,
@@ -472,6 +531,14 @@ function verifyChangeSet(options) {
     const { relative } = resolved;
 
     if (typeof entry.content !== 'string') {
+      shapeFailures += 1;
+      results.push({
+        path: relative,
+        status: 'rejected',
+        skipped: false,
+        reason: 'File content must be a string.',
+        code: 'INVALID_CONTENT'
+      });
       issues.push({
         path: relative,
         line: 0,
@@ -485,13 +552,21 @@ function verifyChangeSet(options) {
 
     const content = entry.content;
     if (!content.trim()) {
-      skipped.push(relative);
+      // An empty body is a legitimate state (a created placeholder, a cleared
+      // notes file). There is nothing to parse, so it is reported as skipped
+      // with a reason — never as a failing check.
+      skip(relative, 'empty content — nothing to verify', 'EMPTY_CONTENT');
       continue;
     }
 
     const bytes = Buffer.byteLength(content, 'utf8');
     if (bytes > CHANGE_VERIFY_LIMITS.maxFileBytes) {
-      skipped.push(relative);
+      sizeFailures += 1;
+      skip(
+        relative,
+        `larger than the ${CHANGE_VERIFY_LIMITS.maxFileBytes} byte verification limit`,
+        'FILE_TOO_LARGE'
+      );
       issues.push({
         path: relative,
         line: 0,
@@ -504,7 +579,12 @@ function verifyChangeSet(options) {
     }
 
     if (totalBytes + bytes > CHANGE_VERIFY_LIMITS.maxTotalBytes) {
-      skipped.push(relative);
+      sizeFailures += 1;
+      skip(
+        relative,
+        `the change set exceeds the ${CHANGE_VERIFY_LIMITS.maxTotalBytes} byte verification limit`,
+        'CHANGE_SET_TOO_LARGE'
+      );
       issues.push({
         path: relative,
         line: 0,
@@ -528,11 +608,31 @@ function verifyChangeSet(options) {
     } else if (extension === '.html' || extension === '.htm') {
       fileIssues = checkHtml(content);
     } else {
-      skipped.push(relative);
+      // Plain text, images, lockfiles... There is no static checker for this
+      // file, so saying "it passed" would be a guess. Report it as skipped.
+      skip(
+        relative,
+        extension
+          ? `no static check for ${extension} files`
+          : 'no static check for files without an extension',
+        'NO_STATIC_CHECK'
+      );
       continue;
     }
 
     checked += 1;
+    syntaxFailures += fileIssues.length;
+    const checkedEntry = {
+      path: relative,
+      status: 'checked',
+      skipped: false,
+      check: staticCheckName(extension),
+      reason: fileIssues.length
+        ? `${fileIssues.length} problem(s) found`
+        : `checked as ${staticCheckName(extension)}`
+    };
+    if (fileIssues.length) checkedEntry.code = fileIssues[0].code;
+    results.push(checkedEntry);
     for (const issue of fileIssues) {
       issues.push({
         path: relative,
@@ -548,13 +648,72 @@ function verifyChangeSet(options) {
   issues.sort(compareIssues);
   const truncated = issues.length > CHANGE_VERIFY_LIMITS.maxIssues;
   const reported = truncated ? issues.slice(0, CHANGE_VERIFY_LIMITS.maxIssues) : issues;
-  const hasError = reported.some((issue) => issue.severity === 'error');
+
+  const skippedCount = skipped.length;
+  const skippedForNoCheck = skippedWhileChecking.filter((entry) => entry.code === 'NO_STATIC_CHECK').length;
+  const checks = [
+    {
+      id: 'path-boundary',
+      name: CHECK_LABELS.pathBoundary,
+      ok: boundaryFailures === 0,
+      ran: files.length > 0,
+      failures: boundaryFailures,
+      details: boundaryFailures === 0
+        ? 'No path escaped the opened workspace'
+        : `${boundaryFailures} path(s) escaped the opened workspace`
+    },
+    {
+      id: 'content-shape',
+      name: CHECK_LABELS.contentShape,
+      ok: shapeFailures === 0,
+      ran: files.length > 0,
+      failures: shapeFailures,
+      details: shapeFailures === 0
+        ? 'Every entry carried text content'
+        : `${shapeFailures} entry(ies) did not carry text content`
+    },
+    {
+      id: 'size-limits',
+      name: CHECK_LABELS.sizeLimits,
+      ok: sizeFailures === 0,
+      ran: files.length > 0,
+      failures: sizeFailures,
+      details: sizeFailures === 0
+        ? 'Inside the per-file and total size limits'
+        : `${sizeFailures} file(s) exceeded a size limit`
+    },
+    {
+      id: 'static-syntax',
+      name: CHECK_LABELS.staticSyntax,
+      ok: syntaxFailures === 0,
+      ran: checked > 0,
+      failures: syntaxFailures,
+      details: checked === 0
+        ? `Nothing to parse — ${skippedForNoCheck} file(s) have no static checker and ${skippedCount - skippedForNoCheck} were skipped for another reason`
+        : `${checked} file(s) checked, ${skippedCount} skipped${syntaxFailures ? `, ${syntaxFailures} problem(s)` : ''}`
+    },
+    {
+      id: 'report-limit',
+      name: CHECK_LABELS.reportLimit,
+      ok: !truncated,
+      ran: issues.length > 0,
+      failures: truncated ? issues.length - reported.length : 0,
+      details: truncated
+        ? `Only the first ${CHANGE_VERIFY_LIMITS.maxIssues} of ${issues.length} findings are shown`
+        : 'All findings reported'
+    }
+  ];
+  const failedChecks = checks.filter((check) => !check.ok).map((check) => check.id);
 
   return {
-    ok: !truncated && !hasError,
+    ok: failedChecks.length === 0,
     checked,
     issues: reported,
-    skipped
+    skipped,
+    skippedDetails: skippedWhileChecking,
+    results,
+    checks,
+    failedChecks
   };
 }
 

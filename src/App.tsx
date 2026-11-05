@@ -1,8 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ArrowLeft, Bug, FolderOpen, FolderTree, GitBranch, Loader2, LogOut, MonitorPlay, Search, Settings, Sparkles, Terminal, UserRound } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Bug, FolderOpen, FolderTree, GitBranch, Loader2, LogOut, MonitorPlay, Search, Settings, Terminal, UserRound } from 'lucide-react';
 import { ShadRoxLogo } from './components/Logo';
 import { Stage2Hub } from './components/Stage2Hub';
-import { CodeEditor, type DefinitionNavigation, type EditorQuickFixActions, type EditorSymbolActions, type RenameOutcome } from './components/CodeEditor';
+import { CodeEditor, PathPromptDialog, type DefinitionNavigation, type EditorQuickFixActions, type EditorSymbolActions, type PathPromptRequest, type RenameOutcome } from './components/CodeEditor';
 import { PreviewPane } from './components/PreviewPane';
 import { ChatPanel, type PinnedSymbol } from './components/ChatPanel';
 import { QuickOpen } from './components/QuickOpen';
@@ -494,6 +494,9 @@ export default function App() {
       return true;
     }
   });
+  // A prompt asking for a plan is a request to review it first: auto-apply must
+  // not write files behind an Approve button the user has not pressed yet.
+  const planApprovalGateRef = useRef<Set<string>>(new Set());
   const [resumePrefixes, setResumePrefixes] = useState<Record<string, string>>({});
   /** Auto pays a cheap model to pick the context before the answer model sees it. */
   const [autoContext, setAutoContext] = useState<boolean>(() => {
@@ -2583,7 +2586,8 @@ export default function App() {
         const staticChecksPassed = changeSetVerdict?.ok === true;
         const boundariesPassed = changeSetVerdict !== null &&
           !changeSetVerdict.issues.some((issue) => issue.code === 'PATH_OUTSIDE_WORKSPACE');
-        const diskSavePassed = !outcome.failed && outcome.written === applied.length;
+        const uniqueApplied = new Set(applied.map((item) => item.toLowerCase())).size;
+        const diskSavePassed = !outcome.failed && outcome.written === uniqueApplied;
         const checks = [
           {
             name: 'Static syntax validation',
@@ -2602,7 +2606,7 @@ export default function App() {
             ok: diskSavePassed,
             details: diskSavePassed
               ? `${outcome.written} file(s) confirmed saved`
-              : `${outcome.written} of ${applied.length} file(s) saved${outcome.message ? `: ${outcome.message}` : ''}`
+              : `${outcome.written} of ${uniqueApplied} file(s) saved${outcome.message ? `: ${outcome.message}` : ''}`
           }
         ];
         const passed = checks.every((check) => check.ok);
@@ -2616,7 +2620,7 @@ export default function App() {
                     checks,
                     summary: passed
                       ? `${outcome.written} file(s) saved and checked`
-                      : 'Some checks did not pass or were not run'
+                      : `Failed: ${checks.filter((check) => !check.ok).map((check) => check.name).join(', ')}`
                   }
                 }
               : msg
@@ -2658,6 +2662,7 @@ export default function App() {
 
   const handleApprovePlan = useCallback(
     (messageId: string) => {
+      planApprovalGateRef.current.delete(messageId);
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === messageId
@@ -2678,6 +2683,7 @@ export default function App() {
 
   const handleRejectPlan = useCallback(
     (messageId: string) => {
+      planApprovalGateRef.current.delete(messageId);
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === messageId
@@ -2827,7 +2833,7 @@ export default function App() {
       messageId: string,
       fullReply: string,
       mode: RefineModeMeta,
-      options: { replace?: boolean; onFailures?: (failures: string[]) => void } = {}
+      options: { replace?: boolean; onFailures?: (failures: string[]) => void; onUnmapped?: () => void } = {}
     ) => {
       if (!options.replace && patchSets.some((set) => set.messageId === messageId)) return;
 
@@ -2843,7 +2849,14 @@ export default function App() {
 
       if (patches.length === 0) {
         const scan = extractFilePatches(fullReply, workspace.files);
-        if (scan.unmapped > 0) {
+        // An example snippet in an answer is not an edit attempt. Only a
+        // SEARCH/REPLACE block that lost its file path is worth a retry.
+        const looksLikeEdit = fullReply.includes('<<<<<<< ORIGINAL');
+        if (scan.unmapped > 0 && looksLikeEdit) {
+          if (options.onUnmapped) {
+            options.onUnmapped();
+            return;
+          }
           setToast('Response contained code blocks without explicit file paths — changes were not applied.');
           window.setTimeout(() => setToast(null), 6000);
         }
@@ -2863,6 +2876,11 @@ export default function App() {
         : [...previous, { messageId, patches: review }]));
 
       if (!autoApplyChanges) return;
+      if (planApprovalGateRef.current.has(messageId)) {
+        setToast('Plan is waiting for approval — changes are staged, not applied.');
+        window.setTimeout(() => setToast(null), 4000);
+        return;
+      }
 
       setToast(`Verifying ${review.length} file(s)…`);
       window.setTimeout(() => setToast(null), 4000);
@@ -3069,12 +3087,14 @@ export default function App() {
     let applied = false;
     let streamCompleted = false;
     let runRepair: (failures: string[]) => Promise<void> = async () => {};
+    let runUnmappedRepair: () => Promise<void> = async () => {};
 
     const applyReplyPatches = () => {
       if (applied) return;
       applied = true;
       applyPatchesFromReply(modelMessage.id, reply, mode, {
-        onFailures: (failures) => { void runRepair(failures); }
+        onFailures: (failures) => { void runRepair(failures); },
+        onUnmapped: () => { void runUnmappedRepair(); }
       });
     };
 
@@ -3242,6 +3262,41 @@ export default function App() {
       }
     };
 
+    /**
+     * One bounded retry for edit blocks that arrived without a path= fence.
+     * The model clearly meant to change a file, so it gets one chance to name
+     * it; nothing reaches the editor until a path is present.
+     */
+    let unmappedRepairUsed = false;
+    runUnmappedRepair = async () => {
+      if (unmappedRepairUsed || repairUsed || controller.signal.aborted) return;
+      unmappedRepairUsed = true;
+      abortRef.current = controller;
+      setIsGenerating(true);
+      try {
+        const answerBeforeRepair = reply;
+        announce('The edit did not name a file, so nothing was applied — retrying once with the path.', 5000);
+        const correction = await streamOnce([
+          ...fit.messages,
+          { role: 'assistant', content: answerBeforeRepair },
+          {
+            role: 'user',
+            content:
+              'Your last reply contained SEARCH/REPLACE blocks but their fence line had no file path, so nothing was applied. ' +
+              'Re-send the same change with the exact workspace-relative path in the fence info line of every block, for example ' +
+              '```path=src/App.tsx followed by the ORIGINAL/UPDATED block. Output only the corrected code block(s) and nothing else.'
+          }
+        ]);
+        const corrected = stripToolBlocks(correction.text);
+        if (!controller.signal.aborted && corrected.trim()) {
+          applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true });
+        }
+      } finally {
+        setIsGenerating(false);
+        if (abortRef.current === controller) abortRef.current = null;
+      }
+    };
+
     try {
       const loop = await runToolRounds({
         messages: fit.messages,
@@ -3272,6 +3327,7 @@ export default function App() {
         onPlan: (taskPlan) => {
           const allFiles = Array.from(new Set(taskPlan.flatMap((t) => t.files ?? [])));
           const needsApproval = taskPlan.length > 2 || allFiles.length > 1;
+          if (needsApproval) planApprovalGateRef.current.add(modelMessage.id);
           setMessages((previous) => previous.map((message) => (
             message.id === modelMessage.id
               ? {
@@ -3301,6 +3357,15 @@ export default function App() {
         // A turn that ends with the finish tool can hold no prose at all: the
         // summary in that call is the only answer the user ever sees.
         const answer = reply || loop.text;
+        // The model rarely closes its plan; a turn that ended without a blocked
+        // reason is done, so no step may keep a spinner forever.
+        const closedPlan = loop.plan.length > 0 && !loop.finish?.blocked
+          ? loop.plan.map((task) => (
+              task.status === 'pending' || task.status === 'doing'
+                ? { ...task, status: 'done' as const }
+                : task
+            ))
+          : loop.plan;
         setMessages((previous) => previous.map((message) => (
           message.id === modelMessage.id
             ? {
@@ -3311,7 +3376,7 @@ export default function App() {
                   : answer,
                 toolActivity: loop.activity.length > 0 ? loop.activity : undefined,
                 toolRounds: loop.rounds,
-                taskPlan: loop.plan.length > 0 ? loop.plan : undefined,
+                taskPlan: closedPlan.length > 0 ? closedPlan : undefined,
                 finishedWith: loop.finish ?? undefined,
                 metrics: {
                   tokens: turnUsage.tokens,
@@ -4495,10 +4560,19 @@ export default function App() {
       cancelled = true;
     };
   }, [activeCheckpointId, checkpointNonce, workspace]);
+  const [newFilePathPrompt, setNewFilePathPrompt] = useState<PathPromptRequest | null>(null);
   const handleNewFile = useCallback(() => {
-    const name = window.prompt('Enter file name (e.g. src/utils/helper.ts):');
-    if (!name || !name.trim()) return;
-    workspace.createFile(name.trim(), '// New file created in ShadRox\n');
+    setNewFilePathPrompt({
+      title: 'New file',
+      description: 'Path relative to the opened folder. Folders are created as needed.',
+      initialValue: '',
+      placeholder: 'src/utils/helper.ts',
+      confirmLabel: 'Create file',
+      onSubmit: (value) => {
+        setNewFilePathPrompt(null);
+        workspace.createFile(value, '// New file created in ShadRox\n');
+      }
+    });
   }, [workspace]);
 
   const handleBugReport = useCallback(() => {
@@ -4780,7 +4854,7 @@ export default function App() {
 
 
   return (
-    <div className="w-full h-screen flex flex-col bg-ink-950 text-white overflow-hidden">
+    <div className="w-full h-screen flex flex-col bg-ink-950 text-white overflow-hidden border-b border-white/[0.09]">
       {/* Top Header */}
       <header className="titlebar window-controls-inset h-12 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-white/[0.07] bg-ink-950/80 backdrop-blur-xl">
         <div className="flex items-center gap-2.5 min-w-0">
@@ -4984,26 +5058,28 @@ export default function App() {
                   onClick={() => setIsAccountMenuOpen(false)}
                   aria-hidden="true"
                 />
-                <div className="absolute bottom-full left-0 z-50 mb-2 w-60 overflow-hidden rounded-xl border border-white/[0.1] bg-ink-900 shadow-2xl md:bottom-0 md:left-full md:mb-0 md:ml-2">
-                  <div className="border-b border-white/[0.07] px-3 py-2.5">
-                    <p className="truncate text-xs text-neutral-200">
-                      {auth.user?.email ?? 'Not signed in'}
-                    </p>
-                    <p className="mt-0.5 text-[10px] uppercase tracking-wider text-neutral-500">
-                      {plan === 'free' ? 'Free plan' : plan === 'starter' ? 'Starter plan' : 'Pro plan'}
-                    </p>
+                <div className="absolute bottom-full left-0 z-50 mb-2 w-64 overflow-hidden rounded-xl border border-white/[0.1] bg-ink-900 shadow-2xl md:bottom-0 md:left-full md:mb-0 md:ml-2">
+                  <div className="flex items-center gap-2.5 border-b border-white/[0.07] px-3 py-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.09] bg-white/[0.04]">
+                      {auth.user?.avatarUrl ? (
+                        <img src={auth.user.avatarUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                      ) : auth.user?.email ? (
+                        <span className="text-xs font-semibold text-violet-200">
+                          {auth.user.email.slice(0, 1).toUpperCase()}
+                        </span>
+                      ) : (
+                        <UserRound className="h-4 w-4 text-zinc-400" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-medium text-neutral-100">
+                        {auth.user?.email ?? 'Not signed in'}
+                      </p>
+                      <p className="mt-0.5 text-[10px] uppercase tracking-wider text-neutral-500">
+                        {plan === 'free' ? 'Free plan' : plan === 'starter' ? 'Starter plan' : 'Pro plan'}
+                      </p>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAccountMenuOpen(false);
-                      openSettings('PLAN');
-                    }}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-neutral-300 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
-                  >
-                    <Sparkles className="h-3.5 w-3.5" />
-                    Manage plan
-                  </button>
                   {auth.user && (
                     <button
                       type="button"
@@ -5011,10 +5087,10 @@ export default function App() {
                         setIsAccountMenuOpen(false);
                         void auth.signOut();
                       }}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-neutral-300 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
+                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-xs text-neutral-300 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
                     >
                       <LogOut className="h-3.5 w-3.5" />
-                      Sign out
+                      Log out
                     </button>
                   )}
                 </div>
@@ -5056,6 +5132,7 @@ export default function App() {
             pinnedSymbols={pinnedSymbols}
             onPinnedSymbolsChange={setPinnedSymbols}
             workspaceFiles={workspace.files}
+            workspaceAllFiles={workspace.allFiles}
             skills={projectSkills}
             checkpoints={workspace.checkpoints}
             onRestoreCheckpoint={handleRestoreCheckpoint}
@@ -5271,8 +5348,12 @@ export default function App() {
         />
       )}
 
+      {newFilePathPrompt && (
+        <PathPromptDialog request={newFilePathPrompt} onCancel={() => setNewFilePathPrompt(null)} />
+      )}
+
       {toast && (
-        <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-violet-300/20 bg-ink-800/95 px-4 py-2 text-xs text-zinc-100 shadow-2xl backdrop-blur">
+        <div className="fixed bottom-14 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-violet-300/20 bg-ink-800/95 px-4 py-2 text-xs text-zinc-100 shadow-2xl backdrop-blur">
           {toast}
         </div>
       )}

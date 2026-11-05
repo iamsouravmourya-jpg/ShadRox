@@ -33,6 +33,20 @@ export const DEFAULT_EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
 
 const TRANSFORMERS_MODULE = '@huggingface/transformers';
 
+/**
+ * The semantic toggle is permanently off in this build: package.json has no
+ * `@huggingface/transformers` dependency, so the lazy import below can never
+ * resolve. Say that in the UI instead of leaving a switch that silently does
+ * nothing.
+ */
+export const semanticUnavailableReason =
+  'Local embeddings package not installed (@huggingface/transformers) — semantic search stays off and BM25 answers alone.';
+
+/** Null once the optional package really loaded; the honest reason otherwise. */
+export function getSemanticUnavailableReason(): string | null {
+  return transformersAvailability === 'available' ? null : semanticUnavailableReason;
+}
+
 /** Availability is a string flag, not a boolean union — the tsconfig is not strict. */
 const AVAILABILITY_UNKNOWN = 'unknown';
 const AVAILABILITY_AVAILABLE = 'available';

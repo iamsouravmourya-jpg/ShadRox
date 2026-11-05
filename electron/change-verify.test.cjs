@@ -404,3 +404,106 @@ test('module variants pick the matching script kind', (t) => {
   }]);
   assert.equal(comparisons.ok, true, JSON.stringify(comparisons.issues));
 });
+
+/* -------------------------------------------------------------------------- *
+ * Named checks and explicit skips: "not applicable" must never read as
+ * "did not pass". A created plain-text file is the reported false warning.
+ * -------------------------------------------------------------------------- */
+
+test('a newly created plain-text file is skipped with a reason and never fails the gate', (t) => {
+  const root = makeRoot(t);
+  const result = verify(root, [{ path: 'notes/test.txt', content: 'hello\n' }]);
+
+  assert.equal(result.ok, true, 'nothing is wrong with a plain-text file');
+  assert.equal(result.checked, 0);
+  assert.deepEqual(result.skipped, ['notes/test.txt']);
+  assert.deepEqual(result.results, [{
+    path: 'notes/test.txt',
+    status: 'skipped',
+    skipped: true,
+    reason: 'no static check for .txt files',
+    code: 'NO_STATIC_CHECK'
+  }]);
+
+  const syntax = result.checks.find((check) => check.id === 'static-syntax');
+  assert.equal(syntax.ran, false, 'no checker ran');
+  assert.equal(syntax.ok, true, 'not applicable is not a failure');
+  assert.match(syntax.details, /Nothing to parse/);
+  assert.deepEqual(result.failedChecks, []);
+});
+
+test('an empty created file is skipped with an explicit reason instead of an ok', (t) => {
+  const root = makeRoot(t);
+  const result = verify(root, [{ path: 'notes/empty.txt', content: '' }]);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.results, [{
+    path: 'notes/empty.txt',
+    status: 'skipped',
+    skipped: true,
+    reason: 'empty content — nothing to verify',
+    code: 'EMPTY_CONTENT'
+  }]);
+  assert.deepEqual(result.failedChecks, []);
+});
+
+test('a real syntax error names the check that failed', (t) => {
+  const root = makeRoot(t);
+  const result = verify(root, [
+    { path: 'src/broken.ts', content: 'const bad: = 1;\n' },
+    { path: 'notes/test.txt', content: 'unbalanced { brace\n' }
+  ]);
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.failedChecks, ['static-syntax']);
+  const syntax = result.checks.find((check) => check.id === 'static-syntax');
+  assert.equal(syntax.ran, true);
+  assert.equal(syntax.ok, false);
+  assert.equal(syntax.failures, 1);
+  assert.match(syntax.details, /1 file\(s\) checked, 1 skipped/);
+  assert.equal(result.results.find((entry) => entry.path === 'notes/test.txt').skipped, true);
+  assert.equal(result.results.find((entry) => entry.path === 'src/broken.ts').status, 'checked');
+});
+
+test('boundary and size refusals name their own checks', (t) => {
+  const root = makeRoot(t);
+  const boundary = verify(root, [{ path: '/etc/passwd', content: 'x\n' }]);
+  assert.deepEqual(boundary.failedChecks, ['path-boundary']);
+  assert.equal(boundary.results[0].skipped, false);
+  assert.equal(boundary.results[0].code, 'PATH_OUTSIDE_WORKSPACE');
+
+  const huge = verify(root, [{
+    path: 'src/huge.ts',
+    content: `const a = 1;\n// ${'x'.repeat(CHANGE_VERIFY_LIMITS.maxFileBytes)}`
+  }]);
+  assert.deepEqual(huge.failedChecks, ['size-limits']);
+  assert.deepEqual(huge.results, [{
+    path: 'src/huge.ts',
+    status: 'skipped',
+    skipped: true,
+    reason: `larger than the ${CHANGE_VERIFY_LIMITS.maxFileBytes} byte verification limit`,
+    code: 'FILE_TOO_LARGE'
+  }]);
+});
+
+test('every documented check is always present with a name and a ran flag', (t) => {
+  const root = makeRoot(t);
+  const result = verify(root, [{ path: 'src/a.ts', content: 'export const a = 1;\n' }]);
+  assert.deepEqual(
+    result.checks.map((check) => [check.id, check.name, check.ok, check.ran]),
+    [
+      ['path-boundary', 'Workspace boundary', true, true],
+      ['content-shape', 'Change shape', true, true],
+      ['size-limits', 'Size limits', true, true],
+      ['static-syntax', 'Static syntax validation', true, true],
+      ['report-limit', 'Issue report limit', true, false]
+    ]
+  );
+  assert.deepEqual(result.results, [{
+    path: 'src/a.ts',
+    status: 'checked',
+    skipped: false,
+    check: 'TypeScript/JavaScript syntax',
+    reason: 'checked as TypeScript/JavaScript syntax'
+  }]);
+});

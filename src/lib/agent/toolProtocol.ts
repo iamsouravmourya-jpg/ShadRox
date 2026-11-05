@@ -105,6 +105,10 @@ export function stripToolBlocks(text: string): string {
   const stripped = text
     .replace(/```[ \t]*shadrox:tools[ \t]*\r?\n[\s\S]*?```/g, '')
     .replace(/```[ \t]*shadrox:tools[\s\S]*$/g, '')
+    // A model that echoes its observations back as a results fence must never
+    // surface raw JSON in the transcript.
+    .replace(/```[ \t]*shadrox:results[ \t]*\r?\n[\s\S]*?```/g, '')
+    .replace(/```[ \t]*shadrox:results[\s\S]*$/g, '')
     .trim();
   return parseBareToolCalls(stripped) ? '' : stripped;
 }
