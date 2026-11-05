@@ -11,6 +11,11 @@ import {
   selectHooks
 } from './index';
 import type { LoadedPlugin } from './index';
+import {
+  hashPluginManifest,
+  readPluginConsent,
+  setPluginEnabled
+} from '../workspaceConsent';
 
 const SOURCE = '.shadrox/plugins/demo/plugin.json';
 const PROMPT_ACTION = { type: 'prompt', prompt: 'Summarize the change.' };
@@ -43,6 +48,35 @@ function entry(id: string, hooks: unknown[], extra: Record<string, unknown> = {}
     content: JSON.stringify({ id, name: `${id} plugin`, version: '1.0.0', hooks, ...extra })
   };
 }
+
+test('plugin consent is bound to the exact manifest hash and does not trust legacy id-only consent', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const values = new Map<string, string>();
+  const localStorage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); }
+  };
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { localStorage }
+  });
+
+  try {
+    const root = 'C:\\workspace\\project';
+    const originalHash = await hashPluginManifest('{"enabled":true}');
+    const changedHash = await hashPluginManifest('{"enabled":false}');
+    assert.notEqual(originalHash, changedHash);
+    setPluginEnabled(root, 'demo', true, originalHash);
+    assert.equal(readPluginConsent(root).get('demo'), originalHash);
+    assert.notEqual(readPluginConsent(root).get('demo'), changedHash);
+
+    values.set(`shadrox.plugins.enabled.v2.${root.toLowerCase().replace(/\\/g, '/')}`, JSON.stringify(['demo']));
+    assert.equal(readPluginConsent(root).size, 0);
+  } finally {
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  }
+});
 
 function loadOrFail(entries: Array<{ path: string; content: string }>): LoadedPlugin[] {
   const result = loadPlugins(entries);

@@ -15,6 +15,8 @@ const MAX_PARSED_CALLS = 16;
 /** One observation may not eat the context: the round's results share this budget. */
 const MAX_ROUND_RESULT_CHARS = 48_000;
 const MIN_RESULT_CHARS = 1_000;
+const UNTRUSTED_DATA_BEGIN = '[[SHADROX_UNTRUSTED_DATA_BEGIN]]';
+const UNTRUSTED_DATA_END = '[[SHADROX_UNTRUSTED_DATA_END]]';
 
 export interface ParsedToolBlock {
   calls: ToolCall[];
@@ -121,9 +123,16 @@ export function serializeResults(results: Array<{ name: string; ok: boolean; con
   const total = sizes.reduce((sum, size) => sum + size, 0);
   const share = total > budget ? Math.max(MIN_RESULT_CHARS, Math.floor(budget / Math.max(1, sizes.length))) : null;
   const payload = results.map((result) => (result.ok
-    ? { tool: result.name, ok: true, result: share === null ? result.content : cutToShare(result.content, share) }
-    : { tool: result.name, ok: false, error: result.error ?? 'The tool failed.' }));
+    ? { tool: result.name, ok: true, result: markUntrustedData(share === null ? result.content : cutToShare(result.content, share)) }
+    : { tool: result.name, ok: false, error: markUntrustedData(result.error ?? 'The tool failed.') }));
   return `\`\`\`${RESULT_FENCE}\n${JSON.stringify(payload, null, 1)}\n\`\`\``;
+}
+
+function markUntrustedData(content: string): string {
+  const escaped = content
+    .replaceAll(UNTRUSTED_DATA_BEGIN, `\\${UNTRUSTED_DATA_BEGIN}`)
+    .replaceAll(UNTRUSTED_DATA_END, `\\${UNTRUSTED_DATA_END}`);
+  return `${UNTRUSTED_DATA_BEGIN}\n${escaped}\n${UNTRUSTED_DATA_END}`;
 }
 
 function cutToShare(content: string, limit: number): string {

@@ -28,6 +28,7 @@ import { CHAT_PROMPT_CORE, TOOL_DISCIPLINE_RULES } from './lib/agent/promptDisci
 import { expandChatMentions } from './lib/chat/contextMentions';
 import { parseToolBlocks, stripToolBlocks } from './lib/agent/toolProtocol';
 import { runAgentTurn } from './lib/agents/turnRunner';
+import { isProtectedAgentWritePath } from './lib/agents/applyPolicy';
 import { bundleDocument, bundleProject, canBundle, describeBundleError } from './lib/bundler';
 import {
   getDesktopBridge,
@@ -146,6 +147,7 @@ import {
 } from './lib/automations';
 import {
   WORKSPACE_CONFIG_EVENT,
+  hashPluginManifest,
   hasAutomationConsent,
   readPluginConsent
 } from './lib/workspaceConsent';
@@ -669,9 +671,11 @@ export default function App() {
       );
       // A manifest alone never enables itself; the user opts in per workspace.
       const consent = readPluginConsent(workspaceRootPath);
-      pluginsRef.current = loaded.plugins.map((plugin) => ({
-        ...plugin,
-        enabled: consent.has(plugin.manifest.id)
+      pluginsRef.current = await Promise.all(loaded.plugins.map(async (plugin) => {
+        const entry = entries.get(workspaceRelative(plugin.sourcePath));
+        if (!entry) return { ...plugin, enabled: false };
+        const hash = await hashPluginManifest(entry.content);
+        return { ...plugin, enabled: consent.get(plugin.manifest.id) === hash };
       }));
     } catch (error) {
       warnBridgeError('plugin-scan', error);
@@ -2847,9 +2851,18 @@ export default function App() {
         return;
       }
 
-      const patches = extractUnifiedPatches(fullReply, workspace.files);
+      const extractedPatches = extractUnifiedPatches(fullReply, workspace.files);
+      const blockedPaths = extractedPatches
+        .filter((patch) => isProtectedAgentWritePath(patch.path))
+        .map((patch) => `${patch.path}: agent edits to plugin and automation manifests are blocked.`);
+      const patches = extractedPatches.filter((patch) => !isProtectedAgentWritePath(patch.path));
+      if (blockedPaths.length > 0) {
+        setToast(blockedPaths[0]);
+        window.setTimeout(() => setToast(null), 6000);
+      }
 
       if (patches.length === 0) {
+        if (blockedPaths.length > 0) await options.onFailures?.(blockedPaths);
         const scan = extractFilePatches(fullReply, workspace.files);
         // An example snippet in an answer is not an edit attempt. Only a
         // SEARCH/REPLACE block that lost its file path is worth a retry.
@@ -2887,7 +2900,8 @@ export default function App() {
       setToast(`Verifying ${review.length} file(s)…`);
       window.setTimeout(() => setToast(null), 4000);
       const outcome = await applyReviewSet(messageId, review);
-      if (outcome.failures.length > 0) await options.onFailures?.(outcome.failures);
+      const failures = [...blockedPaths, ...outcome.failures];
+      if (failures.length > 0) await options.onFailures?.(failures);
     },
     [patchSets, workspace, autoApplyChanges, applyReviewSet]
   );

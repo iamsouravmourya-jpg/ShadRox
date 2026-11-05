@@ -62,6 +62,23 @@ export function normalizePolicyPath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+/g, '/');
 }
 
+/** Agent turns must never alter plugin or automation manifests that grant execution. */
+export function isProtectedAgentWritePath(path: string): boolean {
+  const segments: string[] = [];
+  for (const segment of normalizePolicyPath(path).split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment.toLowerCase());
+  }
+  return segments.some((segment, index) =>
+    segment === '.shadrox' &&
+    (segments[index + 1] === 'automations.json' || segments[index + 1] === 'plugins')
+  );
+}
+
 function nonBlankLines(text: string): number {
   return text.split('\n').filter((line) => line.trim().length > 0).length;
 }
