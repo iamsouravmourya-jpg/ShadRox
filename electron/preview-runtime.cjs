@@ -1300,7 +1300,23 @@ function createPreviewRuntime({
     return null;
   }
 
-  return { start, startStatic, startPlan, stop, stopBackend, stopAll, getWorkspaceIdForUrl };
+  const machineIds = new WeakMap();
+  let machineSequence = 0;
+  function ownedPreviews(workspaceId) {
+    return [['frontend', processes.get(workspaceId)], ['backend', backendProcesses.get(workspaceId)]]
+      .filter(([, record]) => record)
+      .map(([kind, record]) => {
+        if (!machineIds.has(record)) machineIds.set(record, `${kind}-${++machineSequence}`);
+        return { id: machineIds.get(record), kind, port: record.url ? Number(new URL(record.url).port) : null };
+      });
+  }
+  async function stopOwnedPreview(workspaceId, identity) {
+    const owned = ownedPreviews(workspaceId).find((entry) => entry.id === identity);
+    if (!owned) return false;
+    return owned.kind === 'frontend' ? stopFrontend(workspaceId) : stopBackend(workspaceId);
+  }
+
+  return { start, startStatic, startPlan, stop, stopBackend, stopAll, getWorkspaceIdForUrl, ownedPreviews, stopOwnedPreview };
 }
 
 module.exports = {

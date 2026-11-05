@@ -168,9 +168,18 @@ interface UseWorkspaceResult {
 
   // --- restore timeline ----------------------------------------------------
   checkpoints: CheckpointMeta[];
-  /** Snapshots the current files so a later chat turn can be undone. */
-  markCheckpoint: (messageId: string, label: string) => Promise<string | null>;
-  restoreCheckpoint: (id: string) => Promise<boolean>;
+  /**
+   * Snapshots the current files so a later chat turn can be undone.
+   * `onlyIfIdle` skips the snapshot while a machine turn is open — a nested
+   * apply then rides the turn's checkpoint instead of double-snapshotting.
+   * `turn` marks the checkpoint as one a finish call will close; run-level
+   * bookmarks pass false so they never hold the idle gate open.
+   */
+  markCheckpoint: (messageId: string, label: string, machine?: boolean, onlyIfIdle?: boolean, turn?: boolean) => Promise<string | null>;
+  finishMachineCheckpoint: (id: string | null) => Promise<void>;
+  inspectMachineCheckpoint: (id: string) => Promise<void>;
+  /** `ok` = the state was restored; `partial` = restored, but some steps failed. */
+  restoreCheckpoint: (id: string) => Promise<{ ok: boolean; partial: boolean }>;
   /** What restoring would do to the current buffers, so a restore is never blind. */
   previewCheckpointDiff: (id: string) => Promise<CheckpointDiff | null>;
   /**
@@ -217,6 +226,10 @@ export function useWorkspace(): UseWorkspaceResult {
   const [diskMessage, setDiskMessage] = useState<string | null>(null);
   const [autoSave, setAutoSave] = useState(false);
   const [checkpoints, setCheckpoints] = useState<CheckpointMeta[]>([]);
+  const machineTurns = useRef(new Map<string, string>());
+  /** Turn checkpoints awaiting their finish call; the only-if-idle gate reads this. */
+  const openTurns = useRef(new Set<string>());
+  const machineStarting = useRef(0);
 
   const files = workspace?.files ?? EMPTY_FILES;
   /**
@@ -1544,6 +1557,13 @@ export function useWorkspace(): UseWorkspaceResult {
     setStatusMessage(null);
     setDiskMessage(null);
     setCheckpoints([]);
+    // A closed workspace can never finish its turns; drop the idle gate so a
+    // later manual apply is not blocked by checkpoints of a workspace that is
+    // gone. Their native snapshots die with the workspace handle anyway.
+    machineTurns.current.clear();
+    openTurns.current.clear();
+    machineStarting.current = 0;
+    activeCheckpointRef.current = null;
     handlesRef.current = new Map();
     directoryHandleRef.current = null;
     desktopWorkspaceIdRef.current = null;
@@ -1554,32 +1574,136 @@ export function useWorkspace(): UseWorkspaceResult {
   // --- restore timeline ------------------------------------------------------
 
   const markCheckpoint = useCallback(
-    async (messageId: string, label: string): Promise<string | null> => {
-      if (!workspace) return null;
-      const meta = await saveCheckpoint({
-        workspacePath: workspace.path,
-        messageId,
-        label,
-        files: filesRef.current
-      });
-      if (meta) {
+    async (messageId: string, label: string, machine = true, onlyIfIdle = false, turn = true): Promise<string | null> => {
+      // The idle gate covers every open turn — native machine turns *and* plain
+      // buffer-only ones — so a nested apply never takes a second snapshot while
+      // a turn is running, and never re-points activeCheckpointRef mid-turn.
+      if (!workspace || (onlyIfIdle && (machineTurns.current.size || openTurns.current.size || machineStarting.current))) return null;
+      machineStarting.current++;
+      const desktop = getDesktopBridge();
+      const nativeId = desktopWorkspaceIdRef.current;
+      try {
+        const meta = await saveCheckpoint({
+          workspacePath: workspace.path, messageId, label, files: filesRef.current,
+          machine: Boolean(machine && desktop && nativeId && workspace.kind === 'folder')
+        });
+        if (!meta) return null;
+        if (turn) openTurns.current.add(meta.id);
+        if (meta.machine && desktop && nativeId) {
+          machineTurns.current.set(meta.id, nativeId);
+          try { meta.machineReport = await desktop.beginMachineTurn(nativeId, meta.id); }
+          catch { machineTurns.current.delete(meta.id); setDiskMessage('Machine snapshot unavailable for this turn; disk rewind is disabled.'); }
+        }
+        if (desktopWorkspaceIdRef.current !== nativeId) return meta.id;
         activeCheckpointRef.current = { id: meta.id, workspacePath: workspace.path };
         setCheckpoints((previous) => [meta, ...previous]);
-      }
-      return meta?.id ?? null;
+        return meta.id;
+      } catch {
+        setDiskMessage('Checkpoint could not be recorded; rewind is unavailable for this turn.');
+        return null;
+      } finally { machineStarting.current--; }
     },
     [workspace]
   );
 
+  const inspectMachineCheckpoint = useCallback(async (id: string) => {
+    const desktop = getDesktopBridge();
+    const nativeId = desktopWorkspaceIdRef.current;
+    if (!desktop || !nativeId) return;
+    const report = await desktop.inspectMachineTurn(nativeId, id).catch(() => null);
+    if (desktopWorkspaceIdRef.current === nativeId) {
+      setCheckpoints((previous) => previous.map((entry) => entry.id === id ? { ...entry, machineReport: report } : entry));
+    }
+  }, []);
+
+  const finishMachineCheckpoint = useCallback(async (id: string | null) => {
+    if (!id) return;
+    // Buffer-only turns have no native snapshot to finish, but they still hold
+    // the idle gate open until this runs — clear it for every checkpoint id.
+    openTurns.current.delete(id);
+    const nativeId = machineTurns.current.get(id);
+    const desktop = getDesktopBridge();
+    if (!desktop || !nativeId) return;
+    try {
+      await desktop.finishMachineTurn(nativeId, id);
+    } catch {
+      setDiskMessage('End snapshot failed; this turn cannot be rewound.');
+    } finally {
+      machineTurns.current.delete(id);
+      await inspectMachineCheckpoint(id);
+    }
+  }, [inspectMachineCheckpoint]);
+
   /**
-   * Tags the active checkpoint with the paths an apply created, so a rollback can
-   * delete them instead of leaving them behind. Deliberately tied to the checkpoint
-   * taken for this turn: a file the user made themselves is never in this list.
+   * Restores one checkpoint. A machine checkpoint rewinds through the native
+   * delta only — it never silently degrades into the buffer rollback below.
+   * `ok` means the captured state was restored; `partial` means it was restored
+   * but some steps (e.g. stopping owned previews) did not complete. Legacy
+   * checkpoints stay buffer-only; the user saves to disk deliberately.
    */
   const restoreCheckpoint = useCallback(
-    async (id: string): Promise<boolean> => {
+    async (id: string): Promise<{ ok: boolean; partial: boolean }> => {
+      const failure = { ok: false, partial: false };
+      const checkpoint = checkpoints.find((entry) => entry.id === id);
+      if (checkpoint?.machine) {
+        const desktop = getDesktopBridge();
+        const nativeId = desktopWorkspaceIdRef.current;
+        if (!desktop || !nativeId) {
+          setDiskMessage('Machine rewind needs the desktop workspace that captured this turn; it is not open, so nothing was restored.');
+          return failure;
+        }
+        if (filesRef.current.some((file) => baselineRef.current[file.name] !== file.content)) {
+          setDiskMessage('Save or discard unsaved editor changes before machine rewind.');
+          return failure;
+        }
+        try {
+          const result = await desktop.restoreMachineTurn(nativeId, id);
+          if (desktopWorkspaceIdRef.current !== nativeId) return failure;
+          // The native response separates "files restored" (report state) from
+          // "every step succeeded" (ok). Say partial when the disk contents came
+          // back but e.g. a preview could not be stopped — never plain success.
+          const restoredState = result.report.state === 'restored';
+          setDiskMessage(
+            result.ok
+              ? result.message
+              : restoredState
+                ? `Partial rewind — the captured files were restored, but not every step finished: ${result.message}`
+                : result.message
+          );
+          if (restoredState) {
+            for (const change of result.report.files) {
+              if (change.beforeHash === null) {
+                const buffered = filesRef.current.find((file) => file.name === change.path);
+                if (buffered && buffered.content !== baselineRef.current[change.path]) {
+                  setConflicts((previous) => [...new Set([...previous, change.path])]);
+                  continue;
+                }
+                filesRef.current = filesRef.current.filter((file) => file.name !== change.path);
+                delete baselineRef.current[change.path];
+                setEditorGroups((previous) => previous.map((group) => ({ ...group,
+                  tabs: group.tabs.filter((name) => name !== change.path), pinnedTabs: group.pinnedTabs.filter((name) => name !== change.path),
+                  activePath: group.activePath === change.path ? null : group.activePath
+                })));
+              } else if (filesRef.current.some((file) => file.name === change.path)) {
+                await refreshDiskFile(change.path);
+              }
+            }
+            setWorkspace((previous) => previous ? { ...previous, files: [...filesRef.current] } : previous);
+            setDiskBaseline({ ...baselineRef.current });
+            for (const directory of new Set(['', ...result.report.files.map((file) => file.path.split('/').slice(0, -1).join('/'))])) {
+              await loadDirectory(directory);
+            }
+          }
+          await inspectMachineCheckpoint(id);
+          return restoredState ? { ok: true, partial: !result.ok } : failure;
+        } catch (error) {
+          setDiskMessage(error instanceof Error ? error.message : 'Machine rewind failed.');
+          await inspectMachineCheckpoint(id);
+          return failure;
+        }
+      }
       const restored = await loadCheckpointFiles(id);
-      if (!restored || restored.length === 0) return false;
+      if (!restored || restored.length === 0) return failure;
 
       const activeName = filesRef.current[activeFileIndex]?.name;
       setWorkspace((previous) =>
@@ -1587,10 +1711,10 @@ export function useWorkspace(): UseWorkspaceResult {
       );
       const nextIndex = restored.findIndex((file) => file.name === activeName);
       setSelectedFileIndex(nextIndex);
-      setDiskMessage('Previous version restored. Click "Save to disk" to persist changes to disk.');
-      return true;
+      setDiskMessage('Legacy checkpoint restored in the editor buffers only — nothing was written to disk. Click "Save to disk" to persist the files.');
+      return { ok: true, partial: false };
     },
-    [activeFileIndex]
+    [activeFileIndex, checkpoints, refreshDiskFile, loadDirectory, inspectMachineCheckpoint]
   );
 
   const previewCheckpointDiff = useCallback(async (id: string): Promise<CheckpointDiff | null> => {
@@ -1605,6 +1729,13 @@ export function useWorkspace(): UseWorkspaceResult {
    */
   const rollbackToCheckpoint = useCallback(
     async (id: string): Promise<boolean> => {
+      // A machine checkpoint owns an on-disk delta; restoring from the stored
+      // buffer copy would silently destroy exactly what the native rewind is
+      // meant to reverse. Refuse and point the caller at the timeline instead.
+      if (checkpoints.some((entry) => entry.id === id && entry.machine)) {
+        setDiskMessage('This checkpoint captured machine state — rewind it from the timeline instead; the buffer rollback was not run.');
+        return false;
+      }
       const restored = await loadCheckpointFiles(id);
       if (!restored) return false;
       const created = await loadCheckpointCreatedPaths(id);
@@ -1653,7 +1784,7 @@ export function useWorkspace(): UseWorkspaceResult {
       );
       return !outcome.failed;
     },
-    [activeFileIndex, saveFilesAtomic]
+    [activeFileIndex, saveFilesAtomic, checkpoints]
   );
 
   // Keep the local snapshot in step with the live workspace so "Recently opened"
@@ -1748,6 +1879,8 @@ export function useWorkspace(): UseWorkspaceResult {
       saveFilesAtomic,
       checkpoints,
       markCheckpoint,
+      finishMachineCheckpoint,
+      inspectMachineCheckpoint,
       restoreCheckpoint,
       previewCheckpointDiff,
       rollbackToCheckpoint
@@ -1809,6 +1942,8 @@ export function useWorkspace(): UseWorkspaceResult {
       saveFilesAtomic,
       checkpoints,
       markCheckpoint,
+      finishMachineCheckpoint,
+      inspectMachineCheckpoint,
       restoreCheckpoint,
       previewCheckpointDiff,
       rollbackToCheckpoint

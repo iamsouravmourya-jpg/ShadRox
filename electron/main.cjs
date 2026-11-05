@@ -46,6 +46,8 @@ const { resolveTerminalPlan, systemEnvironment, clampTerminalSize, normalizeTerm
 const { createMcpClient, validateServerConfig, isSafeHttpUrl } = require('./mcp-client.cjs');
 const { detectRuntime, planDualPreview } = require('./runtime-adapters.cjs');
 const { createAutomationWebhook } = require('./automation-webhook.cjs');
+const { createMachineDelta } = require('./machine-delta.cjs');
+const { createMachineGit } = require('./machine-git.cjs');
 
 const PREVIEW_SCHEME = 'shadrox-preview';
 const APP_BACKGROUND = '#090a0d';
@@ -99,6 +101,23 @@ const previewRuntime = createPreviewRuntime({
 });
 const typeScriptService = createTypeScriptService({
   getWorkspace: (id) => workspaceAccess.getWorkspace(id)
+});
+const machineGit = createMachineGit({
+  getWorkspace: (id) => workspaceAccess.getWorkspace(id),
+  context: gitSafetyContext,
+  run: (root, args, safety, input) => runGit(root, buildGitArgv(args, { safeDirectories: [root], filterDrivers: safety.filterDrivers }), input)
+});
+const machineDelta = createMachineDelta({
+  access: workspaceAccess,
+  readSystem: async (id) => ({
+    git: await machineGit.read(id),
+    previews: previewRuntime.ownedPreviews(id),
+    terminals: [...terminalSessions].filter(([, info]) => info.workspaceId === id)
+      .map(([sessionId, info]) => ({ id: sessionId, mode: info.mode, launchCwd: info.launchCwd })),
+    tools: { node: process.versions.node, electron: process.versions.electron, probes: 'External tool version commands were not run.' }
+  }),
+  prepareGitRestore: machineGit.prepare,
+  stopOwnedPreview: (id, identity) => previewRuntime.stopOwnedPreview(id, identity)
 });
 
 const PREVIEW_ENTRY_CANDIDATES = [
@@ -712,13 +731,13 @@ function secureStorePath() {
  * environment, and a fixed argv per call built by `buildGitArgv`, so neither the
  * opened folder nor its `.git/config` can name a program to run.
  */
-function runGit(cwd, args) {
+function runGit(cwd, args, input) {
   return new Promise((resolve) => {
     if (!gitExecutable || !gitEnvironment) {
       resolve({ ok: false, stdout: '', stderr: 'git is unavailable on a trusted path.' });
       return;
     }
-    execFile(gitExecutable, args, {
+    const child = execFile(gitExecutable, args, {
       cwd,
       env: gitEnvironment,
       timeout: 15_000,
@@ -727,6 +746,10 @@ function runGit(cwd, args) {
     }, (error, stdout, stderr) => {
       resolve({ ok: !error, stdout: String(stdout || ''), stderr: String(stderr || '') });
     });
+    if (input !== undefined) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(input);
+    }
   });
 }
 
@@ -1459,8 +1482,18 @@ async function openFolderWorkspace(rootPath) {
   return opened;
 }
 
+let machineSensitiveOperations = 0;
+function handleMachineSensitive(channel, handler) {
+  ipcMain.handle(channel, async (...args) => {
+    machineDelta.assertWritable();
+    machineSensitiveOperations++;
+    try { return await handler(...args); }
+    finally { machineSensitiveOperations--; }
+  });
+}
+
 function registerIpcHandlers() {
-  ipcMain.handle('workspace:open-folder', async (event) => {
+  handleMachineSensitive('workspace:open-folder', async (event) => {
     assertTrustedRenderer(event);
     const result = await dialog.showOpenDialog(mainWindow, {
       title: 'Open workspace folder',
@@ -1470,7 +1503,7 @@ function registerIpcHandlers() {
     return openFolderWorkspace(result.filePaths[0]);
   });
 
-  ipcMain.handle('workspace:open-files', async (event) => {
+  handleMachineSensitive('workspace:open-files', async (event) => {
     assertTrustedRenderer(event);
     const result = await dialog.showOpenDialog(mainWindow, {
       title: 'Open code files',
@@ -1491,7 +1524,7 @@ function registerIpcHandlers() {
     return opened;
   });
 
-  ipcMain.handle('workspace:reopen', async (event, target) => {
+  handleMachineSensitive('workspace:reopen', async (event, target) => {
     assertTrustedRenderer(event);
     if (!target || typeof target !== 'object') throw new Error('Invalid recent workspace.');
 
@@ -1531,7 +1564,7 @@ function registerIpcHandlers() {
     throw new Error('Unknown recent workspace type.');
   });
 
-  ipcMain.handle('workspace:close', async (event, workspaceId) => {
+  handleMachineSensitive('workspace:close', async (event, workspaceId) => {
     assertTrustedRenderer(event);
     if (workspaceAccess.getWorkspace(workspaceId)) {
       await previewRuntime.stop(workspaceId);
@@ -1541,77 +1574,105 @@ function registerIpcHandlers() {
     if (activeWorkspaceId === workspaceId) activeWorkspaceId = null;
   });
 
+  ipcMain.handle('machine:begin', async (event, workspaceId, checkpointId) => {
+    assertTrustedRenderer(event);
+    return machineDelta.begin(workspaceId, checkpointId);
+  });
+  ipcMain.handle('machine:finish', async (event, workspaceId, checkpointId) => {
+    assertTrustedRenderer(event);
+    return machineDelta.finish(workspaceId, checkpointId);
+  });
+  ipcMain.handle('machine:inspect', (event, workspaceId, checkpointId) => {
+    assertTrustedRenderer(event);
+    return machineDelta.inspect(workspaceId, checkpointId);
+  });
+  ipcMain.handle('machine:restore', async (event, workspaceId, checkpointId) => {
+    assertTrustedRenderer(event);
+    if (rendererDirty) throw new Error('Save or discard unsaved editor changes before machine rewind.');
+    if (machineSensitiveOperations) throw new Error('Wait for workspace commands and operations to finish before rewind.');
+    return machineDelta.restore(workspaceId, checkpointId, async (report) => {
+      const answer = await dialog.showMessageBox(mainWindow, {
+        type: 'warning', title: 'Rewind captured machine changes?',
+        message: `Restore ${report.files.length} captured files${report.git.positionChanged ? ', rewind the local Git ref/index' : ''} and stop ${report.previews.started.length} ShadRox-owned previews?`,
+        detail: 'This is not a full-machine restore. Installed packages, running terminals, stopped processes and remote effects are not undone. Stop other commands that may write to these files before continuing.',
+        buttons: ['Cancel', 'Rewind captured changes'], defaultId: 0, cancelId: 0, noLink: true
+      });
+      if (rendererDirty) throw new Error('Unsaved editor changes appeared; nothing was restored.');
+      return answer.response === 1;
+    });
+  });
+
   ipcMain.handle('app:set-dirty', (event, dirty) => {
     assertTrustedRenderer(event);
     rendererDirty = Boolean(dirty);
   });
 
-  ipcMain.handle('workspace:list-directory', async (event, workspaceId, relativePath, cursor) => {
+  handleMachineSensitive('workspace:list-directory', async (event, workspaceId, relativePath, cursor) => {
     assertTrustedRenderer(event);
     return workspaceAccess.listDirectory(workspaceId, relativePath, cursor);
   });
 
-  ipcMain.handle('workspace:read-file', async (event, workspaceId, relativePath) => {
+  handleMachineSensitive('workspace:read-file', async (event, workspaceId, relativePath) => {
     assertTrustedRenderer(event);
     return workspaceAccess.readFile(workspaceId, relativePath);
   });
 
-  ipcMain.handle('workspace:load-files', async (event, workspaceId, relativePaths, options) => {
+  handleMachineSensitive('workspace:load-files', async (event, workspaceId, relativePaths, options) => {
     assertTrustedRenderer(event);
     return workspaceAccess.loadFiles(workspaceId, relativePaths, options);
   });
 
-  ipcMain.handle('workspace:project-docs', async (event, workspaceId) => {
+  handleMachineSensitive('workspace:project-docs', async (event, workspaceId) => {
     assertTrustedRenderer(event);
     return workspaceAccess.projectDocs(workspaceId);
   });
 
-  ipcMain.handle('workspace:rename-file', async (event, workspaceId, fromPath, toPath) => {
+  handleMachineSensitive('workspace:rename-file', async (event, workspaceId, fromPath, toPath) => {
     assertTrustedRenderer(event);
     return workspaceAccess.renameFile(workspaceId, fromPath, toPath);
   });
 
-  ipcMain.handle('workspace:create-directory', async (event, workspaceId, relativePath) => {
+  handleMachineSensitive('workspace:create-directory', async (event, workspaceId, relativePath) => {
     assertTrustedRenderer(event);
     return workspaceAccess.createDirectory(workspaceId, relativePath);
   });
 
-  ipcMain.handle('workspace:delete-path', async (event, workspaceId, relativePath) => {
+  handleMachineSensitive('workspace:delete-path', async (event, workspaceId, relativePath) => {
     assertTrustedRenderer(event);
     return workspaceAccess.deletePath(workspaceId, relativePath);
   });
 
-  ipcMain.handle('workspace:search-files', async (event, workspaceId, query, limit) => {
+  handleMachineSensitive('workspace:search-files', async (event, workspaceId, query, limit) => {
     assertTrustedRenderer(event);
     return workspaceAccess.searchFiles(workspaceId, query, limit);
   });
 
-  ipcMain.handle('workspace:search-content', async (event, workspaceId, options) => {
+  handleMachineSensitive('workspace:search-content', async (event, workspaceId, options) => {
     assertTrustedRenderer(event);
     return workspaceAccess.searchContent(workspaceId, options);
   });
 
-  ipcMain.handle('workspace:save-files', async (event, workspaceId, files) => {
+  handleMachineSensitive('workspace:save-files', async (event, workspaceId, files) => {
     assertTrustedRenderer(event);
     return workspaceAccess.saveFiles(workspaceId, files);
   });
 
-  ipcMain.handle('workspace:stage-files', async (event, workspaceId, files) => {
+  handleMachineSensitive('workspace:stage-files', async (event, workspaceId, files) => {
     assertTrustedRenderer(event);
     return workspaceAccess.stageFiles(workspaceId, files);
   });
 
-  ipcMain.handle('workspace:commit', async (event, workspaceId, transactionId) => {
+  handleMachineSensitive('workspace:commit', async (event, workspaceId, transactionId) => {
     assertTrustedRenderer(event);
     return workspaceAccess.commitTransaction(workspaceId, transactionId);
   });
 
-  ipcMain.handle('workspace:discard', async (event, workspaceId, transactionId) => {
+  handleMachineSensitive('workspace:discard', async (event, workspaceId, transactionId) => {
     assertTrustedRenderer(event);
     workspaceAccess.discardTransaction(workspaceId, transactionId);
   });
 
-  ipcMain.handle('workspace:verify-change-set', async (event, workspaceId, files) => {
+  handleMachineSensitive('workspace:verify-change-set', async (event, workspaceId, files) => {
     assertTrustedRenderer(event);
     const workspace = workspaceAccess.getWorkspace(workspaceId);
     // A file-only workspace is rooted at its containing directory and saveFiles
@@ -1627,7 +1688,7 @@ function registerIpcHandlers() {
   // process-count guard against a runaway renderer.
   const maxTerminalSessionsPerWorkspace = 12;
 
-  ipcMain.handle('terminal:create', async (event, workspaceId, cols = 100, rows = 30, mode = 'system', sessionKey) => {
+  handleMachineSensitive('terminal:create', async (event, workspaceId, cols = 100, rows = 30, mode = 'system', sessionKey) => {
     assertTrustedRenderer(event);
     if (!pty) throw new Error('Interactive terminal support is unavailable. Reinstall the desktop dependencies and restart ShadRox.');
     const workspace = workspaceAccess.getWorkspace(workspaceId);
@@ -1662,7 +1723,7 @@ function registerIpcHandlers() {
       cwd: workspace.root, env: { ...terminalEnv, TERM: 'xterm-256color' }, useConpty: process.platform === 'win32',
       windowsHide: true
     });
-    const sessionInfo = { workspaceId, mode: plan.mode, label: plan.label, terminal };
+    const sessionInfo = { workspaceId, mode: plan.mode, label: plan.label, launchCwd: workspace.root, terminal };
     terminalSessions.set(sessionId, sessionInfo);
     terminal.onData((data) => mainWindow?.webContents.send('terminal:output', { workspaceId, sessionId, type: 'data', data }));
     terminal.onExit(({ exitCode }) => {
@@ -1672,14 +1733,14 @@ function registerIpcHandlers() {
     return terminalDescriptor(sessionId, sessionInfo, workspace);
   });
 
-  ipcMain.handle('terminal:write', async (event, workspaceId, sessionId, data) => {
+  handleMachineSensitive('terminal:write', async (event, workspaceId, sessionId, data) => {
     assertTrustedRenderer(event);
     const sessionInfo = terminalSessions.get(sessionId);
     if (!sessionInfo || sessionInfo.workspaceId !== workspaceId || typeof data !== 'string' || data.length > 64_000) throw new Error('Invalid terminal session or input.');
     sessionInfo.terminal.write(data);
   });
 
-  ipcMain.handle('terminal:resize', async (event, workspaceId, sessionId, cols, rows) => {
+  handleMachineSensitive('terminal:resize', async (event, workspaceId, sessionId, cols, rows) => {
     assertTrustedRenderer(event);
     const sessionInfo = terminalSessions.get(sessionId);
     if (!sessionInfo || sessionInfo.workspaceId !== workspaceId) throw new Error('Invalid terminal session.');
@@ -1687,7 +1748,7 @@ function registerIpcHandlers() {
     sessionInfo.terminal.resize(size.cols, size.rows);
   });
 
-  ipcMain.handle('terminal:close', async (event, workspaceId, sessionId) => {
+  handleMachineSensitive('terminal:close', async (event, workspaceId, sessionId) => {
     assertTrustedRenderer(event);
     const sessionInfo = terminalSessions.get(sessionId);
     if (!sessionInfo || sessionInfo.workspaceId !== workspaceId) return;
@@ -1695,7 +1756,7 @@ function registerIpcHandlers() {
     sessionInfo.terminal.kill();
   });
 
-  ipcMain.handle('terminal:list-sessions', async (event, workspaceId) => {
+  handleMachineSensitive('terminal:list-sessions', async (event, workspaceId) => {
     assertTrustedRenderer(event);
     const workspace = workspaceAccess.getWorkspace(workspaceId);
     const sessions = [];
@@ -1713,14 +1774,14 @@ function registerIpcHandlers() {
   // A terminal log line is the one place a URL is clicked, and it comes from
   // whatever a command printed, so this is the only path to shell.openExternal
   // from the terminal and it accepts a bare http(s) URL.
-  ipcMain.handle('terminal:open-link', async (event, url) => {
+  handleMachineSensitive('terminal:open-link', async (event, url) => {
     assertTrustedRenderer(event);
     if (!isSafeExternalUrl(url)) throw new Error('Only an http or https link can be opened externally.');
     await shell.openExternal(url);
     return true;
   });
 
-  ipcMain.handle('preview:start', async (event, workspaceId, approval = {}) => {
+  handleMachineSensitive('preview:start', async (event, workspaceId, approval = {}) => {
     assertTrustedRenderer(event);
     const workspace = workspaceAccess.getWorkspace(workspaceId);
     if (!workspace || workspace.mode !== 'folder') {
@@ -1824,7 +1885,7 @@ function registerIpcHandlers() {
     return previewRuntime.start(workspaceId, project.root, project.manifestHash);
   });
 
-  ipcMain.handle('preview:stop', async (event, workspaceId) => {
+  handleMachineSensitive('preview:stop', async (event, workspaceId) => {
     assertTrustedRenderer(event);
     previewStartGenerations.set(workspaceId, (previewStartGenerations.get(workspaceId) ?? 0) + 1);
     return previewRuntime.stop(workspaceId);
@@ -1833,7 +1894,7 @@ function registerIpcHandlers() {
   // The preview is an iframe in this window, so a screenshot is a pixel grab of
   // the region the renderer measured. An omitted rect means "the whole frame as
   // it is visible", which is what the toolbar button asks for.
-  ipcMain.handle('preview:capture-page', async (event, rect) => {
+  handleMachineSensitive('preview:capture-page', async (event, rect) => {
     assertTrustedRenderer(event);
     const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
     if (!win) return { ok: false, error: 'No ShadRox window is open.' };
@@ -1855,7 +1916,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('preview:save-screenshot', async (event, dataUrl) => {
+  handleMachineSensitive('preview:save-screenshot', async (event, dataUrl) => {
     assertTrustedRenderer(event);
     if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png;base64,')) {
       throw new Error('Only a PNG data URL can be saved.');
@@ -1874,7 +1935,7 @@ function registerIpcHandlers() {
     return { ok: true, path: choice.filePath };
   });
 
-  ipcMain.handle('terminal:run-command', async (event, workspaceId, command) => {
+  handleMachineSensitive('terminal:run-command', async (event, workspaceId, command) => {
     assertTrustedRenderer(event);
     const workspace = workspaceAccess.getWorkspace(workspaceId);
     if (!workspace || workspace.mode !== 'folder') {
@@ -1899,7 +1960,7 @@ function registerIpcHandlers() {
     return run;
   });
 
-  ipcMain.handle('git:read', async (event, workspaceId) => {
+  handleMachineSensitive('git:read', async (event, workspaceId) => {
     assertTrustedRenderer(event);
     const workspace = workspaceAccess.getWorkspace(workspaceId);
     if (!workspace || workspace.mode !== 'folder') {
@@ -1929,7 +1990,7 @@ function registerIpcHandlers() {
     };
   });
 
-  ipcMain.handle('git:conflicts', async (event, workspaceId) => {
+  handleMachineSensitive('git:conflicts', async (event, workspaceId) => {
     assertTrustedRenderer(event);
     const workspace = workspaceAccess.getWorkspace(workspaceId);
     if (!workspace || workspace.mode !== 'folder') return { isRepo: false, paths: [] };
@@ -1949,7 +2010,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('git:scm-read', async (event, workspaceId) => {
+  handleMachineSensitive('git:scm-read', async (event, workspaceId) => {
     assertTrustedRenderer(event);
     const { workspace, context } = await requireGitWorkspace(workspaceId);
     if (!context.complete) {
@@ -1972,7 +2033,7 @@ function registerIpcHandlers() {
     };
   });
 
-  ipcMain.handle('git:stage', async (event, workspaceId, rawPaths) => {
+  handleMachineSensitive('git:stage', async (event, workspaceId, rawPaths) => {
     assertTrustedRenderer(event);
     const { workspace, context } = await requireGitWorkspace(workspaceId);
     if (!context.complete) throw new Error('Git filter configuration could not be verified; staging is disabled.');
@@ -1984,7 +2045,7 @@ function registerIpcHandlers() {
     return true;
   });
 
-  ipcMain.handle('git:unstage', async (event, workspaceId, rawPaths) => {
+  handleMachineSensitive('git:unstage', async (event, workspaceId, rawPaths) => {
     assertTrustedRenderer(event);
     const { workspace } = await requireGitWorkspace(workspaceId);
     const paths = validateGitPaths(rawPaths);
@@ -1997,7 +2058,7 @@ function registerIpcHandlers() {
     return true;
   });
 
-  ipcMain.handle('git:commit', async (event, workspaceId, rawMessage) => {
+  handleMachineSensitive('git:commit', async (event, workspaceId, rawMessage) => {
     assertTrustedRenderer(event);
     const { workspace } = await requireGitWorkspace(workspaceId);
     const message = sanitizeCommitMessage(rawMessage);
@@ -2008,7 +2069,7 @@ function registerIpcHandlers() {
     return true;
   });
 
-  ipcMain.handle('git:branches', async (event, workspaceId) => {
+  handleMachineSensitive('git:branches', async (event, workspaceId) => {
     assertTrustedRenderer(event);
     const { workspace } = await requireGitWorkspace(workspaceId);
     const stdout = await runGitOrThrow(workspace.root, buildGitArgv(
@@ -2018,7 +2079,7 @@ function registerIpcHandlers() {
     return parseGitBranches(stdout);
   });
 
-  ipcMain.handle('git:checkout', async (event, workspaceId, rawBranch) => {
+  handleMachineSensitive('git:checkout', async (event, workspaceId, rawBranch) => {
     assertTrustedRenderer(event);
     const { workspace, context } = await requireGitWorkspace(workspaceId);
     if (!context.complete) throw new Error('Git filter configuration could not be verified; branch switching is disabled.');
@@ -2032,7 +2093,7 @@ function registerIpcHandlers() {
     return true;
   });
 
-  ipcMain.handle('git:file-diff', async (event, workspaceId, rawPath, staged) => {
+  handleMachineSensitive('git:file-diff', async (event, workspaceId, rawPath, staged) => {
     assertTrustedRenderer(event);
     const { workspace, context } = await requireGitWorkspace(workspaceId);
     if (!context.complete) throw new Error('Git filter configuration could not be verified; file diffs are unavailable.');
@@ -2176,7 +2237,7 @@ function registerIntegrationHandlers() {
     return detectWorkspaceRuntimes(workspace);
   });
 
-  ipcMain.handle('preview:start-backend', async (event, workspaceId, requestedPort) => {
+  handleMachineSensitive('preview:start-backend', async (event, workspaceId, requestedPort) => {
     assertTrustedRenderer(event);
     const workspace = workspaceAccess.getWorkspace(workspaceId);
     if (!workspace || workspace.mode !== 'folder') {
@@ -2242,7 +2303,7 @@ function registerIntegrationHandlers() {
     return { status: 'ready', url: started.url, script: plan.adapter, hmr: false };
   });
 
-  ipcMain.handle('preview:stop-backend', async (event, workspaceId) => {
+  handleMachineSensitive('preview:stop-backend', async (event, workspaceId) => {
     assertTrustedRenderer(event);
     return previewRuntime.stopBackend(workspaceId);
   });
