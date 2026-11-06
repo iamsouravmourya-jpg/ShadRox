@@ -36,6 +36,8 @@ import { McpToolsSection } from './settings/McpToolsSection';
 import { PluginsSection } from './settings/PluginsSection';
 import { AutomationsSection } from './settings/AutomationsSection';
 import { getMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
+import { capInputValue, parseCapInput, rupeesOf, type SpendCaps } from '../lib/spendLedger';
+import { useSessionSpend, useSpendCaps } from '../hooks/useSpendLedger';
 import type {
   GitHubRepo,
   GitHubUser,
@@ -149,6 +151,11 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
   const [usage, setUsage] = useState<UsageState>(() => getMonthlyUsage(plan));
   const [baseUrlDraft, setBaseUrlDraft] = useState(baseUrl);
   const [extraModelsDraft, setExtraModelsDraft] = useState(extraModels.join(', '));
+  const spendCaps = useSpendCaps();
+  const spendUsage = useSessionSpend(workspaceId ?? null);
+  const [spendDraft, setSpendDraft] = useState<SpendCaps>(spendCaps.caps);
+
+  useEffect(() => setSpendDraft(spendCaps.caps), [spendCaps.caps]);
 
   useEffect(() => {
     setUsage(getMonthlyUsage(plan));
@@ -524,6 +531,52 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   </button>
                 </section>
               )}
+
+              <section className="space-y-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] p-4">
+                <div>
+                  <h3 className="text-[11px] uppercase tracking-wider text-neutral-300">Local spend caps</h3>
+                  <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">
+                    Optional BYOK safety limits, based on usage reported by your provider. Blank means no cap.
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-3 text-[11px]">
+                  <div className="rounded-lg bg-white/[0.03] p-2 text-neutral-400">
+                    Today <span className="float-right text-neutral-200">{spendUsage.snapshot.dayCredits} cr · {rupeesOf(spendUsage.snapshot.dayCredits)}</span>
+                  </div>
+                  <div className="rounded-lg bg-white/[0.03] p-2 text-neutral-400">
+                    This workspace <span className="float-right text-neutral-200">{spendUsage.snapshot.sessionCredits} cr · {rupeesOf(spendUsage.snapshot.sessionCredits)}</span>
+                  </div>
+                </div>
+                {([
+                  ['perTurnCredits', 'Per turn'],
+                  ['perDayCredits', 'Per day'],
+                  ['perRunCredits', 'Autonomous run']
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="flex items-center justify-between gap-3 text-xs text-neutral-400">
+                    <span>{label} (credits)</span>
+                    <input
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      value={capInputValue(spendDraft[key])}
+                      onChange={(event) => setSpendDraft((current) => ({ ...current, [key]: parseCapInput(event.target.value) }))}
+                      onBlur={(event) => {
+                        const value = parseCapInput(event.currentTarget.value);
+                        try {
+                          spendCaps.setCaps({ [key]: value });
+                        } catch {
+                          // The hook surfaces storage failures below.
+                        }
+                      }}
+                      placeholder="Off"
+                      className="w-28 rounded-lg border border-white/[0.09] bg-white/[0.03] px-2 py-1.5 text-right text-xs text-neutral-100 outline-none focus:border-violet-300/40"
+                    />
+                  </label>
+                ))}
+                {(spendCaps.error || spendUsage.error) && (
+                  <p role="alert" className="text-[11px] text-red-300">{spendCaps.error || spendUsage.error}</p>
+                )}
+              </section>
             </>
           )}
 

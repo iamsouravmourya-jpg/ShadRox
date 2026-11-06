@@ -1,6 +1,7 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
 import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
 import { resolveCustomEndpoint } from './_endpoint.js';
+import { renderCacheableContent } from './_promptCache.js';
 import { UpstreamError, mergeOpenAiUsage, usageFields, type StreamRequest, type StreamResult, type StreamSink, type TokenUsage } from './_types.js';
 import { OpenAiToolCallCollector, rejectsNativeTools } from './_toolCalls.js';
 import { fetchUpstream } from './_upstream.js';
@@ -23,7 +24,7 @@ import { fetchUpstream } from './_upstream.js';
 function buildMessages(request: StreamRequest): Array<{ role: string; content: string }> {
   const messages: Array<{ role: string; content: string }> = [];
   if (request.systemInstruction) messages.push({ role: 'system', content: request.systemInstruction });
-  request.messages.forEach((message) => messages.push({ role: message.role, content: message.content }));
+  request.messages.forEach((message) => messages.push({ role: message.role, content: renderCacheableContent(message) }));
   return messages;
 }
 

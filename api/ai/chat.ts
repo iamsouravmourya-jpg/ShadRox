@@ -22,6 +22,7 @@ import {
 } from '../_validate.js';
 import { ADAPTERS, parseProviderId, resolveKeyAccess } from './_access.js';
 import { budgetRequest } from './_budget.js';
+import { shapeStablePrefix } from './_promptCache.js';
 import { resolveCustomEndpoint } from './_endpoint.js';
 import {
   checkSharedKeySpend,
@@ -160,6 +161,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       `[ai] trimmed ${budget.trimmed} message(s) for ${model} (${budget.trimmedChars} chars dropped)`
     );
   }
+  const shapedMessages = shapeStablePrefix(provider, model, budget.messages).messages;
 
   const abort = new AbortController();
   res.on('close', () => {
@@ -224,7 +226,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         model,
         apiKey: spendKey,
         baseUrl,
-        messages: budget.messages,
+        messages: shapedMessages,
         systemInstruction: budget.systemInstruction,
         temperature,
         thinking,
@@ -267,6 +269,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       // report" apart from "the model emitted nothing".
       ...(result.inputTokens !== undefined ? { inputTokens: result.inputTokens } : {}),
       ...(result.outputTokens !== undefined ? { outputTokens: result.outputTokens } : {}),
+      ...(result.cachedInputTokens !== undefined ? { cachedInputTokens: result.cachedInputTokens } : {}),
       provider,
       model,
       tier: byok ? 'byok' : 'shadrox',

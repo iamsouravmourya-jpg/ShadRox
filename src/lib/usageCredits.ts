@@ -4,6 +4,8 @@ import { RUPEES_PER_CREDIT } from './plans';
 export interface TurnUsage {
   inputTokens?: number;
   outputTokens?: number;
+  /** Prompt-cache tokens already included in inputTokens. */
+  cachedTokens?: number;
 }
 
 /**
@@ -37,8 +39,9 @@ export function formatCredits(credits: number | null): string {
  * the total alone, so the UI never has to guess which half is which.
  */
 export function formatTokenSplit(usage: TurnUsage, totalTokens: number): string {
+  const cached = usage.cachedTokens && usage.cachedTokens > 0 ? ` · ${usage.cachedTokens} cached` : '';
   if (Number.isFinite(usage.inputTokens) && Number.isFinite(usage.outputTokens)) {
-    return `${usage.inputTokens} in / ${usage.outputTokens} out`;
+    return `${usage.inputTokens} in / ${usage.outputTokens} out${cached}`;
   }
-  return `${totalTokens} tok`;
+  return `${totalTokens} tok${cached}`;
 }

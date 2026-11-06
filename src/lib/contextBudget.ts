@@ -149,6 +149,7 @@ export function capSystemInstruction(text: string, maxChars = MAX_SYSTEM_INSTRUC
  * ------------------------------------------------------------------ */
 
 import { scrubWorkspaceText } from './envSafety';
+import { markUntrustedData } from './untrustedData';
 
 /** Share of the input budget the system instruction may occupy (server parity). */
 export const SYSTEM_INSTRUCTION_RATIO = 0.6;
@@ -215,7 +216,10 @@ function renderFile(excerpt: SystemFileExcerpt, content: string, truncated: bool
   const marker = truncated
     ? `\n… [${excerpt.label} trimmed to ${content.length} of ${excerpt.content.length} chars] …`
     : '';
-  return `${excerpt.label}\n\`\`\`${excerpt.language}\n${content}${marker}\n\`\`\``;
+  return markUntrustedData(
+    `${excerpt.label}\n\`\`\`${excerpt.language}\n${content}${marker}\n\`\`\``,
+    `workspace file excerpt (${excerpt.label.replace(/:$/, '')})`
+  );
 }
 
 /**
@@ -236,7 +240,7 @@ export function fitSystemContext(system: SystemContext, maxChars: number): Fitte
 
   const render = () => {
     const chunkSection = kept.length > 0 && system.chunkHeader
-      ? [`${system.chunkHeader}\n${kept.join('\n\n')}`]
+      ? [`${system.chunkHeader}\n${markUntrustedData(kept.join('\n\n'), 'auto-retrieved workspace file chunks')}`]
       : [];
     const fileSections = files.map((file) =>
       renderFile(file.excerpt, file.content, file.content.length < file.wanted)

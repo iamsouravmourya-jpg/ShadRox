@@ -71,6 +71,8 @@ export interface StreamResult {
    */
   inputTokens?: number;
   outputTokens?: number;
+  /** Prompt-cache tokens reported by the provider, already included in inputTokens. */
+  cachedInputTokens?: number;
   finishReason: string | null;
 }
 
@@ -81,6 +83,7 @@ export interface TokenUsage {
   output?: number;
   /** Gemini thinking models bill reasoning tokens on the output side. */
   thoughts?: number;
+  cached?: number;
 }
 
 /**
@@ -90,11 +93,16 @@ export interface TokenUsage {
 export function mergeOpenAiUsage(usage: TokenUsage, chunk: unknown): TokenUsage {
   if (!chunk || typeof chunk !== 'object') return usage;
   const u = chunk as Record<string, unknown>;
+  const details = u.prompt_tokens_details;
+  const cached = details && typeof details === 'object'
+    ? (details as Record<string, unknown>).cached_tokens
+    : undefined;
   return {
     ...usage,
     total: typeof u.total_tokens === 'number' ? u.total_tokens : usage.total,
     input: typeof u.prompt_tokens === 'number' ? u.prompt_tokens : usage.input,
-    output: typeof u.completion_tokens === 'number' ? u.completion_tokens : usage.output
+    output: typeof u.completion_tokens === 'number' ? u.completion_tokens : usage.output,
+    cached: typeof cached === 'number' && Number.isFinite(cached) && cached >= 0 ? cached : usage.cached
   };
 }
 
@@ -106,7 +114,10 @@ export function mergeGeminiUsage(usage: TokenUsage, metadata: unknown): TokenUsa
     total: typeof m.totalTokenCount === 'number' ? m.totalTokenCount : usage.total,
     input: typeof m.promptTokenCount === 'number' ? m.promptTokenCount : usage.input,
     output: typeof m.candidatesTokenCount === 'number' ? m.candidatesTokenCount : usage.output,
-    thoughts: typeof m.thoughtsTokenCount === 'number' ? m.thoughtsTokenCount : usage.thoughts
+    thoughts: typeof m.thoughtsTokenCount === 'number' ? m.thoughtsTokenCount : usage.thoughts,
+    cached: typeof m.cachedContentTokenCount === 'number' && Number.isFinite(m.cachedContentTokenCount) && m.cachedContentTokenCount >= 0
+      ? m.cachedContentTokenCount
+      : usage.cached
   };
 }
 
@@ -114,14 +125,15 @@ export function mergeGeminiUsage(usage: TokenUsage, metadata: unknown): TokenUsa
  * StreamResult usage fields with unknown parts omitted, so the client can tell
  * "provider did not report" apart from "the model emitted nothing".
  */
-export function usageFields(usage: TokenUsage): Pick<StreamResult, 'inputTokens' | 'outputTokens'> {
+export function usageFields(usage: TokenUsage): Pick<StreamResult, 'inputTokens' | 'outputTokens' | 'cachedInputTokens'> {
   const output =
     usage.output === undefined && usage.thoughts === undefined
       ? undefined
       : (usage.output ?? 0) + (usage.thoughts ?? 0);
   return {
     ...(usage.input !== undefined ? { inputTokens: usage.input } : {}),
-    ...(output !== undefined ? { outputTokens: output } : {})
+    ...(output !== undefined ? { outputTokens: output } : {}),
+    ...(usage.cached !== undefined ? { cachedInputTokens: usage.cached } : {})
   };
 }
 

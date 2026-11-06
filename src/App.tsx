@@ -18,6 +18,7 @@ import { useByok } from './hooks/useByok';
 import { useAuth } from './hooks/useAuth';
 import { useAutonomyRun } from './hooks/useAutonomyRun';
 import { useTeamRun } from './hooks/useTeamRun';
+import { useSpendCaps } from './hooks/useSpendLedger';
 import { AuthScreen } from './components/AuthScreen';
 import { usePreviewSync } from './hooks/usePreviewSync';
 import { getRefineMode, refinePrompt, streamChat, type ChatTurn, type RefineModeMeta } from './lib/ai';
@@ -110,6 +111,7 @@ import { getPlan, setPlan as persistPlan } from './lib/storage';
 import { getPlanMeta, isPlanSelectable } from './lib/plans';
 import { getMonthlyUsage, recordCreditSpend, settleTurnCredits } from './lib/quota';
 import { creditsForTurn } from './lib/usageCredits';
+import { dailySpendGate, perTurnSpendGate, recordUsageFrame, runBudgetWithCap } from './lib/spendLedger';
 import { browserRunStore } from './lib/autonomy/runStore';
 import type { AutonomyHost } from './lib/autonomy/ports';
 import {
@@ -431,6 +433,7 @@ export default function App() {
   const workspace = useWorkspace();
   const byok = useByok();
   const auth = useAuth();
+  const spendControl = useSpendCaps();
   const files = workspace.files;
   const assets = workspace.assets;
 
@@ -465,6 +468,7 @@ export default function App() {
   const [refineStep, setRefineStep] = useState('');
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [spendRecordingError, setSpendRecordingError] = useState<string | null>(null);
   /** Non-blocking one-liner shown when a request had to be degraded to fit the window. */
   const [contextNotice, setContextNotice] = useState<string | null>(null);
   const [activeStatusMessage, setActiveStatusMessage] = useState<string | null>(null);
@@ -2982,6 +2986,14 @@ export default function App() {
       openSettings('PLAN');
       return;
     }
+    const spendGate = spendRecordingError || spendControl.error
+      ? { blocked: true, message: spendRecordingError ?? spendControl.error ?? 'Unable to verify spend limits.' }
+      : dailySpendGate(restoreWorkspaceId, spendControl.caps);
+    if (spendGate.blocked) {
+      setToast(spendGate.message ?? 'Daily spend cap reached.');
+      openSettings('CHAT');
+      return;
+    }
 
     const ownsDispatchLock = !chatDispatchLockRef.current;
     if (ownsDispatchLock) chatDispatchLockRef.current = true;
@@ -3190,6 +3202,7 @@ export default function App() {
       tokens: 0,
       inputTokens: 0,
       outputTokens: 0,
+      cachedInputTokens: 0,
       credits: 0,
       durationMs: 0,
       firstTokenMs: null as number | null
@@ -3202,6 +3215,12 @@ export default function App() {
      * which is where the calls are parsed.
      */
     const streamOnce = async (loopMessages: ChatTurn[]): Promise<{ text: string; error: string | null }> => {
+      const turnSpendGate = spendRecordingError || spendControl.error
+        ? { blocked: true, message: spendRecordingError ?? spendControl.error ?? 'Unable to verify spend limits.' }
+        : perTurnSpendGate(turnUsage.credits, spendControl.caps);
+      if (turnSpendGate.blocked) {
+        return { text: '', error: turnSpendGate.message ?? 'Per-turn spend cap reached.' };
+      }
       let roundText = '';
       let roundError: string | null = null;
       const paint = (partial: string) => {
@@ -3255,10 +3274,22 @@ export default function App() {
               turnUsage.tokens += info.tokens;
               turnUsage.inputTokens += info.inputTokens;
               turnUsage.outputTokens += info.outputTokens;
+              turnUsage.cachedInputTokens += info.cachedInputTokens ?? 0;
               turnUsage.durationMs += info.durationMs ?? 0;
               if (turnUsage.firstTokenMs === null) turnUsage.firstTokenMs = info.firstTokenMs ?? null;
               const credits = creditsForTurn(info.model, { inputTokens: info.inputTokens, outputTokens: info.outputTokens });
               turnUsage.credits += credits;
+              try {
+                recordUsageFrame(restoreWorkspaceId ?? nativeWorkspaceId ?? 'local', {
+                  modelId: info.model,
+                  inputTokens: info.inputTokens,
+                  outputTokens: info.outputTokens
+                });
+              } catch (error) {
+                const message = error instanceof Error ? error.message : 'Unable to save spend data.';
+                setSpendRecordingError(message);
+                announce(message, 6000);
+              }
               // Charged per round: a tool round is a real billed turn, and the
               // split only exists once that round's stream is over.
               settleTurnCredits(plan, credits, 'chatter');
@@ -3440,6 +3471,7 @@ export default function App() {
                   tokens: turnUsage.tokens,
                   inputTokens: turnUsage.inputTokens,
                   outputTokens: turnUsage.outputTokens,
+                  cachedTokens: turnUsage.cachedInputTokens || undefined,
                   credits: turnUsage.credits,
                   firstTokenMs: turnUsage.firstTokenMs,
                   durationMs: turnUsage.durationMs
@@ -3466,6 +3498,11 @@ export default function App() {
     input,
     isGenerating,
     plan,
+    spendControl.caps,
+    spendControl.error,
+    spendRecordingError,
+    restoreWorkspaceId,
+    nativeWorkspaceId,
     autoContext,
     openSettings,
     refineMode,
@@ -3482,7 +3519,6 @@ export default function App() {
     byok.selectedModel,
     byok.temperature,
     workspace,
-    nativeWorkspaceId,
     activeModel,
     applyPatchesFromReply,
     announce,
@@ -3498,7 +3534,12 @@ export default function App() {
   const runStore = useMemo(() => browserRunStore(), []);
   // Automatic escalation is budget-gated here: the engine stops at this ceiling
   // instead of asking mid-flight, and the chat card shows the same number.
-  const runBudget: RunBudget = DEFAULT_RUN_BUDGET;
+  const runBudget: RunBudget = useMemo(
+    () => spendRecordingError || spendControl.error
+      ? { ...DEFAULT_RUN_BUDGET, maxCredits: 0 }
+      : runBudgetWithCap(DEFAULT_RUN_BUDGET, spendControl.caps),
+    [spendControl.error, spendControl.caps, spendRecordingError]
+  );
 
   const autonomyCheckpoint = useCallback(
     // Run-level bookmark: buffer-only by design and never closed by a finish
@@ -3688,6 +3729,18 @@ export default function App() {
             timedOut: false,
             declinedReason: 'No folder is open, so no terminal is available.'
           };
+        }
+        if (desktop.runVerifyCommand) {
+          const silent = await desktop.runVerifyCommand(nativeWorkspaceId, argv);
+          if (silent.allowed) {
+            return {
+              argv,
+              exitCode: silent.exitCode,
+              stdoutTail: silent.stdout,
+              stderrTail: silent.stderr,
+              timedOut: false
+            };
+          }
         }
         const result = await desktop.runCommand(nativeWorkspaceId, argv);
         if (result.deniedReason) {
@@ -4439,6 +4492,7 @@ export default function App() {
                           tokens: info.tokens,
                           inputTokens: info.inputTokens,
                           outputTokens: info.outputTokens,
+                          cachedTokens: info.cachedInputTokens,
                           credits,
                           firstTokenMs: info.firstTokenMs ?? null,
                           durationMs: info.durationMs ?? null
