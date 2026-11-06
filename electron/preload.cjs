@@ -86,6 +86,36 @@ const shadroxDesktop = Object.freeze({
   onAutomationTrigger: (listener) => subscribe('automation:trigger', listener),
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   onUpdaterStatus: (listener) => subscribe('updater:status', listener),
+  // The signed proof chain. Receipts recorded here are appended to the
+  // main-process ledger before the call resolves, and `receipts` replays that
+  // ledger after a restart.
+  // Debug Adapter Protocol. The adapter child lives in the main process; the
+  // renderer only gets bounded snapshots and lifecycle events.
+  debug: Object.freeze({
+    config: (workspaceId) => ipcRenderer.invoke('debug:config', workspaceId),
+    start: (workspaceId, configName) => ipcRenderer.invoke('debug:start', workspaceId, configName),
+    stop: (workspaceId) => ipcRenderer.invoke('debug:stop', workspaceId),
+    setBreakpoints: (workspaceId, path, lines) => ipcRenderer.invoke('debug:breakpoints', workspaceId, path, lines),
+    threads: (workspaceId) => ipcRenderer.invoke('debug:threads', workspaceId),
+    stack: (workspaceId) => ipcRenderer.invoke('debug:stack', workspaceId),
+    scopes: (workspaceId, frameId) => ipcRenderer.invoke('debug:scopes', workspaceId, frameId),
+    variables: (workspaceId, variablesReference) => ipcRenderer.invoke('debug:variables', workspaceId, variablesReference),
+    evaluate: (workspaceId, frameId, expression) => ipcRenderer.invoke('debug:evaluate', workspaceId, frameId, expression),
+    continue: (workspaceId, threadId) => ipcRenderer.invoke('debug:continue', workspaceId, threadId),
+    next: (workspaceId, threadId) => ipcRenderer.invoke('debug:next', workspaceId, threadId),
+    stepIn: (workspaceId, threadId) => ipcRenderer.invoke('debug:step-in', workspaceId, threadId),
+    stepOut: (workspaceId, threadId) => ipcRenderer.invoke('debug:step-out', workspaceId, threadId),
+    pause: (workspaceId, threadId) => ipcRenderer.invoke('debug:pause', workspaceId, threadId),
+    state: (workspaceId) => ipcRenderer.invoke('debug:state', workspaceId),
+    onEvent: (listener) => subscribe('debug:event', listener)
+  }),
+  proof: Object.freeze({
+    appendReceipt: (receipt, kind) => ipcRenderer.invoke('proof:append-receipt', receipt, kind),
+    appendMilestone: (proof) => ipcRenderer.invoke('proof:append-milestone', proof),
+    receipts: () => ipcRenderer.invoke('proof:receipts'),
+    records: (workspaceId) => ipcRenderer.invoke('proof:records', workspaceId),
+    verify: (workspaceId) => ipcRenderer.invoke('proof:verify', workspaceId)
+  }),
   secureStore: Object.freeze({
     getAll: () => ipcRenderer.invoke('secure:get-all'),
     set: (key, value) => ipcRenderer.invoke('secure:set', key, value),

@@ -348,3 +348,358 @@ export function planAutoImportFixes(
 
   return { patches, resolved, unresolved, notes };
 }
+
+// ── Command failure classification ─────────────────────────────────────────────
+// Heuristics adapted from aider (https://github.com/Aider-AI/aider, MIT License):
+// aider/exceptions.py keeps an ordered table of failure signatures where each row
+// carries a machine-readable name, a one-line human description and a `retry` flag
+// ("will running it again possibly help?"), and aider/run_cmd.py collapses any
+// OS-level launch failure into that table instead of guessing. Same shape here:
+// first matching rule wins, retryable maps to aider's `retry`, and the unclassified
+// tail is an explicit `unknown` rather than a silent pass.
+
+export type CommandFailureClass =
+  | 'missing-dependency'
+  | 'test-assertion'
+  | 'syntax'
+  | 'permission'
+  | 'network'
+  | 'not-found'
+  | 'timeout'
+  | 'none'
+  | 'unknown';
+
+export interface CommandFailureInput {
+  command: string;
+  exitCode: number | null;
+  stdout?: string;
+  stderr?: string;
+}
+
+export interface CommandFailureClassification {
+  /** Machine-readable bucket; safe to switch on. */
+  class: CommandFailureClass;
+  /** One line for a human, and the first line the repair prompt should read. */
+  explanation: string;
+  /** aider's `retry`: does simply running the same command again have a chance? */
+  retryable: boolean;
+  /** What the repair prompt should be told to look at, in priority order. */
+  repairHints: string[];
+  /** Rule id that matched, for tests and debugging. */
+  rule: string;
+  /** The output line that carried the signature, trimmed and clipped. */
+  detail: string;
+  command: string;
+  exitCode: number | null;
+}
+
+interface FailureRule {
+  id: string;
+  class: CommandFailureClass;
+  explanation: string;
+  retryable: boolean;
+  repairHints: string[];
+  /** Exit codes the shell reserves for this failure. */
+  codes?: number[];
+  /** Matched case-insensitively against merged output; first hit wins. */
+  patterns?: RegExp[];
+}
+
+const MAX_FAILURE_TEXT_LENGTH = 20000;
+const MAX_FAILURE_DETAIL_LENGTH = 240;
+const MAX_FAILURE_COMMAND_LENGTH = 240;
+
+/**
+ * Ordered signature table. Keep the specific signatures ahead of the generic
+ * ones: a test run that died on an unresolvable import is a dependency problem,
+ * not an assertion problem, so `missing-dependency` is matched first.
+ */
+const FAILURE_RULES: FailureRule[] = [
+  {
+    id: 'dependency',
+    class: 'missing-dependency',
+    explanation: 'A required module or package is not installed, so nothing else could run.',
+    retryable: false,
+    repairHints: [
+      'install the exact package named in the error',
+      'check package.json/pyproject against the lockfile before changing code',
+      'confirm the import specifier matches the installed package name'
+    ],
+    patterns: [
+      /cannot find module/i,
+      /cannot find package/i,
+      /modulenotfounderror/i,
+      /err_module_not_found/i,
+      /importerror:/i,
+      /no module named/i,
+      /no matching distribution found/i,
+      /unable to locate package/i,
+      /could not find artifact/i,
+      /is not installed/i,
+      /please install\b/i,
+      /npm err!.*404 not found/i,
+      /tl;dr: run `npm install/i
+    ]
+  },
+  {
+    id: 'permission',
+    class: 'permission',
+    explanation: 'The operating system refused the access the command asked for.',
+    retryable: false,
+    repairHints: [
+      'the fix is permissions or a path, not the code under test',
+      'prefer a user-writable path over asking for elevation',
+      'check file ownership and the executable bit before retrying'
+    ],
+    codes: [126],
+    patterns: [
+      /\bepERM\b/i,
+      /\beacces\b/i,
+      /permission denied/i,
+      /operation not permitted/i,
+      /access is denied/i,
+      /allowed only for superuser/i,
+      /must be run as (?:root|administrator)/i,
+      /\b401 unauthorized\b/i,
+      /\b403 forbidden\b/i
+    ]
+  },
+  {
+    id: 'not-found',
+    class: 'not-found',
+    explanation: 'The shell could not find the command or file it was asked to run.',
+    retryable: false,
+    repairHints: [
+      'use the tool name that is actually on PATH (or the project script)',
+      'check the path separator and working directory in the command',
+      'install or link the missing executable instead of editing code'
+    ],
+    codes: [127],
+    patterns: [
+      /command not found/i,
+      /not found: command/i,
+      /is not recognized as the name of a cmdlet/i,
+      /is not an internal or external command/i,
+      /unrecognized command/i,
+      // POSIX shell shape only: `gcc: fatal error: stdio.h: No such file or
+      // directory` and `cannot open shared object file` are a missing toolchain,
+      // not a mistyped command.
+      /^[\w./-]+: no such file or directory/im,
+      /can't open file/i,
+      /executable file not found/i,
+      /unknown command\b/i
+    ]
+  },
+  {
+    id: 'network',
+    class: 'network',
+    explanation: 'A network call failed: the host or registry could not be reached.',
+    retryable: true,
+    repairHints: [
+      'treat this as environmental; do not "fix" code for a connection failure',
+      'retry once, then check proxy/DNS and whether the service is up',
+      'verify the URL and port in the failing request'
+    ],
+    patterns: [
+      /\beconnrefused\b/i,
+      /\beconnreset\b/i,
+      /\beconnaborted\b/i,
+      /\benotfound\b.*\b(dns|getaddrinfo)\b/i,
+      /\beai_again\b/i,
+      /getaddrinfo/i,
+      /socket hang up/i,
+      /could not connect/i,
+      /failed to connect to/i,
+      /network is unreachable/i,
+      /temporary failure in name resolution/i,
+      /\bssl certificate\b/i,
+      /self[- ]signed cert/i,
+      /\bproxy (?:url|connection|authentication)\b/i,
+      /\berror 6 \(couldnt resolve host\)/i
+    ]
+  },
+  {
+    id: 'timeout',
+    class: 'timeout',
+    explanation: 'The command ran out of time and was terminated.',
+    retryable: true,
+    repairHints: [
+      'raise the timeout or narrow the work before changing code',
+      'look for a hang: an interactive prompt, a watch mode, or a blocking server',
+      'check memory limits if the process was killed rather than expired'
+    ],
+    codes: [124, 137, 143],
+    patterns: [
+      /timed out/i,
+      /timeout of \d+ms exceeded/i,
+      /(?:exceeded|reached) .*timeout/i,
+      /\b(killed|out of memory|oom-killer)\b/i
+    ]
+  },
+  {
+    id: 'syntax',
+    class: 'syntax',
+    explanation: 'A file could not be parsed; the source is not valid for its language.',
+    retryable: false,
+    repairHints: [
+      'repair the reported file and line first; nothing else runs until it parses',
+      'check the delimiter or token named in the error',
+      'verify the file was saved as the language its extension declares'
+    ],
+    patterns: [
+      /syntaxerror/i,
+      /syntax error/i,
+      /invalid syntax/i,
+      /unexpected token/i,
+      /unexpected end of (?:input|file)/i,
+      /unexpected eof/i,
+      /unexpected \S+ while parsing/i,
+      /parseerror/i,
+      /indentationerror/i,
+      /\berror ts1\d{3}\b/i,
+      // Parser positions speak in `expected <token>, found <token>`; an
+      // assertion says `expected <value> to be <value>`, so require the token
+      // shape here and leave the value shape to the test rule below.
+      /\bexpected declaration\b/i,
+      /\bexpected ['"]?[\w;,.(){}[\]]{1,12}['"]?,? found\b/i
+    ]
+  },
+  {
+    id: 'test-assertion',
+    class: 'test-assertion',
+    explanation: 'The suite ran and at least one assertion failed.',
+    retryable: false,
+    repairHints: [
+      'read the named failing test and the expected-vs-actual line before editing',
+      'decide whether the assertion or the implementation is the stale one',
+      'rerun only the failed test file to keep the loop short'
+    ],
+    patterns: [
+      /assertionerror/i,
+      /assertion failed/i,
+      /\bexpected\b[\s\S]{0,80}\bto (?:be|equal|deeply? equal|throw|match)\b/i,
+      /\btests?:.*\d+ failed/i,
+      /\b\d+ failed\b[,)]/i,
+      /^\s*(?:-+\s+)?(?:FAIL|FAILED)\b/mi,
+      /\bnot ok \d+/i,
+      /there (?:was|were) \d+ failure/i,
+      /\bfailing tests?\b/i,
+      /\btest failed\b/i
+    ]
+  }
+];
+
+function stripAnsi(text: string): string {
+  return text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '');
+}
+
+function failureText(input: CommandFailureInput): string {
+  const merged = [String(input.stdout ?? ''), String(input.stderr ?? '')].join('\n');
+  const cleaned = stripAnsi(merged).replace(/\r/g, '');
+  if (cleaned.length <= MAX_FAILURE_TEXT_LENGTH) return cleaned;
+  // Tail matters more than head: the reason a command failed is printed last.
+  return cleaned.slice(-MAX_FAILURE_TEXT_LENGTH);
+}
+
+function lineAt(text: string, index: number): string {
+  // A pattern may start its match on whitespace (`^\s*FAIL`), which would
+  // otherwise quote an empty line. Land on real content first.
+  let at = index;
+  while (at < text.length && /[\s]/.test(text[at]) && text[at] !== '\n') at += 1;
+  if (text[at] === '\n') at += 1;
+  const lineStart = text.lastIndexOf('\n', at > 0 ? at - 1 : 0) + 1;
+  const lineEnd = text.indexOf('\n', at);
+  const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd).trim();
+  return line.length <= MAX_FAILURE_DETAIL_LENGTH ? line : `${line.slice(0, MAX_FAILURE_DETAIL_LENGTH)}…`;
+}
+
+interface RuleMatch {
+  matched: boolean;
+  detail: string;
+}
+
+/**
+ * Does any signature fire, and which line should be quoted back? The LAST line a
+ * pattern matched, because tools print a generic code first and the real message
+ * last; a signature that matches but spans no readable line still counts.
+ */
+function matchRule(text: string, patterns: RegExp[]): RuleMatch {
+  if (!text) return { matched: false, detail: '' };
+  let matched = false;
+  for (const pattern of patterns) {
+    if (!pattern.test(text)) continue;
+    matched = true;
+    const scan = new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`);
+    let index = -1;
+    for (const match of text.matchAll(scan)) index = match.index;
+    if (index < 0) continue;
+    const detail = lineAt(text, index);
+    if (detail) return { matched: true, detail };
+  }
+  return { matched, detail: '' };
+}
+
+function normalizeExitCode(exitCode: number | null | undefined): number | null {
+  return typeof exitCode === 'number' && Number.isFinite(exitCode) ? Math.trunc(exitCode) : null;
+}
+
+/**
+ * Turns a finished command plus its output into a machine-readable failure class,
+ * a one-line human explanation and the hints a repair prompt should be given.
+ * Never throws and always answers: unrecognised output is an explicit `unknown`.
+ */
+export function classifyCommandFailure(input: CommandFailureInput): CommandFailureClassification {
+  const command = String(input?.command ?? '').slice(0, MAX_FAILURE_COMMAND_LENGTH);
+  const exitCode = normalizeExitCode(input?.exitCode);
+  const text = failureText(input ?? { command: '', exitCode });
+
+  if (exitCode === 0) {
+    return {
+      class: 'none',
+      explanation: 'The command exited 0; there is no failure to explain.',
+      retryable: false,
+      repairHints: [],
+      rule: 'success',
+      detail: '',
+      command,
+      exitCode
+    };
+  }
+
+  for (const rule of FAILURE_RULES) {
+    const codeMatched = rule.codes ? rule.codes.includes(exitCode ?? NaN) : false;
+    const hit = matchRule(text, rule.patterns ?? []);
+    if (!codeMatched && !hit.matched) continue;
+    return {
+      class: rule.class,
+      explanation: rule.explanation,
+      retryable: rule.retryable,
+      repairHints: [...rule.repairHints],
+      rule: rule.id,
+      detail: hit.detail,
+      command,
+      exitCode
+    };
+  }
+
+  return {
+    class: 'unknown',
+    explanation: `Nothing matched a known failure signature (exit ${exitCode === null ? 'unknown' : exitCode}).`,
+    retryable: false,
+    repairHints: [
+      'read the raw output tail; the cause is not a recognised signature',
+      'ask for the command to be rerun with more verbose output'
+    ],
+    rule: 'unknown',
+    detail: text.trim().split('\n').filter(Boolean).slice(-1)[0]?.slice(0, MAX_FAILURE_DETAIL_LENGTH) ?? '',
+    command,
+    exitCode
+  };
+}
+
+/** One compact line for a status bar: `class · detail (exit N)`. */
+export function formatCommandFailureLine(classification: CommandFailureClassification): string {
+  const tail = classification.exitCode === null ? '' : ` (exit ${classification.exitCode})`;
+  const detail = classification.detail ? ` · ${classification.detail}` : '';
+  return `${classification.class}${detail}${tail}`;
+}

@@ -1,8 +1,9 @@
 import { getDesktopBridge } from '../desktop';
 import { publishTerminalDockEvent } from '../terminal/echoChannel';
 import { terminalStateManager } from '../terminal/state';
-import { buildRepairBrief, createFailureReceipt, type FailureReceipt } from '../repairProof';
-import { globalProofLedger } from '../proofLedger';
+import { formatInjectionOutcome, injectStdinWithApproval, wasInjected } from '../terminal/injectStdin';
+import { buildRepairBrief, failureSourceForCommand, type FailureReceipt } from '../repairProof';
+import { globalRepairSession } from '../repairSession';
 import { describeFinish } from './finishTool';
 import { MCP_TOOL_PREFIX } from './mcpTools';
 import type { ExternalToolDefinition } from './mcpTools';
@@ -36,7 +37,7 @@ export interface ToolOutcome {
   error?: string;
   /** A guard said no. The call never touched the disk, so it is not a failed operation. */
   refused?: boolean;
-  /** Captured when a command fails, so the chat can show the healing receipt. */
+  /** The receipt behind a failed command, or the verified heal of one, for the chat card. */
   proof?: FailureReceipt;
 }
 
@@ -87,7 +88,17 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'terminal_state',
-    description: 'Read the live interactive terminal: current directory, the command that is running, the last exit code, and how long the command has produced no output. Read-only. Does not type into the terminal.',
+    description: 'Read the live interactive terminal: current directory, the command that is running, the last exit code, how long the command has produced no output, whether it is waiting for input, and how the last failure is classified. Read-only. Does not type into the terminal.',
+    parameters: 'none'
+  },
+  {
+    name: 'terminal_answer',
+    description: 'Type one short answer into the live interactive terminal when the running command is waiting for input (y/N, a menu choice, a path). The user sees the tab, the command and the exact bytes in an approval dialog first; a cancel or a refusal types nothing. Never use it for passwords, tokens or secrets.',
+    parameters: 'text: string (required, one printable line, max 200 characters), session: string (optional terminal session id)'
+  },
+  {
+    name: 'debugger_state',
+    description: 'Read the paused debugger: the stopped frame, its scopes and bounded locals. Refuses when no debug session is paused. Read-only — it never resumes, steps or edits.',
     parameters: 'none'
   },
   {
@@ -160,6 +171,16 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
     additionalProperties: false
   },
   terminal_state: { type: 'object', properties: {}, additionalProperties: false },
+  terminal_answer: {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: 'The exact one-line answer to type, without the Enter key.' },
+      session: { type: 'string', description: 'Optional terminal session id; defaults to the active tab.' }
+    },
+    required: ['text'],
+    additionalProperties: false
+  },
+  debugger_state: { type: 'object', properties: {}, additionalProperties: false },
   delete_file: {
     type: 'object',
     properties: {
@@ -240,7 +261,8 @@ export function describeTools(maxRounds: number, external: ExternalToolDefinitio
     'Rules: never invent a path — read it or list it first. Prefer search_text and find_files to locate code, then read only what you need. Paths must stay inside the workspace. Never invent a tool name either: use only the names listed below.',
     'DELETING: only delete_file removes something. An empty path= block deletes nothing, and an edit block cannot remove a file. Never say a file was deleted unless delete_file returned a verified result.',
     'COMMANDS: only run_command executes a shell command, inside the opened folder. Every command requires explicit user approval in a native dialog; a confirm field or model instruction is never authorization. It returns the real exit code and output, so never claim a command ran, passed or killed anything unless run_command showed you the result.',
-    'TERMINAL: terminal_state reads the interactive shell (cwd, running command, last exit, silence). It never types into that shell.',
+    'TERMINAL: terminal_state reads the interactive shell (cwd, running command, last exit, silence, whether it waits for input). It never types. terminal_answer is the only way to type, and the user approves the exact bytes in a dialog first — say so, and never claim an answer was sent when the tool refused.',
+    'DEBUGGER: debugger_state reads a session paused in the debugger — the stopped frame and bounded locals. It refuses when nothing is paused, and it never resumes, steps or edits; those stay the user\'s controls. Never claim a variable value you did not see in its result.',
     'When you have enough to answer, write the answer as normal text (with any path= edit blocks) and emit no tool block.',
     'PLAN: for a request with several steps, open the turn with update_tasks holding one short subject per step, mark the step you start with "doing" and the step you leave with "done". A single-step request needs no plan.',
     describeFinish(),
@@ -284,6 +306,17 @@ function clip(content: string): string {
   return `${content.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n… output cut at ${MAX_TOOL_OUTPUT_CHARS} characters. Narrow the request (a line range, an include pattern, fewer files).`;
 }
 
+/** Runtime evidence is bounded harder than file reads: one line per value. */
+const RUNTIME_FRAME_LIMIT = 10;
+const RUNTIME_SCOPE_LIMIT = 3;
+const RUNTIME_VARIABLE_LIMIT = 30;
+const RUNTIME_VALUE_CHARS = 200;
+
+function clipRuntimeValue(value: string): string {
+  const flat = String(value ?? '').replace(/\s+/g, ' ').trim();
+  return flat.length <= RUNTIME_VALUE_CHARS ? flat : `${flat.slice(0, RUNTIME_VALUE_CHARS - 1)}…`;
+}
+
 function refusal(message: string): ToolOutcome {
   return { ok: false, content: '', error: message, refused: true };
 }
@@ -293,6 +326,10 @@ export function summarizeCall(call: ToolCall): string {
   if (call.name === 'run_command') {
     const command = asString(call.args.command) ?? '';
     return `run_command · ${command.slice(0, MAX_PREVIEW_CHARS)}`;
+  }
+  if (call.name === 'terminal_answer') {
+    const text = asString(call.args.text) ?? '';
+    return `terminal_answer · ${text.slice(0, MAX_PREVIEW_CHARS)}`;
   }
   const path = asString(call.args.path) ?? asString(call.args.query) ?? asString(call.args.include);
   if (path) return `${call.name} · ${path.slice(0, MAX_PREVIEW_CHARS)}`;
@@ -451,16 +488,34 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           'The command ran on disk; this output is the real result.'
         ].join('\n');
         if (result.exitCode !== 0) {
-          const receipt = createFailureReceipt({
-            source: 'terminal',
+          // A repair that was proposed for this exact command is refuted, not
+          // replaced: the same receipt moves to healing_failed with the new exit.
+          const observed = globalRepairSession.observeCommand(
+            command,
+            result.exitCode,
+            [result.stdout, result.stderr].filter(Boolean).join('\n')
+          );
+          const receipt = observed[0] ?? globalRepairSession.capture({
+            source: failureSourceForCommand(command),
             target: command,
             errorMessage: result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`,
             exitCode: result.exitCode,
-            stackTrace: [result.stdout, result.stderr].filter(Boolean).join('\n').slice(0, 4000)
+            stackTrace: [result.stdout, result.stderr].filter(Boolean).join('\n').slice(0, 4000),
+            checkpointId: globalRepairSession.currentCheckpointId()
           });
-          globalProofLedger.recordFailureReceipt(receipt);
+          if (!receipt) return { ok: false, content: clip(body), error: clip(body) };
           const detail = clip(`${body}\n\n${buildRepairBrief(receipt)}`);
           return { ok: false, content: detail, error: detail, proof: receipt };
+        }
+        const healed = globalRepairSession.observeCommand(command, 0, result.stdout);
+        if (healed.length > 0) {
+          // Only a re-run after a proposed repair reaches this branch; the card
+          // shows the verified heal instead of the earlier failure.
+          return {
+            ok: true,
+            content: clip(`${body}\n\nHealing verified: ${healed[0].verificationEvidence}`),
+            proof: healed[0]
+          };
         }
         return { ok: true, content: clip(body) };
       }
@@ -471,9 +526,57 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           `cwd: ${summary.activeCwd || '(unknown)'}`,
           `running: ${summary.isExecuting ? (summary.activeCommand || '(command text not captured yet)') : 'no'}`,
           `last exit: ${summary.lastExitCode === null ? '(none)' : summary.lastExitCode}`,
-          `silent seconds: ${summary.hungSeconds}`
+          `silent seconds: ${summary.hungSeconds}`,
+          `hung: ${summary.isHung ? 'yes' : 'no'} (threshold ${summary.hungThresholdSeconds}s, trips in ${summary.secondsToHung}s)`,
+          `awaiting input: ${summary.awaitingInput ? 'yes' : 'no'}`,
+          summary.lastFailure
+            ? `last failure: ${summary.lastFailure.class} — ${summary.lastFailure.explanation}; hints: ${summary.lastFailure.repairHints.join('; ')}`
+            : 'last failure: (none)'
         ];
         return { ok: true, content: lines.join('\n') };
+      }
+      case 'terminal_answer': {
+        const text = asString(call.args.text);
+        if (!text) return refusal('terminal_answer needs text.');
+        const session = asString(call.args.session) || terminalStateManager.getSummary().activeSessionId || '';
+        const outcome = await injectStdinWithApproval(session, text, { source: 'assistant' });
+        const detail = clip(formatInjectionOutcome(outcome));
+        return wasInjected(outcome)
+          ? { ok: true, content: detail }
+          : { ok: false, content: detail, error: detail };
+      }
+      case 'debugger_state': {
+        const debug = desktop.debug;
+        if (!debug) return refusal('The debugger is unavailable in this build.');
+        const session = await debug.state(workspaceId);
+        if (session.status !== 'stopped') return refusal('No debug session is paused.');
+        const frames = await debug.stack(workspaceId);
+        const top = frames[0];
+        if (!top) return refusal('The debugger is paused but reported no stack frames.');
+        const lines = [
+          `paused: ${session.stopReason ?? 'stopped'}${session.exception ? ' (exception)' : ''}`,
+          `top frame: ${clipRuntimeValue(top.name)} at ${
+            top.file ? `${top.file}:${top.line ?? 1}:${top.column ?? 1}` : '(source outside the workspace)'
+          }`,
+          ...frames
+            .slice(0, RUNTIME_FRAME_LIMIT)
+            .map(
+              (frame, index) =>
+                `  #${index} ${clipRuntimeValue(frame.name)}${frame.file ? ` (${frame.file}:${frame.line ?? 1})` : ''}`
+            )
+        ];
+        const scopes = await debug.scopes(workspaceId, top.id);
+        if (scopes.length === 0) lines.push('scopes: (none reported)');
+        for (const scope of scopes.slice(0, RUNTIME_SCOPE_LIMIT)) {
+          lines.push(`scope ${clipRuntimeValue(scope.name)}`);
+          const variables = await debug.variables(workspaceId, scope.variablesReference);
+          if (variables.length === 0) lines.push('  (no variables)');
+          for (const variable of variables.slice(0, RUNTIME_VARIABLE_LIMIT)) {
+            const type = variable.type ? ` [${clipRuntimeValue(variable.type)}]` : '';
+            lines.push(`  ${clipRuntimeValue(variable.name)} = ${clipRuntimeValue(variable.value)}${type}`);
+          }
+        }
+        return { ok: true, content: clip(lines.join('\n')) };
       }
       case 'outline': {
         const path = asString(call.args.path);

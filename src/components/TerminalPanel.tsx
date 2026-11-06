@@ -31,7 +31,18 @@ import {
   takeTerminalTranscript,
   terminalTranscriptKey
 } from '../lib/terminal/ringBuffer';
-import { terminalStateManager } from '../lib/terminal/state';
+import {
+  HUNG_THRESHOLD_CHOICES,
+  readHungThresholdSetting,
+  terminalStateManager,
+  writeHungThresholdSetting
+} from '../lib/terminal/state';
+import {
+  formatInjectionOutcome,
+  injectStdinWithApproval,
+  setTerminalDockMounted
+} from '../lib/terminal/injectStdin';
+import { formatCommandFailureLine } from '../lib/autoFix';
 import {
   TERMINAL_MIN_HEIGHT,
   clampTerminalHeight,
@@ -40,7 +51,7 @@ import {
   terminalHeightFromKey,
   writeTerminalHeight
 } from '../lib/terminal/dockHeight';
-import { formatTerminalDockEvent, isSafeCommandLine, subscribeTerminalDockEvents } from '../lib/terminal/echoChannel';
+import { formatTerminalDockEvent, isSafeCommandLine, setTerminalRunRouter, subscribeTerminalDockEvents } from '../lib/terminal/echoChannel';
 import type { TerminalDockEvent } from '../lib/terminal/echoChannel';
 
 interface TerminalSurfaceHandle {
@@ -437,6 +448,76 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
     terminalStateManager.setActiveSession(active?.key ?? null);
   }, [active?.key]);
 
+  // ── hung watch ──────────────────────────────────────────────────────────────
+  // Silence is the only signal a shell gives for "stuck" and for "waiting on you",
+  // so the dock polls its own shell state once a second while a command runs and
+  // nothing else changes. The interval never re-renders an idle dock.
+  const [hungThresholdSeconds, setHungThresholdSeconds] = useState(() => readHungThresholdSetting(getStorage()));
+  const [quietTick, setQuietTick] = useState(0);
+  const [hungNotice, setHungNotice] = useState<string | null>(null);
+  const [answerDraft, setAnswerDraft] = useState('');
+  const [isAnswerOpen, setIsAnswerOpen] = useState(false);
+  const answerInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    terminalStateManager.setHungThresholdSeconds(hungThresholdSeconds);
+    writeHungThresholdSetting(getStorage(), hungThresholdSeconds);
+  }, [hungThresholdSeconds]);
+
+  // Only while a command is running: the badge has to move with the silence.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (terminalStateManager.getSummaryFor(active?.key ?? null).isExecuting) setQuietTick((tick) => tick + 1);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [active?.key]);
+
+  // Injection travels through the echo channel, which needs this panel mounted to
+  // reach a PTY. Announcing that lets `injectStdinWithApproval` refuse instead of
+  // queueing an approved answer for a shell that no longer exists.
+  useEffect(() => {
+    setTerminalDockMounted(true);
+    return () => setTerminalDockMounted(false);
+  }, []);
+
+  const summary = terminalStateManager.getSummaryFor(active?.key ?? null);
+
+  useEffect(() => {
+    const sessionKey = active?.key ?? null;
+    if (!sessionKey) {
+      setHungNotice((current) => (current === null ? current : null));
+      return;
+    }
+    const live = terminalStateManager.getSummaryFor(sessionKey);
+    if (!live.isHung) {
+      // Output resumed or the command exited: the notice is gone, and the next
+      // silent run gets its own.
+      setHungNotice((current) => (current === null ? current : null));
+      setIsAnswerOpen((open) => (live.isExecuting ? open : false));
+      return;
+    }
+    if (!terminalStateManager.consumeHungNotice(sessionKey)) return;
+    const message = `no output for ${live.hungSeconds}s while running ${live.activeCommand ?? 'a command'}`;
+    surfacesRef.current.get(sessionKey)?.echo(`\r\n\x1b[38;5;245m[shadrox] ${message}\x1b[0m\r\n`);
+    setHungNotice(message);
+  }, [quietTick, active?.key]);
+
+  const failure = summary.lastFailure && summary.lastFailure.class !== 'none' ? summary.lastFailure : null;
+  const thresholdOptions = Array.from(new Set<number>([hungThresholdSeconds, ...HUNG_THRESHOLD_CHOICES])).sort((a, b) => a - b);
+
+  /** Answer an interactive prompt through the approval gate; there is no other path. */
+  const sendPromptAnswer = async () => {
+    const session = active;
+    if (!session) return;
+    const text = answerDraft;
+    setAnswerDraft('');
+    setIsAnswerOpen(false);
+    const outcome = await injectStdinWithApproval(session.key, text, { label: session.name, source: 'user' });
+    const surface = surfacesRef.current.get(session.key);
+    surface?.echo(formatInjectionOutcome(outcome));
+    surface?.focus();
+  };
+
   useEffect(() => {
     rememberWorkspaceSessions(workspaceId, sessionsState.sessions);
   }, [workspaceId, sessionsState.sessions]);
@@ -460,8 +541,19 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
   }, []);
 
   useEffect(() => {
+    // Approved stdin goes only to the session it was approved for. Falling back
+    // to whichever tab happens to be active would type a "y" into an idle shell.
+    setTerminalRunRouter((event) => {
+      const target = event.sessionKey ? surfacesRef.current.get(event.sessionKey) ?? null : null;
+      if (!target || !isSafeCommandLine(event.command)) return false;
+      target.run(event.command);
+      return true;
+    });
     const unsubscribe = subscribeTerminalDockEvents((event) => routeDockEvent(event, surfacesRef.current, active?.key ?? null));
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      setTerminalRunRouter(null);
+    };
   }, [active?.key]);
 
   const activeSearch = activeHandle?.search;
@@ -731,6 +823,45 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
               exit {terminalStateManager.getSessionState(active.key)?.lastCommand?.exitCode}
             </span>
           )}
+          {summary.isExecuting && summary.isHung && (
+            <span
+              className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-mono text-amber-300"
+              title={`Nothing printed for ${summary.hungSeconds}s (hung after ${summary.hungThresholdSeconds}s of silence)`}
+            >
+              quiet {summary.hungSeconds}s
+            </span>
+          )}
+          {summary.isExecuting && !summary.isHung && summary.hungSeconds >= 2 && (
+            <span
+              className="shrink-0 text-[10px] font-mono text-neutral-500"
+              title={`${summary.secondsToHung}s of silence before ShadRox calls this hung`}
+            >
+              {summary.hungSeconds}s
+            </span>
+          )}
+          {summary.isExecuting && summary.awaitingInput && !summary.isHung && (
+            <span className="shrink-0 rounded border border-emerald-500/30 px-1 text-[10px] font-mono text-emerald-300" title="The running command has gone quiet; it may be waiting for an answer">
+              awaiting input
+            </span>
+          )}
+          <label
+            className="hidden shrink-0 items-center gap-1 text-[10px] font-mono text-neutral-500 lg:flex"
+            title="Seconds of silence before a running command is called hung"
+          >
+            hung&gt;
+            <select
+              aria-label="Hung detection threshold in seconds"
+              value={hungThresholdSeconds}
+              onChange={(event) => setHungThresholdSeconds(Number(event.target.value))}
+              className="h-5 rounded border border-white/[0.07] bg-black/40 px-1 text-[10px] text-neutral-300 outline-none focus:border-emerald-500/40"
+            >
+              {thresholdOptions.map((seconds) => (
+                <option key={seconds} value={seconds}>
+                  {seconds}s
+                </option>
+              ))}
+            </select>
+          </label>
           <span className="hidden truncate text-[10px] font-mono text-neutral-600 sm:inline" title={workspaceName}>{workspaceName}</span>
           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_TONE[statusKey]}`} />
           <span className="shrink-0 text-[10px] font-mono uppercase tracking-wider text-neutral-500">
@@ -793,6 +924,81 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
           </button>
         </div>
       </div>
+
+      {/* One status row: the hung notice, why the last command failed, and the only
+          way to answer an interactive prompt from here — always through the gate. */}
+      {(hungNotice || failure || summary.isExecuting) && (
+        <div className="flex h-7 shrink-0 items-center gap-3 overflow-hidden border-b border-white/[0.07] bg-[#090a0e] px-2 text-[10px] font-mono">
+          {hungNotice && (
+            <span className="flex shrink-0 items-center gap-1 text-amber-300" role="status">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+              {hungNotice}
+            </span>
+          )}
+          {failure && (
+            <span
+              className="truncate text-rose-300"
+              title={`${failure.explanation}\n\nTell the repair prompt:\n- ${failure.repairHints.join('\n- ')}`}
+            >
+              why: {formatCommandFailureLine(failure)}
+            </span>
+          )}
+          {summary.isExecuting && (
+            isAnswerOpen ? (
+              <span className="ml-auto flex shrink-0 items-center gap-1">
+                <input
+                  ref={answerInputRef}
+                  value={answerDraft}
+                  maxLength={200}
+                  aria-label="Text to type into the running command"
+                  placeholder="answer, e.g. y"
+                  onChange={(event) => setAnswerDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void sendPromptAnswer();
+                    if (event.key === 'Escape') {
+                      setIsAnswerOpen(false);
+                      setAnswerDraft('');
+                      activeHandle?.focus();
+                    }
+                  }}
+                  className="h-5 w-52 rounded border border-white/[0.07] bg-black/50 px-1 text-[10px] text-neutral-200 outline-none focus:border-emerald-500/40"
+                />
+                <button
+                  type="button"
+                  disabled={!answerDraft.trim()}
+                  onClick={() => void sendPromptAnswer()}
+                  className="rounded border border-emerald-500/30 px-1.5 py-0.5 text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-40"
+                >
+                  Send
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAnswerOpen(false);
+                    setAnswerDraft('');
+                    activeHandle?.focus();
+                  }}
+                  className="rounded px-1.5 py-0.5 text-neutral-400 hover:text-white"
+                >
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAnswerOpen(true);
+                  requestAnimationFrame(() => answerInputRef.current?.focus());
+                }}
+                className="ml-auto shrink-0 rounded border border-white/[0.08] px-1.5 py-0.5 text-neutral-400 hover:border-emerald-500/30 hover:text-emerald-200"
+                title="Type an answer into the running command. ShadRox shows the exact bytes and asks first."
+              >
+                Send to prompt
+              </button>
+            )
+          )}
+        </div>
+      )}
 
       {isFindOpen && (
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-white/[0.07] bg-ink-950 px-2">
@@ -900,28 +1106,17 @@ const SEARCH_OPTIONS = {
 };
 
 /**
- * A command event needs a live shell; a result line only needs somewhere to be
- * read. So `run` goes to the tab it named (or the active one) and is refused when
- * the text is not a single printable line, while everything else is printed as
- * transcript text.
+ * Non-run events are transcript text: they go to the tab they named, else the
+ * active one. Typing is handled by the run router above, never here.
  */
 function routeDockEvent(
   event: TerminalDockEvent,
   surfaces: Map<string, TerminalSurfaceHandle>,
   activeKey: string | null
 ): void {
-  const target = (event.kind === 'command' && event.sessionKey ? surfaces.get(event.sessionKey) : null)
-    || (activeKey ? surfaces.get(activeKey) : null)
-    || null;
+  const key = event.kind === 'command' && event.sessionKey ? event.sessionKey : activeKey;
+  const target = key ? surfaces.get(key) : null;
   if (!target) return;
-  if (event.kind === 'command' && event.run) {
-    if (isSafeCommandLine(event.command)) {
-      target.run(event.command.trim());
-      return;
-    }
-    target.echo(`${formatTerminalDockEvent({ ...event, run: false })}\x1b[33m[not auto-run: a command must be one printable line]\x1b[0m\r\n`);
-    return;
-  }
   const text = formatTerminalDockEvent(event);
   if (text) target.echo(text);
 }

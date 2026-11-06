@@ -4,20 +4,40 @@
  *
  *   timestamp · workspace · action type · before/after SHA-256 · command argv
  *   · cwd · exit code · stdout/stderr HASHES (never content) · model+provider
- *   · token counts · cost estimate · denials/cancellations.
+ *   · token counts · cost estimate · denials/cancellations · failure receipts.
  *
- * Storage is app-local and indexed by workspace id; the key registry is kept
- * behind Electron safeStorage rather than in the opened project. The trust model, stated
- * honestly: the chain detects edits to the ledger file itself (someone
+ * The record format and every piece of chain math (canonical serialization,
+ * payload hashing, prev-linking, sequence rules) come from
+ * `electron/proof-chain.cjs` — the single implementation shared with the real
+ * main-process writer (`electron/main.cjs` via `electron/proof-service.cjs`)
+ * and the offline verifier (`npm run verify:proofs`). Nothing in this file
+ * re-derives a hash: if the two ever disagreed, the app's own ledger would
+ * fail its own audit, and that is exactly the bug this module exists to prevent.
+ *
+ * Storage is app-local and indexed by workspace id; the signing key lives in
+ * the OS-encrypted store rather than in the opened project. The trust model,
+ * stated honestly: the chain detects edits to the ledger file itself (someone
  * rewriting a claim after the fact); it is tamper-*evidence*, not tamper-
  * *proof* — an attacker who can edit every file in the workspace wholesale is
- * out of scope for a local-first tool. Keys are per-workspace and local;
- * rotation appends a new public key and later events sign with it, so old
- * events stay verifiable.
+ * out of scope for a local-first tool. Keys are local; rotation appends a new
+ * public key and later events sign with it, so old events stay verifiable.
  *
  * All IO is injected so this module runs unchanged in the renderer (desktop
- * bridge), in tests (in-memory), and later in a CLI.
+ * bridge), in tests (in-memory), and in a CLI.
  */
+
+import {
+  GENESIS_HASH,
+  RECORD_VERSION,
+  buildRecord,
+  canonicalJson as sharedCanonicalJson,
+  keyIdOfPublicJwkAsync,
+  lineOf,
+  normalizeRecordFields,
+  sanitizeData,
+  signedPayloadOf,
+  verifyChain
+} from '../../../electron/proof-chain.cjs';
 
 export type ProofEventType =
   | 'turn.apply'
@@ -26,7 +46,10 @@ export type ProofEventType =
   | 'turn.usage'
   | 'turn.delta'
   | 'command.run'
-  | 'command.denied';
+  | 'command.denied'
+  | 'milestone.verified'
+  | 'receipt.failure'
+  | 'receipt.update';
 
 export type ProofActor = 'agent' | 'user' | 'plugin' | 'automation' | 'system';
 
@@ -78,6 +101,11 @@ export interface ProofCrypto {
   importPublic(jwk: JsonWebKey): Promise<CryptoKey>;
   sign(key: CryptoKey, text: string): Promise<string>;
   verify(key: CryptoKey, text: string, signature: string): Promise<boolean>;
+  /**
+   * Optional SHA-256 override. Hashing defaults to Node's; a renderer that
+   * bundles this module without `node:crypto` injects `crypto.subtle.digest`.
+   */
+  digestHex?: (text: string) => Promise<string>;
 }
 
 const ED25519 = { name: 'Ed25519' } as unknown as AlgorithmIdentifier;
@@ -109,6 +137,9 @@ export const webcryptoEd25519: ProofCrypto = {
     } catch {
       return false;
     }
+  },
+  async digestHex(text) {
+    return sha256Hex(text);
   }
 };
 
@@ -137,29 +168,18 @@ export function fromBase64(text: string): Uint8Array {
   return bytes;
 }
 
-/** Deterministic JSON: object keys sorted so the same payload always hashes the same. */
-export function canonicalJson(value: unknown): string {
-  if (value === null || value === undefined) return 'null';
-  if (typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  const entries = Object.entries(value as Record<string, unknown>)
-    .filter(([, item]) => item !== undefined)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`;
+/**
+ * Deterministic JSON, delegated to the shared chain module so a payload that
+ * hashes to one value in the main process hashes to the same value here.
+ */
+export const canonicalJson = sharedCanonicalJson;
+
+/** The signed pre-image: everything except the `hash` and `sig` fields. */
+export function unsignedOf(record: Omit<ProofRecord, 'sig'> | ProofRecord): string {
+  return signedPayloadOf(record);
 }
 
-/** The signed pre-image: everything except the sig field itself. */
-export function unsignedOf(record: Omit<ProofRecord, 'sig'>): string {
-  return canonicalJson({
-    v: record.v, seq: record.seq, ts: record.ts, workspace: record.workspace,
-    type: record.type, actor: record.actor, messageId: record.messageId,
-    data: record.data, prev: record.prev, keyId: record.keyId
-  });
-}
-
-async function keyIdFor(publicJwk: JsonWebKey): Promise<string> {
-  return `k-${(await sha256Hex(canonicalJson(publicJwk))).slice(0, 12)}`;
-}
+const PROOF_GENESIS = GENESIS_HASH;
 
 export interface ProofLedgerOptions {
   workspace: string;
@@ -180,6 +200,7 @@ export class ProofLedger {
   private io: ProofLedgerIo;
   private crypto: ProofCrypto;
   private now: () => number;
+  private maxLineBytes: number;
   private tail: { seq: number; hash: string } | null = null;
   private loading: Promise<void> | null = null;
   private queue: Promise<unknown> = Promise.resolve();
@@ -192,10 +213,19 @@ export class ProofLedger {
     this.workspace = options.workspace;
     this.crypto = options.crypto ?? webcryptoEd25519;
     this.now = options.now ?? (() => Date.now());
+    this.maxLineBytes = options.maxLineBytes ?? 256 * 1024;
   }
 
   /** True when the last line of the stored file was half-written (crash cut). */
   get sawTruncatedTail(): boolean { return this.truncatedTail; }
+
+  private digestHex(text: string): Promise<string> {
+    return this.crypto.digestHex ? this.crypto.digestHex(text) : sha256Hex(text);
+  }
+
+  private async keyIdOf(publicJwk: JsonWebKey): Promise<string> {
+    return keyIdOfPublicJwkAsync(publicJwk, (text) => this.digestHex(text));
+  }
 
   private async ensureLoaded(): Promise<void> {
     if (this.tail && this.registry && this.privateSigner) return;
@@ -228,7 +258,7 @@ export class ProofLedger {
           const { privateKey, publicKey } = await this.crypto.generate();
           const publicJwk = await globalThis.crypto.subtle.exportKey('jwk', publicKey);
           const privateJwk = await globalThis.crypto.subtle.exportKey('jwk', privateKey);
-          const keyId = await keyIdFor(publicJwk);
+          const keyId = await this.keyIdOf(publicJwk);
           registry = { current: keyId, keys: [{ keyId, publicJwk, createdAt: this.now() }], private: { keyId, jwk: privateJwk } };
           await this.io.writeKeys(JSON.stringify(registry, null, 2));
         }
@@ -237,31 +267,31 @@ export class ProofLedger {
         }
         const publicKeys = new Map<string, CryptoKey>();
         for (const entry of registry.keys) {
-          if (await keyIdFor(entry.publicJwk) !== entry.keyId) {
+          if (await this.keyIdOf(entry.publicJwk) !== entry.keyId) {
             throw new Error(`Proof key ${entry.keyId} does not match its public-key fingerprint.`);
           }
           publicKeys.set(entry.keyId, await this.crypto.importPublic(entry.publicJwk));
         }
-        let expectedSeq = 1;
-        let previousHash = '0'.repeat(64);
-        for (const record of records) {
-          const publicKey = publicKeys.get(record.keyId);
-          if (
-            record.workspace !== this.workspace ||
-            record.seq !== expectedSeq ||
-            record.prev !== previousHash ||
-            !publicKey ||
-            !(await this.crypto.verify(publicKey, record.hash, record.sig)) ||
-            (await sha256Hex(unsignedOf(record))) !== record.hash
-          ) {
-            throw new Error(`Proof ledger record ${expectedSeq} failed chain or signature verification; refusing to append.`);
-          }
-          expectedSeq += 1;
-          previousHash = record.hash;
+
+        // Chain integrity comes from the shared verifier, not a local re-run.
+        const report = await verifyChain(records as unknown as Record<string, unknown>[], {
+          digestHex: (value) => this.digestHex(value),
+          resolver: (keyId: string) => publicKeys.get(keyId) ?? null,
+          verifySig: (key: CryptoKey, hash: string, signature: string) => this.crypto.verify(key, hash, signature)
+        });
+        if (report.totalRecords !== records.length) {
+          throw new Error('The proof ledger changed shape while it was being read; refusing to append.');
         }
-        this.tail = records.length > 0
-          ? { seq: records[records.length - 1].seq, hash: records[records.length - 1].hash }
-          : null;
+        if (!report.ok) {
+          throw new Error(
+            `Proof ledger failed chain verification at records ${[
+              ...new Set([...report.tamperedRecords, ...report.brokenLinks, ...report.gaps, ...report.signatureFailures, ...report.unknownKeys])
+            ].join(', ')}; refusing to append.`
+          );
+        }
+
+        const last = records[records.length - 1];
+        this.tail = last ? { seq: last.seq, hash: await this.digestHex(unsignedOf(last)) } : null;
         const currentEntry = registry.keys.find((item) => item.keyId === registry!.current);
         if (!currentEntry || registry.private.keyId !== currentEntry.keyId) {
           throw new Error('The current proof signing key is not present in the registry.');
@@ -285,7 +315,7 @@ export class ProofLedger {
    * Key rotation: a fresh Ed25519 pair becomes the signer for *later* events;
    * the public half of every previous key stays in the registry so old events
    * keep verifying. Documented policy: one keypair per workspace, rotated on
-   * demand (or by deleting `.shadrox/proof-keys.json` and starting a new chain).
+   * demand (or by deleting the registry and starting a new chain).
    */
   async rotateKey(): Promise<string> {
     return this.serialize(async () => {
@@ -293,7 +323,7 @@ export class ProofLedger {
       const { privateKey, publicKey } = await this.crypto.generate();
       const publicJwk = await globalThis.crypto.subtle.exportKey('jwk', publicKey);
       const privateJwk = await globalThis.crypto.subtle.exportKey('jwk', privateKey);
-      const keyId = await keyIdFor(publicJwk);
+      const keyId = await this.keyIdOf(publicJwk);
       const registry: KeyRegistry = {
         current: keyId,
         keys: [...(this.registry?.keys ?? []), { keyId, publicJwk, createdAt: this.now() }],
@@ -315,28 +345,33 @@ export class ProofLedger {
   async append(event: ProofEventInput): Promise<ProofRecord> {
     return this.serialize(async () => {
       await this.ensureLoaded();
-      const seq = (this.tail?.seq ?? 0) + 1;
-      const prev = this.tail?.hash ?? '0'.repeat(64);
-      const unsigned: Omit<ProofRecord, 'sig' | 'hash'> = {
-        v: 1,
-        seq,
-        ts: this.now(),
-        workspace: this.workspace,
-        type: event.type,
-        actor: event.actor,
-        messageId: event.messageId ?? null,
-        data: event.data,
-        prev,
-        keyId: this.privateSigner!.keyId
-      };
-      const hash = await sha256Hex(canonicalJson(unsigned));
-      const sig = await this.crypto.sign(this.privateSigner!.key, hash);
-      const record: ProofRecord = { ...unsigned, hash, sig };
-      const line = JSON.stringify(record);
-      if (line.length > 256 * 1024) throw new Error('Proof event exceeds 256KB; refusing to bloat the ledger.');
+      const record = await buildRecord(
+        {
+          v: RECORD_VERSION,
+          seq: (this.tail?.seq ?? 0) + 1,
+          ts: this.now(),
+          workspace: this.workspace,
+          type: event.type,
+          actor: event.actor,
+          messageId: event.messageId ?? null,
+          // Untrusted payloads are size-bounded and escaped before they are
+          // hashed, so command output can never forge a field or a line.
+          data: sanitizeData(event.data ?? {}),
+          prev: this.tail?.hash ?? PROOF_GENESIS,
+          keyId: this.privateSigner!.keyId
+        },
+        {
+          sign: (text: string) => this.crypto.sign(this.privateSigner!.key, text),
+          digestHex: (text: string) => this.digestHex(text)
+        }
+      );
+      const line = lineOf(record);
+      if (new TextEncoder().encode(line).length > this.maxLineBytes) {
+        throw new Error(`Proof event is over ${this.maxLineBytes} bytes; refusing to bloat the ledger.`);
+      }
       await this.io.appendLine(line);
-      this.tail = { seq, hash };
-      return record;
+      this.tail = { seq: record.seq, hash: record.hash };
+      return record as ProofRecord;
     });
   }
 }

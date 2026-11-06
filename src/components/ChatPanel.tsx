@@ -318,22 +318,42 @@ function ThinkingTrace({ reasoning, streaming }: { reasoning: string; streaming?
   );
 }
 
-function SelfHealingProofCard({ proof }: { proof: import('../lib/repairProof').FailureReceipt }) {
+function SelfHealingProofCard({
+  proof,
+  checkpointAvailable,
+  restoring,
+  onUndo
+}: {
+  proof: import('../lib/repairProof').FailureReceipt;
+  checkpointAvailable: boolean;
+  restoring: boolean;
+  onUndo: (checkpointId: string) => void;
+}) {
   const isHealed = proof.status === 'verified_healed';
+  const isRejected = proof.status === 'rejected';
+  const checkpointId = proof.checkpointId;
+  const surface = isHealed
+    ? 'border-emerald-500/25 bg-emerald-950/15'
+    : isRejected
+      ? 'border-amber-500/25 bg-amber-950/15'
+      : 'border-rose-500/25 bg-rose-950/15';
+  const badge = isHealed
+    ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300'
+    : isRejected
+      ? 'border-amber-400/25 bg-amber-500/10 text-amber-200'
+      : 'border-rose-400/25 bg-rose-500/10 text-rose-300';
 
   return (
-    <div className={`mb-2.5 rounded-xl border p-3 text-[11px] ${isHealed ? 'border-emerald-500/25 bg-emerald-950/15' : 'border-rose-500/25 bg-rose-950/15'}`}>
+    <div className={`mb-2.5 rounded-xl border p-3 text-[11px] ${surface}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className={`grid size-6 shrink-0 place-items-center rounded-md border ${isHealed ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300' : 'border-rose-400/30 bg-rose-500/10 text-rose-300'}`}>
+          <span className={`grid size-6 shrink-0 place-items-center rounded-md border ${isHealed ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300' : isRejected ? 'border-amber-400/30 bg-amber-500/10 text-amber-200' : 'border-rose-400/30 bg-rose-500/10 text-rose-300'}`}>
             <ShieldCheck className="h-3.5 w-3.5" />
           </span>
           <div>
             <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-neutral-200">
               <span>Self-Healing Proof</span>
-              <span className={`rounded-full border px-1.5 py-px text-[9px] uppercase font-mono tracking-wide ${
-                isHealed ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300' : 'border-rose-400/25 bg-rose-500/10 text-rose-300'
-              }`}>
+              <span className={`rounded-full border px-1.5 py-px text-[9px] uppercase font-mono tracking-wide ${badge}`}>
                 {proof.status.replace('_', ' ')}
               </span>
               <span className="text-[10px] text-neutral-500 font-mono">[{proof.source.toUpperCase()}]</span>
@@ -350,12 +370,28 @@ function SelfHealingProofCard({ proof }: { proof: import('../lib/repairProof').F
           {proof.errorMessage}
         </div>
       )}
-      {proof.checkpointId && (
-        <p className="mt-1.5 text-[10px] font-mono text-neutral-500">Undo checkpoint {proof.checkpointId} is saved for this turn.</p>
+      {checkpointId && (
+        <div className="mt-1.5 flex items-center justify-between gap-2">
+          <p className="min-w-0 truncate text-[10px] font-mono text-neutral-500" title={checkpointId}>
+            Checkpoint {checkpointId}
+          </p>
+          {checkpointAvailable && proof.status !== 'rejected' && (
+            <button
+              type="button"
+              onClick={() => onUndo(checkpointId)}
+              disabled={restoring}
+              title="Restore the workspace to this turn's checkpoint"
+              className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-white/[0.09] bg-white/[0.04] px-2 py-1 text-[10px] font-mono text-neutral-300 transition-colors hover:border-rose-400/30 hover:text-rose-200 disabled:cursor-wait disabled:opacity-60"
+            >
+              <Undo2 className="h-3 w-3" />
+              {restoring ? 'Restoring…' : 'Undo this turn'}
+            </button>
+          )}
+        </div>
       )}
 
       {proof.verificationEvidence && (
-        <div className="mt-2 text-[10px] font-mono text-emerald-400 flex items-center gap-1">
+        <div className={`mt-2 text-[10px] font-mono flex items-center gap-1 ${isHealed ? 'text-emerald-400' : isRejected ? 'text-amber-200/90' : 'text-rose-300'}`}>
           <Check className="h-3 w-3 shrink-0" />
           <span>{proof.verificationEvidence}</span>
         </div>
@@ -1415,7 +1451,15 @@ export function ChatPanel({
                 )}
 
                 {message.selfHealingProof && (
-                  <SelfHealingProofCard proof={message.selfHealingProof} />
+                  <SelfHealingProofCard
+                    proof={message.selfHealingProof}
+                    checkpointAvailable={Boolean(
+                      message.selfHealingProof.checkpointId
+                      && checkpoints.some((entry) => entry.id === message.selfHealingProof?.checkpointId)
+                    )}
+                    restoring={restoringCheckpointId === message.selfHealingProof.checkpointId}
+                    onUndo={onRestoreCheckpoint}
+                  />
                 )}
 
                 {message.reasoning && (

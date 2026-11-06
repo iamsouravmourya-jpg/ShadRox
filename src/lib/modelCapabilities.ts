@@ -1,4 +1,5 @@
 import type { ProviderId } from './providers';
+import { lookupModelMetadata } from './modelMetadata';
 
 /**
  * Model capability registry.
@@ -7,6 +8,15 @@ import type { ProviderId } from './providers';
  * plus a name-based fallback matcher for models the table does not know. The
  * table is keyed by recognizable name patterns instead of exact IDs, so new
  * model releases work without a code change.
+ *
+ * Resolution order — an order, not a vote:
+ * 1. the exact-id metadata table in `./modelMetadata.ts` (Cline-derived,
+ *    Apache-2.0): the only source here that is a published per-model number
+ *    rather than a regex guess;
+ * 2. the pattern tables below, for models the metadata table does not list;
+ * 3. the conservative defaults.
+ * A model absent from (1) therefore behaves exactly as it did before (1) was
+ * wired in, so a missing row cannot crash or oversize a request.
  */
 
 export interface ModelCapabilities {
@@ -20,6 +30,8 @@ export interface ModelCapabilities {
    * below contextWindow / 2.
    */
   maxOutput?: number;
+  /** Which source produced the numbers, so a caller can log the precedence honestly. */
+  source?: 'metadata_table' | 'pattern_table' | 'default';
 }
 
 interface CapabilityPattern {
@@ -78,22 +90,40 @@ const DEFAULT_CONTEXT_WINDOW = 32_000;
 /** Conservative output cap used when the model is not in any table. */
 const DEFAULT_MAX_OUTPUT = 4_096;
 
+/**
+ * The table in `./modelMetadata.ts`, in this module's shape. A row is a
+ * published per-model number, so it always wins over the pattern guesses —
+ * including for `provider: 'custom'`, where the id is the same model reached
+ * through a gateway, and for Groq/OpenRouter-namespaced ids
+ * (`openai/gpt-4o` is still GPT-4o's window).
+ */
+function metadataCapabilities(provider: ProviderId, modelId: string): ModelCapabilities | null {
+  const row = lookupModelMetadata(modelId, provider);
+  if (!row) return null;
+  return {
+    contextWindow: row.contextWindow,
+    maxOutput: row.maxOutputTokens,
+    source: 'metadata_table'
+  };
+}
+
 /** Best-effort context window for a model id, first match wins. */
 export function resolveContextWindow(provider: ProviderId, modelId: string): number {
-  const id = modelId.toLowerCase();
-  const table = CAPABILITIES[provider] ?? [];
-  for (const entry of table) {
-    if (entry.pattern.test(id)) return entry.contextWindow;
-  }
-  return DEFAULT_CONTEXT_WINDOW;
+  return resolveCapabilities(provider, modelId).contextWindow;
 }
 
 /**
  * Full capability record for a model — contextWindow plus the per-model
  * maxOutput ceiling. Use this instead of `resolveContextWindow` when you
  * also need to size the output reservation accurately.
+ *
+ * Metadata table first, then the per-provider pattern tables, then the
+ * defaults; see the header for why that order is the safe one.
  */
 export function resolveCapabilities(provider: ProviderId, modelId: string): ModelCapabilities {
+  const fromTable = metadataCapabilities(provider, modelId);
+  if (fromTable) return fromTable;
+
   const id = modelId.toLowerCase();
   const table = CAPABILITIES[provider] ?? [];
   for (const entry of table) {
@@ -101,10 +131,20 @@ export function resolveCapabilities(provider: ProviderId, modelId: string): Mode
       return {
         contextWindow: entry.contextWindow,
         ...(entry.maxOutput !== undefined ? { maxOutput: entry.maxOutput } : {}),
+        source: 'pattern_table'
       };
     }
   }
-  return { contextWindow: DEFAULT_CONTEXT_WINDOW };
+  return { contextWindow: DEFAULT_CONTEXT_WINDOW, source: 'default' };
+}
+
+/**
+ * The one budget resolver every caller should use: it returns the numbers plus
+ * where they came from, so `api/ai/_budget.ts` and the renderer provably share
+ * a single precedence instead of each re-implementing a lookup.
+ */
+export function resolveBudgetCapabilities(provider: ProviderId, modelId: string): ModelCapabilities {
+  return resolveCapabilities(provider, modelId);
 }
 
 export { DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_OUTPUT };

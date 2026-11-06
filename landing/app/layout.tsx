@@ -1,6 +1,7 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { ThemeProvider } from '@/components/landing/theme-provider'
+import { APP_VERSION, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import './globals.css'
 
 const SITE_URL = 'https://www.shadrox.cyou'
@@ -79,10 +80,10 @@ const jsonLd = {
       name: 'ShadRox',
       applicationCategory: 'DeveloperApplication',
       operatingSystem: 'Windows 10, Windows 11 (64-bit)',
-      softwareVersion: '0.0.6',
+      softwareVersion: APP_VERSION,
       dateModified: '2026-11-05',
       url: SITE_URL,
-      downloadUrl: 'https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.6-Setup.exe',
+      downloadUrl: WINDOWS_DOWNLOAD_URL,
       offers: { '@type': 'Offer', price: '0', priceCurrency: 'INR', availability: 'https://schema.org/InStock' },
       image: `${SITE_URL}/icon-512.png`,
       author: { '@id': `${SITE_URL}/#sourav-maurya` },

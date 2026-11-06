@@ -3,9 +3,53 @@ import assert from 'node:assert/strict';
 import {
   createFailureReceipt,
   buildRepairBrief,
+  failureSourceForCommand,
   proposeRepair,
-  verifyHealing
+  verifyHealing,
+  type FailureSource
 } from './repairProof';
+
+test('failureSourceForCommand names the check a command actually runs', () => {
+  const cases: Array<[string, FailureSource]> = [
+    ['npm test', 'test'],
+    ['npm t', 'test'],
+    ['npm run test', 'test'],
+    ['npm run test:unit -- --run', 'test'],
+    ['npm --prefix landing run test:e2e', 'test'],
+    ['CI=1 npx vitest run', 'test'],
+    ['vitest --run', 'test'],
+    ['npx jest src/app', 'test'],
+    ['node --test src/a.test.ts', 'test'],
+    ['python -m pytest -q', 'test'],
+    ['pytest -k smoke', 'test'],
+    ['cargo test --all', 'test'],
+    ['go test ./...', 'test'],
+    ['playwright test', 'test'],
+    ['cd packages/app && npm test', 'test'],
+    ['tsc --noEmit', 'compiler'],
+    ['npx tsc -b', 'compiler'],
+    ['npm run typecheck', 'compiler'],
+    ['npm run build', 'compiler'],
+    ['pnpm run build', 'compiler'],
+    ['vite build', 'compiler'],
+    ['cargo build --release', 'compiler'],
+    ['go build ./cmd/server', 'compiler'],
+    ['eslint src --max-warnings 0', 'compiler'],
+    ['npm run build && npm test', 'test'],
+    ['ls -la', 'terminal'],
+    ['git status', 'terminal'],
+    ['npm install', 'terminal'],
+    ['npm run dev', 'terminal'],
+    ['node scripts/seed.js', 'terminal'],
+    ['vite', 'terminal'],
+    ['echo "npm test"', 'terminal'],
+    ['rm -rf dist', 'terminal']
+  ];
+
+  for (const [command, expected] of cases) {
+    assert.equal(failureSourceForCommand(command), expected, `expected ${command} to be ${expected}`);
+  }
+});
 
 test('createFailureReceipt initializes a valid failure receipt with immutable metadata', () => {
   const receipt = createFailureReceipt({

@@ -19,6 +19,7 @@ import type { ViewportSize } from '../lib/types';
 import type { PreviewDocument } from '../lib/preview';
 import { parseRevealMessage, type RevealSourceTarget } from '../lib/previewSource';
 import { getDesktopBridge, type DesktopPreviewOutput, type DesktopPreviewState, type PreviewProjectCandidate } from '../lib/desktop';
+import { globalRepairSession } from '../lib/repairSession';
 import { BackendPreview } from './BackendPreview';
 
 interface PreviewPaneProps {
@@ -161,6 +162,13 @@ export function PreviewPane({
       }))
     : logs;
   const previewStartMessage = [...localPreviewLogs].reverse().find((entry) => entry.type === 'status')?.message;
+  // The assertion effect below must read the latest errors without re-running
+  // on every console line, so the diagnostics live in a ref.
+  const previewErrorLogRef = useRef<string[]>([]);
+  previewErrorLogRef.current = displayedLogs
+    .filter((entry) => entry.type === 'error')
+    .slice(-10)
+    .map((entry) => `[${entry.timestamp}] ${entry.message}`);
 
   // Drives the split layout. BackendPreview owns runtime detection and reports
   // whether a backend plan exists; the frontend preview stays full-width until
@@ -191,7 +199,23 @@ export function PreviewPane({
     let cancelled = false;
     const timer = window.setTimeout(() => {
       void desktop.assertPreview(workspaceId).then((verdict) => {
-        if (!cancelled) setPreviewAssert(verdict.status);
+        if (cancelled) return;
+        setPreviewAssert(verdict.status);
+        // The verdict contract is `ok` only when the load is proven; `fatal`
+        // and `warn` are both failed verdicts. `observed` is neutral — the
+        // assertion could not evaluate — so it is never a failure receipt.
+        if (verdict.status !== 'fatal' && verdict.status !== 'warn') return;
+        const consoleErrors = previewErrorLogRef.current;
+        globalRepairSession.capture({
+          source: 'preview',
+          target: localPreviewState.url ?? `workspace:${workspaceId}`,
+          errorMessage: verdict.detail
+            || (verdict.errorCount > 0 ? consoleErrors[0] : undefined)
+            || (verdict.status === 'fatal'
+              ? 'Preview check failed: a source-derived selector did not match.'
+              : 'Preview check warned: not every source-derived selector matched.'),
+          consoleErrors
+        });
       }).catch(() => {
         if (!cancelled) setPreviewAssert(null);
       });

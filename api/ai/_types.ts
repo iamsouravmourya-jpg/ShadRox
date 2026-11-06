@@ -7,6 +7,13 @@ export type ThinkingLevel = 'low' | 'high';
 export interface ChatMessage {
   role: ChatRole;
   content: string;
+  /**
+   * Set by `shapeStablePrefix()` on a cache breakpoint, for the one provider
+   * family whose wire format carries a cache field (`cache_control` content
+   * parts, Anthropic behind an OpenAI-compatible gateway). Never set for
+   * Gemini/Groq/plain-compatible servers, so no unknown field can reach them.
+   */
+  cacheEphemeral?: boolean;
 }
 
 export interface ChatMessageInput {

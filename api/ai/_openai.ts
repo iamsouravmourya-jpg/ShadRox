@@ -1,5 +1,6 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
 import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
+import { shapeStablePrefix } from './_promptCache.js';
 import { UpstreamError, mergeOpenAiUsage, usageFields, type StreamRequest, type StreamResult, type StreamSink, type ThinkingLevel, type TokenUsage } from './_types.js';
 import { OpenAiToolCallCollector, rejectsNativeTools } from './_toolCalls.js';
 import { fetchUpstream } from './_upstream.js';
@@ -41,10 +42,19 @@ function limitHint(model: string, limits: GroqLimits): string {
     : `Groq rejected the request for \`${model}\` — its rate limit on your key is too small for this prompt. Try a model with a higher limit, or start a new chat.`;
 }
 
+/**
+ * Groq has no cache field in its chat-completions body: it caches the longest
+ * common prompt prefix implicitly and bills the hit through
+ * `usage.prompt_tokens_details.cached_tokens`, which `mergeOpenAiUsage` already
+ * reads. What this route can control is the prefix, so the stable blocks are
+ * hoisted and the volatile turn goes last (`auto_prefix` mode of
+ * `./_promptCache.ts`) — no marker field, no unknown key in the body.
+ */
 function buildMessages(request: StreamRequest): Array<{ role: string; content: string }> {
+  const shaped = shapeStablePrefix(request.provider, request.model, request.messages).messages;
   const messages: Array<{ role: string; content: string }> = [];
   if (request.systemInstruction) messages.push({ role: 'system', content: request.systemInstruction });
-  request.messages.forEach((message) => messages.push({ role: message.role, content: message.content }));
+  shaped.forEach((message) => messages.push({ role: message.role, content: message.content }));
   return messages;
 }
 

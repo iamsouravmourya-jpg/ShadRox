@@ -51,6 +51,9 @@ const {
 const { resolveTerminalPlan, systemEnvironment, clampTerminalSize, normalizeTerminalSessionKey, isSafeExternalUrl } = require('./terminal-modes.cjs');
 const { applyShellIntegration } = require('./shell-integration.cjs');
 const { createProofStore } = require('./proof-store.cjs');
+const { createProofKeyring } = require('./proof-keyring.cjs');
+const { createProofService, PROOF_APP_SCOPE } = require('./proof-service.cjs');
+const { redactCommandForProof } = require('./proof-redact.cjs');
 const {
   DEFAULT_SETTLE_MS,
   buildFrameAssertionScript,
@@ -65,6 +68,7 @@ const { createAutomationWebhook } = require('./automation-webhook.cjs');
 const { createMachineDelta, LIMITS: MACHINE_LIMITS } = require('./machine-delta.cjs');
 const { createMachineGit } = require('./machine-git.cjs');
 const { createMachineReceipt } = require('./machine-receipt.cjs');
+const { createDebugHost } = require('./debug-host.cjs');
 
 const PREVIEW_SCHEME = 'shadrox-preview';
 const APP_BACKGROUND = '#090a0d';
@@ -95,7 +99,9 @@ protocol.registerSchemesAsPrivileged([{
 }]);
 
 const workspaceAccess = createWorkspaceAccess();
-const workspaceConsent = createWorkspaceConsent();
+const workspaceConsent = createWorkspaceConsent({
+  storageFile: path.join(app.getPath('userData'), 'workspace-consent.json')
+});
 const workspaceWatchers = new Map();
 const terminalSessions = new Map();
 let activeWorkspaceId = null;
@@ -140,6 +146,23 @@ const machineDelta = createMachineDelta({
 const proofStore = createProofStore({
   root: path.join(app.getPath('userData'), 'proof-ledgers'),
   safeStorage
+});
+// The per-install Ed25519 identity that signs every proof record, and the one
+// writer both this file and `npm run verify:proofs` agree on.
+const proofKeyring = createProofKeyring({
+  dir: path.join(app.getPath('userData'), 'proof-keys'),
+  safeStorage
+});
+const proofService = createProofService({ store: proofStore, keyring: proofKeyring });
+// The DAP host owns at most one adapter child; it is torn down on workspace
+// switch and on window close so no debuggee outlives the session that owns it.
+const debugHost = createDebugHost({
+  getWorkspace: (id) => workspaceAccess.getWorkspace(id),
+  broadcast: (event) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('debug:event', event);
+    }
+  }
 });
 const previewConsoleErrors = createConsoleErrorSink();
 const machineReceipt = createMachineReceipt({
@@ -301,25 +324,35 @@ function hashText(value) {
   return createHash('sha256').update(typeof value === 'string' ? value : '').digest('hex');
 }
 
-/** Append-only command receipt. Hashes only — the ledger never stores command output. */
+/**
+ * Append-only command receipt, in the canonical signed chain format the offline
+ * verifier reads (`npm run verify:proofs`). Hashes of the output go into the
+ * payload; the output itself never does.
+ */
 async function recordCommandProof(workspaceId, command, run) {
   try {
-    const existing = await proofStore.readLedger(workspaceId);
-    const seq = existing ? existing.split('\n').filter(Boolean).length + 1 : 1;
-    const line = JSON.stringify({
-      v: 1,
-      seq,
-      workspace: workspaceId,
+    const redacted = redactCommandForProof(command);
+    await proofService.append(workspaceId, {
       type: run.deniedReason ? 'command.denied' : 'command.run',
-      exitCode: run.exitCode ?? null,
-      commandHash: hashText(command),
-      stdoutHash: hashText(run.stdout),
-      stderrHash: hashText(run.stderr)
+      actor: 'agent',
+      data: {
+        argv: clipProofText(redacted),
+        commandHash: hashText(redacted),
+        exitCode: run.exitCode ?? null,
+        stdoutHash: hashText(run.stdout),
+        stderrHash: hashText(run.stderr),
+        ...(run.deniedReason ? { deniedReason: clipProofText(run.deniedReason) } : {})
+      }
     });
-    await proofStore.appendLine(workspaceId, line);
-  } catch {
+  } catch (error) {
     // A ledger write must not change the command result the user already saw.
+    console.error(`[desktop] proof ledger append failed for workspace ${workspaceId}:`, error?.message ?? error);
   }
+}
+
+function clipProofText(value) {
+  const text = typeof value === 'string' ? value : String(value ?? '');
+  return text.length > 4096 ? `${text.slice(0, 4096)}…` : text;
 }
 
 async function runPreviewAssertion(workspaceId) {
@@ -699,6 +732,7 @@ function terminalDescriptor(sessionId, sessionInfo, workspace) {
 }
 
 function stopWorkspaceServices(workspaceId) {
+  debugHost.stopWorkspace(workspaceId);
   typeScriptService.closeWorkspace(workspaceId);
   const watcher = workspaceWatchers.get(workspaceId);
   if (watcher) {
@@ -935,6 +969,132 @@ function writeSecureStore(store) {
 }
 
 const SECURE_KEY_PATTERN = /^shadrox\.[a-z0-9._-]{1,80}$/i;
+
+/**
+ * Proof-ledger IPC: the renderer's `src/lib/proofLedger.ts` is the only writer
+ * of self-healing receipts, and every receipt it records is appended to the
+ * signed chain here before the call resolves. Reads return the folded chain, so
+ * a receipt recorded in a previous session is back in the renderer's memory on
+ * the next app start.
+ */
+function registerProofHandlers() {
+  ipcMain.handle('proof:append-receipt', async (event, receipt, kind) => {
+    assertTrustedRenderer(event);
+    const isUpdate = kind === 'update';
+    const { record, receiptHash } = await proofService.appendReceipt(receipt, isUpdate ? 'receipt.update' : 'receipt.failure');
+    return { seq: record.seq, ts: record.ts, proofHash: record.hash, keyId: record.keyId, receiptHash };
+  });
+
+  ipcMain.handle('proof:append-milestone', async (event, proof) => {
+    assertTrustedRenderer(event);
+    const record = await proofService.appendMilestone(proof);
+    return { seq: record.seq, ts: record.ts, proofHash: record.hash, keyId: record.keyId };
+  });
+
+  ipcMain.handle('proof:receipts', (event) => {
+    assertTrustedRenderer(event);
+    return proofService.readReceipts(PROOF_APP_SCOPE);
+  });
+
+  ipcMain.handle('proof:records', (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    const target = typeof workspaceId === 'string' && workspaceId ? workspaceId : PROOF_APP_SCOPE;
+    return proofService.readRecords(target);
+  });
+
+  ipcMain.handle('proof:verify', (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    const target =
+      typeof workspaceId === 'string' && workspaceId
+        ? workspaceId
+        : activeWorkspaceId && workspaceAccess.getWorkspace(activeWorkspaceId)
+          ? activeWorkspaceId
+          : PROOF_APP_SCOPE;
+    return proofService.verify(target);
+  });
+}
+
+/**
+ * Debugger IPC. Every handler pins the caller to the main frame of the app's
+ * own origin, exactly like the proof and terminal handlers. The host validates
+ * `shadrox.debug.json` itself; this layer only moves values.
+ */
+function registerDebugHandlers() {
+  ipcMain.handle('debug:config', (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    return debugHost.configs(workspaceId);
+  });
+
+  ipcMain.handle('debug:start', async (event, workspaceId, configName) => {
+    assertTrustedRenderer(event);
+    return debugHost.start(workspaceId, typeof configName === 'string' ? configName : undefined);
+  });
+
+  ipcMain.handle('debug:stop', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    await debugHost.stop(workspaceId);
+  });
+
+  ipcMain.handle('debug:breakpoints', async (event, workspaceId, file, lines) => {
+    assertTrustedRenderer(event);
+    return debugHost.setBreakpoints(workspaceId, file, lines);
+  });
+
+  ipcMain.handle('debug:threads', (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    return debugHost.threads(workspaceId);
+  });
+
+  ipcMain.handle('debug:stack', (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    return debugHost.stack(workspaceId);
+  });
+
+  ipcMain.handle('debug:scopes', (event, workspaceId, frameId) => {
+    assertTrustedRenderer(event);
+    return debugHost.scopes(workspaceId, frameId);
+  });
+
+  ipcMain.handle('debug:variables', (event, workspaceId, variablesReference) => {
+    assertTrustedRenderer(event);
+    return debugHost.variables(workspaceId, variablesReference);
+  });
+
+  ipcMain.handle('debug:evaluate', (event, workspaceId, frameId, expression) => {
+    assertTrustedRenderer(event);
+    return debugHost.evaluate(workspaceId, frameId, expression);
+  });
+
+  ipcMain.handle('debug:continue', (event, workspaceId, threadId) => {
+    assertTrustedRenderer(event);
+    return debugHost.continue(workspaceId, threadId);
+  });
+
+  ipcMain.handle('debug:next', (event, workspaceId, threadId) => {
+    assertTrustedRenderer(event);
+    return debugHost.next(workspaceId, threadId);
+  });
+
+  ipcMain.handle('debug:step-in', (event, workspaceId, threadId) => {
+    assertTrustedRenderer(event);
+    return debugHost.stepIn(workspaceId, threadId);
+  });
+
+  ipcMain.handle('debug:step-out', (event, workspaceId, threadId) => {
+    assertTrustedRenderer(event);
+    return debugHost.stepOut(workspaceId, threadId);
+  });
+
+  ipcMain.handle('debug:pause', (event, workspaceId, threadId) => {
+    assertTrustedRenderer(event);
+    return debugHost.pause(workspaceId, threadId);
+  });
+
+  ipcMain.handle('debug:state', (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    return debugHost.state(workspaceId);
+  });
+}
 
 function registerSecureStoreHandlers() {
   ipcMain.handle('secure:get-all', (event) => {
@@ -2627,6 +2787,7 @@ async function createWindow() {
     });
   });
   mainWindow.on('closed', () => {
+    debugHost.disposeAll();
     mainWindow = null;
   });
 
@@ -2669,6 +2830,8 @@ app.whenReady().then(async () => {
   locateGitExecutable();
   registerIpcHandlers();
   registerSecureStoreHandlers();
+  registerProofHandlers();
+  registerDebugHandlers();
   registerAuthHandlers();
   registerIntegrationHandlers();
   await createWindow();
@@ -2693,6 +2856,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
+  debugHost.disposeAll();
   void previewRuntime.stopAll();
   if (automationWebhook) {
     void automationWebhook.stop();

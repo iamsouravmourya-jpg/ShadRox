@@ -26,6 +26,7 @@ import {
   type ProofLedgerIo,
   type ProofRecord
 } from './ledger';
+import { verifyChain } from '../../../electron/proof-chain.cjs';
 
 export type ClaimStatus = 'holds' | 'invalidated' | 'missing' | 'recorded';
 
@@ -207,15 +208,17 @@ export async function verifyProofLedger(
   const invalidated = claims.filter((claim) => claim.status !== 'holds' && claim.status !== 'recorded').length;
   const summary = records.length === 0
     ? 'No proof records — nothing has been observed through the ledger yet.'
-    : integrityFailures > 0
-      ? `Chain integrity FAILED: ${tamperedRecords.length} tampered, ${brokenLinks.length} broken links, ${signatureFailures.length} bad signatures, ${unknownKeys.length} unknown keys.`
-      : `${records.length} records, chain intact${truncatedTail ? ' (torn last line ignored)' : ''} · ${holds} claim${holds === 1 ? '' : 's'} still hold, ${invalidated} invalidated.`;
+    : integrityFailures > 0 || truncatedTail
+      ? `Chain integrity FAILED: ${tamperedRecords.length} tampered, ${brokenLinks.length} broken links, ${signatureFailures.length} bad signatures, ${unknownKeys.length} unknown keys${truncatedTail ? ', torn last line' : ''}.`
+      : `${records.length} records, chain intact · ${holds} claim${holds === 1 ? '' : 's'} still hold, ${invalidated} invalidated.`;
 
   return {
     ranAt: (options.now ?? (() => Date.now()))(),
     workspace: options.workspace ?? '',
     totalRecords: records.length,
-    chainValid: records.length > 0 && integrityFailures === 0,
+    // The offline verifier (`electron/proof-chain.cjs`) fails a half-written
+    // tail line too; the renderer must agree or the two report different truths.
+    chainValid: records.length > 0 && integrityFailures === 0 && !truncatedTail,
     tamperedRecords, brokenLinks, gaps, signatureFailures, unknownKeys,
     keyIds: [...publicKeys.keys()],
     truncatedTail,

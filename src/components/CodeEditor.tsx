@@ -60,6 +60,8 @@ import {
 import { runQuickEdit, sliceQuickEditContext } from '../lib/quickEdit';
 import { computeHunks, hunkStats } from '../lib/editor/hunks';
 import { semanticHighlighting, setSemanticTokens } from '../lib/editor/semanticLayer';
+import { breakpointGutterExtension, setBreakpointLines } from '../lib/editor/breakpoints';
+import { debugHoverExtension } from '../lib/editor/hoverValues';
 import type { ProviderId } from '../lib/providers';
 import type { WorkspaceFile } from '../lib/types';
 import type {
@@ -165,6 +167,29 @@ interface CodeEditorProps {
    * Search view docks into the same slot instead of covering the screen.
    */
   sidebarPanel?: ReactNode;
+  /**
+   * Debugger breakpoints for the active file. `enabled` is false when no
+   * shadrox.debug.json configuration exists, which turns the gutter into a
+   * plain spacer instead of accepting clicks that would go nowhere.
+   */
+  breakpoints?: {
+    enabled: boolean;
+    /** Breakpoint lines for the active file; absent means none. */
+    lines?: number[];
+    onToggle: (line: number) => void;
+  };
+  /** Where the debugger is paused, shown as a compact header chip. */
+  pausedAt?: { file: string; line: number; column?: number | null } | null;
+  /** Reveals the paused location through the app's navigation path. */
+  onOpenPaused?: (file: string, line: number, column?: number | null) => void;
+  /**
+   * Hover values while paused. The editor asks for one identifier at a time;
+   * the caller owns the frame id and the adapter call.
+   */
+  debugHover?: {
+    enabled: boolean;
+    evaluate: (expression: string) => Promise<string | null>;
+  };
 }
 
 /** What the editor needs to offer language-service quick fixes. */
@@ -540,7 +565,11 @@ export function CodeEditor({
   onSelectOutlineSymbol,
   symbols,
   quickFixes,
-  sidebarPanel
+  sidebarPanel,
+  breakpoints,
+  pausedAt,
+  onOpenPaused,
+  debugHover
 }: CodeEditorProps) {
   const activeFile = activeFilePath === undefined
     ? files[resolveActiveFileIndex(activeFileIndex, files.length)] ?? null
@@ -599,6 +628,32 @@ export function CodeEditor({
   const lintExtensions = useMemo(
     () => [linter(lintSource, { delay: 0 }), lintGutter()],
     [lintSource]
+  );
+
+  /**
+   * The breakpoint gutter reads its click handler through a ref so the
+   * extension instance never changes: toggling a dot must not reconfigure
+   * CodeMirror and discard scroll or selection state.
+   */
+  const breakpointToggleRef = useRef<(line: number) => void>(() => {});
+  breakpointToggleRef.current = breakpoints?.onToggle ?? (() => {});
+  const breakpointExtension = useMemo(
+    () => breakpointGutterExtension({ onToggle: (line) => breakpointToggleRef.current(line) }),
+    []
+  );
+
+  // Same ref pattern for hover evaluate: the extension stays one instance while
+  // the paused frame and adapter call change underneath it.
+  const debugHoverEnabledRef = useRef(false);
+  debugHoverEnabledRef.current = debugHover?.enabled === true;
+  const debugHoverEvaluateRef = useRef<(expression: string) => Promise<string | null>>(async () => null);
+  debugHoverEvaluateRef.current = debugHover?.evaluate ?? (async () => null);
+  const debugHoverExtensionInstance = useMemo(
+    () => debugHoverExtension({
+      enabled: () => debugHoverEnabledRef.current,
+      evaluate: (expression) => debugHoverEvaluateRef.current(expression)
+    }),
+    []
   );
 
   // Go-to-definition is installed even when inline AI is not configured.
@@ -853,6 +908,18 @@ export function CodeEditor({
     view.dispatch({ effects: setSemanticTokens.of(activeFile ? semanticTokens ?? [] : []) });
   }, [semanticTokens, activeFile?.name]);
 
+  // Breakpoint dots for the active file; cleared when the debug config is gone.
+  useEffect(() => {
+    const view = editorRef.current?.view;
+    if (!view) return;
+    view.dispatch({
+      effects: setBreakpointLines.of({
+        enabled: breakpoints?.enabled === true,
+        lines: breakpoints?.lines ?? []
+      })
+    });
+  }, [breakpoints?.enabled, breakpoints?.lines, activeFile?.name]);
+
   useEffect(() => {
     const firstLevel = new Set(['', ...files
       .map((file) => file.name.split('/').filter(Boolean).slice(0, 1)[0])
@@ -867,6 +934,8 @@ export function CodeEditor({
       ...definitionExtensions,
       ...symbolExtensions,
       ...quickFixExtensions,
+      breakpointExtension,
+      debugHoverExtensionInstance,
       SEMANTIC_EXTENSION,
       MULTI_CURSOR_EXTENSION
     ];
@@ -911,7 +980,7 @@ export function CodeEditor({
       );
     }
     return list;
-  }, [activeFile?.name, activeFile?.language, editorAi, lintExtensions, definitionExtensions, symbolExtensions, quickFixExtensions]);
+  }, [activeFile?.name, activeFile?.language, editorAi, lintExtensions, definitionExtensions, symbolExtensions, quickFixExtensions, breakpointExtension, debugHoverExtensionInstance]);
 
   // Ctrl+K edits, the F2 prompt and the Ctrl+. menu are all scoped to the open
   // buffer, so a tab switch drops them along with the abort controller behind a
@@ -1502,6 +1571,17 @@ export function CodeEditor({
                 <span className="hidden md:inline text-[10px] text-neutral-500 uppercase font-mono">
                   {activeFile.language}
                 </span>
+                {pausedAt && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenPaused?.(pausedAt.file, pausedAt.line, pausedAt.column)}
+                    title={`Debugger paused at ${pausedAt.file}:${pausedAt.line}`}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-rose-400/30 bg-rose-500/10 px-1.5 py-0.5 font-mono text-[10px] text-rose-200 transition-colors hover:bg-rose-500/20 cursor-pointer"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
+                    paused at {pausedAt.file.split('/').pop()}:{pausedAt.line}
+                  </button>
+                )}
                 {isMarkdownFile(activeFile.name, activeFile.language) && (
                   <button
                     type="button"

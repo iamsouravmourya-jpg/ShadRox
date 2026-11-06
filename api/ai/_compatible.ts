@@ -1,7 +1,15 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
 import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
 import { resolveCustomEndpoint } from './_endpoint.js';
-import { renderCacheableContent } from './_promptCache.js';
+import {
+  markStableText,
+  promptCacheKeyValue,
+  promptCacheMode,
+  renderCacheableContent,
+  shapeStablePrefix,
+  supportsPromptCacheKey,
+  type RenderedContent
+} from './_promptCache.js';
 import { UpstreamError, mergeOpenAiUsage, usageFields, type StreamRequest, type StreamResult, type StreamSink, type TokenUsage } from './_types.js';
 import { OpenAiToolCallCollector, rejectsNativeTools } from './_toolCalls.js';
 import { fetchUpstream } from './_upstream.js';
@@ -21,11 +29,44 @@ import { fetchUpstream } from './_upstream.js';
  * Whatever the endpoint returns is what the user's key is charged for.
  */
 
-function buildMessages(request: StreamRequest): Array<{ role: string; content: string }> {
-  const messages: Array<{ role: string; content: string }> = [];
-  if (request.systemInstruction) messages.push({ role: 'system', content: request.systemInstruction });
-  request.messages.forEach((message) => messages.push({ role: message.role, content: renderCacheableContent(message) }));
+/**
+ * The wire `messages` array. `withMarkers` is what turns the aider-style
+ * breakpoints computed by `shapeStablePrefix` into real
+ * `cache_control: {type:'ephemeral'}` content parts; it is only ever true for an
+ * Anthropic-family model id on this endpoint (see `promptCacheMode`). With it
+ * off the serialization is byte-identical to the plain string form this adapter
+ * has always sent, which is also the form a gateway that rejects the parts gets
+ * resent in.
+ */
+function buildMessages(request: StreamRequest, withMarkers: boolean): Array<{ role: string; content: RenderedContent }> {
+  const shaped = shapeStablePrefix(request.provider, request.model, request.messages).messages;
+  const messages: Array<{ role: string; content: RenderedContent }> = [];
+  if (request.systemInstruction) {
+    // The system instruction is the longest-lived block in the request, so on a
+    // marked provider it gets its own breakpoint: everything before a
+    // `cache_control` marker is what the provider stores, and an unmarked system
+    // block would push the whole instruction into the volatile tail.
+    messages.push({
+      role: 'system',
+      content: withMarkers ? markStableText(request.systemInstruction) : request.systemInstruction
+    });
+  }
+  shaped.forEach((message) => messages.push({
+    role: message.role,
+    content: withMarkers ? renderCacheableContent(message) : message.content
+  }));
   return messages;
+}
+
+/**
+ * How gateways say "I do not understand that content part". Narrow on purpose:
+ * anything else falls through to the normal error path, because replaying a
+ * request costs the user tokens.
+ */
+function rejectsCacheControl(payload: string): boolean {
+  return /cache_control|cache control|content part|unexpected extra|extra inputs are not permitted|invalid.*content.*type|unsupported.*content/i.test(
+    payload
+  );
 }
 
 /** OpenAI-compatible servers spell the reasoning stream three different ways. */
@@ -54,12 +95,19 @@ export async function streamCustomEndpoint(
 ): Promise<StreamResult> {
   const { apiKey, model, temperature, signal } = request;
   const url = chatUrl(request);
+  const mode = promptCacheMode(request.provider, model);
+  const plan = shapeStablePrefix(request.provider, model, request.messages);
+  // `prompt_cache_key` is documented by OpenAI's own API and by nothing else in
+  // ShadRox's provider set, so a Groq/OpenRouter/local server body never grows
+  // an unknown field.
+  const cacheKey = supportsPromptCacheKey(url) ? promptCacheKeyValue(plan) : undefined;
 
-  const body = (withTemperature: boolean, withTools: boolean) =>
+  const body = (withTemperature: boolean, withTools: boolean, withMarkers: boolean) =>
     JSON.stringify({
       model,
-      messages: buildMessages(request),
+      messages: buildMessages(request, withMarkers),
       ...(withTemperature ? { temperature } : {}),
+      ...(cacheKey ? { prompt_cache_key: cacheKey } : {}),
       stream: true,
       stream_options: { include_usage: true },
       ...(withTools && request.toolDefinitions?.length
@@ -73,7 +121,7 @@ export async function streamCustomEndpoint(
         : {})
     });
 
-  const send = (withTemperature: boolean, attempts: number, withTools: boolean) =>
+  const send = (withTemperature: boolean, attempts: number, withTools: boolean, withMarkers: boolean) =>
     fetchUpstream(
       url,
       {
@@ -82,19 +130,30 @@ export async function streamCustomEndpoint(
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json'
         },
-        body: body(withTemperature, withTools)
+        body: body(withTemperature, withTools, withMarkers)
       },
       signal,
       attempts
     );
 
   let withTools = Boolean(request.toolDefinitions?.length);
-  let response = await send(true, 1, withTools);
+  let withMarkers = mode === 'cache_control';
+  let response = await send(true, 1, withTools, withMarkers);
   let payload = response.ok ? '' : await readErrorPayload(response);
+
+  // A gateway that forwards Claude but not Anthropic's content-part extension:
+  // drop the markers, keep the request. One replay of a rejected body costs
+  // nothing (it never reached a model), and the ordering discipline that
+  // implicit prefix caching needs survives the downgrade untouched.
+  if (!response.ok && withMarkers && rejectsCacheControl(payload)) {
+    withMarkers = false;
+    response = await send(true, 1, withTools, withMarkers);
+    payload = response.ok ? '' : await readErrorPayload(response);
+  }
 
   if (!response.ok && withTools && rejectsNativeTools(payload)) {
     withTools = false;
-    response = await send(true, 1, withTools);
+    response = await send(true, 1, withTools, withMarkers);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 
@@ -102,7 +161,7 @@ export async function streamCustomEndpoint(
   // reject it outright (local quant builds especially). One retry without it
   // costs nothing and turns a hard failure into a working chat.
   if (!response.ok && /temperature/i.test(payload)) {
-    response = await send(false, 1, withTools);
+    response = await send(false, 1, withTools, withMarkers);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 

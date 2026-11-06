@@ -118,8 +118,24 @@ const listeners = new Set<Listener>();
 let queue: TerminalDockEvent[] = [];
 
 /** True when a mounted dock took the event; false means it is queued for the next mount. */
+/**
+ * A `run: true` event must be typed into a real shell, so its success is an
+ * acknowledgement rather than "a listener existed". The panel registers the
+ * router while it is mounted; the queue never replays run events because the
+ * session they were approved for may be gone by then.
+ */
+let runRouter: ((event: TerminalCommandRequest) => boolean) | null = null;
+
+export function setTerminalRunRouter(router: ((event: TerminalCommandRequest) => boolean) | null): void {
+  runRouter = router;
+}
+
 export function publishTerminalDockEvent(event: TerminalDockEvent): boolean {
   if (!event || (event.kind === 'command' && !String(event.command).trim())) return false;
+  if (event.kind === 'command' && event.run) {
+    if (listeners.size === 0) return false;
+    return runRouter ? runRouter(event) : false;
+  }
   if (listeners.size === 0) {
     queue.push(event);
     if (queue.length > MAX_QUEUED_TERMINAL_EVENTS) queue = queue.slice(-MAX_QUEUED_TERMINAL_EVENTS);
