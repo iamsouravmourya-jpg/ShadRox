@@ -4,6 +4,14 @@ You are hired for a multi-phase engineering task on ShadRox. This file is your s
 Baseline: HEAD d49310e — **1066/1066 tests pass, typecheck 0**. Never commit code that drops below this baseline.
 At the end of every phase run: `npm run typecheck; echo $?` = 0 AND `npm test; echo $?` = 0.
 
+## QODER RECOVERY STATUS — 2026-11-06
+
+Completed: verify-command default-deny gate, untrusted-data wrapping and secret scrubbing, proof ledger, preview assertions, spend ledger, prompt-cache shaping, and the existing contract-context equivalent. Validation: 1126 tests + 30 pretests pass, typecheck passes, and production build passes.
+
+Pending:
+- **Phase 3A terminal state:** shell integration markers, live CWD/exit-code state, hung detection, and agent query API.
+- **Phase 3D Self-Healing Proof remainder:** automatic failure receipts, atomic repair proposals, and verified undo checkpoints.
+
 ---
 
 ## NON-NEGOTIABLE RULES (enforce for the entire session)

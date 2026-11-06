@@ -5,6 +5,7 @@ import { parseToolBlocks, serializeCallKey, serializeResults, stripToolBlocks } 
 import { applyTaskUpdates, completionGuard, renderTaskPlan, type TaskPlan } from './taskPlan';
 import { detectStuck, stuckInstruction, type StuckRound } from './stuck';
 import { FINISH_TOOL_NAME, parseFinishArguments } from './finishTool';
+import type { FailureReceipt } from '../repairProof';
 
 /**
  * Runs the tool rounds of one assistant turn.
@@ -57,6 +58,8 @@ export interface ToolLoopResult {
   plan: TaskPlan;
   /** Set when the turn ended with the finish tool instead of with prose. */
   finish?: { summary: string; blocked: string | null };
+  /** Latest captured command failure, so the chat card can show it. */
+  failureProof?: FailureReceipt | null;
 }
 
 export interface ToolLoopInput {
@@ -143,6 +146,8 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   let guardUsed = false;
   let stuckNudged = false;
   let finished: { summary: string; blocked: string | null } | null = null;
+  let failureProof: FailureReceipt | null = null;
+  const stamp = (result: ToolLoopResult): ToolLoopResult => (failureProof ? { ...result, failureProof } : result);
 
   // The user's ask as issued, not the running transcript: observations and
   // nudges also arrive as `user` turns, so the intent is read once up front.
@@ -160,30 +165,30 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     const final = await input.stream(messages, currentRound);
     const stripped = stripToolBlocks(final.text);
     if (stripped.trim() || final.error) {
-      return { text: stripped, rounds: currentRound + 1, activity, capped, error: final.error, plan };
+      return stamp({ text: stripped, rounds: currentRound + 1, activity, capped, error: final.error, plan });
     }
     // The model answered the order with another tool block: it still owes an
     // answer, and an empty reply is worse than the round it costs to avoid it.
     messages.push({ role: 'assistant', content: final.text });
     messages.push({ role: 'user', content: FINAL_ASK });
     const again = await input.stream(messages, currentRound + 1);
-    return {
+    return stamp({
       text: stripToolBlocks(again.text),
       rounds: currentRound + 2,
       activity,
       capped,
       error: again.error,
       plan
-    };
+    });
   };
 
   while (true) {
     const streamed = await input.stream(messages, round);
-    if (input.aborted()) return { text: streamed.text, rounds: round, activity, capped: false, error: null, plan };
+    if (input.aborted()) return stamp({ text: streamed.text, rounds: round, activity, capped: false, error: null, plan });
     round += 1;
     text = streamed.text;
     input.onRound?.(round - 1, streamed.text);
-    if (streamed.error) return { text, rounds: round, activity, capped: false, error: streamed.error, plan };
+    if (streamed.error) return stamp({ text, rounds: round, activity, capped: false, error: streamed.error, plan });
 
     const blocks = parseToolBlocks(streamed.text);
     if (blocks.length === 0) {
@@ -193,7 +198,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         messages.push({ role: 'user', content: EXPLORATION_NUDGE });
         continue;
       }
-      return { text, rounds: round, activity, capped: false, error: null, plan };
+      return stamp({ text, rounds: round, activity, capped: false, error: null, plan });
     }
 
     const fresh: ToolCall[] = [];
@@ -311,11 +316,17 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     }
 
     usable.forEach((call, index) => activity.push(toActivity(call, outcomes[index], batchDurationMs)));
+    for (const outcome of outcomes) {
+      if (outcome?.proof) failureProof = outcome.proof;
+    }
     history.push({ calls: usable.map((call) => serializeCallKey(call)), changedFiles: 0 });
-    if (input.aborted()) return { text: stripToolBlocks(streamed.text), rounds: round, activity, capped: false, error: null, plan };
+    if (input.aborted()) return stamp({ text: stripToolBlocks(streamed.text), rounds: round, activity, capped: false, error: null, plan });
 
     messages.push({ role: 'assistant', content: streamed.text });
-    const observation = serializeResults(usable.map((call, index) => ({ name: call.name, ...outcomes[index] })));
+    const observation = serializeResults(usable.map((call, index) => {
+      const { proof: _proof, ...rest } = outcomes[index];
+      return { name: call.name, ...rest };
+    }));
     // A call that was refused or cut still needs saying when the round ran
     // something: dropping the note is how a model keeps re-asking blind.
     messages.push({ role: 'user', content: problems.length > 0 ? `${observation}\n\nAlso: ${problems.join(' ')}` : observation });
@@ -330,7 +341,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         continue;
       }
       const prose = stripToolBlocks(streamed.text).trim();
-      return {
+      return stamp({
         text: prose || (finished as { summary: string }).summary,
         rounds: round,
         activity,
@@ -338,7 +349,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         error: null,
         plan,
         finish: finished as { summary: string; blocked: string | null }
-      };
+      });
     }
 
     const stuck = detectStuck(history);

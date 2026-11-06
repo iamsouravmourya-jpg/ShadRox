@@ -345,9 +345,14 @@ function SelfHealingProofCard({ proof }: { proof: import('../lib/repairProof').F
         </div>
       </div>
 
-      <div className="mt-2 text-[10.5px] font-mono text-neutral-300 bg-black/40 rounded p-2 border border-white/[0.04]">
-        {proof.errorMessage}
-      </div>
+      {proof.errorMessage && (
+        <div className="mt-2 text-[10.5px] font-mono text-neutral-300 bg-black/40 rounded p-2 border border-white/[0.04]">
+          {proof.errorMessage}
+        </div>
+      )}
+      {proof.checkpointId && (
+        <p className="mt-1.5 text-[10px] font-mono text-neutral-500">Undo checkpoint {proof.checkpointId} is saved for this turn.</p>
+      )}
 
       {proof.verificationEvidence && (
         <div className="mt-2 text-[10px] font-mono text-emerald-400 flex items-center gap-1">
@@ -810,7 +815,7 @@ function PatchHunkReview({ sections, onApply }: PatchHunkReviewProps) {
                     {isRejected ? 'Rejected' : 'Accepted'}
                   </button>
                 </div>
-                <div className="max-h-40 overflow-y-auto px-1.5 pb-1.5 font-mono text-[10px] leading-relaxed">
+                <div className="max-h-40 overflow-auto px-1.5 pb-1.5 font-mono text-[10px] leading-relaxed">
                   {section.beforeLines.slice(hunk.beforeStart, hunk.beforeEnd).map((line, index) => (
                     <div key={`removed-${index}`} className="flex gap-1.5 whitespace-pre text-rose-200/90">
                       <span className="w-2 shrink-0 select-none text-rose-400/60">−</span>
@@ -929,6 +934,7 @@ export function ChatPanel({
   activeStatusMessage = null
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
@@ -995,6 +1001,9 @@ export function ChatPanel({
   }, [speech.transcript]);
 
   useEffect(() => {
+    // Streaming rewrites `messages` on every delta; without this the pane
+    // yanks the reader back down whenever they scroll up mid-reply.
+    if (!stickToBottomRef.current) return;
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages]);
 
@@ -1281,7 +1290,14 @@ export function ChatPanel({
       )}
 
       {/* Messages Scroll Area */}
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4 text-xs">
+      <div
+        ref={scrollRef}
+        className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4 text-xs"
+        onScroll={(event) => {
+          const el = event.currentTarget;
+          stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        }}
+      >
         {backgroundResume && (
           <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.07] px-3 py-2.5">
             <div className="flex items-start gap-2">
@@ -1691,6 +1707,7 @@ export function ChatPanel({
             diff={checkpointDiff}
             diffLoading={checkpointDiffLoading}
             onExportReceipt={onExportDeltaReceipt}
+            disabled={isGenerating}
           />
         </div>
       )}
@@ -1702,7 +1719,7 @@ export function ChatPanel({
           <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-rose-500/25 bg-rose-500/[.07] p-2 text-[11px] text-rose-300">
             <div className="flex items-center gap-1.5 min-w-0">
               <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-              <span className="truncate">Out of credits this month ({Math.round(usage.limit)}/{Math.round(usage.limit)})</span>
+              <span className="truncate">Out of credits this month ({Math.round(usage.used)}/{Math.round(usage.limit)})</span>
             </div>
             <button
               type="button"

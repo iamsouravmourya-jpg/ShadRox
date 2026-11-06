@@ -12,7 +12,7 @@ export function BetaCta() {
           <div
             className="relative mx-auto max-w-3xl overflow-hidden rounded-3xl p-8 text-center sm:p-12"
             style={{
-              background: 'linear-gradient(160deg, #3a1fa8, #6d4aff 55%, #c084fc)',
+              background: 'linear-gradient(155deg, #2a3142 0%, #6d7382 42%, #6a4de0 74%, #3ec8ea 100%)',
             }}
           >
             {/* Orb decorations */}

@@ -1,6 +1,0 @@
-{
-  "summary": "Comprehensive architectural implementation plan for ShadRox BIG-TASK v0.0.7 engineering push, covering:\n1. Security-first verifyCommand strict allowlist per binary (npm test, pytest, tsc, git diff) via execFile argv with human approval dialog for all others.\n2. Phase 3A Terminal integration with real-time OSC escape sequences for command start, exit code, cwd, and structured agent state inspection.\n3. Phase 3D Signature Flagship: Self-Healing Proof with live assertion capture, failure receipts, and repair PR generation.\n4. Ledgers wiring: proof ledger, preview assertions, spend ledger, prompt caching (3C), and model metadata normalization.\n5. Phase 4 Release & Integration Battery gates reserved for explicit user GO.",
-  "updatedAt": "2026-11-05T22:09:28.452840529Z",
-  "requestFeedback": true,
-  "userFacing": true
-}

@@ -1,5 +1,5 @@
 import type { ToolCall } from './tools';
-import { markUntrustedData as markUntrustedPayload } from '../untrustedData';
+import { scrubWorkspaceText } from '../envSafety';
 
 /**
  * The wire format for a tool round.
@@ -16,6 +16,8 @@ const MAX_PARSED_CALLS = 16;
 /** One observation may not eat the context: the round's results share this budget. */
 const MAX_ROUND_RESULT_CHARS = 48_000;
 const MIN_RESULT_CHARS = 1_000;
+const UNTRUSTED_DATA_BEGIN = '[[SHADROX_UNTRUSTED_DATA_BEGIN]]';
+const UNTRUSTED_DATA_END = '[[SHADROX_UNTRUSTED_DATA_END]]';
 
 export interface ParsedToolBlock {
   calls: ToolCall[];
@@ -128,7 +130,10 @@ export function serializeResults(results: Array<{ name: string; ok: boolean; con
 }
 
 export function markUntrustedData(content: string): string {
-  return markUntrustedPayload(content);
+  const escaped = scrubWorkspaceText(content)
+    .replaceAll(UNTRUSTED_DATA_BEGIN, `\\${UNTRUSTED_DATA_BEGIN}`)
+    .replaceAll(UNTRUSTED_DATA_END, `\\${UNTRUSTED_DATA_END}`);
+  return `${UNTRUSTED_DATA_BEGIN}\n${escaped}\n${UNTRUSTED_DATA_END}`;
 }
 
 function cutToShare(content: string, limit: number): string {

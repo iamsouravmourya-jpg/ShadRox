@@ -10,7 +10,12 @@ coverage/
 reference/
 # Legacy autonomous engine: unsafe and unwired; kept locally for idea-mining only.
 autonomous/
+# Moved drafts and agent worktree copies. Not part of the app.
+_junk/
+shadrox-dist-060/
+vibe_images/
 .DS_Store
 *.log
 .env*
 !.env.example
+

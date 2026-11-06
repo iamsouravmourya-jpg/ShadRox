@@ -9,8 +9,9 @@ import {
 } from './quota';
 
 /** localStorage + the two window listeners quota.ts talks to. */
-function withBrowser(run: () => void): void {
+function withBrowser(run: () => void, sharedKey = false): void {
   const store = new Map<string, string>();
+  if (sharedKey) store.set('shadrox.key.shared', 'true');
   const previousStorage = Reflect.get(globalThis, 'localStorage');
   const previousWindow = Reflect.get(globalThis, 'window');
   Reflect.set(globalThis, 'localStorage', {
@@ -57,7 +58,7 @@ test('a plan tier is spent down at the published rates', () => {
       getMonthlyUsage('starter').used,
       CREDIT_RATES.chatter + CREDIT_RATES.codeEdit + CREDIT_RATES.tabCompletion
     );
-  });
+  }, true);
 });
 
 test('the cap is reached exactly at the plan allowance', () => {
@@ -71,7 +72,23 @@ test('the cap is reached exactly at the plan allowance', () => {
     assert.equal(usage.isCapReached, true);
     assert.equal(usage.remaining, 0);
     assert.equal(usage.percentage, 100);
-  });
+  }, true);
+});
+
+/**
+ * ShadRox pays for nothing when the user's own key carries the request, so a
+ * paid plan on BYOK must neither lose credits nor get blocked.
+ */
+test('a paid plan running on the user\'s own key is not metered and not capped', () => {
+  withBrowser(() => {
+    resetMonthlyUsage();
+    addCreditSpend(getPlanMeta('starter').creditsPerMonth);
+    for (let turn = 0; turn < 50; turn += 1) recordCreditSpend('starter', 'codeEdit');
+    const usage = getMonthlyUsage('starter');
+    assert.equal(usage.used, 0, 'a BYOK turn is not counted');
+    assert.equal(usage.isCapReached, false, 'a BYOK turn is never blocked by the cap');
+    assert.equal(usage.isUnlimited, true);
+  }, false);
 });
 
 test('Pro carries more credits than Starter', () => {

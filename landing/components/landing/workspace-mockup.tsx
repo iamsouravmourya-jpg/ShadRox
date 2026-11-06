@@ -78,7 +78,7 @@ export function WorkspaceMockup() {
           </div>
 
           {/* Status line */}
-          <div className="absolute bottom-0 left-0 right-0 flex items-center gap-2 border-t border-white/8 bg-[linear-gradient(90deg,#6d4aff,#ec4899)] px-3 py-1.5 font-mono text-[9px] text-white sm:left-0 sm:right-[180px] lg:right-[210px]">
+          <div className="absolute bottom-0 left-0 right-0 flex items-center gap-2 border-t border-white/8 bg-[linear-gradient(90deg,#8b93a7,#6a4de0,#3ec8ea)] px-3 py-1.5 font-mono text-[9px] text-white sm:left-0 sm:right-[180px] lg:right-[210px]">
             <span>⎇ main</span>
             <span className="opacity-60">·</span>
             <span>0 errors</span>
@@ -95,7 +95,7 @@ export function WorkspaceMockup() {
             <Sparkles className="size-3 text-violet-300" />
             <span>AI chat</span>
           </div>
-          <div className="justify-self-end ml-auto max-w-[90%] rounded-xl bg-[#6d4aff] px-3 py-2 text-[10px] leading-4 text-white mb-2">
+          <div className="justify-self-end ml-auto max-w-[90%] rounded-xl bg-[linear-gradient(135deg,#6a4de0,#3ec8ea)] px-3 py-2 text-[10px] leading-4 text-white mb-2">
             Add a loading state
           </div>
           <div className="rounded-xl border border-white/8 bg-white/[.03] px-3 py-2 leading-4 text-zinc-400 mb-2">

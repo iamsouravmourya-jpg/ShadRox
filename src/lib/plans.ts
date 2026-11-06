@@ -125,7 +125,7 @@ export function getPlanEntitlementNote(plan: PlanTier, sharedKeyEligible: boolea
   }
   const allotment = `${meta.creditsPerMonth.toLocaleString('en-IN')} credits a month`;
   const meter =
-    'The counter on this device moves for any paid plan, even when your own key ran the request, and the server does not enforce it yet.';
+    'Turns carried by your own key are neither counted nor capped — the meter and the cap apply only to requests that run on the ShadRox shared key.';
   return sharedKeyEligible
     ? `${allotment} pay for requests run on the ShadRox shared key. That key answers only while the operator has it enabled on the server; on a plain beta install your own BYOK key still carries every request. ${meter}`
     : `${allotment} pay for requests run on the ShadRox shared key, and this beta does not open that path for ${meta.label}. ${meter}`;

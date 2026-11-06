@@ -23,23 +23,20 @@ A native desktop workspace for working on local projects with an editor, Markdow
 
 > **ShadRox is beta software (v0.0.6).** It is not a mature replacement for a general-purpose IDE. Agent output and model-generated edits can be incorrect — inspect proposed changes and keep backups or use Git for important work.
 
-**In the v0.0.6 release**
-- **Assistant shell access.** The agent can run a command in the opened folder and read its real exit code and output, so it can start a build, run tests, or stop a process instead of guessing.
+The download button points at the **last published** GitHub release. This source tree is still version `0.0.6` and includes the behavior below. A newer local installer is not on GitHub until it is published.
+
+**In this source tree**
+- **Assistant shell access.** The agent can run a command in the opened folder and read its real exit code and output.
+- **Command approval.** Only these exact forms may run without a dialog: `npm test`, `pytest`, `python -m pytest`, `tsc --noEmit`, `npx tsc --noEmit`, `git diff`, `git status`. The match is on the whole command line, so an extra argument — `tsc --outFile build.js`, `git diff --output patch.txt`, `pytest tests/unit` — is not on the list and needs approval, and any shell metacharacter or path separator (`; & | > < $ \` ( ) / \ quote`) is refused before the match. Every other command needs a native approval dialog. The workspace is checked again after approval and before the command runs.
 - **Verified writes.** After applying edits, ShadRox re-reads the files and only reports a save when the bytes on disk actually changed.
-- **Redesigned replies.** Assistant answers render as cards with headings, tables, quotes, editor-style code blocks, and one-click copy.
-- **Self-healing preview.** Preview servers left behind by a force-closed app and stale Next.js dev locks are detected and cleaned up automatically the next time the same project starts, so ports stop getting stuck.
-- **New logo.** A refreshed shield-and-ribbon mark ships across the app, installer, and [landing page](https://www.shadrox.cyou).
-
-**Additional implementation in this source checkout**
-
-The repository includes work beyond the downloadable v0.0.6 release:
-- **Command Security Gate & Binary Allowlist.** Verification commands strictly enforce a default-deny binary allowlist (`npm test`, `pytest`, `tsc`, `git diff`) executed via safe `execFile` argv tuples. Shell metacharacters are rejected at the parser boundary, and all other commands require explicit native human approval dialogs.
-- **OSC Shell Integration (OSC 133 / 633 / 7).** Real-time escape sequence parsing streams prompt boundaries, command start/finish events, exit codes, live CWD updates, and hung process detection into a structured terminal state engine without ANSI stream pollution.
-- **Self-Healing Proof Engine.** Flagship verification system capturing DOM assertions, runtime console errors, exit codes, and git diffs into verifiable failure receipts, generating surgical repair briefs and verifying atomic fix patches.
-- **Proof & Spend Ledgers.** Milestone proof persistence and provider prompt cache hit tracking (Gemini `cachedContentTokenCount` & OpenAI `cached_tokens`) calculating real-time token usage, cache hit ratios, and cost savings.
-- **Workspace consent tracking.** Reopening a recent folder verifies the path was previously opened via a system dialog; unknown paths prompt a confirmation before mounting.
-- **Credential scrubbing.** Provider error messages and agent command environments are scrubbed for GitHub tokens, AWS access keys, and credential-shaped values.
-- **Model-aware context budgets.** A best-effort model capability registry supplies context-window and output limits used when fitting prompts.
+- **Terminal state.** PowerShell and bash emit OSC 133 / 633 markers for cwd, command text, and exit code. The panel shows cwd and the last exit code, and notices a running command that has gone silent. Command Prompt and plain `/bin/sh` are not wrapped. The agent can read that summary with `terminal_state`. It cannot type into the interactive shell.
+- **Failure receipts.** A failed `run_command` is shown on the assistant message with that turn's undo checkpoint id. The model receives the error and a repair brief. ShadRox does not apply a repair patch by itself.
+- **Preview.** Stale preview servers and Next.js dev locks are cleaned up the next time that project starts. After a preview is ready, a bounded check reports `ok`, `warn`, `fatal`, or `observed`. `observed` means the check could not prove the page.
+- **Proof and spend.** Assistant commands append a local ledger line with hashes of the command and its output, not the output text. Settings tracks provider-reported token use, including cache hits when the provider sends them.
+- **Workspace consent.** Reopening a folder or file requires a path the main process already accepted. An unknown path asks again before it is mounted.
+- **Credential scrubbing.** API error text is redacted for GitHub and AWS-shaped tokens. Terminal environments drop credential-shaped variables.
+- **Context budgets.** Prompt fitting uses per-model window and output limits. Stable prompt prefixes are shaped for providers that can cache them.
+- **Replies and logo.** Assistant answers render as cards. The shield-and-ribbon mark is the app icon. Landing call-to-action accents use silver, violet, and cyan.
 
 ## What is ShadRox?
 
@@ -51,16 +48,16 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 
 | | Feature | What it does |
 |---|---|---|
-| 🛡️ | **Command Security Gate** | Enforces a strict default-deny binary allowlist (`npm test`, `pytest`, `tsc`, `git diff`) with safe `execFile` argv tuples. Blocks shell metacharacters and routes unapproved commands to native human approval dialogs. |
-| 📟 | **OSC Shell Integration** | Real-time `OSC 133`, `OSC 633`, and `OSC 7` escape sequence parser tracking prompt boundaries, command start/end, exit codes, live CWD breadcrumbs, and hung execution. |
-| 🩹 | **Self-Healing Proof** | Signature verification system capturing failure receipts (stack traces, DOM/console assertions, exit codes, diffs) and generating atomic repair patches with post-repair verification. |
-| 📊 | **Proof & Spend Ledgers** | Persists milestone execution proofs and tracks provider prompt cache savings (`cachedTokens`) and hit ratios across turns. |
+| 🛡️ | **Command approval** | A short verify allowlist can run silently. Any other shell command waits for a native dialog. `delete_file` also requires `confirm: true` and a follow-up read that proves the path is gone. |
+| 📟 | **Terminal state** | PowerShell and bash report cwd, the command line, and the exit code. The panel shows them, and `terminal_state` lets the agent read the same summary, including how long a command has been silent. |
+| 🩹 | **Failure receipts** | A failed assistant command becomes a receipt on the chat message, with the turn's undo checkpoint id. The model sees the error. A patch is still a normal reviewed edit, not an automatic rewrite. |
+| 📊 | **Proof and spend** | Command ledger lines store hashes, not output text. Spend tracking uses the token counts the provider reports, including cache hits when that field exists. |
 | 📁 | **Project Explorer** | Open a local folder or selected files, browse the workspace tree, and create, rename, or delete files and folders. Files are loaded as you open them. |
 | ✏️ | **Editor & Markdown preview** | CodeMirror 6 editing, split editor groups, pinned/reorderable tabs, quick open, outline, inline completions, and a one-click source/preview toggle for Markdown files. |
 | 🔍 | **Code navigation** | TypeScript diagnostics, go-to-definition, find references, rename, quick fixes, semantic highlighting, and workspace symbol search where supported. |
 | 💬 | **AI chat and queue** | Use Gemini, Groq, or a custom OpenAI-compatible endpoint. Replies render as cards with headings, tables, quotes, and copyable code blocks. Queue follow-up messages while a turn is running; inspect proposed file changes and review supported diffs before applying. Dictate prompts with voice input. |
 | ⌘ | **Command palette & quick edit** | Fuzzy-find files, workspace symbols, and commands from one palette; select code and press Ctrl+K for an inline AI edit; accept ghost-text completions powered by server-side FIM. |
-| 🤖 | **Bounded agent loop** | Multi-round tool use with native provider calls where supported and a text-protocol fallback. Built-in workspace tools list directories, read files, search names and text, inspect diagnostics and Git state, outline files, and run one shell command with its real exit code; every request also carries a compact repo map as context. Turns have tool and iteration limits. |
+| 🤖 | **Bounded agent loop** | Multi-round tool use with native provider calls where supported and a text-protocol fallback. Built-in tools list directories, read files, search names and text, inspect diagnostics and Git state, outline files, delete one path, read terminal state, and run one shell command with its real exit code. Every request also carries a compact repo map. Turns have tool and iteration limits. |
 | 🚀 | **Multi-step runs and teams** | Plan larger work as tasks, run verification/repair stages, or coordinate specialist roles. Features an autonomous DAG execution engine and role-confined agent teams. |
 | 🔌 | **MCP servers** | Connect user-configured Model Context Protocol servers. External tool calls require approval. |
 | 👁️ | **Local preview & assertions** | Preview Markdown, static sites, detected Node web projects, and Python/Go/PHP/Java/.NET backends. Includes DOM route, element, and console error assertions. |
@@ -137,9 +134,11 @@ The agent is more than a one-shot text patch parser. It can request bounded roun
 - Diagnostics
 - Git state
 - File outlines
+- Delete one file or an empty folder (`delete_file`, requires `confirm: true`, then a disk check)
+- Read the interactive terminal (`terminal_state`: cwd, running command, last exit code, silent seconds)
 - One shell command per call (`run_command`)
 
-`run_command` runs in the opened folder and returns the real exit code, stdout, and stderr, so the agent can start a build, run tests, inspect Git, or stop a process (including a server holding a port) instead of claiming a result it never saw. A command that can create, modify, or delete files — `rm`, `mv`, `git commit`, an install, output redirection to a file — is refused unless the model passes `confirm: true`, which it is instructed to use only when you asked for that change. Every assistant command and its result is echoed into the terminal panel.
+`run_command` runs in the opened folder and returns the real exit code, stdout, and stderr. A model field is not permission. The verify allowlist above can run without a dialog; every other command opens a native approval dialog, and the workspace is checked again before execution. A non-zero exit becomes a failure receipt on that chat message. The command and its result are also echoed into the terminal panel. `terminal_state` only reads. It does not send keystrokes.
 
 The model can also update its task plan and finish a turn explicitly. A turn is limited to **five tool rounds** by default, with up to six calls in a round.
 
@@ -181,7 +180,7 @@ Teams share the same bounded tool loop and guarded patch path. Each agent's brie
 - Groq
 - Custom OpenAI-compatible endpoints (including Ollama, LM Studio, and compatible gateways)
 
-The beta runs on **Bring Your Own Key (BYOK)**. Add a provider key in Settings; model availability and charges depend on that provider. Optional local spend caps in **Settings → Models & Keys** can limit one chat turn, one day, or one autonomous run. Caps are off by default and use provider-reported token usage, so treat them as a safety estimate rather than provider billing.
+The beta runs on **Bring Your Own Key (BYOK)**. Add a provider key in Settings; model availability and charges depend on that provider. While your own key carries the request, nothing is metered and nothing is capped — ShadRox bills no credits for it. Credits and the monthly cap apply only to requests run on the optional ShadRox shared key, and no payment is taken in this beta.
 
 **Project context** is assembled locally for each request and can include:
 - Selected files
@@ -215,9 +214,9 @@ Opening a project workspace automatically starts its detected preview script and
 
 For a running local preview, **Check** inspects only bounded frame structure and recent console errors. An **Observed** result is deliberately not a claim that the page looks correct.
 
-The **integrated terminal** is an interactive shell rooted in the workspace. Credential-shaped environment variables (API keys, tokens) are stripped from every terminal session before it starts. Assistant-initiated commands run non-interactively and report the captured exit code and output back into the chat; they do not get an interactive session. A strict verification allowlist (`npm test`, `npm run test`/`typecheck`, `npx tsc`, `npx pytest`, `pytest`, `tsc`, `git diff`) — exact argv, no shell metacharacters — runs without a prompt; **everything else requires one-time approval in a native dialog**, and the workspace is re-verified between approval and execution.
+The **integrated terminal** is an interactive shell rooted in the workspace. Credential-shaped environment variables are stripped before the shell starts. PowerShell and bash load a small ShadRox script that reports cwd, the command line, and the exit code. Assistant commands are a separate non-interactive run: they do not type into that shell. The same verify allowlist can run without a prompt; **everything else requires approval in a native dialog**, and the workspace is checked again between approval and execution.
 
-The local proof ledger records confirmed file-apply hashes and provider-reported usage metadata, not prompt or file contents. Ledger records are hash-chained and signed; signing keys are stored in the app's OS-encrypted store. This is tamper-evidence, not a remote attestation or protection against an attacker who controls the machine.
+Assistant commands append a proof line under the app's user-data folder: hashes of the command, stdout, and stderr, plus the exit code. The line does not store the output text. Separately, the Ed25519 proof ledger can sign records and keep its keys in the OS encrypted store. A matching signature shows the ledger file was not edited after the fact. It is not remote attestation, and it does not protect a machine the attacker already controls.
 
 ## Tech Stack
 
@@ -295,7 +294,7 @@ npm run dev:landing
 
 ```
 shadrox/
-├── electron/           # Main process: IPC, workspace consent, command approval, preview, terminal, MCP, updater
+├── electron/           # Main process: IPC, workspace consent, command approval, preview checks, shell integration, proof store, terminal, MCP, updater
 ├── src/
 │   ├── components/      # React UI: editor, chat, preview, terminal, settings, explorer
 │   ├── hooks/           # React hooks
@@ -309,7 +308,8 @@ shadrox/
 │       ├── machine/     # Machine Delta support modules
 │       ├── plugins/     # Plugin manifest, loader, hook engine
 │       ├── preview/     # Preview instrumentation experiments (shipped click-to-source lives in src/lib/previewSource.ts)
-│       └── terminal/    # Terminal sessions, ring buffer, dock height
+│       ├── proof/       # Signed proof ledger and offline verification
+│       └── terminal/    # Sessions, OSC parser, terminal state, ring buffer
 ├── api/
 │   ├── ai/             # Chat, FIM, commit message, budget, spend guard, upstream
 │   ├── byok/           # BYOK key validation
@@ -348,7 +348,7 @@ Google sign-in through Supabase is required to enter the app. Supabase stores ac
 ## Beta Limitations
 
 - This is **beta software.** Agent output and model-generated edits can be incorrect; inspect diffs and retain backups.
-- Provider-native tool calls are used where supported, with ShadRox's text protocol as a fallback. Reads and inspections are unguarded; file edits go through the patch pipeline, and shell commands that can mutate files require the explicit `confirm: true` gate. The command guard is a blacklist, not a sandbox — it can miss indirect mutations.
+- Provider-native tool calls are used where supported, with ShadRox's text protocol as a fallback. Reads and inspections are unguarded. File edits go through the patch pipeline. `delete_file` requires `confirm: true`. Other shell commands need the native approval dialog unless they match the verify allowlist. Approval is not a sandbox: an approved command can still change the machine.
 - Agent loops, autonomous runs, teams, plugins, and automations are evolving features; verify important work yourself.
 - Preview support is **project-dependent**; not every language, framework, or server configuration can be run in the preview pane.
 - Google sign-in and Supabase configuration are required for the desktop app. BYOK keys and access to models are the user's responsibility.
