@@ -1,13 +1,33 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
 import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
-import { UpstreamError, mergeGeminiUsage, usageFields, type StreamRequest, type StreamResult, type StreamSink, type TokenUsage, type ToolCallEntry } from './_types.js';
+import { shapeStablePrefix } from './_promptCache.js';
+import { UpstreamError, mergeGeminiUsage, usageFields, type ChatMessage, type StreamRequest, type StreamResult, type StreamSink, type TokenUsage, type ToolCallEntry } from './_types.js';
 import { rejectsNativeTools } from './_toolCalls.js';
 import { fetchUpstream } from './_upstream.js';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
-function buildSystemInstruction(request: StreamRequest): string {
-  const inline = request.messages
+/**
+ * Gemini's cache placement, the `system_instruction_prefix` mode of
+ * `./_promptCache.ts`: the REST format has no per-message cache field and no
+ * `cachedContent` marker is created here (see that file's header for why), but
+ * `systemInstruction` is the one block the API keeps outside the turn list, and
+ * implicit context caching bills the reused leading prefix back as
+ * `usageMetadata.cachedContentTokenCount`. So the marker this family gets is:
+ * every stable block — the caller's instruction and any inline system turn —
+ * hoisted into `systemInstruction` in a fixed order, `contents` append-only,
+ * volatile turn last.
+ *
+ * `shapeStablePrefix` is idempotent, so routes that already shaped their
+ * messages (`chat.ts`) are unaffected and routes that did not get the same
+ * guarantee.
+ */
+function cacheShaped(request: StreamRequest): ChatMessage[] {
+  return shapeStablePrefix(request.provider, request.model, request.messages).messages;
+}
+
+function buildSystemInstruction(request: StreamRequest, shaped: readonly ChatMessage[]): string {
+  const inline = shaped
     .filter((message) => message.role === 'system')
     .map((message) => message.content);
   return [request.systemInstruction, ...inline]
@@ -15,8 +35,8 @@ function buildSystemInstruction(request: StreamRequest): string {
     .join('\n\n');
 }
 
-function buildContents(request: StreamRequest) {
-  return request.messages
+function buildContents(request: StreamRequest, shaped: readonly ChatMessage[]) {
+  return shaped
     .filter((message) => message.role !== 'system')
     .map((message) => ({
       role: message.role === 'assistant' ? 'model' : 'user',
@@ -30,8 +50,9 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
   // query parameter: query strings get written into proxy/CDN logs and can be
   // echoed back inside upstream error bodies.
   const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
-  const contents = buildContents(request);
-  const systemText = buildSystemInstruction(request);
+  const shaped = cacheShaped(request);
+  const contents = buildContents(request, shaped);
+  const systemText = buildSystemInstruction(request, shaped);
 
   const send = (generationConfig: Record<string, unknown>, withTools: boolean) =>
     fetchUpstream(

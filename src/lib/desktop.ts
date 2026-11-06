@@ -390,9 +390,174 @@ export type UpdaterStatus =
   | { state: 'ready'; version: string }
   | { state: 'error'; message: string };
 
+/** One canonical record of the signed proof chain, as stored on disk. */
+export interface DesktopProofRecord {
+  v: 1;
+  seq: number;
+  ts: number;
+  workspace: string;
+  type: string;
+  actor: string;
+  messageId: string | null;
+  data: Record<string, unknown>;
+  prev: string;
+  keyId: string;
+  hash: string;
+  sig: string;
+}
+
+/** `{sequence number, payload hash}` pair the desktop returns after an append. */
+export interface ProofAppendResult {
+  seq: number;
+  ts: number;
+  proofHash: string;
+  keyId: string;
+  receiptHash?: string;
+}
+
+/**
+ * A receipt replayed from the durable chain. `proofHash` is the hash of the
+ * record that produced this state, so a caller can tie what it shows the user
+ * back to a signed ledger entry even after a restart.
+ */
+export interface ProofReceiptEntry {
+  receipt: import('./repairProof').FailureReceipt;
+  receiptHash: string | null;
+  proofHash: string | null;
+  seq: number | null;
+  ts: number | null;
+  workspace: string | null;
+}
+
+export interface ProofVerifySummary {
+  workspaceId: string;
+  totalRecords: number;
+  ok: boolean;
+  failures: number;
+  tamperedRecords: number[];
+  brokenLinks: number[];
+  gaps: number[];
+  signatureFailures: number[];
+  unknownKeys: number[];
+  truncatedTail: boolean;
+  keyIds: string[];
+  detail: string;
+}
+
 export interface DesktopAuthResult {
   params?: Record<string, string>;
   error?: string;
+}
+
+/** One entry of `shadrox.debug.json` at the workspace root, after validation. */
+export interface DebugLaunchConfig {
+  name: string;
+  type: 'node';
+  request: 'launch';
+  program: string;
+  runtimeExecutable?: string;
+  args?: string[];
+  cwd?: string;
+  adapterCommand: string;
+  adapterArgs?: string[];
+}
+
+export interface DebugConfigResult {
+  /** False when the workspace has no `shadrox.debug.json`. */
+  found: boolean;
+  /** Absolute path the result was read from. */
+  path: string;
+  configurations: DebugLaunchConfig[];
+  /** Validation problem, e.g. a program that escapes the workspace. */
+  error: string | null;
+}
+
+export interface DebugBreakpoint {
+  /** Workspace-relative path. */
+  file: string;
+  line: number;
+  verified: boolean;
+  id: number | null;
+}
+
+export interface DebugThread {
+  id: number;
+  name: string;
+}
+
+export interface DebugStackFrame {
+  id: number;
+  name: string;
+  /** Workspace-relative path, or null for a frame outside the workspace. */
+  file: string | null;
+  line: number | null;
+  column: number | null;
+  sourceName: string | null;
+}
+
+export interface DebugScope {
+  name: string;
+  variablesReference: number;
+  expensive: boolean;
+  presentationHint: string | null;
+}
+
+export interface DebugVariable {
+  name: string;
+  value: string;
+  type: string | null;
+  variablesReference: number;
+}
+
+export interface DebugEvaluation {
+  result: string;
+  type: string | null;
+  variablesReference: number;
+}
+
+export type DebugStatus = 'idle' | 'starting' | 'running' | 'stopped' | 'terminated' | 'error';
+
+export interface DebugState {
+  status: DebugStatus;
+  workspaceId: string | null;
+  configName: string | null;
+  threadId: number | null;
+  frameId: number | null;
+  stopReason: string | null;
+  exception: boolean;
+  message: string | null;
+  /** Recent debuggee output, clipped in the main process. */
+  output: string;
+}
+
+export type DebugEvent =
+  | { type: 'state'; workspaceId: string; state: DebugState }
+  | { type: 'stopped'; workspaceId: string; threadId: number | null; reason: string; exception: boolean; allThreadsStopped: boolean }
+  | { type: 'continued'; workspaceId: string; threadId: number | null }
+  | { type: 'terminated'; workspaceId: string; message?: string }
+  | { type: 'output'; workspaceId: string; category: string; text: string }
+  | { type: 'breakpoint'; workspaceId: string; reason: string; breakpoint: { id: number | null; verified: boolean; line: number | null; file: string | null } }
+  | { type: 'error'; workspaceId: string; message: string };
+
+/** The main-process DAP host, absent in a browser build. */
+export interface DebugDesktopAPI {
+  config: (workspaceId: string) => Promise<DebugConfigResult>;
+  start: (workspaceId: string, configName?: string) => Promise<DebugState>;
+  stop: (workspaceId: string) => Promise<void>;
+  setBreakpoints: (workspaceId: string, path: string, lines: number[]) => Promise<DebugBreakpoint[]>;
+  threads: (workspaceId: string) => Promise<DebugThread[]>;
+  stack: (workspaceId: string) => Promise<DebugStackFrame[]>;
+  scopes: (workspaceId: string, frameId: number) => Promise<DebugScope[]>;
+  variables: (workspaceId: string, variablesReference: number) => Promise<DebugVariable[]>;
+  /** Evaluate one identifier for a hover tooltip; paused sessions only. */
+  evaluate: (workspaceId: string, frameId: number, expression: string) => Promise<DebugEvaluation>;
+  continue: (workspaceId: string, threadId?: number) => Promise<DebugState>;
+  next: (workspaceId: string, threadId?: number) => Promise<DebugState>;
+  stepIn: (workspaceId: string, threadId?: number) => Promise<DebugState>;
+  stepOut: (workspaceId: string, threadId?: number) => Promise<DebugState>;
+  pause: (workspaceId: string, threadId?: number) => Promise<DebugState>;
+  state: (workspaceId: string) => Promise<DebugState>;
+  onEvent: (listener: (event: DebugEvent) => void) => () => void;
 }
 
 export interface ShadRoxDesktopAPI {
@@ -553,6 +718,27 @@ export interface ShadRoxDesktopAPI {
     getAll: () => Promise<Record<string, string>>;
     set: (key: string, value: string) => Promise<boolean>;
     delete: (key: string) => Promise<boolean>;
+  };
+  /**
+   * The DAP debugger (main process). Optional so a browser build without the
+   * Electron bridge still type-checks; every caller gates on its presence.
+   */
+  debug?: DebugDesktopAPI;
+  /**
+   * The durable, signed proof chain (main process). Absent in a browser, where
+   * receipts stay in memory for the session only.
+   */
+  proof?: {
+    /** Append a failure receipt (`kind: 'record' | 'update'`) to the chain. */
+    appendReceipt: (receipt: import('./repairProof').FailureReceipt, kind?: 'record' | 'update') => Promise<ProofAppendResult>;
+    /** Append a verified plan milestone to the chain. */
+    appendMilestone: (proof: import('./proofLedger').MilestoneProofRecord) => Promise<ProofAppendResult>;
+    /** Replay every receipt from the chain, newest first, with its proof hash. */
+    receipts: () => Promise<ProofReceiptEntry[]>;
+    /** Raw records of one ledger; the workspace id defaults to the app scope. */
+    records: (workspaceId?: string) => Promise<DesktopProofRecord[]>;
+    /** Chain + signature verification of one ledger. */
+    verify: (workspaceId?: string) => Promise<ProofVerifySummary>;
   };
   auth: {
     /** Opens the system browser and resolves with the loopback callback's query params. */

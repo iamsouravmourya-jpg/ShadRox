@@ -18,6 +18,7 @@ import {
   type SystemContext
 } from './contextBudget';
 import { resolveContextWindow } from './modelCapabilities';
+import { USER_ASK_MIN_CHARS } from './compaction/pairOrder';
 
 test('reserves half the context window for model output, floor 4096', () => {
   assert.equal(reservedOutputTokens(8_000), 4_096);
@@ -90,6 +91,27 @@ test('caps the instruction to 60% of the input budget, floored and globally capp
   assert.equal(systemInstructionBudgetChars(4_000_000), MAX_SYSTEM_INSTRUCTION_CHARS, 'huge windows keep the 80k ceiling');
 });
 
+test('the live turn keeps its tool observation while older prose is folded', () => {
+  const call = '```shadrox:tools\nread_file {"path":"src/a.ts"}\n```';
+  const observation = `\`\`\`shadrox:results\n${'export const value = 1;\n'.repeat(60)}\`\`\``;
+  const messages = [
+    { role: 'assistant' as const, content: 'old answer. '.repeat(1_500) },
+    { role: 'user' as const, content: 'older ask '.repeat(1_000) },
+    { role: 'assistant' as const, content: 'older answer. '.repeat(1_000) },
+    { role: 'user' as const, content: 'open src/a.ts and check it' },
+    { role: 'assistant' as const, content: call },
+    { role: 'user' as const, content: observation }
+  ];
+  const result = trimMessagesToBudget(messages, 8_000);
+
+  assert.equal(result.messages[4]!.content, call, 'the live tool call is intact');
+  assert.equal(result.messages[5]!.content, observation, 'the live observation is intact');
+  assert.equal(result.messages[3]!.content, 'open src/a.ts and check it');
+  assert.ok(result.messages[0]!.content.length < messages[0]!.content.length, 'older prose was folded');
+  const total = result.messages.reduce((sum, message) => sum + message.content.length, 0);
+  assert.ok(total <= messageBudgetChars(8_000));
+});
+
 test('a single user message bigger than the window still fits the request', () => {
   const contextWindow = 8_000;
   const fit = fitChatRequest({
@@ -102,7 +124,10 @@ test('a single user message bigger than the window still fits the request', () =
   const effectiveWindow = contextWindow - systemTokens;
 
   assert.ok(fit.trimmed > 0, 'the oversize turn was shortened');
-  assert.equal(fit.messages[0].content.length, TRIM_TO_LEN + 3);
+  // A typed ask shrinks only to the documented floor (`USER_ASK_MIN_CHARS`)
+  // while that floor still fits the budget; the last-resort phase takes it to
+  // `TRIM_TO_LEN` only when the request would otherwise overflow.
+  assert.equal(fit.messages[0].content.length, USER_ASK_MIN_CHARS + 3);
   assert.ok(systemTokens + tokensOf(historyChars) <= contextWindow);
   assert.ok(historyChars <= messageBudgetChars(effectiveWindow));
 });

@@ -33,7 +33,9 @@ export const KNOWN_MODELS_CATALOG: Record<string, ModelMetadata> = {
     id: 'gemini-2.5-pro',
     name: 'Gemini 2.5 Pro',
     provider: 'gemini',
-    contextWindow: 2_097_152,
+    // 1M input, not the 2M figure that circulated for the preview: sizing a
+    // request from the larger number gets a provider 400, not a longer answer.
+    contextWindow: 1_048_576,
     maxOutputTokens: 8_192,
     inputPricePerMillion: 1.25,
     outputPricePerMillion: 5.00,
@@ -131,4 +133,61 @@ export function resolveModelMetadata(modelId: string): ModelMetadata {
   }
 
   return { ...DEFAULT_FALLBACK_METADATA, id: modelId, name: modelId };
+}
+
+/**
+ * Table lookup for *budget* decisions: returns a catalog row only when the model
+ * id really names it, and `null` otherwise so the caller can fall back to the
+ * pattern guesses in `./modelCapabilities.ts`.
+ *
+ * This is deliberately stricter than `resolveModelMetadata`, whose fuzzy
+ * substring rule is fine for a pricing display and dangerous for a context
+ * window: `gemini-2.5-flash-lite` contains `gemini-2.5-flash`, and inheriting
+ * that row's 1,048,576-token window would oversize a 1M request by ~5% and make
+ * the provider reject it. Over there, an approximate number is a nicer label;
+ * over here it is an overflow.
+ *
+ * Accepted forms of a hit, in order:
+ * 1. exact id, lowercased/trimmed;
+ * 2. the id with its leading gateway namespace segment removed
+ *    (`google/gemini-2.5-flash`, `openai/gpt-4o`, `x-ai/grok-3`);
+ * 3. the same, after dropping a REST path prefix (`models/gemini-2.5-flash`).
+ * Anything else — dated variants, version suffixes, unknown families — is a
+ * miss, which is the safe answer: the fallback tables are more conservative.
+ */
+/** Gateway namespaces that name a vendor unambiguously. */
+const NAMESPACE_PROVIDERS: Record<string, ModelMetadata['provider']> = {
+  google: 'gemini',
+  gemini: 'gemini',
+  openai: 'openai',
+  groq: 'groq'
+};
+
+/** A row only sizes a request for the provider that publishes that window. */
+function providerMatches(row: ModelMetadata, rawId: string, provider?: string): boolean {
+  if (!provider || provider === 'custom' || provider === row.provider) return true;
+  const namespace = rawId.includes('/') ? rawId.split('/')[0]! : '';
+  return NAMESPACE_PROVIDERS[namespace] === row.provider;
+}
+
+export function lookupModelMetadata(modelId: string, provider?: string): ModelMetadata | null {
+  const raw = (modelId || '').toLowerCase().trim();
+  if (!raw) return null;
+
+  const candidates: string[] = [raw];
+  const withoutPath = raw.replace(/^(?:models|cachedcontents)\//i, '');
+  if (withoutPath !== raw) candidates.push(withoutPath);
+
+  const segments = withoutPath.split('/');
+  if (segments.length > 1) {
+    // Namespace first, id last: `anthropic/vertex/claude-…` style routing.
+    candidates.push(segments[segments.length - 1]);
+    candidates.push(segments.slice(1).join('/'));
+  }
+
+  for (const candidate of candidates) {
+    const row = KNOWN_MODELS_CATALOG[candidate];
+    if (row && providerMatches(row, raw, provider)) return row;
+  }
+  return null;
 }

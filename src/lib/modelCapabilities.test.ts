@@ -61,8 +61,15 @@ test('custom endpoint with deepseek-r1/reasoner → 64,000', () => {
   assert.equal(resolveContextWindow('custom', 'deepseek-reasoner'),  64_000);
 });
 
-test('custom gemini flash pattern → 1M', () => {
-  assert.equal(resolveContextWindow('custom', 'gemini-2.5-flash'), 1_000_000);
+test('custom gemini flash → the published metadata number, not the 1M guess', () => {
+  // Wiring ./modelMetadata.ts in front of the pattern tables changed exactly
+  // one expectation in this file: the hand-written /gemini.*flash/ guess was
+  // 1,000,000, the published Gemini 2.5 Flash window is 1,048,576. The table
+  // wins wherever it has a row; every pattern below still serves the models the
+  // table does not name (see ./modelMetadata.test.ts for the fallback tests).
+  assert.equal(resolveContextWindow('custom', 'gemini-2.5-flash'), 1_048_576);
+  // The lite sibling has no row, so its pattern guess is untouched.
+  assert.equal(resolveContextWindow('custom', 'gemini-2.5-flash-lite'), 1_000_000);
 });
 
 test('custom gemini non-flash pattern → 131,072', () => {

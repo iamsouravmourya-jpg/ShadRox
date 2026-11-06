@@ -7,7 +7,7 @@ import {
   trimMessagesToBudget,
   type BudgetedMessage
 } from '../../src/lib/contextBudget.js';
-import { resolveCapabilities } from '../../src/lib/modelCapabilities.js';
+import { resolveBudgetCapabilities } from '../../src/lib/modelCapabilities.js';
 import type { ProviderId } from './_types.js';
 
 export interface BudgetedRequest {
@@ -16,6 +16,13 @@ export interface BudgetedRequest {
   /** Messages the trimmer shortened. */
   trimmed: number;
   trimmedChars: number;
+  /**
+   * Which table sized this request: the exact-id metadata table
+   * (`src/lib/modelMetadata.ts`), the per-provider pattern guesses, or the
+   * default. Surfaced so a wrong context window is visible instead of showing
+   * up as an opaque provider error.
+   */
+  capabilitySource: 'metadata_table' | 'pattern_table' | 'default';
 }
 
 /**
@@ -30,6 +37,12 @@ export interface BudgetedRequest {
  * The fix is arithmetic, not a new rule: cap the instruction to what this model
  * can actually carry, then subtract its estimated tokens from the window before
  * the history is trimmed. `src/lib/*` stays untouched (another agent owns it).
+ *
+ * Window and output ceiling come from `resolveBudgetCapabilities()`, i.e. the
+ * published per-model rows in `src/lib/modelMetadata.ts` first and the regex
+ * guesses in `src/lib/modelCapabilities.ts` only for a model the table does not
+ * list — the same precedence the renderer uses, so client and server cannot
+ * disagree about how big the window is.
  */
 export function budgetRequest(
   provider: ProviderId,
@@ -37,7 +50,10 @@ export function budgetRequest(
   messages: BudgetedMessage[],
   rawSystemInstruction?: string
 ): BudgetedRequest {
-  const { contextWindow, maxOutput } = resolveCapabilities(provider, model);
+  const capabilities = resolveBudgetCapabilities(provider, model);
+  const contextWindow = capabilities.contextWindow;
+  const maxOutput = capabilities.maxOutput;
+  const capabilitySource = capabilities.source ?? 'default';
   // messageBudgetChars() is the input budget in characters: the window minus the
   // output reservation. Cap the instruction to a share of that so the history
   // still gets room, and never above the global ceiling.
@@ -59,6 +75,7 @@ export function budgetRequest(
     messages: trimmed.messages,
     systemInstruction,
     trimmed: trimmed.trimmed,
-    trimmedChars: trimmed.trimmedChars
+    trimmedChars: trimmed.trimmedChars,
+    capabilitySource
   };
 }

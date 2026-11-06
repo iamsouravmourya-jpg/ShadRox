@@ -84,6 +84,58 @@ test('unknown folder reopen uses only the native selection and cancellation chan
   assert.equal(selected, chosenPath);
 });
 
+test('a restart keeps consent so a recent folder reopens in one click', async (context) => {
+  const root = await temporaryDirectory(context, 'shadrox-consent-restart-');
+  const folder = path.join(root, 'workspace');
+  const file = path.join(root, 'notes.md');
+  const unknown = path.join(root, 'never-picked');
+  await Promise.all([fs.mkdir(folder), fs.writeFile(file, 'notes'), fs.mkdir(unknown)]);
+  const storageFile = path.join(root, 'workspace-consent.json');
+
+  const first = createWorkspaceConsent({ storageFile });
+  await first.grantFolder(folder);
+  await first.grantFiles([file]);
+
+  const restarted = createWorkspaceConsent({ storageFile });
+  assert.equal(await restarted.hasFolder(folder), true);
+  assert.equal(await restarted.hasFiles([file]), true);
+
+  let calls = 0;
+  const reopened = await resolveFolderReopen(folder, restarted, async () => {
+    calls++;
+    return { canceled: true, filePaths: [] };
+  });
+  assert.equal(reopened, folder);
+  assert.equal(calls, 0, 'a consented folder must not open a picker');
+
+  assert.deepEqual(await resolveFileReopen([file], restarted, async () => {
+    calls++;
+    return { canceled: true, filePaths: [] };
+  }), [file]);
+  assert.equal(calls, 0, 'a consented file must not open a picker');
+
+  const picked = path.join(root, 'picked-later');
+  await resolveFolderReopen(unknown, restarted, async () => {
+    calls++;
+    return { canceled: false, filePaths: [picked] };
+  });
+  assert.equal(calls, 1, 'an unseen path still requires the native picker');
+});
+
+test('a damaged consent file is ignored instead of blocking the app', async (context) => {
+  const root = await temporaryDirectory(context, 'shadrox-consent-corrupt-');
+  const folder = path.join(root, 'workspace');
+  await fs.mkdir(folder);
+  const storageFile = path.join(root, 'workspace-consent.json');
+  await fs.writeFile(storageFile, '{ not json');
+
+  const consent = createWorkspaceConsent({ storageFile });
+  assert.equal(await consent.hasFolder(folder), false);
+  await consent.grantFolder(folder);
+  const restarted = createWorkspaceConsent({ storageFile });
+  assert.equal(await restarted.hasFolder(folder), true);
+});
+
 test('unknown file reopen uses only native selections and cancellation returns no paths', async () => {
   const consent = createWorkspaceConsent();
   const canceled = await resolveFileReopen(['renderer-file'], consent, async () => ({

@@ -90,6 +90,9 @@ em{font-style:italic;color:var(--ac)}
 strong{font-weight:700}
 svg.i{width:20px;height:20px;display:block;flex:none;fill:none;stroke:currentColor;
   stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+code{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:.9em;
+  background:var(--bg2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;
+  white-space:nowrap;color:var(--ink2)}
 
 /* ═══════════════════════════════════════════
    ACCENT PHRASE
@@ -273,9 +276,6 @@ nav .wrap{display:flex;align-items:center;gap:24px;height:68px}
   margin-bottom:20px;
 }
 .pill-dot{width:7px;height:7px;border-radius:50%;background:var(--ok)}
-
-/* Rotating word */
-#rot{color:var(--ac);display:inline-block;min-width:80px;text-align:left;transition:opacity .3s}
 
 h1{
   font-family:'Playfair Display',Georgia,serif;
@@ -722,7 +722,7 @@ footer{
 }
 .footer-grid{display:grid;grid-template-columns:minmax(260px,1.5fr) repeat(3,minmax(120px,1fr));gap:36px}
 .footer-brand p{font-size:13px;color:var(--mut);max-width:300px;margin:14px 0 18px;line-height:1.7}
-.footer-col h4{
+.footer-col h3{
   font-size:12px;letter-spacing:.18em;text-transform:uppercase;
   margin-bottom:16px;font-weight:800;color:var(--ink);
 }
@@ -768,10 +768,10 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
   background:var(--card);
   color:var(--ink);font-size:17px;cursor:pointer;
   box-shadow:0 8px 22px -8px var(--shadow);
-  opacity:0;transform:translateY(18px);
+  opacity:0;transform:translateY(18px);visibility:hidden;
   transition:.3s cubic-bezier(.22,1,.36,1);z-index:90;
 }
-#top-btn.visible{opacity:1;transform:none}
+#top-btn.visible{opacity:1;transform:none;visibility:visible}
 #top-btn:hover{border-color:var(--ac);color:var(--ac);transform:translateY(-2px)}
 @media(max-width:600px){#top-btn{right:14px;bottom:84px;width:40px;height:40px}}
 
@@ -854,6 +854,16 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
   .nav-links.open .dd{flex-direction:column;gap:2px}
   body{padding-bottom:72px}
   .m-dl{display:flex}
+  /* Hero mockup: at ~390px the monospace lines were clipping mid-line. */
+  .code-win{font-size:10.5px}
+  .win-code{padding:14px 12px}
+  .win-bar{padding:11px 12px}
+  .win-title{margin-left:8px;padding:3px 8px;font-size:11px}
+  .win-cap i{width:32px;height:22px}
+  .win-status{font-size:11px;padding:7px 12px}
+  .win-term{padding:9px 12px 11px;font-size:10.5px}
+  .win-chat{padding:12px}
+  .diff-block{font-size:10px}
 }
 
 /* Mobile sticky download bar */
@@ -866,6 +876,7 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
 }
 .m-dl .btn{width:100%;justify-content:center}
 @media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
   *{animation:none!important;transition:none!important}
   [data-reveal],[data-reveal].visible{opacity:1!important;transform:none!important}
   .card:hover{transform:none}
@@ -911,7 +922,7 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
 <div id="pg"></div>
 
 <!-- Cursor glow (desktop only) -->
-<div id="cur"></div>
+<div id="cur" aria-hidden="true"></div>
 
 <!-- ═══════════════ ANNOUNCEMENT BAR ═══════════════ -->
 <div class="ann" id="ann-bar">
@@ -923,7 +934,7 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
 <!-- ═══════════════ NAVIGATION ═══════════════ -->
 <nav id="main-nav">
   <div class="wrap">
-    <a href="#" class="logo" aria-label="ShadRox — back to top">
+    <a href="#top" class="logo" aria-label="ShadRox — back to top">
       <svg class="logo-icon" viewBox="0 0 32 32" fill="none" aria-hidden="true">
         <defs><linearGradient id="s-grad-nav" x1="11" y1="12" x2="21" y2="20" gradientUnits="userSpaceOnUse">
           <stop offset="0" stop-color="#8b5cf6"/><stop offset="0.55" stop-color="#6366f1"/><stop offset="1" stop-color="#22d3ee"/>
@@ -992,7 +1003,7 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
 
     <!-- Code Window Stage -->
     <div class="stage visible" data-reveal>
-      <div class="float-chip fc1" aria-hidden="true"><svg class="i"><use href="#i-command"/></svg>⌘K inline AI edit</div>
+      <div class="float-chip fc1" aria-hidden="true"><svg class="i"><use href="#i-command"/></svg>Ctrl+K inline AI edit</div>
       <div class="float-chip fc2" aria-hidden="true"><svg class="i"><use href="#i-git"/></svg>Git built in</div>
       <div class="float-chip fc3" aria-hidden="true"><svg class="i"><use href="#i-eye"/></svg>Live preview</div>
 
@@ -1002,9 +1013,9 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
           <span class="win-cap" aria-hidden="true"><i>—</i><i>□</i><i class="x">×</i></span>
         </div>
         <div class="win-tabs" role="tablist" aria-label="Workspace panes">
-          <button role="tab" aria-selected="true" data-pane="code">Editor</button>
-          <button role="tab" aria-selected="false" data-pane="chat">AI chat</button>
-          <button role="tab" aria-selected="false" data-pane="pv">Preview</button>
+          <button role="tab" id="pane-tab-code" aria-selected="true" aria-controls="win-pane-code" data-pane="code">Editor</button>
+          <button role="tab" id="pane-tab-chat" aria-selected="false" aria-controls="win-pane-chat" data-pane="chat">AI chat</button>
+          <button role="tab" id="pane-tab-pv" aria-selected="false" aria-controls="win-pane-pv" data-pane="pv">Preview</button>
         </div>
         <div class="win-cols">
           <div class="win-side" aria-hidden="true">
@@ -1015,17 +1026,17 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
             <div>&nbsp;&nbsp;api/auth.ts</div>
             <div>SHADROX.md</div>
           </div>
-          <div class="win-code is-active" data-pane-id="code">
+          <div class="win-code is-active" role="tabpanel" id="win-pane-code" aria-labelledby="pane-tab-code" data-pane-id="code">
             <div class="code-line" style="--i:0"><span class="cln">1</span><span class="cc">// src/App.tsx</span></div>
             <div class="code-line" style="--i:1"><span class="cln">2</span><span class="ck">import</span> { useWorkspace } <span class="ck">from</span> <span class="cs">"./useWorkspace"</span></div>
             <div class="code-line" style="--i:2"><span class="cln">3</span></div>
             <div class="code-line" style="--i:3"><span class="cln">4</span><span class="ck">export function</span> <span class="cf">App</span>() {</div>
             <div class="code-line" style="--i:4"><span class="cln">5</span>  <span class="ck">const</span> { ready } = <span class="cf">useWorkspace</span>()</div>
-            <div class="code-line" style="--i:5"><span class="cln">6</span>  <span class="cc">// ⌘K on a selection → inline AI edit</span></div>
+            <div class="code-line" style="--i:5"><span class="cln">6</span>  <span class="cc">// Ctrl+K on a selection → inline AI edit</span></div>
             <div class="code-line" style="--i:6"><span class="cln">7</span>  <span class="ck">return</span> &lt;<span class="cf">Workspace</span> ready={ready} /&gt;</div>
             <div class="code-line" style="--i:7"><span class="cln">8</span>}</div>
           </div>
-          <div class="win-chat" data-pane-id="chat">
+          <div class="win-chat" role="tabpanel" id="win-pane-chat" aria-labelledby="pane-tab-chat" data-pane-id="chat">
             <div class="chat-msg user" style="--d:2.6s">@App.tsx add a loading state</div>
             <div class="chat-msg" style="--d:3.4s">Reading 2 files · round 3/12<span class="typing"></span></div>
             <div class="diff-block" style="--d:4.6s">
@@ -1039,12 +1050,12 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
               </div>
             </div>
           </div>
-          <div class="win-preview" data-pane-id="pv">
+          <div class="win-preview" role="tabpanel" id="win-pane-pv" aria-labelledby="pane-tab-pv" data-pane-id="pv">
             <b>PREVIEW</b>
             <div class="pv-frame">
               <i class="hl"></i><i></i><i></i><i class="btnish"></i>
             </div>
-            <span class="pv-tag">localhost:5173 · click-to-source</span>
+            <span class="pv-tag">localhost:5173 · live preview</span>
           </div>
           <div class="win-term" aria-hidden="true">
             <div><i>PS D:\dev\my-project&gt;</i> npm run dev</div>
@@ -1081,8 +1092,8 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
         <span class="stat-label">agent roles in a multi-step team run</span>
       </div>
       <div class="stat-item">
-        <b class="stat-num" data-count="12">0</b>
-        <span class="stat-label">tools wired into one window</span>
+        <b class="stat-num" data-count="14">0</b>
+        <span class="stat-label">built-in agent tools in the bounded loop, from reads and search to one guarded shell command, a confirmed terminal answer and a paused-debugger snapshot</span>
       </div>
     </div>
   </div>
@@ -1136,14 +1147,14 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
     <p class="section-sub" data-reveal>Bounded, reviewable and honest about its limits.</p>
 
     <div class="tabs" role="tablist" aria-label="Agent capabilities" data-reveal>
-      <button class="tab active" role="tab" aria-selected="true" data-panel="0">Agent loop</button>
-      <button class="tab" role="tab" aria-selected="false" data-panel="1">Autonomous runs</button>
-      <button class="tab" role="tab" aria-selected="false" data-panel="2">Agent teams</button>
-      <button class="tab" role="tab" aria-selected="false" data-panel="3">MCP &amp; rules</button>
+      <button class="tab active" id="agent-tab-0" role="tab" aria-selected="true" aria-controls="agent-panel-0" data-panel="0">Agent loop</button>
+      <button class="tab" id="agent-tab-1" role="tab" aria-selected="false" aria-controls="agent-panel-1" data-panel="1">Autonomous runs</button>
+      <button class="tab" id="agent-tab-2" role="tab" aria-selected="false" aria-controls="agent-panel-2" data-panel="2">Agent teams</button>
+      <button class="tab" id="agent-tab-3" role="tab" aria-selected="false" aria-controls="agent-panel-3" data-panel="3">MCP &amp; rules</button>
     </div>
 
     <!-- Panel 0 -->
-    <div class="panel active" role="tabpanel" aria-label="Agent capabilities 1" data-panel-content="0">
+    <div class="panel active" role="tabpanel" id="agent-panel-0" aria-labelledby="agent-tab-0" data-panel-content="0">
       <div>
         <h3 class="serif">Reads first.<br><em>Then proposes.</em></h3>
         <p>The agent reads your project — files, search, diagnostics, Git — and proposes changes as diffs you accept or reject. Requests can include a compact repo map so it understands the codebase before touching anything.</p>
@@ -1163,7 +1174,7 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
     </div>
 
     <!-- Panel 1 -->
-    <div class="panel" role="tabpanel" aria-label="Agent capabilities 2" data-panel-content="1">
+    <div class="panel" role="tabpanel" id="agent-panel-1" aria-labelledby="agent-tab-1" data-panel-content="1">
       <div>
         <h3 class="serif">Plan. Patch.<br><em>Verify. Repair.</em></h3>
         <p>Big goals become a task DAG of milestones. Each is verified with diagnostics, and failures get a repair brief. Still beta — review the results.</p>
@@ -1182,7 +1193,7 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
     </div>
 
     <!-- Panel 2 -->
-    <div class="panel" role="tabpanel" aria-label="Agent capabilities 3" data-panel-content="2">
+    <div class="panel" role="tabpanel" id="agent-panel-2" aria-labelledby="agent-tab-2" data-panel-content="2">
       <div>
         <h3 class="serif">A small team,<br><em>with boundaries.</em></h3>
         <p>A Coordinator splits the goal and assigns specialists. Each brief carries file ownership so agents stay out of each other's way.</p>
@@ -1201,7 +1212,7 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
     </div>
 
     <!-- Panel 3 -->
-    <div class="panel" role="tabpanel" aria-label="Agent capabilities 4" data-panel-content="3">
+    <div class="panel" role="tabpanel" id="agent-panel-3" aria-labelledby="agent-tab-3" data-panel-content="3">
       <div>
         <h3 class="serif">Your tools.<br><em>Your rules.</em></h3>
         <p>Connect Model Context Protocol servers with approval for every external tool call, and teach the agent your conventions once via rule files.</p>
@@ -1225,16 +1236,16 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
 <section id="why">
   <div class="wrap">
     <p class="eyebrow" data-reveal>Why not just…</p>
-    <h2 class="serif" data-reveal>Aider and Cline are <em>powerful.</em><br>They also need an IDE around them.</h2>
-    <p class="section-sub" data-reveal>Same agent discipline and bring-your-own-key pricing — plus the editor, preview, Git UI and terminal the terminal-based tools leave out.</p>
+    <h2 class="serif" data-reveal>Aider and Cline are <em>powerful.</em><br>Neither one is the whole workspace.</h2>
+    <p class="section-sub" data-reveal>Same review-and-accept discipline and bring-your-own-key pricing — plus the editor, live preview, Git UI and terminal in the same window.</p>
     <div class="privacy-list" style="max-width:800px;margin:0 auto" data-reveal>
       <div class="privacy-item">
         <span class="pi-num" aria-hidden="true">vs</span>
-        <div><h3>Aider · Cline</h3><p>Strong agents, no workspace. ShadRox adds the editor, live preview, Git tools and terminal around the same bounded, review-and-accept loop.</p></div>
+        <div><h3>Aider · Cline</h3><p>Aider drives from a terminal and Cline is a plugin inside another editor — strong agents, but the workspace lives somewhere else. ShadRox keeps the same bounded, review-and-accept loop and adds the explorer, preview, Git tools and terminal in one app.</p></div>
       </div>
       <div class="privacy-item">
         <span class="pi-num" aria-hidden="true">vs</span>
-        <div><h3>Cloud AI editors</h3><p>Requests go from your machine straight to the provider you configure — not through a middleman server. Point it at Ollama or LM Studio and nothing leaves your PC.</p></div>
+        <div><h3>Cloud AI editors</h3><p>Requests go from your machine to the provider you configure — not through a ShadRox server, and your key is never sent to one. Point it at Ollama or LM Studio and the prompt stays on your PC.</p></div>
       </div>
       <div class="privacy-item">
         <span class="pi-num" aria-hidden="true">vs</span>
@@ -1268,7 +1279,7 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
       </div>
       <div class="privacy-item">
         <span class="pi-num">3</span>
-        <div><h3>Guarded commands</h3><p>Only a short list of read-only verify commands (npm test, tsc --noEmit, git diff…) may run silently. Anything else — every delete, install, write or chained command — opens an explicit approval dialog first.</p></div>
+        <div><h3>Guarded commands</h3><p>Approval is default-deny. Only these exact forms run without a prompt: <code>npm test</code>, <code>pytest</code>, <code>python -m pytest</code>, <code>tsc --noEmit</code>, <code>npx tsc --noEmit</code>, <code>git diff</code>, <code>git status</code>. One extra argument or a shell operator breaks the match, so everything else waits for a native approval dialog — and the workspace is re-checked between approval and execution.</p></div>
       </div>
       <div class="privacy-item">
         <span class="pi-num">4</span>
@@ -1292,7 +1303,7 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
           <li>Google sign-in is required to enter the app</li>
           <li>Agent, autonomous run, team, plugin, and automation features are evolving</li>
           <li>Preview support depends on your project and installed runtimes</li>
-          <li>Plan and credit-meter screens are previews; public payments are not enabled</li>
+          <li>Turns on your own key are neither metered nor capped; the plan and credit-meter screens are previews, and public payments are not enabled</li>
         </ul>
         <p style="margin-top:24px">
           <a class="btn btn-primary btn-sm" href="https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest"><svg class="i" aria-hidden="true"><use href="#i-update"/></svg>Download for Windows</a>
@@ -1310,9 +1321,6 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
     <h2 class="serif" data-reveal>Quick <em>answers.</em></h2>
     <p class="section-sub" data-reveal>Everything you need to know before you download.</p>
     <div id="faq-list"></div>
-    <p style="text-align:center;margin-top:36px" data-reveal>
-      <a class="btn btn-primary" href="https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest"><svg class="i" aria-hidden="true"><use href="#i-update"/></svg>Download for Windows</a>
-    </p>
   </div>
 </section>
 
@@ -1336,7 +1344,7 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
   <div class="wrap">
     <div class="footer-grid">
       <div class="footer-brand">
-        <a href="#" class="logo" aria-label="ShadRox — back to top">
+        <a href="#top" class="logo" aria-label="ShadRox — back to top">
           <svg class="logo-icon" viewBox="0 0 32 32" fill="none" aria-hidden="true">
             <defs><linearGradient id="s-grad-foot" x1="11" y1="12" x2="21" y2="20" gradientUnits="userSpaceOnUse">
               <stop offset="0" stop-color="#8b5cf6"/><stop offset="0.55" stop-color="#6366f1"/><stop offset="1" stop-color="#22d3ee"/>
@@ -1356,20 +1364,20 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
         </div>
       </div>
       <div class="footer-col">
-        <h4>Explore</h4>
+        <h3>Explore</h3>
         <a href="#features">Features</a>
         <a href="#agent">AI Agent</a>
         <a href="#how">How it works</a>
         <a href="#privacy">Privacy</a>
       </div>
       <div class="footer-col">
-        <h4>Get ShadRox</h4>
+        <h3>Get ShadRox</h3>
         <a href="https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest">Download for Windows</a>
         <a href="https://github.com/iamsouravmourya-jpg/ShadRox/releases">All releases</a>
         <a href="#faq">Frequently asked questions</a>
       </div>
       <div class="footer-col">
-        <h4>About</h4>
+        <h3>About</h3>
         <a href="https://www.shadrox.cyou">shadrox.cyou</a>
         <a href="https://www.linkedin.com/in/sourav-maurya-45b272377">About the maker</a>
         <a href="https://github.com/iamsouravmourya-jpg/ShadRox/issues">Report an issue</a>
@@ -1428,15 +1436,26 @@ window.addEventListener('scroll', () => {
   if (!scrollQueued) { scrollQueued = true; requestAnimationFrame(onScroll); }
 }, { passive: true });
 onScroll();
-topBtn.onclick = () => scrollTo({ top: 0, behavior: 'smooth' });
+topBtn.onclick = () => scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' });
 
 /* ── Mobile menu ── */
 const menuBtn = document.getElementById('menu-btn');
 const navLinks = document.getElementById('nav-links');
+/* Product disclosure: the submenu opens on :focus-within, so keep aria-expanded honest. */
+const ddBtn = document.querySelector('.nav-links > li > button[aria-haspopup]');
+const syncDd = () => {
+  if (ddBtn) ddBtn.setAttribute('aria-expanded', String(ddBtn.parentElement.matches(':focus-within') || navLinks.classList.contains('open')));
+};
+if (ddBtn) {
+  ddBtn.addEventListener('focusin', syncDd);
+  ddBtn.addEventListener('focusout', () => setTimeout(syncDd, 0));
+  ddBtn.addEventListener('click', syncDd);
+}
 const setMenu = open => {
   navLinks.classList.toggle('open', open);
   menuBtn.setAttribute('aria-expanded', String(open));
   menuBtn.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+  syncDd();
 };
 menuBtn.onclick = () => setMenu(!navLinks.classList.contains('open'));
 navLinks.querySelectorAll('a').forEach(a => a.onclick = () => setMenu(false));
@@ -1475,7 +1494,7 @@ const signature = [
   ['i-folder','Project Explorer','Open a local folder or selected files, browse the workspace tree, and create, rename or delete them. Files load from your disk.','',dExplorer],
   ['i-chat','AI chat you review','Gemini, Groq or a custom OpenAI-compatible endpoint. Queue follow-ups, and every proposed change arrives as a diff you accept or reject.','',dDiff],
   ['i-agent','Bounded agent','Read-only inspection tools, one guarded shell command with its real exit code, a fixed cap on tool rounds, and patches held for review — it never edits files behind your back.','',dAgent],
-  ['i-eye','Local preview','Markdown, static sites and detected Node, Python, Go, PHP, Java or .NET backends. Click an element to jump to the code that renders it.','',dPreview]
+  ['i-eye','Local preview','Markdown, static sites and detected Node, Python, Go, PHP, Java or .NET backends. A bounded check grades the rendered frame, stale dev servers are cleaned up on the next start, and click-to-source works on pages ShadRox serves.','',dPreview]
 ];
 const caps = [
   ['Edit',[
@@ -1491,9 +1510,9 @@ const caps = [
     ['i-rules','Rules & skills','SHADROX.md, AGENTS.md, .cursorrules, reusable skills.']
   ]],
   ['Run',[
-    ['i-terminal','Integrated terminal','Interactive shell in the workspace, sessions and splits.'],
+    ['i-terminal','Integrated terminal','Interactive shell in the workspace, with sessions and splits. PowerShell and bash report live cwd and exit codes back to the panel.'],
     ['i-git','Source control','Stage diffs, switch branches, AI commit messages.'],
-    ['i-checkpoint','Checkpoints','Review assistant checkpoints, restore earlier state.'],
+    ['i-checkpoint','Rewindable checkpoints','Restore earlier files and your local Git position. Installed packages, running terminals and remote effects are not undone.'],
     ['i-update','Auto-updates','Checks on start, installs when you restart.']
   ]],
   ['Ship',[
@@ -1530,8 +1549,8 @@ const faqs = [
   ['Which AI providers are supported?', 'Google Gemini, Groq, and custom OpenAI-compatible endpoints, including compatible local gateways such as Ollama and LM Studio. Model availability and charges depend on your provider.'],
   ['Where is my AI key stored?', 'The desktop app stores provider keys in OS-backed encrypted storage. AI requests go from your machine to the configured provider; the key is not sent to ShadRox.'],
   ['Can I preview any project?', 'ShadRox supports Markdown, static sites, detected Node web projects, and detected Python, Go, PHP, Java, and .NET backends. The project runtime must be installed, and not every configuration is supported.'],
-  ['Can the agent make changes on its own?', 'Inspection tools are read-only. The agent can also run one shell command at a time in your opened folder and gets its real exit code back, but any command that can touch files is refused unless the change was explicitly asked for. File edits go through a guarded patch and review flow; unsafe changes are held for review. Agent and autonomous workflows are beta, so inspect results and keep backups.'],
-  ['Are billing and credits enabled?', 'No. The plan and credit-meter screens are an early preview; public payment processing is not enabled in this beta. Announced plans are Starter (₹399 + GST) and Pro (₹999 + GST); today you use the app with your own AI key at no charge from ShadRox.'],
+  ['Can the agent make changes on its own?', 'Not silently. Inspection tools are read-only. The agent can run one shell command at a time in your opened folder and gets its real exit code back, but approval is default-deny: only a short allowlist of exact verify forms (npm test, pytest, python -m pytest, tsc --noEmit, npx tsc --noEmit, git diff, git status) runs without a prompt, and every other command opens a native approval dialog first. File edits go through a guarded patch and review flow; unsafe changes are held for review. Deleting a path needs an explicit confirm plus a follow-up read that proves it is gone. Agent and autonomous workflows are beta, so inspect results and keep backups.'],
+  ['Are billing and credits enabled?', 'No. The beta runs on bring-your-own-key: your provider bills you directly, and ShadRox neither meters nor caps those turns — there is no spend limit for you to set. Credits and a monthly cap apply only to requests run on the optional ShadRox shared key. The plan and credit-meter screens are an early preview of billing that moves no money, and public payment processing is not enabled. Announced plans are Starter (₹399 + GST) and Pro (₹999 + GST), locked during beta.'],
   ['How do updates work?', 'The app checks for a newer release on start, downloads it in the background, and installs it when you restart or quit.']
 ];
 document.getElementById('faq-list').innerHTML = faqs.map(q =>
@@ -1595,7 +1614,9 @@ tabs.forEach((tab, i) => {
   };
 });
 
-/* ── Hero window panes (narrow screens) ── */
+/* ── Hero window panes (narrow screens) ──
+   The panes stay visible side by side on wide screens, so they use the is-active
+   class rather than the hidden attribute; only the tablist is real below 961px. */
 const winTabs = [...document.querySelectorAll('.win-tabs [role="tab"]')];
 const winPanes = [...document.querySelectorAll('[data-pane-id]')];
 winTabs.forEach(tab => {

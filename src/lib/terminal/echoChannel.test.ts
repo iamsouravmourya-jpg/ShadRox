@@ -9,6 +9,7 @@ import {
   pendingTerminalDockEvents,
   publishTerminalDockEvent,
   sanitizeEchoLine,
+  setTerminalRunRouter,
   subscribeTerminalDockEvents,
   truncateEchoOutput
 } from './echoChannel';
@@ -125,9 +126,34 @@ test('the queue is bounded and drops the oldest events', () => {
 
 test('a live dock receives events immediately and nothing is queued', () => {
   withSubscriber((received) => {
-    assert.equal(publishTerminalDockEvent({ kind: 'command', command: 'npm i', source: 'user', run: true }), true);
-    assert.equal(received.length, 1);
-    assert.equal(pendingTerminalDockEvents().length, 0);
+    const typed: string[] = [];
+    setTerminalRunRouter((event) => {
+      typed.push(event.command);
+      return true;
+    });
+    try {
+      assert.equal(publishTerminalDockEvent({ kind: 'command', command: 'npm i', source: 'user', run: true }), true);
+      assert.deepEqual(typed, ['npm i']);
+      assert.equal(received.length, 0, 'a typed run event is not echoed a second time');
+
+      assert.equal(publishTerminalDockEvent({ kind: 'command', command: 'echo hi', source: 'user' }), true);
+      assert.equal(received.length, 1);
+      assert.equal(pendingTerminalDockEvents().length, 0);
+    } finally {
+      setTerminalRunRouter(null);
+    }
+  });
+});
+
+test('a run event is refused when no shell accepted it', () => {
+  withSubscriber((received) => {
+    setTerminalRunRouter(() => false);
+    try {
+      assert.equal(publishTerminalDockEvent({ kind: 'command', command: 'y', source: 'assistant', run: true, sessionKey: 'gone' }), false);
+      assert.equal(received.length, 0);
+    } finally {
+      setTerminalRunRouter(null);
+    }
   });
 });
 

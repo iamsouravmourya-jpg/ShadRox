@@ -10,6 +10,8 @@ import { ScmPanel } from './components/ScmPanel';
 import type { Command } from './lib/commands';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { useWorkspace } from './hooks/useWorkspace';
+import { useDebug } from './hooks/useDebug';
+import { DebugPanel } from './components/DebugPanel';
 import { useRepoMapFiles } from './hooks/useRepoMap';
 import { useDiagnostics } from './hooks/useDiagnostics';
 import { useOutline } from './hooks/useOutline';
@@ -111,6 +113,7 @@ import { getPlan, setPlan as persistPlan } from './lib/storage';
 import { getPlanMeta, isPlanSelectable } from './lib/plans';
 import { getMonthlyUsage, recordCreditSpend, settleTurnCredits } from './lib/quota';
 import { creditsForTurn } from './lib/usageCredits';
+import { globalRepairSession } from './lib/repairSession';
 import { browserRunStore } from './lib/autonomy/runStore';
 import type { AutonomyHost } from './lib/autonomy/ports';
 import {
@@ -447,6 +450,7 @@ export default function App() {
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [diskToast, setDiskToast] = useState<string | null>(null);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
+  const [isDebugPanelOpen, setIsDebugPanelOpen] = useState(false);
   const [viewport, setViewport] = useState<ViewportSize>('desktop');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('CHAT');
@@ -573,6 +577,9 @@ export default function App() {
   const dirtyFilesRef = useRef<string[]>([]);
   dirtyFilesRef.current = [...workspace.dirtyFiles];
   const nativeWorkspaceId = workspace.workspace?.nativeWorkspaceId ?? null;
+  // The renderer half of the DAP session: snapshots, breakpoints and the
+  // runtime-to-receipt siphon. The adapter process itself lives in main.
+  const debug = useDebug(desktop, nativeWorkspaceId);
   const localPreviewAvailable = useMemo(() => {
     return Boolean(desktop && nativeWorkspaceId && workspace.workspace?.kind === 'folder');
   }, [desktop, nativeWorkspaceId, workspace.workspace?.kind]);
@@ -640,6 +647,14 @@ export default function App() {
    */
   const activeFilePath = workspace.activeFile?.name ?? null;
   const workspaceRootPath = workspace.workspace?.path ?? null;
+  /** True once shadrox.debug.json parsed into at least one configuration. */
+  const debugBreakpointsEnabled = debug.config.configurations.length > 0;
+  /** Where the debugger is paused, for the editor-header chip. */
+  const debugPausedAt = useMemo(() => {
+    const frame = debug.selectedFrame;
+    if (debug.state.status !== 'stopped' || !frame?.file) return null;
+    return { file: frame.file, line: frame.line ?? 1, column: frame.column };
+  }, [debug.state.status, debug.selectedFrame]);
 
   const saveBackgroundSnapshot = useCallback(
     (source: BackgroundRunSource) => {
@@ -2631,6 +2646,22 @@ export default function App() {
         // Billed only once the change actually landed — a rejected or rolled-back
         // patch costs the user nothing beyond the turn they already paid for.
         if (withLanded.some((patch) => patch.landed)) recordCreditSpend(plan, 'codeEdit');
+        if (applied.length > 0) {
+          // A landed edit is the repair attempt for any failure this turn
+          // captured; the re-run is what decides whether it healed. The card
+          // shows the proposal immediately instead of the captured snapshot.
+          const proposed = globalRepairSession.onEditApplied(
+            `Applied ${applied.length} file(s) through the patch engine: ${applied.slice(0, 8).join(', ')}`
+          );
+          if (proposed.length > 0) {
+            setMessages((previous) => previous.map((message) => {
+              const proof = message.selfHealingProof;
+              if (!proof) return message;
+              const updated = proposed.find((receipt) => receipt.id === proof.id);
+              return updated ? { ...message, selfHealingProof: updated } : message;
+            }));
+          }
+        }
         announce(
           outcome.written > 0
             ? `${outcome.written} file${outcome.written === 1 ? '' : 's'} applied as one change set.`
@@ -3192,6 +3223,9 @@ export default function App() {
     };
 
     const machineCheckpoint = await workspace.markCheckpoint(modelMessage.id, text);
+    // Receipts captured by the tools below inherit this turn's checkpoint, so
+    // the proof card can offer the exact rewind the turn already recorded.
+    globalRepairSession.beginTurn(machineCheckpoint);
 
     const turnUsage = {
       tokens: 0,
@@ -3444,7 +3478,7 @@ export default function App() {
                 taskPlan: closedPlan.length > 0 ? closedPlan : undefined,
                 finishedWith: loop.finish ?? undefined,
                 selfHealingProof: loop.failureProof
-                  ? { ...loop.failureProof, checkpointId: loop.failureProof.checkpointId ?? machineCheckpoint ?? undefined }
+                  ? globalRepairSession.attachCheckpoint(loop.failureProof.id, machineCheckpoint) ?? loop.failureProof
                   : message.selfHealingProof,
                 metrics: {
                   tokens: turnUsage.tokens,
@@ -3466,6 +3500,7 @@ export default function App() {
       try { if (streamCompleted) await applyReplyPatches(); }
       finally {
         await workspace.finishMachineCheckpoint(machineCheckpoint);
+        globalRepairSession.endTurn();
         setIsGenerating(false);
         setActiveStatusMessage(null);
         chatDispatchLockRef.current = false;
@@ -4588,6 +4623,20 @@ export default function App() {
       try {
         const result = await workspace.restoreCheckpoint(checkpointId);
         if (result.ok) {
+          // The failing state was rewound, so any receipt captured at this
+          // checkpoint is rejected — the repair was not what removed it.
+          const rejected = globalRepairSession.rejectForCheckpoint(
+            checkpointId,
+            `Restored checkpoint ${checkpointId}; the failing state was rewound.`
+          );
+          if (rejected.length > 0) {
+            setMessages((previous) => previous.map((message) => {
+              const proof = message.selfHealingProof;
+              if (!proof) return message;
+              const updated = rejected.find((receipt) => receipt.id === proof.id);
+              return updated ? { ...message, selfHealingProof: updated } : message;
+            }));
+          }
           setCheckpointNonce((previous) => previous + 1);
           const isMachine = Boolean(workspace.checkpoints.find((entry) => entry.id === checkpointId)?.machine);
           setToast(isMachine
@@ -4723,6 +4772,13 @@ export default function App() {
         category: 'View',
         keywords: 'shell console',
         run: () => setIsTerminalOpen((open) => !open)
+      },
+      {
+        id: 'view.debug',
+        title: 'Toggle debugger',
+        category: 'View',
+        keywords: 'debug breakpoints pause step dap',
+        run: () => setIsDebugPanelOpen((open) => !open)
       },
       { id: 'chat.new', title: 'New chat', category: 'Chat', keywords: 'clear reset', run: handleClearChat },
       {
@@ -5099,6 +5155,20 @@ export default function App() {
           >
             <GitBranch className="h-[18px] w-[18px]" />
           </button>
+          <button
+            type="button"
+            onClick={() => setIsDebugPanelOpen((open) => !open)}
+            aria-pressed={isDebugPanelOpen}
+            disabled={!desktop}
+            title={isDebugPanelOpen ? 'Close debugger' : 'Debugger'}
+            className={`flex h-9 w-9 items-center justify-center rounded-xl transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 ${
+              isDebugPanelOpen
+                ? 'bg-violet-500/15 text-violet-200'
+                : 'text-zinc-500 hover:bg-white/[0.06] hover:text-white'
+            }`}
+          >
+            <Bug className="h-[18px] w-[18px]" />
+          </button>
 
           <div className="relative ml-auto md:ml-0 md:mt-auto">
             <button
@@ -5367,6 +5437,23 @@ export default function App() {
                           onSelectOutlineSymbol={handleSelectOutlineSymbol}
                           symbols={editorSymbols}
                           quickFixes={editorQuickFixes}
+                          breakpoints={{
+                            enabled: debugBreakpointsEnabled,
+                            lines: group.activePath ? debug.breakpoints[group.activePath] : undefined,
+                            onToggle: (line) => {
+                              if (group.activePath) void debug.toggleBreakpoint(group.activePath, line);
+                            }
+                          }}
+                          pausedAt={groupIndex === 0 ? debugPausedAt : null}
+                          onOpenPaused={(file, line, column) => void navigateToPath(file, line, column)}
+                          debugHover={groupIndex === 0 && debug.state.status === 'stopped' && debug.selectedFrame
+                            ? {
+                                enabled: true,
+                                evaluate: (expression) => debug.selectedFrame
+                                  ? debug.evaluate(debug.selectedFrame.id, expression)
+                                  : Promise.resolve(null)
+                              }
+                            : undefined}
                           sidebarPanel={groupIndex === 0
                             ? isScmPanelOpen ? scmPanel : isSearchPanelOpen ? searchPanel : undefined
                             : undefined}
@@ -5376,6 +5463,17 @@ export default function App() {
                   </div>
                 </>
               )}
+            </div>
+          )}
+          {isDebugPanelOpen && desktop && nativeWorkspaceId && (
+            <div className="h-64 shrink-0 border-t border-white/[0.09]">
+              <DebugPanel
+                desktop={desktop}
+                workspaceId={nativeWorkspaceId}
+                controller={debug}
+                onOpenFrame={(file, line, column) => void navigateToPath(file, line, column)}
+                onClose={() => setIsDebugPanelOpen(false)}
+              />
             </div>
           )}
           {isTerminalOpen && terminalAvailable && desktop && nativeWorkspaceId && (

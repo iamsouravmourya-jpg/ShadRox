@@ -25,6 +25,7 @@
  */
 import * as stream from 'node:stream';
 import type { DebugProtocol } from './debugProtocol.ts';
+import { createFrameParser, encodeFrame } from '../../../electron/dap-framing.cjs';
 
 /** Resolve after `ms` milliseconds. Replaces vscode's base/common/async timeout. */
 function timeout(ms: number): Promise<void> {
@@ -265,13 +266,17 @@ export abstract class AbstractDebugAdapter {
  */
 export class StreamDebugAdapter extends AbstractDebugAdapter {
 
-	private static readonly TWO_CRLF = '\r\n\r\n';
-	private static readonly HEADER_LINESEPARATOR = /\r?\n/;	// allow for non-RFC 2822 conforming line separators
-	private static readonly HEADER_FIELDSEPARATOR = /: */;
-
 	private outputStream: stream.Writable | undefined;
-	private rawData = Buffer.allocUnsafe(0);
-	private contentLength = -1;
+
+	/**
+	 * Framing lives in `electron/dap-framing.cjs` so the main-process host and
+	 * this renderer-side client cannot drift apart. The parser is incremental:
+	 * partial headers and mid-JSON bodies are buffered until the rest arrives.
+	 */
+	private readonly parser = createFrameParser({
+		onMessage: (message: unknown) => this.acceptMessage(message as DebugProtocol.ProtocolMessage),
+		onError: (error: Error) => this._onError.fire(error)
+	});
 
 	/** Wire the adapter to a pair of streams: the readable carries adapter →
 	 *  client messages, the writable carries client → adapter messages. For a
@@ -279,10 +284,9 @@ export class StreamDebugAdapter extends AbstractDebugAdapter {
 	connect(readable: stream.Readable, writable: stream.Writable): void {
 
 		this.outputStream = writable;
-		this.rawData = Buffer.allocUnsafe(0);
-		this.contentLength = -1;
+		this.parser.reset();
 
-		readable.on('data', (data: Buffer) => this.handleData(data));
+		readable.on('data', (data: Buffer) => this.parser.push(data));
 	}
 
 	startSession(): Promise<void> {
@@ -297,46 +301,7 @@ export class StreamDebugAdapter extends AbstractDebugAdapter {
 	sendMessage(message: DebugProtocol.ProtocolMessage): void {
 
 		if (this.outputStream) {
-			const json = JSON.stringify(message);
-			this.outputStream.write(`Content-Length: ${Buffer.byteLength(json, 'utf8')}${StreamDebugAdapter.TWO_CRLF}${json}`, 'utf8');
-		}
-	}
-
-	private handleData(data: Buffer): void {
-
-		this.rawData = Buffer.concat([this.rawData, data]);
-
-		while (true) {
-			if (this.contentLength >= 0) {
-				if (this.rawData.length >= this.contentLength) {
-					const message = this.rawData.toString('utf8', 0, this.contentLength);
-					this.rawData = this.rawData.slice(this.contentLength);
-					this.contentLength = -1;
-					if (message.length > 0) {
-						try {
-							this.acceptMessage(JSON.parse(message) as DebugProtocol.ProtocolMessage);
-						} catch (e) {
-							this._onError.fire(new Error(`${(e as Error).message || e}\n${message}`));
-						}
-					}
-					continue;	// there may be more complete messages to process
-				}
-			} else {
-				const idx = this.rawData.indexOf(StreamDebugAdapter.TWO_CRLF);
-				if (idx !== -1) {
-					const header = this.rawData.toString('utf8', 0, idx);
-					const lines = header.split(StreamDebugAdapter.HEADER_LINESEPARATOR);
-					for (const h of lines) {
-						const kvPair = h.split(StreamDebugAdapter.HEADER_FIELDSEPARATOR);
-						if (kvPair[0] === 'Content-Length') {
-							this.contentLength = Number(kvPair[1]);
-						}
-					}
-					this.rawData = this.rawData.slice(idx + StreamDebugAdapter.TWO_CRLF.length);
-					continue;
-				}
-			}
-			break;
+			this.outputStream.write(encodeFrame(message), 'utf8');
 		}
 	}
 }

@@ -12,6 +12,7 @@ import {
   observationAnchors,
   transcriptOf
 } from './compaction/openhands';
+import { TRIM_ORDER, pairGroupsFromAnchors, trimStageNote, trimStageOfMessage, type TrimStage } from './compaction/pairOrder';
 
 /**
  * LLM-free history compaction: the step that runs before trimMessagesToBudget().
@@ -32,6 +33,13 @@ import {
  * turns), condense the middle into one digest per run, drop single messages
  * only when condensation cannot reach minimum progress — and escalate into the
  * head as a last resort, the analogue of the upstream hard context reset.
+ *
+ * * which one goes, in which order * is one documented answer: the stages in
+ * ./compaction/pairOrder.ts (Cline's context-management drop order merged with
+ * the OpenHands condenser policy). This stage spends them positionally oldest-
+ * first — a digest of the oldest middle beats a digest of a newer tool round —
+ * while ./contextBudget.ts spends them by stage. Both use the same pair
+ * grouping, so a tool call and its observation cannot be split by either stage.
  *
  * Everything here is deterministic and idempotent: no ordering by length, no
  * sampling, no model call. Compacting an already compacted history is a no-op
@@ -546,21 +554,18 @@ export function compactHistory(
   }
 
   let guard = 0;
+  const droppedStages = new Set<TrimStage>();
   while (chars > budget && guard < 100_000) {
     guard += 1;
     const anchors = fitAnchors(kept, anchorByOrigin);
     const locked = locksFor(kept, keepFirstHead, anchors);
     // Whole pair groups only: an action and its observation leave together or
-    // not at all — the ported TruncatingCondenser rule. Groups come out in
-    // position order, so the oldest low-value block is always the first victim.
-    const groups: number[][] = [];
-    const byAnchor = new Map<number, number[]>();
-    kept.forEach((entry, index) => {
-      const list = byAnchor.get(anchors[index]) ?? [];
-      list.push(index);
-      byAnchor.set(anchors[index], list);
-    });
-    byAnchor.forEach((members) => groups.push(members));
+    // not at all. This is the shared implementation of the rule — the same
+    // grouping the trimmer in ./contextBudget.ts walks, so the two stages of
+    // one fit pass cannot disagree about what a "turn" is (the documented order
+    // lives in ./compaction/pairOrder.ts). Groups come out in position order,
+    // so the oldest low-value block is always the first victim.
+    const groups = pairGroupsFromAnchors(anchors);
 
     let victims = groups.find((members) => members.every((i) => !locked[i] && i < kept.length - 1));
     if (!victims) {
@@ -573,6 +578,7 @@ export function compactHistory(
     }
     if (!victims) break;
     for (const index of [...victims].sort((a, b) => b - a)) {
+      droppedStages.add(trimStageOfMessage(kept[index].message));
       chars -= kept[index].message.content.length;
       kept.splice(index, 1);
       dropped += 1;
@@ -588,7 +594,12 @@ export function compactHistory(
   if (condensed > 0) {
     folds.push(`condensed ${plural(condensed, 'middle message', 'middle messages')} into ${plural(digests, 'digest')}`);
   }
-  if (dropped > 0) folds.push(`dropped ${plural(dropped, 'oldest message')} to fit the budget`);
+  if (dropped > 0) {
+    const note = trimStageNote([...droppedStages]);
+    folds.push(note
+      ? `dropped ${plural(dropped, 'oldest message')} to fit the budget (${note} go first, per the ${TRIM_ORDER.length}-stage order)`
+      : `dropped ${plural(dropped, 'oldest message')} to fit the budget`);
+  }
 
   const compacted = kept.map((entry) => entry.message);
   return {

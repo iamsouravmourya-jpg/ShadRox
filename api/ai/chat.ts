@@ -22,7 +22,7 @@ import {
 } from '../_validate.js';
 import { ADAPTERS, parseProviderId, resolveKeyAccess } from './_access.js';
 import { budgetRequest } from './_budget.js';
-import { shapeStablePrefix } from './_promptCache.js';
+import { promptCacheReport, shapeStablePrefix, type PromptCacheReport } from './_promptCache.js';
 import { resolveCustomEndpoint } from './_endpoint.js';
 import {
   checkSharedKeySpend,
@@ -161,9 +161,21 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       `[ai] trimmed ${budget.trimmed} message(s) for ${model} (${budget.trimmedChars} chars dropped)`
     );
   }
-  const shapedMessages = shapeStablePrefix(provider, model, budget.messages).messages;
+  // Prompt caching: order the request so its leading block is byte-identical
+  // across turns, and stamp the cache field where the provider family has one
+  // (Anthropic content parts behind a custom OpenAI-compatible gateway). For
+  // Gemini and Groq the plan emits no field and only guarantees placement,
+  // because their wire formats cache the common prefix implicitly.
+  const cachePlan = shapeStablePrefix(provider, model, budget.messages);
+  const cacheReport: PromptCacheReport = promptCacheReport(cachePlan);
+  const shapedMessages = cachePlan.messages;
 
   const abort = new AbortController();
+  console.info(
+    `[ai] prompt cache ${cacheReport.mode} for ${model} (${budget.capabilitySource} window): ` +
+    `${cacheReport.prefixTokens} stable-prefix token(s), ${cacheReport.markers} marker(s), ` +
+    `${Math.round(cacheReport.prefixShare * 100)}% of the prompt`
+  );
   res.on('close', () => {
     if (!res.writableEnded) abort.abort();
   });
@@ -214,6 +226,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       tier: 'shadrox',
       finishReason: 'length',
       truncated: true,
+      promptCache: cacheReport,
       firstTokenMs,
       durationMs: Math.round(performance.now() - startedAt)
     });
@@ -270,6 +283,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       ...(result.inputTokens !== undefined ? { inputTokens: result.inputTokens } : {}),
       ...(result.outputTokens !== undefined ? { outputTokens: result.outputTokens } : {}),
       ...(result.cachedInputTokens !== undefined ? { cachedInputTokens: result.cachedInputTokens } : {}),
+      // What this route asked the provider to cache, so the UI can tell a real
+      // 0-token hit apart from "the provider never reported a hit".
+      promptCache: cacheReport,
       provider,
       model,
       tier: byok ? 'byok' : 'shadrox',
