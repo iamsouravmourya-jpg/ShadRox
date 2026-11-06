@@ -81,6 +81,7 @@ export interface TokenUsage {
   total?: number;
   input?: number;
   output?: number;
+  cached?: number;
   /** Gemini thinking models bill reasoning tokens on the output side. */
   thoughts?: number;
   cached?: number;

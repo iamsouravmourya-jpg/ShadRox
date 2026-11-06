@@ -84,3 +84,30 @@ test('gemini usage from a raw SSE body keeps the last reported fields', () => {
   assert.deepEqual(usageFields(usage), { inputTokens: 900, outputTokens: 100 });
   assert.equal(usage.total, 1000);
 });
+
+test('openai prompt_tokens_details captures cached_tokens', () => {
+  const usage = mergeOpenAiUsage(
+    {},
+    {
+      prompt_tokens: 2000,
+      completion_tokens: 150,
+      total_tokens: 2150,
+      prompt_tokens_details: { cached_tokens: 1600 }
+    }
+  );
+  assert.deepEqual(usageFields(usage), { inputTokens: 2000, outputTokens: 150, cachedInputTokens: 1600 });
+});
+
+test('gemini usage metadata captures cachedContentTokenCount', () => {
+  const usage = mergeGeminiUsage(
+    {},
+    {
+      promptTokenCount: 1500,
+      candidatesTokenCount: 200,
+      totalTokenCount: 1700,
+      cachedContentTokenCount: 1200
+    }
+  );
+  assert.deepEqual(usageFields(usage), { inputTokens: 1500, outputTokens: 200, cachedInputTokens: 1200 });
+});
+

@@ -154,6 +154,10 @@ export interface ChatMessage {
       openIssues?: string[];
     };
   };
+  /** Self-Healing Proof receipt showing verified failure and heal state. */
+  selfHealingProof?: import('./repairProof').FailureReceipt;
+  /** Exact spend and prompt cache savings recorded for this turn. */
+  spendLedgerRecord?: import('./spendLedger').TokenSpendRecord;
 }
 
 /** A single file change proposed by one assistant reply, awaiting review. */

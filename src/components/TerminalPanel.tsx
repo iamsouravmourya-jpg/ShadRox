@@ -31,6 +31,7 @@ import {
   takeTerminalTranscript,
   terminalTranscriptKey
 } from '../lib/terminal/ringBuffer';
+import { terminalStateManager } from '../lib/terminal/state';
 import {
   TERMINAL_MIN_HEIGHT,
   clampTerminalHeight,
@@ -130,8 +131,9 @@ function TerminalSurface({
 
     const applyOutput = (output: TerminalOutput) => {
       if (output.type === 'data' && output.data) {
-        appendTerminalTranscript(transcriptKey, output.data);
-        terminal.write(output.data);
+        const clean = terminalStateManager.feed(session.key, output.data);
+        appendTerminalTranscript(transcriptKey, clean);
+        terminal.write(clean);
       }
       if (output.type === 'exit') {
         const line = `\r\n\x1b[90m[process exited with code ${output.exitCode ?? 'unknown'}]\x1b[0m\r\n`;
@@ -432,6 +434,10 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
   });
 
   useEffect(() => {
+    terminalStateManager.setActiveSession(active?.key ?? null);
+  }, [active?.key]);
+
+  useEffect(() => {
     rememberWorkspaceSessions(workspaceId, sessionsState.sessions);
   }, [workspaceId, sessionsState.sessions]);
 
@@ -715,6 +721,16 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
+          {active && terminalStateManager.getSessionState(active.key)?.cwd && (
+            <span className="hidden truncate text-[10px] font-mono text-neutral-400 sm:inline max-w-[14rem]" title={terminalStateManager.getSessionState(active.key)?.cwd}>
+              {terminalStateManager.getSessionState(active.key)?.cwd}
+            </span>
+          )}
+          {active && terminalStateManager.getSessionState(active.key)?.lastCommand?.exitCode !== null && terminalStateManager.getSessionState(active.key)?.lastCommand?.exitCode !== undefined && (
+            <span className={`text-[10px] font-mono ${terminalStateManager.getSessionState(active.key)?.lastCommand?.exitCode === 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              exit {terminalStateManager.getSessionState(active.key)?.lastCommand?.exitCode}
+            </span>
+          )}
           <span className="hidden truncate text-[10px] font-mono text-neutral-600 sm:inline" title={workspaceName}>{workspaceName}</span>
           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_TONE[statusKey]}`} />
           <span className="shrink-0 text-[10px] font-mono uppercase tracking-wider text-neutral-500">
