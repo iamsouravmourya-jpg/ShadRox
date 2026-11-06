@@ -318,6 +318,61 @@ function ThinkingTrace({ reasoning, streaming }: { reasoning: string; streaming?
   );
 }
 
+function SelfHealingProofCard({ proof }: { proof: import('../lib/repairProof').FailureReceipt }) {
+  const isHealed = proof.status === 'verified_healed';
+
+  return (
+    <div className={`mb-2.5 rounded-xl border p-3 text-[11px] ${isHealed ? 'border-emerald-500/25 bg-emerald-950/15' : 'border-rose-500/25 bg-rose-950/15'}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className={`grid size-6 shrink-0 place-items-center rounded-md border ${isHealed ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300' : 'border-rose-400/30 bg-rose-500/10 text-rose-300'}`}>
+            <ShieldCheck className="h-3.5 w-3.5" />
+          </span>
+          <div>
+            <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-neutral-200">
+              <span>Self-Healing Proof</span>
+              <span className={`rounded-full border px-1.5 py-px text-[9px] uppercase font-mono tracking-wide ${
+                isHealed ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300' : 'border-rose-400/25 bg-rose-500/10 text-rose-300'
+              }`}>
+                {proof.status.replace('_', ' ')}
+              </span>
+              <span className="text-[10px] text-neutral-500 font-mono">[{proof.source.toUpperCase()}]</span>
+            </div>
+            <p className="text-[10.5px] text-neutral-300 mt-0.5 font-mono truncate max-w-[20rem]" title={proof.target}>
+              {proof.target}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-2 text-[10.5px] font-mono text-neutral-300 bg-black/40 rounded p-2 border border-white/[0.04]">
+        {proof.errorMessage}
+      </div>
+
+      {proof.verificationEvidence && (
+        <div className="mt-2 text-[10px] font-mono text-emerald-400 flex items-center gap-1">
+          <Check className="h-3 w-3 shrink-0" />
+          <span>{proof.verificationEvidence}</span>
+        </div>
+      )}
+
+      {(proof.stackTrace || (proof.diagnostics && proof.diagnostics.length > 0)) && (
+        <details className="mt-2">
+          <summary className="cursor-pointer text-[10px] font-mono text-neutral-500 hover:text-neutral-300">
+            View captured failure evidence
+          </summary>
+          <div className="mt-1.5 max-h-32 overflow-y-auto rounded bg-ink-950/80 p-2 font-mono text-[9px] text-neutral-400 border border-white/[0.04]">
+            {proof.stackTrace && <div className="whitespace-pre-wrap">{proof.stackTrace}</div>}
+            {proof.diagnostics && proof.diagnostics.map((d, i) => (
+              <div key={i} className="text-rose-300">{d.file}:{d.line} - {d.message}</div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 // --- Agent UX components (Devin / Cursor / Zed style) -----------------------
 
 interface ToolCardProps {
@@ -1341,6 +1396,10 @@ export function ChatPanel({
 
                 {message.verificationResult && (
                   <VerificationOutcomeBanner result={message.verificationResult} />
+                )}
+
+                {message.selfHealingProof && (
+                  <SelfHealingProofCard proof={message.selfHealingProof} />
                 )}
 
                 {message.reasoning && (
