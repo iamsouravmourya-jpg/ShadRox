@@ -1,25 +1,22 @@
-PENDING — ShadRox (2026-11-05)
+PENDING — ShadRox (2026-11-06)
 
-README update ho gaya (v0.0.6 bullets: self-healing preview + new logo), commit + push done.
-Ye sab abhi bacha hai:
+Done in source, not yet published:
+- README matches the wired command approval, terminal state, failure receipts, and preview check.
+- Landing mockup/CTA accents use the shield palette (silver, violet, cyan). The live page is still landing/public/landing-v3.html.
+- shadrox-dist-060/ and vibe_images/ are gitignored.
+- IGNOU artifacts (test.txt, SHADROX_SMOKE_TEST_v0.0.4.txt, a project .shadrox/) are not in this repo or under the user profile. Nothing was deleted.
+- Per your decision: BYOK turns are neither counted nor capped (src/lib/quota.ts meters only requests run on the ShadRox shared key), and the "Local spend caps" settings block is removed. src/lib/spendLedger.ts stays in the repo with no UI and no enforcement caller.
 
-1. BIG-TASK BATTERY (naya exe, CDP port 9555 pe launch hua hai, IGNOU CODER khula hai)
-   - T2: FAQ task via chat (data file + accordion + about page + npm run build)
-   - Rollback / checkpoint test (chat "undo" + UI timeline restore)
-   - Delete-file via chat
-   - Git commit via chat (confirm gate click)
-   - Deep report chat me (Hinglish)
-
-2. RELEASE
-   - Rebuilt installer publish karna hai GitHub Releases pe:
-     C:\Users\WorkSpace\AppData\Local\Temp\shadrox-dist-061\ShadRox-v0.0.6-Setup.exe
-     + shadrox-0.0.6-x64.nsis.7z (web installer dono chahiye)
-   - Purana v0.0.6 exe Releases se delete (workflow: sirf latest installer rahega)
-
-3. USER DECISIONS (bina pooche kuch nahi karunga)
-   - app/about/page.tsx me "Built with ShadRox" line — rakhna hai ya revert?
-   - IGNOU CODER test artifacts (test.txt, README sections, .shadrox/, SHADROX_SMOKE_TEST_v0.0.4.txt) — delete karu?
-
-4. OPTIONAL (landing polish)
-   - beta-cta.tsx / workspace-mockup.tsx me purani palette accents (#6d4aff/#ec4899) naye logo palette se match karna
-   - Landing iframe SEO debt (inline content) — deferred
+Still open (from the PLAN-BIGTASK.md audit, file:line verified 2026-11-06):
+1. You test the new installer yourself, then we commit further. Do not publish until you say so.
+2. Chat battery on that installer: FAQ task, undo, delete-file, git commit confirm, Hinglish report.
+3. "Built with ShadRox" on the about page — still your call. Not changed.
+4. Phase 3A remainder: interactive prompt answers cannot be injected into the PTY at all (no producer sets run:true; the confirmAction-gated injection the plan demands is unbuilt) — src/lib/terminal/echoChannel.ts:17, src/components/TerminalPanel.tsx:917. Hung state is only a number, no threshold/alert (src/lib/terminal/shellIntegration.ts:60). aider's command-failure classification never landed in src/lib/autoFix.ts (it is still auto-import only).
+5. Phase 3B remainder: no debugger UI whatsoever — src/lib/debug/* has zero production importers, no breakpoint gutter, no call-stack/variables panels, no launch config. The repair brief therefore carries stdout/stderr only, no live stack frames or local variables (src/lib/agent/tools.ts:459).
+6. Phase 3C remainder: prompt caching only orders a stable prefix — no Gemini cachedContent / no cache breakpoints are sent (api/ai/_promptCache.ts:45, api/ai/chat.ts:164). Cline trim-order merge is absent. Model metadata table (src/lib/modelMetadata.ts) is unused; budgets still read hand-written guesses (api/ai/_budget.ts:40).
+7. Phase 3D remainder (the signature feature is ~60%): only an agent run_command failure auto-creates a receipt. Test/preview/compiler failures never do, proposeRepair/verifyHealing have no callers, and undo is labelled, not verified (src/lib/repairProof.ts:111,125; src/components/ChatPanel.tsx:353).
+8. Proof-ledger integrity bug: electron/main.cjs:309 writes chain lines without prev/hash/keyId/sig, so the verifier in src/lib/proof/verify.ts:89 would reject the real ledger — and the "verify" npm script that doit.md:722 promises does not exist.
+9. Untrusted-data wrapping is still missing for project rules and skill descriptions, which are pushed raw into the system core (src/App.tsx:1789,1791) — deliberately left as instructions, needs your call.
+10. Time-Travel: restore covers files + git ref/index + ShadRox-owned previews only; no fork-forward, terminal cwd and tabs are not rewound (src/hooks/useWorkspace.ts:1660, electron/machine-delta.cjs:217).
+11. Rebuild and publish the installer: the current v0.0.6 exe predates all of this.
+12. Landing: inline the iframe'd static page into page.tsx for SEO (deferred).

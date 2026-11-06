@@ -89,3 +89,11 @@ test('terminalStateManager tracks active session summary and drops closed sessio
   terminalStateManager.dropSession('sess-a');
   assert.equal(terminalStateManager.getSummary().activeSessionId, null);
 });
+
+test('ShellIntegrationParser keeps Windows paths inside OSC 633 cwd markers', () => {
+  const parser = new ShellIntegrationParser('session-win', '');
+  parser.feed('\x1b]633;P;Cwd=C:\\Users\\sourav\\proj\x07\x1b]633;E;npm test\x07\x1b]133;D;1\x07');
+  assert.equal(parser.getState().cwd, 'C:\\Users\\sourav\\proj');
+  assert.equal(parser.getState().lastCommand?.command, 'npm test');
+  assert.equal(parser.getState().lastCommand?.exitCode, 1);
+});

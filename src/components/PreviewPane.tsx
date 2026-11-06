@@ -18,7 +18,7 @@ import {
 import type { ViewportSize } from '../lib/types';
 import type { PreviewDocument } from '../lib/preview';
 import { parseRevealMessage, type RevealSourceTarget } from '../lib/previewSource';
-import type { DesktopPreviewOutput, DesktopPreviewState, PreviewProjectCandidate } from '../lib/desktop';
+import { getDesktopBridge, type DesktopPreviewOutput, type DesktopPreviewState, type PreviewProjectCandidate } from '../lib/desktop';
 import { BackendPreview } from './BackendPreview';
 
 interface PreviewPaneProps {
@@ -143,6 +143,7 @@ export function PreviewPane({
   const effectiveReloadKey = `${reloadKey}:${manualReloadKey}`;
   const [isConsoleOpen, setIsConsoleOpen] = useState(false);
   const [logs, setLogs] = useState<ConsoleEntry[]>([]);
+  const [previewAssert, setPreviewAssert] = useState<'ok' | 'warn' | 'fatal' | 'observed' | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const previewStageRef = useRef<HTMLDivElement>(null);
   const previewFrameRef = useRef<HTMLIFrameElement>(null);
@@ -179,6 +180,27 @@ export function PreviewPane({
   useEffect(() => {
     if (localPreviewState.status === 'error') setIsConsoleOpen(true);
   }, [localPreviewState.status]);
+
+  useEffect(() => {
+    if (localPreviewState.status !== 'ready' || !workspaceId) {
+      setPreviewAssert(null);
+      return;
+    }
+    const desktop = getDesktopBridge();
+    if (!desktop?.assertPreview) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void desktop.assertPreview(workspaceId).then((verdict) => {
+        if (!cancelled) setPreviewAssert(verdict.status);
+      }).catch(() => {
+        if (!cancelled) setPreviewAssert(null);
+      });
+    }, 600);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [localPreviewState.status, localPreviewState.url, workspaceId, reloadKey]);
 
   // Listen to iframe error and console bridge
   useEffect(() => {
@@ -262,6 +284,20 @@ export function PreviewPane({
             {document?.stackType && (
               <span className="hidden sm:inline rounded border border-violet-300/25 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-violet-300">
                 {document.stackType}
+              </span>
+            )}
+            {previewAssert && (
+              <span
+                title="Structured preview check after load"
+                className={`rounded-full border px-2 py-0.5 text-[10px] font-mono shrink-0 ${
+                  previewAssert === 'ok'
+                    ? 'border-emerald-500/25 bg-emerald-500/[.08] text-emerald-300'
+                    : previewAssert === 'fatal'
+                      ? 'border-rose-500/25 bg-rose-500/[.08] text-rose-300'
+                      : 'border-amber-500/25 bg-amber-500/[.08] text-amber-200'
+                }`}
+              >
+                check {previewAssert}
               </span>
             )}
             {localPreviewState.status === 'ready' && (

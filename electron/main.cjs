@@ -5,7 +5,7 @@ const http = require('node:http');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
 const chokidar = require('chokidar');
 let pty = null;
 try { pty = require('node-pty'); } catch { /* PTY support may be unavailable in an unbuilt development install. */ }
@@ -49,18 +49,22 @@ const {
   validateGitPaths
 } = require('./git-scm.cjs');
 const { resolveTerminalPlan, systemEnvironment, clampTerminalSize, normalizeTerminalSessionKey, isSafeExternalUrl } = require('./terminal-modes.cjs');
+const { applyShellIntegration } = require('./shell-integration.cjs');
+const { createProofStore } = require('./proof-store.cjs');
+const {
+  DEFAULT_SETTLE_MS,
+  buildFrameAssertionScript,
+  createConsoleErrorSink,
+  deriveContainerSelectors,
+  mergePreviewVerdict,
+  summarizeFrameResult
+} = require('./preview-assert.cjs');
 const { createMcpClient, validateServerConfig, isSafeHttpUrl } = require('./mcp-client.cjs');
 const { detectRuntime, planDualPreview } = require('./runtime-adapters.cjs');
 const { createAutomationWebhook } = require('./automation-webhook.cjs');
 const { createMachineDelta, LIMITS: MACHINE_LIMITS } = require('./machine-delta.cjs');
 const { createMachineGit } = require('./machine-git.cjs');
 const { createMachineReceipt } = require('./machine-receipt.cjs');
-const {
-  execFileBlockReason,
-  findPlantedShim,
-  parseVerifyCommand,
-  resolveExecArgv
-} = require('./verify-allowlist.cjs');
 
 const PREVIEW_SCHEME = 'shadrox-preview';
 const APP_BACKGROUND = '#090a0d';
@@ -133,6 +137,11 @@ const machineDelta = createMachineDelta({
   prepareGitRestore: machineGit.prepare,
   stopOwnedPreview: (id, identity) => previewRuntime.stopOwnedPreview(id, identity)
 });
+const proofStore = createProofStore({
+  root: path.join(app.getPath('userData'), 'proof-ledgers'),
+  safeStorage
+});
+const previewConsoleErrors = createConsoleErrorSink();
 const machineReceipt = createMachineReceipt({
   access: workspaceAccess,
   receiptsDir: path.join(app.getPath('userData'), 'machine-receipts'),
@@ -286,6 +295,76 @@ function getPreviewWorkspaceIdForUrl(value) {
   }
   if (target.protocol !== `${PREVIEW_SCHEME}:`) return null;
   return workspaceAccess.getWorkspace(target.hostname)?.mode === 'folder' ? target.hostname : null;
+}
+
+function hashText(value) {
+  return createHash('sha256').update(typeof value === 'string' ? value : '').digest('hex');
+}
+
+/** Append-only command receipt. Hashes only — the ledger never stores command output. */
+async function recordCommandProof(workspaceId, command, run) {
+  try {
+    const existing = await proofStore.readLedger(workspaceId);
+    const seq = existing ? existing.split('\n').filter(Boolean).length + 1 : 1;
+    const line = JSON.stringify({
+      v: 1,
+      seq,
+      workspace: workspaceId,
+      type: run.deniedReason ? 'command.denied' : 'command.run',
+      exitCode: run.exitCode ?? null,
+      commandHash: hashText(command),
+      stdoutHash: hashText(run.stdout),
+      stderrHash: hashText(run.stderr)
+    });
+    await proofStore.appendLine(workspaceId, line);
+  } catch {
+    // A ledger write must not change the command result the user already saw.
+  }
+}
+
+async function runPreviewAssertion(workspaceId) {
+  const contents = mainWindow?.webContents;
+  if (!contents) return mergePreviewVerdict({ frameFound: false, detail: 'no-window' });
+  let frame = null;
+  try {
+    const frames = contents.mainFrame?.framesInSubtree || [];
+    frame = frames.find((candidate) => getPreviewWorkspaceIdForUrl(candidate.url) === workspaceId) || null;
+  } catch {
+    frame = null;
+  }
+  const consoleErrors = previewConsoleErrors.drain(workspaceId);
+  if (!frame) return mergePreviewVerdict({ frameFound: false, consoleErrors, detail: 'preview-frame-not-found' });
+  let html = '';
+  try {
+    html = await frame.executeJavaScript('document.documentElement ? document.documentElement.outerHTML.slice(0, 200000) : ""', true);
+  } catch {
+    html = '';
+  }
+  const selectors = deriveContainerSelectors(typeof html === 'string' ? html : '');
+  const containerDerived = selectors.length > 0;
+  try {
+    const scriptResult = await frame.executeJavaScript(
+      buildFrameAssertionScript(containerDerived ? selectors : ['body'], DEFAULT_SETTLE_MS),
+      true
+    );
+    const summary = summarizeFrameResult(scriptResult);
+    return mergePreviewVerdict({
+      frameFound: true,
+      evaluated: summary.evaluated,
+      containerDerived,
+      failedSelectors: summary.failedSelectors,
+      warningSelectors: summary.warningSelectors,
+      consoleErrors
+    });
+  } catch {
+    return mergePreviewVerdict({
+      frameFound: true,
+      evaluated: false,
+      containerDerived,
+      consoleErrors,
+      detail: 'assertion-script-did-not-evaluate'
+    });
+  }
 }
 
 function decodePreviewSegments(pathname) {
@@ -731,24 +810,6 @@ function executeCommand(command, cwd) {
       windowsHide: true,
       // Same credential-scrubbed agent environment the assistant's shell mode uses,
       // so a one-shot command can never read a stored key out of `$env`.
-      env: resolveTerminalPlan({ mode: 'agent' }).env
-    }, (error, stdout, stderr) => {
-      resolve({
-        stdout: String(stdout || ''),
-        stderr: String(stderr || ''),
-        exitCode: error ? (typeof error.code === 'number' ? error.code : 1) : 0
-      });
-    });
-  });
-}
-
-function executeVerifiedArgv(argv, cwd) {
-  return new Promise((resolve) => {
-    execFile(argv[0], argv.slice(1), {
-      cwd,
-      timeout: 120_000,
-      maxBuffer: 2 * 1024 * 1024,
-      windowsHide: true,
       env: resolveTerminalPlan({ mode: 'agent' }).env
     }, (error, stdout, stderr) => {
       resolve({
@@ -1791,9 +1852,10 @@ function registerIpcHandlers() {
     const sessionId = requestedKey ?? randomUUID();
     const size = clampTerminalSize(cols, rows);
     const terminalEnv = requestedMode === 'agent' ? plan.env : systemEnvironment(plan.env);
-    const terminal = pty.spawn(plan.shellPath, plan.shellArgs, {
+    const integrated = applyShellIntegration({ ...plan, env: terminalEnv });
+    const terminal = pty.spawn(integrated.shellPath, integrated.shellArgs, {
       name: 'xterm-256color', cols: size.cols, rows: size.rows,
-      cwd: workspace.root, env: { ...terminalEnv, TERM: 'xterm-256color' }, useConpty: process.platform === 'win32',
+      cwd: workspace.root, env: { ...integrated.env, TERM: 'xterm-256color' }, useConpty: process.platform === 'win32',
       windowsHide: true
     });
     const sessionInfo = { workspaceId, mode: plan.mode, label: plan.label, launchCwd: workspace.root, terminal };
@@ -1964,6 +2026,14 @@ function registerIpcHandlers() {
     return previewRuntime.stop(workspaceId);
   });
 
+  handleMachineSensitive('preview:assert', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    if (typeof workspaceId !== 'string' || !workspaceId) {
+      return mergePreviewVerdict({ frameFound: false, detail: 'missing-workspace' });
+    }
+    return runPreviewAssertion(workspaceId);
+  });
+
   // The preview is an iframe in this window, so a screenshot is a pixel grab of
   // the region the renderer measured. An omitted rect means "the whole frame as
   // it is visible", which is what the toolbar button asks for.
@@ -2049,38 +2119,8 @@ function registerIpcHandlers() {
       exitCode: run.exitCode,
       durationMs: Date.now() - started
     });
+    await recordCommandProof(workspaceId, command, run);
     return run;
-  });
-
-  handleMachineSensitive('terminal:run-verify-command', async (event, workspaceId, command) => {
-    assertTrustedRenderer(event);
-    const workspace = workspaceAccess.getWorkspace(workspaceId);
-    if (!workspace || workspace.mode !== 'folder') {
-      throw new Error('Verify commands are available only for an opened folder workspace.');
-    }
-
-    const verdict = parseVerifyCommand(command);
-    if (!verdict.allowed) return { allowed: false, reason: verdict.reason };
-    const shellReason = execFileBlockReason(verdict.argv, process.platform);
-    if (shellReason) return { allowed: false, reason: shellReason };
-    const planted = findPlantedShim(verdict.argv, workspace.root, fs.existsSync, process.platform);
-    if (planted) {
-      return {
-        allowed: false,
-        reason: `"${planted}" could shadow the PATH binary, so nothing ran silently.`
-      };
-    }
-
-    const argv = resolveExecArgv(verdict.argv, process.platform);
-    const started = Date.now();
-    const run = await executeVerifiedArgv(argv, workspace.root);
-    mainWindow?.webContents.send('terminal:run', {
-      workspaceId,
-      command: verdict.argv.join(' '),
-      ...run,
-      durationMs: Date.now() - started
-    });
-    return { allowed: true, ...run };
   });
 
   handleMachineSensitive('git:read', async (event, workspaceId) => {
@@ -2579,6 +2619,7 @@ async function createWindow() {
     const workspaceId = getPreviewWorkspaceIdForUrl(details.frame?.url || '');
     if (!workspaceId || typeof details.message !== 'string') return;
     const level = details.level === 'error' ? 'error' : details.level === 'warning' ? 'warn' : 'log';
+    if (level === 'error') previewConsoleErrors.record(workspaceId, details.message);
     mainWindow?.webContents.send('preview:output', {
       workspaceId,
       type: 'console',

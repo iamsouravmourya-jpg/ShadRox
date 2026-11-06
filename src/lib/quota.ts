@@ -1,4 +1,6 @@
 import { CREDIT_RATES, getPlanMeta, type CreditRate } from './plans';
+import { SHARED_KEY_ENABLED } from './sharedKeyPolicy';
+import { getUseSharedKey } from './storage';
 import type { PlanTier } from './types';
 
 export interface UsageState {
@@ -36,9 +38,21 @@ export function getUsageCredits(): number {
   }
 }
 
+/**
+ * Credits meter only what the ShadRox proxy pays for. A turn carried by the
+ * user's own BYOK key costs their provider directly, so it is neither counted
+ * nor capped, whichever plan the app is filed under. The stored flag is the
+ * same one `useByok` initializes its state from, so the two cannot disagree.
+ */
+export function isMeteredPlan(plan: PlanTier): boolean {
+  if (!Number.isFinite(getPlanMeta(plan).creditsPerMonth)) return false;
+  return SHARED_KEY_ENABLED && getUseSharedKey();
+}
+
 export function getMonthlyUsage(plan: PlanTier): UsageState {
-  const used = getUsageCredits();
-  const limit = getPlanMeta(plan).creditsPerMonth;
+  const metered = isMeteredPlan(plan);
+  const used = metered ? getUsageCredits() : 0;
+  const limit = metered ? getPlanMeta(plan).creditsPerMonth : Infinity;
   const isUnlimited = !Number.isFinite(limit);
   const remaining = isUnlimited ? Infinity : Math.max(0, limit - used);
   const percentage = isUnlimited ? 0 : Math.min(100, Math.round((used / limit) * 100));
@@ -72,7 +86,7 @@ export function addCreditSpend(credits: number): number {
  * counted and nothing can run out.
  */
 export function recordCreditSpend(plan: PlanTier, rate: CreditRate): number {
-  if (!Number.isFinite(getPlanMeta(plan).creditsPerMonth)) return 0;
+  if (!isMeteredPlan(plan)) return 0;
   return addCreditSpend(CREDIT_RATES[rate]);
 }
 
@@ -85,7 +99,7 @@ export function recordCreditSpend(plan: PlanTier, rate: CreditRate): number {
  * every turn that reports usage.
  */
 export function settleTurnCredits(plan: PlanTier, credits: number | null, fallback: CreditRate): number {
-  if (!Number.isFinite(getPlanMeta(plan).creditsPerMonth)) return 0;
+  if (!isMeteredPlan(plan)) return 0;
   return addCreditSpend(credits === null ? CREDIT_RATES[fallback] : credits);
 }
 

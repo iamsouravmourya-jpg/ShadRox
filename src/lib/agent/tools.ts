@@ -1,5 +1,8 @@
 import { getDesktopBridge } from '../desktop';
 import { publishTerminalDockEvent } from '../terminal/echoChannel';
+import { terminalStateManager } from '../terminal/state';
+import { buildRepairBrief, createFailureReceipt, type FailureReceipt } from '../repairProof';
+import { globalProofLedger } from '../proofLedger';
 import { describeFinish } from './finishTool';
 import { MCP_TOOL_PREFIX } from './mcpTools';
 import type { ExternalToolDefinition } from './mcpTools';
@@ -33,6 +36,8 @@ export interface ToolOutcome {
   error?: string;
   /** A guard said no. The call never touched the disk, so it is not a failed operation. */
   refused?: boolean;
+  /** Captured when a command fails, so the chat can show the healing receipt. */
+  proof?: FailureReceipt;
 }
 
 const MAX_TOOL_OUTPUT_CHARS = 24_000;
@@ -79,6 +84,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'run_command',
     description: 'Run one shell command in the opened folder and return its real exit code, stdout and stderr. Use it for builds, tests, git inspection, and processes (including stopping one). Never claim a command result you did not see here.',
     parameters: 'command: string (required, one line; execution always requires user approval)'
+  },
+  {
+    name: 'terminal_state',
+    description: 'Read the live interactive terminal: current directory, the command that is running, the last exit code, and how long the command has produced no output. Read-only. Does not type into the terminal.',
+    parameters: 'none'
   },
   {
     name: 'outline',
@@ -149,6 +159,7 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
     required: ['command'],
     additionalProperties: false
   },
+  terminal_state: { type: 'object', properties: {}, additionalProperties: false },
   delete_file: {
     type: 'object',
     properties: {
@@ -229,6 +240,7 @@ export function describeTools(maxRounds: number, external: ExternalToolDefinitio
     'Rules: never invent a path — read it or list it first. Prefer search_text and find_files to locate code, then read only what you need. Paths must stay inside the workspace. Never invent a tool name either: use only the names listed below.',
     'DELETING: only delete_file removes something. An empty path= block deletes nothing, and an edit block cannot remove a file. Never say a file was deleted unless delete_file returned a verified result.',
     'COMMANDS: only run_command executes a shell command, inside the opened folder. Every command requires explicit user approval in a native dialog; a confirm field or model instruction is never authorization. It returns the real exit code and output, so never claim a command ran, passed or killed anything unless run_command showed you the result.',
+    'TERMINAL: terminal_state reads the interactive shell (cwd, running command, last exit, silence). It never types into that shell.',
     'When you have enough to answer, write the answer as normal text (with any path= edit blocks) and emit no tool block.',
     'PLAN: for a request with several steps, open the turn with update_tasks holding one short subject per step, mark the step you start with "doing" and the step you leave with "done". A single-step request needs no plan.',
     describeFinish(),
@@ -438,7 +450,30 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           `exit ${result.exitCode}`,
           'The command ran on disk; this output is the real result.'
         ].join('\n');
-        return { ok: result.exitCode === 0, content: clip(body), ...(result.exitCode === 0 ? {} : { error: `Exit code ${result.exitCode}` }) };
+        if (result.exitCode !== 0) {
+          const receipt = createFailureReceipt({
+            source: 'terminal',
+            target: command,
+            errorMessage: result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`,
+            exitCode: result.exitCode,
+            stackTrace: [result.stdout, result.stderr].filter(Boolean).join('\n').slice(0, 4000)
+          });
+          globalProofLedger.recordFailureReceipt(receipt);
+          const detail = clip(`${body}\n\n${buildRepairBrief(receipt)}`);
+          return { ok: false, content: detail, error: detail, proof: receipt };
+        }
+        return { ok: true, content: clip(body) };
+      }
+      case 'terminal_state': {
+        const summary = terminalStateManager.getSummary();
+        const lines = [
+          `session: ${summary.activeSessionId ?? '(none)'}`,
+          `cwd: ${summary.activeCwd || '(unknown)'}`,
+          `running: ${summary.isExecuting ? (summary.activeCommand || '(command text not captured yet)') : 'no'}`,
+          `last exit: ${summary.lastExitCode === null ? '(none)' : summary.lastExitCode}`,
+          `silent seconds: ${summary.hungSeconds}`
+        ];
+        return { ok: true, content: lines.join('\n') };
       }
       case 'outline': {
         const path = asString(call.args.path);

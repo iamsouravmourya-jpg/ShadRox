@@ -86,7 +86,7 @@ export class ShellIntegrationParser {
     }
 
     // Combined regex for OSC 7 and OSC 133/633
-    const COMBINED_OSC_REGEX = /\x1b\](?:7;file:\/\/[^\/]*([^\x07\x1b]+)|(133|633);([A-Za-z0-9_=;\-\/\.\:\s]+))(\x07|\x1b\\)/g;
+    const COMBINED_OSC_REGEX = /\x1b\](?:7;file:\/\/[^/\x07\x1b]*([^\x07\x1b]+)|(133|633);([^\x07\x1b]{1,4000}))(\x07|\x1b\\)/g;
 
     let cleanText = '';
     let lastIndex = 0;
