@@ -1,5 +1,4 @@
 User-agent: *
 Allow: /
-Disallow: /landing-v3.html
 
 Sitemap: https://www.shadrox.cyou/sitemap.xml

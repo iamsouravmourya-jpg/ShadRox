@@ -444,8 +444,103 @@ function readOrphanEntries(orphansFile) {
 function writeOrphanEntries(orphansFile, entries) {
   if (!orphansFile) return;
   try {
-    require('node:fs').writeFileSync(orphansFile, JSON.stringify({ entries: entries.slice(-30) }));
+    const fsSync = require('node:fs');
+    const payload = JSON.stringify({ entries: entries.slice(-30) });
+    // Rename, not truncate: a force-kill mid-write would otherwise leave a
+    // half-written file that readOrphanEntries silently reads as "no orphans".
+    const tempPath = `${orphansFile}.${process.pid}.tmp`;
+    fsSync.writeFileSync(tempPath, payload);
+    fsSync.renameSync(tempPath, orphansFile);
   } catch { /* best-effort registry */ }
+}
+
+/** Binaries a ShadRox preview tree can legitimately be made of. */
+const DEV_SERVER_IMAGE_NAMES = new Set([
+  'node', 'node.exe', 'npm', 'npm.cmd', 'npx', 'npx.cmd',
+  'pnpm', 'pnpm.cmd', 'yarn', 'yarn.cmd', 'bun', 'bun.exe', 'deno', 'deno.exe'
+]);
+
+function queryProcessImage(pid, spawnProcess = spawn) {
+  return new Promise((resolve) => {
+    const isWin = process.platform === 'win32';
+    const args = isWin
+      ? ['/fi', `PID eq ${pid}`, '/nh', '/fo', 'CSV']
+      : ['-o', 'comm=', '-p', String(pid)];
+    let child;
+    try {
+      child = spawnProcess(isWin ? 'tasklist.exe' : 'ps', args, {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+    } catch {
+      return resolve(null);
+    }
+    let out = '';
+    child.stdout?.on('data', (chunk) => { out += chunk; });
+    child.once('error', () => resolve(null));
+    child.once('close', () => {
+      const image = isWin ? (out.match(/^\s*"([^"]+)"/) || [])[1] : out.trim();
+      resolve(image ? String(image).toLowerCase() : null);
+    });
+  });
+}
+
+/**
+ * Windows recycles PIDs, so a registry entry from a previous boot can name a
+ * process that is now something the user cares about. Only kill what still
+ * looks like a dev server; when the identity cannot be read at all, fall back
+ * to the recorded behaviour rather than strand the orphan forever.
+ */
+async function isDevServerProcess(pid, spawnProcess) {
+  const image = await queryProcessImage(pid, spawnProcess);
+  if (!image) return true;
+  const base = image.split(/[\\/]/).pop();
+  return DEV_SERVER_IMAGE_NAMES.has(base) || base === 'node';
+}
+
+function killProcessTree(pid, spawnProcess = spawn) {
+  if (process.platform !== 'win32') {
+    // Signalling is synchronous here, so the taskkill/read-back race
+    // the Windows branch cannot avoid does not exist.
+    try {
+      process.kill(-pid, 'SIGKILL');
+      return Promise.resolve(true);
+    } catch {
+      try {
+        process.kill(pid, 'SIGKILL');
+        return Promise.resolve(true);
+      } catch {
+        return Promise.resolve(false);
+      }
+    }
+  }
+  return new Promise((resolve) => {
+    const killer = spawnProcess('taskkill.exe', ['/pid', String(pid), '/t', '/f'], {
+      windowsHide: true,
+      stdio: 'ignore'
+    });
+    killer.once('error', () => resolve(false));
+    killer.once('close', (code) => resolve(code === 0));
+  });
+}
+
+/** Kill dev servers a previous ShadRox session left behind for this project. */
+async function reapOrphanedPreviews(orphansFile, root, spawnProcess) {
+  if (!orphansFile) return 0;
+  const target = normalizeProjectRoot(root);
+  const entries = readOrphanEntries(orphansFile).filter((entry) => isProcessAlive(entry.pid));
+  let killed = 0;
+  for (const entry of entries) {
+    if (normalizeProjectRoot(entry.root) !== target) continue;
+    if (!await isDevServerProcess(entry.pid, spawnProcess)) continue;
+    if (await killProcessTree(entry.pid, spawnProcess)) killed += 1;
+  }
+  // Drop this root's entries whether or not the kill landed: a PID that no
+  // longer belongs to a dev server is stale data, and taskkill reports success
+  // before Windows finishes releasing the handle, so a liveness re-check here
+  // would keep a dead entry forever.
+  writeOrphanEntries(orphansFile, entries.filter((entry) => normalizeProjectRoot(entry.root) !== target));
+  return killed;
 }
 
 function normalizeProjectRoot(value) {
@@ -462,32 +557,6 @@ function recordOrphanChild(orphansFile, pid, root) {
 function forgetOrphanChild(orphansFile, pid) {
   if (!orphansFile) return;
   writeOrphanEntries(orphansFile, readOrphanEntries(orphansFile).filter((entry) => entry.pid !== pid));
-}
-
-function killProcessTree(pid, spawnProcess = spawn) {
-  return new Promise((resolve) => {
-    const killer = spawnProcess('taskkill.exe', ['/pid', String(pid), '/t', '/f'], {
-      windowsHide: true,
-      stdio: 'ignore'
-    });
-    killer.once('error', resolve);
-    killer.once('close', resolve);
-  });
-}
-
-/** Kill dev servers a previous ShadRox session left behind for this project. */
-async function reapOrphanedPreviews(orphansFile, root, spawnProcess) {
-  if (!orphansFile) return 0;
-  const target = normalizeProjectRoot(root);
-  const entries = readOrphanEntries(orphansFile).filter((entry) => isProcessAlive(entry.pid));
-  let killed = 0;
-  for (const entry of entries) {
-    if (normalizeProjectRoot(entry.root) !== target) continue;
-    await killProcessTree(entry.pid, spawnProcess);
-    killed += 1;
-  }
-  writeOrphanEntries(orphansFile, entries.filter((entry) => normalizeProjectRoot(entry.root) !== target));
-  return killed;
 }
 
 /**
@@ -890,6 +959,27 @@ function createPreviewRuntime({
       emit(workspaceId, 'status', 'Dependencies installed. Starting local project...');
     }
 
+    // Self-heal runs BEFORE any port decision. An orphan from a force-killed
+    // session still holds the intended port at this point, and Next keeps its
+    // dev lock while that orphan's PID is alive — deciding the port first made
+    // the new session relocate to 3001 while 3000 freed itself a second later.
+    const isNextCommand = /\bnext\b/i.test(script.command);
+    const intendedPort = getScriptPort(script.command) ?? getFrameworkDefaultPort(script.command);
+    const orphanCount = await reapOrphanedPreviews(orphansFile, root, spawnProcess);
+    if (orphanCount > 0) {
+      emit(workspaceId, 'status', `Terminated ${orphanCount} leftover preview server(s) from a previous ShadRox session.`);
+      // taskkill's exit fires before Windows releases the listening socket.
+      if (intendedPort) {
+        const releaseDeadline = Date.now() + 3000;
+        while (Date.now() < releaseDeadline && await isPortBusy(intendedPort)) {
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+      }
+    }
+    if (await removeStaleNextDevLock(root, isNextCommand)) {
+      emit(workspaceId, 'status', 'Removed a stale Next.js dev-server lock left by a previous session.');
+    }
+
     // A 180 ms budget used to miss an unrelated server already listening on a
     // common dev port under machine load. Preview would then adopt that server
     // as the project. The normal probe budget is cheap here: these run in
@@ -904,7 +994,6 @@ function createPreviewRuntime({
     // holding the port afterwards is foreign: never kill it, move to the next
     // free port like Vite's strictPort fallback instead. A script that offers
     // no override at all gets a structured error the UI can explain.
-    const intendedPort = getScriptPort(script.command) ?? getFrameworkDefaultPort(script.command);
     const overrideStrategy = getPortOverrideStrategy(script.command);
     let portOverride = null;
     if (intendedPort &&
@@ -932,15 +1021,6 @@ function createPreviewRuntime({
       emit(workspaceId, 'status',
         `Port ${intendedPort} is already used by ${holderId ? 'another ShadRox preview' : 'another local server'}. ` +
         `Starting on port ${portOverride} instead.`);
-    }
-
-    const isNextCommand = /\bnext\b/i.test(script.command);
-    if (await removeStaleNextDevLock(root, isNextCommand)) {
-      emit(workspaceId, 'status', 'Removed a stale Next.js dev-server lock left by a previous session.');
-    }
-    const orphanCount = await reapOrphanedPreviews(orphansFile, root, spawnProcess);
-    if (orphanCount > 0) {
-      emit(workspaceId, 'status', `Terminated ${orphanCount} leftover preview server(s) from a previous ShadRox session.`);
     }
 
     const child = spawnCommand(

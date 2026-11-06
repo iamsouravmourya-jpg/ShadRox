@@ -856,6 +856,10 @@ function createWorkspaceAccess() {
           await fs.unlink(temporaryPath);
         }
         workspace.fileMap.set(relativePath, target);
+        const persisted = await fs.readFile(target, 'utf8').catch(() => null);
+        if (persisted !== file.content) {
+          throw new Error('ShadRox could not read the saved bytes back from disk. The save is not confirmed.');
+        }
         saved.push(relativePath);
         if (!workspace.fileMap.has(relativePath)) workspace.fileMap.set(relativePath, target);
       } catch (error) {

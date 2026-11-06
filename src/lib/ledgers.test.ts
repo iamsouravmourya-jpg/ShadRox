@@ -68,7 +68,7 @@ test('SpendLedger calculates prompt spend, cached token savings, and hit ratio',
   assert.equal(summary.totalCompletionTokens, 2_000);
   assert.ok(summary.cacheSavingsUsd > 0, 'Should have positive cache savings');
   assert.ok(summary.totalCostUsd > 0);
-  assert.equal(summary.cacheHitRatio, 0.44); // 80k / 180k
+  assert.equal(summary.cacheHitRatio, 0.8); // 80k cached of 100k total prompt tokens
 });
 
 test('resolveModelMetadata normalizes known models and falls back cleanly for unknown models', () => {

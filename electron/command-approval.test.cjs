@@ -27,17 +27,23 @@ function fixture(overrides = {}) {
 }
 
 test('isAllowedVerifyCommand strictly accepts only safe test/typecheck binaries without shell metachars', () => {
-  // Allowlisted
+  // Allowlisted: exact read-only forms from the verify allowlist table
   assert.equal(isAllowedVerifyCommand('npm test'), true);
-  assert.equal(isAllowedVerifyCommand('npm run test'), true);
-  assert.equal(isAllowedVerifyCommand('npm run typecheck'), true);
   assert.equal(isAllowedVerifyCommand('pytest'), true);
-  assert.equal(isAllowedVerifyCommand('pytest tests/unit'), true);
-  assert.equal(isAllowedVerifyCommand('tsc'), true);
+  assert.equal(isAllowedVerifyCommand('python -m pytest'), true);
   assert.equal(isAllowedVerifyCommand('tsc --noEmit'), true);
+  assert.equal(isAllowedVerifyCommand('npx tsc --noEmit'), true);
   assert.equal(isAllowedVerifyCommand('git diff'), true);
-  assert.equal(isAllowedVerifyCommand('npx tsc'), true);
-  assert.equal(isAllowedVerifyCommand('npx pytest'), true);
+  assert.equal(isAllowedVerifyCommand('git status'), true);
+
+  // Denied: an allowlisted binary plus an argument that can make it write files
+  assert.equal(isAllowedVerifyCommand('pytest tests/unit'), false);
+  assert.equal(isAllowedVerifyCommand('tsc'), false);
+  assert.equal(isAllowedVerifyCommand('npx tsc'), false);
+  assert.equal(isAllowedVerifyCommand('tsc --outFile build.js'), false);
+  assert.equal(isAllowedVerifyCommand('git diff --output patch.txt'), false);
+  assert.equal(isAllowedVerifyCommand('npm test --prefix ../elsewhere'), false);
+  assert.equal(isAllowedVerifyCommand('npm run test'), false);
 
   // Denied / Non-allowlisted
   assert.equal(isAllowedVerifyCommand('rm -rf /'), false);
