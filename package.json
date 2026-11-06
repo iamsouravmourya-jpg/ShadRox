@@ -8,7 +8,7 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "pretest": "node --import tsx --test electron/machine-receipt.test.cjs electron/verify-allowlist.test.cjs api/ai/promptCache.test.ts src/lib/spendLedger.test.ts",
+    "pretest": "node --import tsx --test electron/machine-receipt.test.cjs electron/verify-allowlist.test.cjs electron/proof-store.test.cjs electron/preview-assert.test.cjs api/ai/promptCache.test.ts src/lib/spendLedger.test.ts src/lib/proof/ledger.test.ts",
     "dev": "tsx server.ts",
     "dev:landing": "npm --prefix landing run dev",
     "dev:desktop": "concurrently -k \"npm:dev\" \"wait-on http://localhost:3000 && electron .\"",
