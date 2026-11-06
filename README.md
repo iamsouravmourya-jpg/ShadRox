@@ -211,7 +211,11 @@ The beta runs on **Bring Your Own Key (BYOK)**. Add a provider key in Settings; 
 
 Opening a project workspace automatically starts its detected preview script and may install missing dependencies. Check the detected project and run script before opening an untrusted workspace. Click-to-source works for static pages served through ShadRox, not external dev servers.
 
+For a running local preview, **Check** inspects only bounded frame structure and recent console errors. An **Observed** result is deliberately not a claim that the page looks correct.
+
 The **integrated terminal** is an interactive shell rooted in the workspace. Credential-shaped environment variables (API keys, tokens) are stripped from every terminal session before it starts. Assistant-initiated commands use a separate path: each one requires a one-time native approval dialog, runs non-interactively, and reports the captured exit code and output back into the chat — they do not get an interactive session.
+
+The local proof ledger records confirmed file-apply hashes and provider-reported usage metadata, not prompt or file contents. Ledger records are hash-chained and signed; signing keys are stored in the app's OS-encrypted store. This is tamper-evidence, not a remote attestation or protection against an attacker who controls the machine.
 
 ## Tech Stack
 
