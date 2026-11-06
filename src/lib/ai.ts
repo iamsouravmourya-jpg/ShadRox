@@ -112,6 +112,8 @@ export interface StreamDoneInfo {
   /** Absent when the provider reported no split, which is not the same as zero. */
   inputTokens?: number;
   outputTokens?: number;
+  /** Prompt-cache tokens reported by the provider, already included in inputTokens. */
+  cachedInputTokens?: number;
   provider: ProviderId;
   model: string;
   tier: string;
@@ -467,6 +469,7 @@ async function runStreamAttempt(
         tokens: event.tokens ?? 0,
         inputTokens: typeof event.inputTokens === 'number' ? event.inputTokens : undefined,
         outputTokens: typeof event.outputTokens === 'number' ? event.outputTokens : undefined,
+        cachedInputTokens: typeof event.cachedInputTokens === 'number' ? event.cachedInputTokens : undefined,
         provider: event.provider ?? provider,
         model: event.model ?? model,
         tier: event.tier ?? 'byok',

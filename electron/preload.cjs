@@ -35,6 +35,7 @@ const shadroxDesktop = Object.freeze({
   verifyChangeSet: (id, files) => ipcRenderer.invoke('workspace:verify-change-set', id, files),
   onWorkspaceChange: (listener) => subscribe('workspace:change', listener),
   runCommand: (id, command) => ipcRenderer.invoke('terminal:run-command', id, command),
+  runVerifyCommand: (id, command) => ipcRenderer.invoke('terminal:run-verify-command', id, command),
   gitRead: (id) => ipcRenderer.invoke('git:read', id),
   gitConflicts: (id) => ipcRenderer.invoke('git:conflicts', id),
   gitScmRead: (id) => ipcRenderer.invoke('git:scm-read', id),

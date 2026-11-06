@@ -179,7 +179,7 @@ Teams share the same bounded tool loop and guarded patch path. Each agent's brie
 - Groq
 - Custom OpenAI-compatible endpoints (including Ollama, LM Studio, and compatible gateways)
 
-The beta runs on **Bring Your Own Key (BYOK)**. Add a provider key in Settings; model availability and charges depend on that provider.
+The beta runs on **Bring Your Own Key (BYOK)**. Add a provider key in Settings; model availability and charges depend on that provider. Optional local spend caps in **Settings → Models & Keys** can limit one chat turn, one day, or one autonomous run. Caps are off by default and use provider-reported token usage, so treat them as a safety estimate rather than provider billing.
 
 **Project context** is assembled locally for each request and can include:
 - Selected files

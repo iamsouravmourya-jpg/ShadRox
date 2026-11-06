@@ -55,6 +55,12 @@ const { createAutomationWebhook } = require('./automation-webhook.cjs');
 const { createMachineDelta, LIMITS: MACHINE_LIMITS } = require('./machine-delta.cjs');
 const { createMachineGit } = require('./machine-git.cjs');
 const { createMachineReceipt } = require('./machine-receipt.cjs');
+const {
+  execFileBlockReason,
+  findPlantedShim,
+  parseVerifyCommand,
+  resolveExecArgv
+} = require('./verify-allowlist.cjs');
 
 const PREVIEW_SCHEME = 'shadrox-preview';
 const APP_BACKGROUND = '#090a0d';
@@ -725,6 +731,24 @@ function executeCommand(command, cwd) {
       windowsHide: true,
       // Same credential-scrubbed agent environment the assistant's shell mode uses,
       // so a one-shot command can never read a stored key out of `$env`.
+      env: resolveTerminalPlan({ mode: 'agent' }).env
+    }, (error, stdout, stderr) => {
+      resolve({
+        stdout: String(stdout || ''),
+        stderr: String(stderr || ''),
+        exitCode: error ? (typeof error.code === 'number' ? error.code : 1) : 0
+      });
+    });
+  });
+}
+
+function executeVerifiedArgv(argv, cwd) {
+  return new Promise((resolve) => {
+    execFile(argv[0], argv.slice(1), {
+      cwd,
+      timeout: 120_000,
+      maxBuffer: 2 * 1024 * 1024,
+      windowsHide: true,
       env: resolveTerminalPlan({ mode: 'agent' }).env
     }, (error, stdout, stderr) => {
       resolve({
@@ -2026,6 +2050,37 @@ function registerIpcHandlers() {
       durationMs: Date.now() - started
     });
     return run;
+  });
+
+  handleMachineSensitive('terminal:run-verify-command', async (event, workspaceId, command) => {
+    assertTrustedRenderer(event);
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    if (!workspace || workspace.mode !== 'folder') {
+      throw new Error('Verify commands are available only for an opened folder workspace.');
+    }
+
+    const verdict = parseVerifyCommand(command);
+    if (!verdict.allowed) return { allowed: false, reason: verdict.reason };
+    const shellReason = execFileBlockReason(verdict.argv, process.platform);
+    if (shellReason) return { allowed: false, reason: shellReason };
+    const planted = findPlantedShim(verdict.argv, workspace.root, fs.existsSync, process.platform);
+    if (planted) {
+      return {
+        allowed: false,
+        reason: `"${planted}" could shadow the PATH binary, so nothing ran silently.`
+      };
+    }
+
+    const argv = resolveExecArgv(verdict.argv, process.platform);
+    const started = Date.now();
+    const run = await executeVerifiedArgv(argv, workspace.root);
+    mainWindow?.webContents.send('terminal:run', {
+      workspaceId,
+      command: verdict.argv.join(' '),
+      ...run,
+      durationMs: Date.now() - started
+    });
+    return { allowed: true, ...run };
   });
 
   handleMachineSensitive('git:read', async (event, workspaceId) => {

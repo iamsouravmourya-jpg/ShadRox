@@ -112,6 +112,10 @@ export interface DesktopCommandResult {
   deniedReason?: string;
 }
 
+export type DesktopVerifyCommandResult =
+  | ({ allowed: true } & DesktopCommandResult)
+  | { allowed: false; reason: string };
+
 /** Read-only snapshot of the workspace's git state, from the main process. */
 export interface GitReadResult {
   isRepo: boolean;
@@ -433,6 +437,8 @@ export interface ShadRoxDesktopAPI {
   /** Static pre-apply check of proposed file contents (syntax, JSON, markup). */
   verifyChangeSet: (workspaceId: string, files: VerifyChangeFile[]) => Promise<VerifyChangeResult>;
   runCommand: (workspaceId: string, command: string) => Promise<DesktopCommandResult>;
+  /** Runs only exact allowlisted verification argv via execFile; misses do not execute. */
+  runVerifyCommand?: (workspaceId: string, command: string) => Promise<DesktopVerifyCommandResult>;
   /** Read-only git status/diff/log for AI commit messages. */
   gitRead: (workspaceId: string) => Promise<GitReadResult>;
   /** Unmerged index paths, read-only, for the conflict banner. */

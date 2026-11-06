@@ -95,7 +95,7 @@ export interface Milestone {
   expectedFiles: string[];
   /** Milestone ids that must pass first. A cycle makes the whole plan invalid. */
   dependsOn: string[];
-  /** Optional proof command. Runs only through the app's approval gate. */
+  /** Optional proof command. Main-process allowlisted forms run via execFile; all others require approval. */
   verifyCommand?: string;
   status: MilestoneStatus;
   attempts: Attempt[];

@@ -116,6 +116,8 @@ export interface ChatMessage {
     /** Absent when the provider reported no input/output split. */
     inputTokens?: number;
     outputTokens?: number;
+    /** Prompt-cache tokens reported by the provider, already included in inputTokens. */
+    cachedTokens?: number;
     /**
      * Credits this turn actually cost at the rate table, derived from the real
      * split. Absent when the split is unknown — a guessed charge is worse than
