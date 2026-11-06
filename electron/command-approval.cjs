@@ -2,64 +2,18 @@
 
 const path = require('node:path');
 
-const SHELL_METACHARS_REGEX = /[&|;><`$()\\\n\r]/;
+const { parseVerifyCommand } = require('./verify-allowlist.cjs');
 
 /**
- * Parses and verifies whether a command string is an authorized verification command
- * under the strict default-deny allowlist policy (npm test, pytest, tsc, git diff).
- * Returns array of [binary, ...args] if strictly allowed, or null if denied.
+ * Strict default-deny check for the silent verification path, backed by the single
+ * allowlist table in verify-allowlist.cjs. Prefix matching is deliberately not used:
+ * `tsc --outFile build.js` and `git diff --output patch.txt` start with an
+ * allowlisted binary but write files, so they must reach interactive approval.
+ * Returns argv when silently allowed, null when approval is required.
  */
 function parseVerifyArgv(command) {
-  if (typeof command !== 'string') return null;
-  const trimmed = command.trim();
-  if (!trimmed) return null;
-
-  // Strict check 1: Reject any shell control, redirection, chaining, or expansion characters
-  if (SHELL_METACHARS_REGEX.test(trimmed)) {
-    return null;
-  }
-
-  // Split into argv elements safely
-  const parts = trimmed.split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return null;
-
-  const bin = parts[0];
-
-  // Rule 1: npm test, npm run test, npm run typecheck
-  if (bin === 'npm') {
-    if (parts[1] === 'test') {
-      return parts;
-    }
-    if (parts[1] === 'run' && (parts[2] === 'test' || parts[2] === 'typecheck')) {
-      return parts;
-    }
-    return null;
-  }
-
-  // Rule 2: npx tsc, npx pytest
-  if (bin === 'npx') {
-    if (parts[1] === 'tsc' || parts[1] === 'pytest') {
-      return parts;
-    }
-    return null;
-  }
-
-  // Rule 3: pytest
-  if (bin === 'pytest') {
-    return parts;
-  }
-
-  // Rule 4: tsc
-  if (bin === 'tsc') {
-    return parts;
-  }
-
-  // Rule 5: git diff
-  if (bin === 'git' && parts[1] === 'diff') {
-    return parts;
-  }
-
-  return null;
+  const verdict = parseVerifyCommand(command);
+  return verdict.allowed ? verdict.argv : null;
 }
 
 function isAllowedVerifyCommand(command) {

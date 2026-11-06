@@ -1081,7 +1081,7 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
         <span class="stat-label">agent roles in a multi-step team run</span>
       </div>
       <div class="stat-item">
-        <b class="stat-num" data-count="18">0</b>
+        <b class="stat-num" data-count="12">0</b>
         <span class="stat-label">tools wired into one window</span>
       </div>
     </div>
@@ -1268,7 +1268,7 @@ try{var t=localStorage.getItem('shadrox-theme')||(matchMedia('(prefers-color-sch
       </div>
       <div class="privacy-item">
         <span class="pi-num">3</span>
-        <div><h3>Guarded commands</h3><p>Risky delete-style commands (rm, del, Remove-Item…) hit a deny-list that forces an explicit approval dialog before anything runs.</p></div>
+        <div><h3>Guarded commands</h3><p>Only a short list of read-only verify commands (npm test, tsc --noEmit, git diff…) may run silently. Anything else — every delete, install, write or chained command — opens an explicit approval dialog first.</p></div>
       </div>
       <div class="privacy-item">
         <span class="pi-num">4</span>
@@ -1497,7 +1497,7 @@ const caps = [
     ['i-update','Auto-updates','Checks on start, installs when you restart.']
   ]],
   ['Ship',[
-    ['i-github','GitHub integration','Validate a token, create repos, push from the app.'],
+    ['i-github','GitHub integration','Validate a token and push from the app.'],
     ['i-plugin','Plugins & automations','Workspace plugins, scheduled or webhook triggers. Beta.']
   ]]
 ];

@@ -28,18 +28,30 @@ const MAX_FRAMES = 6;
 const MAX_STACK_CHARS = 1200;
 const DEFAULT_PROMPT_CHARS = 1800;
 
+/**
+ * Control characters a page can throw into console output (NUL, bells, ANSI
+ * remainder) never belong in a prompt: they confuse the model and can forge
+ * terminal escapes in whatever echoes the prompt back. Newlines, tabs and CR
+ * are kept — the stack excerpt is multi-line by design.
+ */
+const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+
 function clip(value: string, max: number): string {
-  const text = stripAnsi(value ?? '').trim();
+  const text = stripAnsi(value ?? '').replace(CONTROL_CHARS, '').trim();
   return text.length > max ? `${text.slice(0, max).trimEnd()} ...` : text;
 }
 
 /** The frames worth sending to a model: the first few, with the rest counted. */
 export function formatStackExcerpt(stack: string | undefined): string {
   if (!stack) return '';
-  const frames = stripAnsi(stack)
+  const lines = stripAnsi(stack)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && line !== 'Error');
+  // `Error: boom` is a header, not a frame; it belongs to the prompt's own
+  // `Error:` line. Counted as a frame it inflated the dropped-frame summary.
+  const frames = lines.filter((line) => line.startsWith('at '));
+  if (frames.length === 0) return clip(lines.join('\n'), MAX_STACK_CHARS);
   const kept = frames.slice(0, MAX_FRAMES).join('\n');
   const suffix = frames.length > MAX_FRAMES ? `\n... ${frames.length - MAX_FRAMES} more frame(s)` : '';
   return clip(`${kept}${suffix}`, MAX_STACK_CHARS);
