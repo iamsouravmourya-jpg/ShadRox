@@ -252,3 +252,23 @@ test('the server part of a name can be read back for a refusal', () => {
   assert.equal(serverIdOfExternalName('mcp__brave__search'), 'brave');
   assert.equal(serverIdOfExternalName('read_file'), null);
 });
+
+test('an aborted signal refuses the MCP call without dispatching to the server', async () => {
+  const fake = fakeBridge({ servers: [server('a')], tools: { a: [tool('a', 'ping')] } });
+  const controller = new AbortController();
+  controller.abort();
+  const handle = createMcpToolHandle(fake.bridge, { signal: controller.signal });
+  const outcome = await handle.call({ name: 'mcp__a__ping', args: {} });
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.error as string, /cancelled/);
+  assert.equal(fake.calls.length, 0, 'no new external dispatch after abort');
+});
+
+test('a live signal still allows a normal MCP call', async () => {
+  const fake = fakeBridge({ servers: [server('a')], tools: { a: [tool('a', 'ping')] } });
+  const controller = new AbortController();
+  const handle = createMcpToolHandle(fake.bridge, { signal: controller.signal });
+  const outcome = await handle.call({ name: 'mcp__a__ping', args: {} });
+  assert.equal(outcome.ok, true);
+  assert.equal(fake.calls.length, 1);
+});

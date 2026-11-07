@@ -47,6 +47,28 @@ test('resolveRate applies FAST_RATIO when model id ends with "-fast"', () => {
   assert.equal(fast.output, base.output * FAST_RATIO);
 });
 
+/**
+ * The Starter Pack's shared key serves these four models, and the whole margin
+ * calculation reads this table. A model that falls through to UNKNOWN_RATE is
+ * not just mispriced — it is billed at 57x its real cost and routed away from.
+ */
+test('the Starter Pack stack is priced, reader and coder included', () => {
+  assert.deepEqual(resolveRate('amazon/nova-micro-v1'), { input: 0.035, output: 0.14 });
+  assert.deepEqual(resolveRate('google/gemini-2.5-flash-lite'), { input: 0.1, output: 0.4 });
+  assert.deepEqual(resolveRate('qwen/qwen3-coder-flash'), { input: 0.195, output: 0.975 });
+  assert.deepEqual(resolveRate('qwen/qwen3-coder-next'), { input: 0.12, output: 0.8 });
+  assert.deepEqual(resolveRate('z-ai/glm-4.7-flash'), { input: 0.06, output: 0.4 });
+  assert.deepEqual(resolveRate('deepseek/deepseek-v4.1-flash'), { input: 0.3, output: 1.2 });
+  for (const id of [
+    'amazon/nova-micro-v1',
+    'google/gemini-2.5-flash-lite',
+    'qwen/qwen3-coder-flash',
+    'deepseek/deepseek-v4.1-flash'
+  ]) {
+    assert.equal(isPriced(id), true, `${id} must not fall through to UNKNOWN_RATE`);
+  }
+});
+
 test('resolveRate returns correct rates for a premium claude-sonnet pattern', () => {
   const rate = resolveRate('claude-sonnet-5.5');
   assert.equal(rate.input, 2.0);

@@ -1,10 +1,12 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
+import { DEFAULT_MAX_OUTPUT, resolveBudgetCapabilities } from '../../src/lib/modelCapabilities.js';
 import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
 import { resolveCustomEndpoint } from './_endpoint.js';
 import {
   markStableText,
   promptCacheKeyValue,
   promptCacheMode,
+  promptCacheReport,
   renderCacheableContent,
   shapeStablePrefix,
   supportsPromptCacheKey,
@@ -12,7 +14,7 @@ import {
 } from './_promptCache.js';
 import { UpstreamError, mergeOpenAiUsage, usageFields, type StreamRequest, type StreamResult, type StreamSink, type TokenUsage } from './_types.js';
 import { OpenAiToolCallCollector, rejectsNativeTools } from './_toolCalls.js';
-import { fetchUpstream } from './_upstream.js';
+import { AttemptCounter, fetchUpstream, type MeteredStreamResult } from './_upstream.js';
 
 /**
  * OpenAI-compatible chat completions for the BYOK custom endpoint.
@@ -97,6 +99,10 @@ export async function streamCustomEndpoint(
   const url = chatUrl(request);
   const mode = promptCacheMode(request.provider, model);
   const plan = shapeStablePrefix(request.provider, model, request.messages);
+  const attempts = new AttemptCounter();
+  const droppedFeatures: string[] = [];
+  const maxOutputTokens = resolveBudgetCapabilities(request.provider, model).maxOutput ?? DEFAULT_MAX_OUTPUT;
+  let servedModel: string | undefined;
   // `prompt_cache_key` is documented by OpenAI's own API and by nothing else in
   // ShadRox's provider set, so a Groq/OpenRouter/local server body never grows
   // an unknown field.
@@ -107,6 +113,7 @@ export async function streamCustomEndpoint(
       model,
       messages: buildMessages(request, withMarkers),
       ...(withTemperature ? { temperature } : {}),
+      max_tokens: maxOutputTokens,
       ...(cacheKey ? { prompt_cache_key: cacheKey } : {}),
       stream: true,
       stream_options: { include_usage: true },
@@ -121,7 +128,7 @@ export async function streamCustomEndpoint(
         : {})
     });
 
-  const send = (withTemperature: boolean, attempts: number, withTools: boolean, withMarkers: boolean) =>
+  const send = (withTemperature: boolean, fetchAttempts: number, withTools: boolean, withMarkers: boolean) =>
     fetchUpstream(
       url,
       {
@@ -133,6 +140,7 @@ export async function streamCustomEndpoint(
         body: body(withTemperature, withTools, withMarkers)
       },
       signal,
+      fetchAttempts,
       attempts
     );
 
@@ -147,12 +155,14 @@ export async function streamCustomEndpoint(
   // implicit prefix caching needs survives the downgrade untouched.
   if (!response.ok && withMarkers && rejectsCacheControl(payload)) {
     withMarkers = false;
+    droppedFeatures.push('cache_control');
     response = await send(true, 1, withTools, withMarkers);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 
   if (!response.ok && withTools && rejectsNativeTools(payload)) {
     withTools = false;
+    droppedFeatures.push('tools');
     response = await send(true, 1, withTools, withMarkers);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
@@ -161,6 +171,7 @@ export async function streamCustomEndpoint(
   // reject it outright (local quant builds especially). One retry without it
   // costs nothing and turns a hard failure into a working chat.
   if (!response.ok && /temperature/i.test(payload)) {
+    droppedFeatures.push('temperature');
     response = await send(false, 1, withTools, withMarkers);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
@@ -206,6 +217,9 @@ export async function streamCustomEndpoint(
       toolCalls.add(delta.tool_calls);
     }
     if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason;
+    if (typeof parsed?.model === 'string' && parsed.model.trim()) {
+      servedModel = parsed.model.trim();
+    }
     usage = mergeOpenAiUsage(usage, parsed?.usage);
   });
 
@@ -236,7 +250,24 @@ export async function streamCustomEndpoint(
     );
   }
 
-  return { tokens: usage.total || estimateTokens(fullText), ...usageFields(usage), finishReason };
+  const toolText = calls.map((call) => `${call.name}${call.arguments}`).join('');
+  const result: MeteredStreamResult = {
+    tokens: usage.total || estimateTokens(fullText + toolText),
+    ...usageFields(usage),
+    finishReason,
+    usageSource: usage.total ? 'provider' : 'estimated',
+    attempts: attempts.count,
+    // The report describes the FINAL wire payload: markers and tools reflect
+    // whatever the fallback ladder actually kept, never the original plan.
+    promptCache: promptCacheReport(shapeStablePrefix(request.provider, model, request.messages, {
+      systemInstruction: request.systemInstruction,
+      toolDefinitions: withTools ? request.toolDefinitions : undefined,
+      emitMarkers: withMarkers
+    })),
+    ...(servedModel ? { servedModel } : {}),
+    ...(droppedFeatures.length > 0 ? { droppedFeatures: [...droppedFeatures] } : {})
+  };
+  return result;
 }
 
 /**

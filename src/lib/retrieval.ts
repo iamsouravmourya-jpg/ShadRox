@@ -108,7 +108,9 @@ export function extractSymbols(content: string, limit = SYMBOLS_PER_FILE): strin
  * Cuts a file into retrieval-sized pieces.
  *
  * Chunking starts at each top-level declaration so a returned snippet is a
- * whole function rather than an arbitrary slice of lines.
+ * whole function rather than an arbitrary slice of lines. An interval longer
+ * than MAX_CHUNK_LINES is covered by continuation chunks, so code past line
+ * 120 of a long function stays discoverable instead of being silently dropped.
  */
 function chunkFile(file: WorkspaceFile): Array<{ startLine: number; endLine: number; content: string }> {
   const lines = file.content.split('\n');
@@ -133,22 +135,54 @@ function chunkFile(file: WorkspaceFile): Array<{ startLine: number; endLine: num
   for (let index = 0; index < starts.length; index += 1) {
     const start = starts[index];
     const rawEnd = index === starts.length - 1 ? lines.length : starts[index + 1];
-    const end = Math.min(rawEnd, start + MAX_CHUNK_LINES);
+    let end = Math.min(rawEnd, start + MAX_CHUNK_LINES);
     chunks.push({
       startLine: start + 1,
       endLine: end,
       content: lines.slice(start, end).join('\n')
     });
+    while (end < rawEnd) {
+      const next = Math.min(rawEnd, end + MAX_CHUNK_LINES);
+      chunks.push({
+        startLine: end + 1,
+        endLine: next,
+        content: lines.slice(end, next).join('\n')
+      });
+      end = next;
+    }
   }
   return chunks;
 }
 
-function signatureOf(files: WorkspaceFile[]): string {
-  let total = 0;
-  files.forEach((file) => {
-    total += file.name.length + file.content.length;
-  });
-  return `${files.length}:${total}`;
+/**
+ * Content identity that survives same-length edits: two independent FNV-style
+ * streams plus the length, so swapping one identifier for another of equal
+ * size changes the hash. A bridge-provided version is trusted instead — it
+ * changes on every write — which avoids hashing bytes the desktop already
+ * identified.
+ */
+function hashContent(content: string): string {
+  let a = 0x811c9dc5;
+  let b = 0x9e3779b9;
+  for (let index = 0; index < content.length; index += 1) {
+    const code = content.charCodeAt(index);
+    a = Math.imul(a ^ code, 0x01000193);
+    b = Math.imul(b ^ code, 0x85ebca6b);
+    b ^= b >>> 13;
+  }
+  return `${(a >>> 0).toString(36)}-${(b >>> 0).toString(36)}-${content.length}`;
+}
+
+function fileIdentity(file: WorkspaceFile): string {
+  return file.version ? `v:${file.version}:${file.content.length}` : `h:${hashContent(file.content)}`;
+}
+
+function signatureFrom(files: WorkspaceFile[], identities: string[], workspaceId?: string): string {
+  let signature = workspaceId ?? '';
+  for (let index = 0; index < files.length; index += 1) {
+    signature += '\u0000' + files[index].name + '\u0001' + identities[index];
+  }
+  return signature;
 }
 
 export interface ChunkPiece {
@@ -179,16 +213,39 @@ export function buildChunksForTesting(files: WorkspaceFile[]): ChunkPiece[] {
 }
 
 let cachedIndex: CodeIndex | null = null;
+let pieceCacheWorkspace: string | null = null;
+let pieceCache = new Map<string, ChunkPiece[]>();
 
-function buildIndex(files: WorkspaceFile[]): CodeIndex {
-  const signature = signatureOf(files);
+/** Unchanged files keep their chunks; the cache is scoped to one workspace. */
+function piecesFor(file: WorkspaceFile, workspaceId: string | undefined, identity: string): ChunkPiece[] {
+  const scope = workspaceId ?? '';
+  if (pieceCacheWorkspace !== scope) {
+    pieceCacheWorkspace = scope;
+    pieceCache = new Map();
+  }
+  const key = file.name + String.fromCharCode(0) + identity;
+  const hit = pieceCache.get(key);
+  if (hit) return hit;
+  const pieces = chunkFile(file).map((piece) => ({
+    path: file.name,
+    startLine: piece.startLine,
+    endLine: piece.endLine,
+    content: piece.content
+  }));
+  pieceCache.set(key, pieces);
+  return pieces;
+}
+
+function buildIndex(files: WorkspaceFile[], workspaceId?: string): CodeIndex {
+  const identities = files.map(fileIdentity);
+  const signature = signatureFrom(files, identities, workspaceId);
   if (cachedIndex && cachedIndex.signature === signature) return cachedIndex;
 
   const chunks: CodeChunk[] = [];
   const documentFrequency = new Map<string, number>();
 
-  files.forEach((file) => {
-    chunkFile(file).forEach((piece) => {
+  files.forEach((file, fileIndex) => {
+    piecesFor(file, workspaceId, identities[fileIndex]).forEach((piece) => {
       const tokens = tokenize(`${file.name}\n${piece.content}`);
       const terms = countTerms(tokens);
       const unique = new Set(tokens);
@@ -220,10 +277,22 @@ export interface EmbeddingIndex {
 }
 
 let cachedEmbeddingIndex: EmbeddingIndex | null = null;
+let vectorCacheScope: string | null = null;
+const vectorCache = new Map<string, number[]>();
 
 /** Drops the vector cache. Only tests need this; retrieval reuses it by signature. */
 export function resetEmbeddingCache(): void {
   cachedEmbeddingIndex = null;
+  vectorCacheScope = null;
+  vectorCache.clear();
+}
+
+/** Drops every retrieval cache (index, chunks, vectors). Test seam. */
+export function resetRetrievalCaches(): void {
+  cachedIndex = null;
+  pieceCacheWorkspace = null;
+  pieceCache = new Map();
+  resetEmbeddingCache();
 }
 
 function isValidVectorList(vectors: unknown, expected: number): boolean {
@@ -254,7 +323,8 @@ export async function buildEmbeddingIndex(
   embedder: LocalEmbedder | null
 ): Promise<EmbeddingIndex> {
   const chunks = buildChunksForTesting(files);
-  const signature = `${signatureOf(files)}|${embedder ? embedder.id : 'none'}`;
+  const identities = files.map(fileIdentity);
+  const signature = `${signatureFrom(files, identities)}|${embedder ? embedder.id : 'none'}`;
 
   if (cachedEmbeddingIndex && cachedEmbeddingIndex.signature === signature) return cachedEmbeddingIndex;
   if (!embedder || chunks.length === 0) return { signature, chunks, vectors: [], dimension: 0 };

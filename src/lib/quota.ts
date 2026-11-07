@@ -1,7 +1,12 @@
 import { CREDIT_RATES, getPlanMeta, type CreditRate } from './plans';
-import { SHARED_KEY_ENABLED } from './sharedKeyPolicy';
+import { SHARED_KEY_ENABLED, type ResolvedPayer } from './sharedKeyPolicy';
 import { getUseSharedKey } from './storage';
 import type { PlanTier } from './types';
+
+export interface SettlementOptions {
+  payer?: ResolvedPayer;
+  idempotencyKey?: string;
+}
 
 export interface UsageState {
   /** Credits spent this month. */
@@ -81,13 +86,72 @@ export function addCreditSpend(credits: number): number {
   }
 }
 
+const SETTLED_KEY = 'shadrox.quota.settled.v1';
+const SETTLED_VERSION = 1;
+const MAX_SETTLED_ENTRIES = 1000;
+
+interface SettledEntry {
+  credits: number;
+  at: number;
+}
+
+interface SettledLog {
+  version: number;
+  entries: Record<string, SettledEntry>;
+}
+
+function readSettledLog(): SettledLog | null {
+  try {
+    const raw = localStorage.getItem(SETTLED_KEY);
+    if (!raw) return { version: SETTLED_VERSION, entries: {} };
+    const parsed = JSON.parse(raw) as Partial<SettledLog> | null;
+    if (!parsed || parsed.version !== SETTLED_VERSION || !parsed.entries || typeof parsed.entries !== 'object') return null;
+    const entries: Record<string, SettledEntry> = {};
+    for (const [key, value] of Object.entries(parsed.entries)) {
+      const entry = value as Partial<SettledEntry> | null;
+      if (entry && Number.isFinite(entry.credits) && Number.isFinite(entry.at)) {
+        entries[key] = { credits: entry.credits as number, at: entry.at as number };
+      }
+    }
+    return { version: SETTLED_VERSION, entries };
+  } catch {
+    return null;
+  }
+}
+
+function chargeOnce(amount: number, idempotencyKey?: string): number {
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  if (!idempotencyKey) return addCreditSpend(amount);
+  const log = readSettledLog();
+  if (!log) return 0;
+  if (log.entries[idempotencyKey]) return 0;
+  log.entries[idempotencyKey] = { credits: amount, at: Date.now() };
+  const keys = Object.keys(log.entries);
+  if (keys.length > MAX_SETTLED_ENTRIES) {
+    keys.sort((a, b) => log.entries[a].at - log.entries[b].at);
+    for (const key of keys.slice(0, keys.length - MAX_SETTLED_ENTRIES)) delete log.entries[key];
+  }
+  try {
+    localStorage.setItem(SETTLED_KEY, JSON.stringify(log));
+  } catch {
+    return 0;
+  }
+  return addCreditSpend(amount);
+}
+
+function isMeteredFor(plan: PlanTier, payer?: ResolvedPayer): boolean {
+  if (payer === 'byok') return false;
+  if (payer === 'shared') return SHARED_KEY_ENABLED && Number.isFinite(getPlanMeta(plan).creditsPerMonth);
+  return isMeteredPlan(plan);
+}
+
 /**
  * Free/BYOK has no meter — the user pays their own provider, so nothing is
  * counted and nothing can run out.
  */
-export function recordCreditSpend(plan: PlanTier, rate: CreditRate): number {
-  if (!isMeteredPlan(plan)) return 0;
-  return addCreditSpend(CREDIT_RATES[rate]);
+export function recordCreditSpend(plan: PlanTier, rate: CreditRate, options: SettlementOptions = {}): number {
+  if (!isMeteredFor(plan, options.payer)) return 0;
+  return chargeOnce(CREDIT_RATES[rate], options.idempotencyKey);
 }
 
 /**
@@ -98,9 +162,9 @@ export function recordCreditSpend(plan: PlanTier, rate: CreditRate): number {
  * operator's key. Never both: charging real and flat together would double-bill
  * every turn that reports usage.
  */
-export function settleTurnCredits(plan: PlanTier, credits: number | null, fallback: CreditRate): number {
-  if (!isMeteredPlan(plan)) return 0;
-  return addCreditSpend(credits === null ? CREDIT_RATES[fallback] : credits);
+export function settleTurnCredits(plan: PlanTier, credits: number | null, fallback: CreditRate, options: SettlementOptions = {}): number {
+  if (!isMeteredFor(plan, options.payer)) return 0;
+  return chargeOnce(credits === null ? CREDIT_RATES[fallback] : credits, options.idempotencyKey);
 }
 
 export function resetMonthlyUsage(): void {

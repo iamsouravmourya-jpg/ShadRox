@@ -91,8 +91,8 @@ test('a paid plan running on the user\'s own key is not metered and not capped',
   }, false);
 });
 
-test('Pro carries more credits than Starter', () => {
+test('both packs are metered and BYOK carries no limit', () => {
   assert.equal(getPlanMeta('starter').creditsPerMonth, 800);
-  assert.equal(getPlanMeta('pro').creditsPerMonth, 2200);
+  assert.equal(getPlanMeta('heavy').creditsPerMonth, 1600);
   assert.equal(Number.isFinite(getPlanMeta('free').creditsPerMonth), false);
 });

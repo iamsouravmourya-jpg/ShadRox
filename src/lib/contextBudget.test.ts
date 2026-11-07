@@ -87,8 +87,20 @@ function makeSystem(overrides: Partial<SystemContext> = {}): SystemContext {
 test('caps the instruction to 60% of the input budget, floored and globally capped', () => {
   // 32k window -> 65536 input chars; 60% = 39321, under the 80k global ceiling.
   assert.equal(systemInstructionBudgetChars(32_768), Math.floor(messageBudgetChars(32_768) * SYSTEM_INSTRUCTION_RATIO));
-  assert.equal(systemInstructionBudgetChars(1_000), MIN_BUDGET_CHARS, 'tiny windows keep the floor');
   assert.equal(systemInstructionBudgetChars(4_000_000), MAX_SYSTEM_INSTRUCTION_CHARS, 'huge windows keep the 80k ceiling');
+});
+
+test('floors clamp to the actual window instead of over-promising on tiny windows', () => {
+  // A 1k-token window cannot reserve 4096 output tokens and still hold input:
+  // the honest budget is zero, not the old 5000-char floor that exceeded it.
+  assert.equal(messageBudgetChars(1_000), 0);
+  assert.equal(systemInstructionBudgetChars(1_000), 0);
+  assert.ok(systemInstructionBudgetChars(1_000) <= messageBudgetChars(1_000));
+  // A window that genuinely has room keeps the floor as a minimum, never above
+  // what remains.
+  const window = 12_000;
+  assert.ok(messageBudgetChars(window) >= Math.min(MIN_BUDGET_CHARS, messageBudgetChars(window)));
+  assert.ok(systemInstructionBudgetChars(window) <= messageBudgetChars(window));
 });
 
 test('the live turn keeps its tool observation while older prose is folded', () => {
@@ -124,10 +136,12 @@ test('a single user message bigger than the window still fits the request', () =
   const effectiveWindow = contextWindow - systemTokens;
 
   assert.ok(fit.trimmed > 0, 'the oversize turn was shortened');
-  // A typed ask shrinks only to the documented floor (`USER_ASK_MIN_CHARS`)
-  // while that floor still fits the budget; the last-resort phase takes it to
-  // `TRIM_TO_LEN` only when the request would otherwise overflow.
+  // The current ask shrinks only to the documented floor (`USER_ASK_MIN_CHARS`);
+  // it is never taken below that floor. Because the floor fits this window the
+  // request is possible, so overflow stays false even though the newest turn cut.
   assert.equal(fit.messages[0].content.length, USER_ASK_MIN_CHARS + 3);
+  assert.equal(fit.overflow, false);
+  assert.equal(fit.newestTurnTrimmed, true);
   assert.ok(systemTokens + tokensOf(historyChars) <= contextWindow);
   assert.ok(historyChars <= messageBudgetChars(effectiveWindow));
 });
@@ -289,5 +303,133 @@ test('the notice tells the user what the model did not get to see', () => {
   assert.ok(notice);
   assert.match(notice, /Context window is full for llama-3.3-70b/);
   assert.match(notice, /retrieved chunk\(s\) dropped/);
+  // The only message is the current ask, so the notice must not claim "older".
+  assert.equal(fit.newestTurnTrimmed, true);
+  assert.match(notice, /the current turn was shortened/);
+  assert.doesNotMatch(notice, /older message\(s\) shortened/);
+});
+
+test('the notice says "older" only when older history was the victim', () => {
+  const fit = fitChatRequest({
+    contextWindow: 8_000,
+    messages: [
+      { role: 'assistant', content: 'old reply '.repeat(2_000) },
+      { role: 'user', content: 'current question' }
+    ],
+    system: makeSystem()
+  });
+  assert.equal(fit.newestTurnTrimmed, false);
+  assert.equal(fit.messages[1].content, 'current question');
+  const notice = contextFitNotice(fit);
+  assert.ok(notice);
   assert.match(notice, /older message\(s\) shortened/);
+  assert.doesNotMatch(notice, /current turn was shortened/);
+});
+
+test('extra input (tool schemas + framing) is budgeted against the same window', () => {
+  const contextWindow = 32_768;
+  const extraInputChars = 20_000;
+  assert.ok(messageBudgetChars(contextWindow, undefined, extraInputChars) < messageBudgetChars(contextWindow));
+  assert.equal(
+    messageBudgetChars(contextWindow, undefined, extraInputChars),
+    messageBudgetChars(contextWindow) - extraInputChars
+  );
+  assert.ok(systemInstructionBudgetChars(contextWindow, undefined, extraInputChars) < systemInstructionBudgetChars(contextWindow));
+
+  const fit = fitChatRequest({
+    contextWindow,
+    messages: [
+      { role: 'assistant', content: 'a'.repeat(40_000) },
+      { role: 'user', content: 'and now?' }
+    ],
+    system: makeSystem({ chunks: ['c'.repeat(8_000)] }),
+    extraInputChars
+  });
+  const historyChars = fit.messages.reduce((sum, message) => sum + message.content.length, 0);
+  const systemTokens = estimateTokens(fit.system.text);
+  const extraTokens = Math.ceil(extraInputChars / 4);
+  const effectiveWindow = contextWindow - systemTokens;
+  assert.equal(fit.overflow, false);
+  assert.ok(
+    systemTokens + tokensOf(historyChars) + extraTokens + reservedOutputTokens(effectiveWindow) <= contextWindow,
+    'system + history + schemas/framing + output reservation fit the window'
+  );
+  assert.equal(fit.messages[1].content, 'and now?');
+});
+
+test('fitSystemContext subtracts extra input from its ceiling', () => {
+  const system = makeSystem({ chunks: ['c'.repeat(9_000)] });
+  const gross = fitSystemContext(system, 10_000);
+  const net = fitSystemContext(system, 10_000, 4_000);
+  assert.equal(net.budgetChars, 6_000);
+  assert.ok(net.text.length <= 6_000);
+  assert.ok(net.text.length <= gross.text.length);
+});
+
+test('an ask that cannot fit even at its floor signals overflow instead of truncating', () => {
+  const fit = fitChatRequest({
+    contextWindow: 1_000,
+    messages: [{ role: 'user', content: 'u'.repeat(50_000) }],
+    system: makeSystem()
+  });
+  assert.equal(fit.overflow, true);
+  // The ask is left at its floor, never sliced below it to fake a fit.
+  assert.ok(fit.messages[0].content.length >= Math.min(USER_ASK_MIN_CHARS, 50_000));
+  const notice = contextFitNotice(fit, 'tiny-model');
+  assert.ok(notice);
+  assert.match(notice, /Context window is too small for tiny-model/);
+  assert.match(notice, /cannot fit even after trimming/);
+});
+
+test('trimMessagesToBudget reports overflow when the budget cannot hold the floors', () => {
+  const result = trimMessagesToBudget(
+    [{ role: 'user', content: 'u'.repeat(50_000) }],
+    1_000
+  );
+  assert.equal(result.overflow, true);
+  assert.equal(result.newestTurnTrimmed, true);
+  assert.ok(result.messages[0].content.length >= USER_ASK_MIN_CHARS);
+});
+
+test('capSystemInstruction keeps untrusted wrappers balanced when it cuts', () => {
+  const wrapped = markUntrustedData('secret-ish payload '.repeat(4_000), 'workspace chunk');
+  const text = `HEAD ${wrapped} TAIL`;
+  const capped = capSystemInstruction(text, 2_000);
+  assert.ok(capped.length <= 2_000);
+  const begins = (capped.match(/\[\[SHADROX_UNTRUSTED_DATA_BEGIN\]\]/g) ?? []).length;
+  const ends = (capped.match(/\[\[SHADROX_UNTRUSTED_DATA_END\]\]/g) ?? []).length;
+  assert.equal(begins, ends, 'every opened wrapper is closed');
+  assert.match(capped, /trimmed/);
+});
+
+test('capSystemInstruction marks the cut explicitly when a wrapper is split', () => {
+  // A single wrapper far larger than the cap: the head/tail cut lands inside it.
+  const wrapped = markUntrustedData('x'.repeat(40_000), 'workspace chunk');
+  const capped = capSystemInstruction(wrapped, 3_000);
+  assert.ok(capped.length <= 3_000);
+  const begins = (capped.match(/\[\[SHADROX_UNTRUSTED_DATA_BEGIN\]\]/g) ?? []).length;
+  const ends = (capped.match(/\[\[SHADROX_UNTRUSTED_DATA_END\]\]/g) ?? []).length;
+  assert.equal(begins, ends);
+  assert.match(capped, /split and re-balanced/);
+});
+
+test('capSystemInstruction leaves an unsplit cut with the plain marker', () => {
+  const text = 'A'.repeat(50_000) + 'IMPORTANT TAIL' + 'C'.repeat(6_000);
+  const capped = capSystemInstruction(text, 20_000);
+  assert.ok(capped.length <= 20_000);
+  assert.ok(capped.includes('IMPORTANT TAIL'));
+  assert.match(capped, /system context trimmed/);
+  assert.doesNotMatch(capped, /split and re-balanced/);
+});
+
+test('a truncated system instruction still balances its wrappers', () => {
+  const cap = 4_000;
+  const fit = fitSystemContext(makeSystem({
+    core: [markUntrustedData('y'.repeat(cap * 8), 'workspace repo map')]
+  }), cap);
+  assert.equal(fit.degradation, 'truncated');
+  assert.ok(fit.text.length <= cap);
+  const begins = (fit.text.match(/\[\[SHADROX_UNTRUSTED_DATA_BEGIN\]\]/g) ?? []).length;
+  const ends = (fit.text.match(/\[\[SHADROX_UNTRUSTED_DATA_END\]\]/g) ?? []).length;
+  assert.equal(begins, ends);
 });

@@ -1,10 +1,12 @@
 import type { ChatTurn } from '../ai';
-import { availableToolNames, isControlTool, isKnownTool, runTool, summarizeCall, type ToolCall, type ToolOutcome } from './tools';
+import { availableToolNames, classifyToolEffect, isControlTool, isKnownTool, runTool, summarizeCall, type ToolCall, type ToolOutcome } from './tools';
 import type { McpToolHandle } from './mcpTools';
 import { parseToolBlocks, serializeCallKey, serializeResults, stripToolBlocks } from './toolProtocol';
 import { applyTaskUpdates, completionGuard, renderTaskPlan, type TaskPlan } from './taskPlan';
 import { detectStuck, stuckInstruction, type StuckRound } from './stuck';
 import { FINISH_TOOL_NAME, parseFinishArguments } from './finishTool';
+import { allowsEffect, type RunPolicy, type ToolEffect } from './runPolicy';
+import type { AttemptRecord, AttemptState } from '../taskUsage';
 import type { FailureReceipt } from '../repairProof';
 
 /**
@@ -77,6 +79,12 @@ export interface ToolLoopInput {
   onPlan?: (plan: TaskPlan) => void;
   /** User-configured MCP tools; discovered once per turn, not once per round. */
   external?: McpToolHandle;
+  /** When present, effectful calls are refused unless the mode allows them. */
+  policy?: RunPolicy;
+  /** Linked cancellation: checked before each stream/dispatch and after awaits. */
+  signal?: AbortSignal;
+  /** Records every provider attempt the loop dispatches, with honest usage. */
+  onAttempt?: (record: AttemptRecord) => void;
 }
 
 function controlOutcome(call: ToolCall, plan: TaskPlan, guardUsed: boolean): { outcome: ToolOutcome; plan: TaskPlan; finish?: { summary: string; blocked: string | null }; stop: boolean } {
@@ -131,7 +139,15 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   const maxRounds = input.maxRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
   const messages = [...input.messages];
   const activity: ToolActivity[] = [];
-  const seen = new Set<string>();
+  const policy = input.policy;
+  const isAborted = (): boolean => input.aborted() || input.signal?.aborted === true;
+  // Outcome/version-aware dedup: a key is only a duplicate while it last
+  // succeeded at the current mutation epoch. A failed or refused call is never
+  // recorded, so it can retry; a successful mutation bumps the epoch so reads and
+  // tests can rerun against the changed workspace.
+  let epoch = 0;
+  const lastSuccessEpoch = new Map<string, number>();
+  let attemptSeq = 0;
   let plan: TaskPlan = input.initialPlan ? [...input.initialPlan] : [];
   const external = input.external;
   // One listing per turn: rounds then reuse the same routes instead of re-querying
@@ -158,11 +174,43 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   /** One nudge per turn, and only while a round is left to spend on it. */
   const mayNudgeExploration = () => !nudgeUsed && wantsExploration && !inspectedWorkspace() && round < maxRounds;
 
+  /** Every provider attempt is timed and recorded, even when usage is unknown. */
+  const streamWithAttempt = async (turns: ChatTurn[], roundIndex: number): Promise<{ text: string; error: string | null }> => {
+    const startedAt = Date.now();
+    const attemptId = `tool-round-${roundIndex}-${attemptSeq++}`;
+    let state: AttemptState = 'pending';
+    try {
+      const result = await input.stream(turns, roundIndex);
+      state = result.error ? 'failed' : isAborted() ? 'cancelled' : 'completed';
+      return result;
+    } catch (error) {
+      state = 'failed';
+      throw error;
+    } finally {
+      input.onAttempt?.({
+        taskId: input.workspaceId ?? 'tool-loop',
+        attemptId,
+        role: 'tool-round',
+        provider: 'unknown',
+        requestedModel: 'unknown',
+        state,
+        usageSource: 'unknown',
+        inputTokens: null,
+        outputTokens: null,
+        cachedInputTokens: null,
+        durationMs: Date.now() - startedAt,
+        startedAt
+      });
+    }
+  };
+
   /** The cap is reached: one more stream, with instructions to answer now. */
   const forceFinal = async (currentRound: number, ask: string): Promise<ToolLoopResult> => {
     capped = true;
+    if (isAborted()) return stamp({ text, rounds: currentRound, activity, capped, error: null, plan });
     messages.push({ role: 'user', content: ask });
-    const final = await input.stream(messages, currentRound);
+    const final = await streamWithAttempt(messages, currentRound);
+    if (isAborted()) return stamp({ text: stripToolBlocks(final.text), rounds: currentRound + 1, activity, capped, error: null, plan });
     const stripped = stripToolBlocks(final.text);
     if (stripped.trim() || final.error) {
       return stamp({ text: stripped, rounds: currentRound + 1, activity, capped, error: final.error, plan });
@@ -171,7 +219,8 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     // answer, and an empty reply is worse than the round it costs to avoid it.
     messages.push({ role: 'assistant', content: final.text });
     messages.push({ role: 'user', content: FINAL_ASK });
-    const again = await input.stream(messages, currentRound + 1);
+    if (isAborted()) return stamp({ text: '', rounds: currentRound + 1, activity, capped, error: null, plan });
+    const again = await streamWithAttempt(messages, currentRound + 1);
     return stamp({
       text: stripToolBlocks(again.text),
       rounds: currentRound + 2,
@@ -183,8 +232,9 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   };
 
   while (true) {
-    const streamed = await input.stream(messages, round);
-    if (input.aborted()) return stamp({ text: streamed.text, rounds: round, activity, capped: false, error: null, plan });
+    if (isAborted()) return stamp({ text, rounds: round, activity, capped: false, error: null, plan });
+    const streamed = await streamWithAttempt(messages, round);
+    if (isAborted()) return stamp({ text: streamed.text, rounds: round, activity, capped: false, error: null, plan });
     round += 1;
     text = streamed.text;
     input.onRound?.(round - 1, streamed.text);
@@ -203,6 +253,9 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
 
     const fresh: ToolCall[] = [];
     const freshKeys: string[] = [];
+    // Calls the run policy refuses: recorded so the user sees a real denial in
+    // the trace and the model is told why, instead of a silent no-op.
+    const denied: Array<{ call: ToolCall; effect: ToolEffect }> = [];
     const problems: string[] = blocks.filter((block) => block.error).map((block) => block.error as string);
     for (const block of blocks) {
       for (const call of block.calls) {
@@ -210,9 +263,20 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
           problems.push(`"${call.name}" is not a tool. Available: ${availableToolNames(externalNames)}.`);
           continue;
         }
+        if (policy) {
+          const effect = classifyToolEffect(call.name);
+          if (!allowsEffect(policy.mode, effect)) {
+            denied.push({ call, effect });
+            problems.push(
+              `${summarizeCall(call)} was refused: ${policy.mode} mode does not allow ${effect} actions. Switch to Agent mode to allow it.`
+            );
+            continue;
+          }
+        }
         const key = serializeCallKey(call);
-        if (seen.has(key)) {
-          problems.push(`${summarizeCall(call)} was already run this turn — its result is in the history above. Ask for something different.`);
+        const succeededAt = lastSuccessEpoch.get(key);
+        if (succeededAt !== undefined && succeededAt === epoch) {
+          problems.push(`${summarizeCall(call)} already succeeded this turn and nothing has changed since — its result is in the history above. Ask for something different.`);
           continue;
         }
         if (freshKeys.includes(key)) {
@@ -225,14 +289,27 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     }
     // The cap is applied after dedupe, so a refused duplicate cannot steal a slot.
     const usable = fresh.slice(0, MAX_CALLS_PER_ROUND);
-    freshKeys.slice(0, MAX_CALLS_PER_ROUND).forEach((key) => seen.add(key));
     const cut = fresh.slice(MAX_CALLS_PER_ROUND);
     if (cut.length > 0) {
-      // Deliberately not added to `seen`: recording a call that never ran as
-      // already-run would refuse the retry and strand the model on round two.
+      // Deliberately not recorded as succeeded: a call that never ran must stay
+      // runnable next round instead of being refused as a duplicate.
       problems.push(
         `${cut.slice(0, 3).map(summarizeCall).join(', ')}${cut.length > 3 ? `, +${cut.length - 3} more` : ''} did not run this round — a round holds at most ${MAX_CALLS_PER_ROUND} calls. Ask for ${cut.length > 1 ? 'them' : 'it'} again in the next round.`
       );
+    }
+
+    // A policy refusal is a real outcome, not a malformed call: it is recorded
+    // in the trace even when nothing else in the round could run.
+    for (const entry of denied) {
+      activity.push({
+        name: entry.call.name,
+        label: summarizeCall(entry.call),
+        ok: false,
+        error: `${policy?.mode ?? 'ask'} mode does not allow ${entry.effect} actions.`,
+        input: entry.call.args,
+        stage: 'failed',
+        refused: true
+      });
     }
 
     if (usable.length === 0) {

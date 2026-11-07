@@ -3,9 +3,15 @@ import test from 'node:test';
 import { creditsForTurn, formatCredits, formatTokenSplit } from './usageCredits';
 
 test('a reported split prices at the rate table', () => {
-  // deepseek-v4-flash is $0.13 in / $0.26 out per 1M, x84 = ₹10.92 in / ₹21.84 out.
-  // 10k in + 1k out = ₹0.1092 + ₹0.02184 = ₹0.13104 → /0.24 = 0.546 → 0.6 credits.
-  assert.equal(creditsForTurn('deepseek/deepseek-v4-flash', { inputTokens: 10_000, outputTokens: 1_000 }), 0.6);
+  // deepseek-v4-flash is $0.13 in / $0.26 out per 1M, x99.26 = ₹12.90 in / ₹25.81 out.
+  // 10k in + 1k out = ₹0.129 + ₹0.0258 = ₹0.1548 → /0.35 = 0.442 → 0.5 credits.
+  assert.equal(creditsForTurn('deepseek/deepseek-v4-flash', { inputTokens: 10_000, outputTokens: 1_000 }), 0.5);
+});
+
+test('the pack writes a 15k edit for just over one credit, never below its cost', () => {
+  // Qwen3 Coder Flash is $0.195 in / $0.975 out → 15k + 1.2k = ₹0.4061 → 1.16 credits.
+  const credits = creditsForTurn('qwen/qwen3-coder-flash', { inputTokens: 15_000, outputTokens: 1_200 });
+  assert.equal(credits, 1.2);
 });
 
 test('an unknown split yields no charge rather than a guessed one', () => {

@@ -64,6 +64,11 @@ test('six rounds whose last two stall is exhausted', () => {
   assert.match(signal?.detail as string, /rounds 5 and 6 of 6/);
 });
 
+test('a real mutation in the tail is progress and clears the exhausted verdict', () => {
+  const signal = detectStuck([...distinct(4), round([]), round(['delete_file gone.txt'], 1)]);
+  assert.equal(signal, null, 'a round that changed a file is not a stalled tail');
+});
+
 test('exhausted needs six rounds', () => {
   assert.equal(detectStuck([...distinct(3), round([]), round([])]), null);
 });

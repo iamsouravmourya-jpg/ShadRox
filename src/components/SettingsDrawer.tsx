@@ -512,7 +512,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     <span className="text-xs font-semibold">No API key? Let ShadRox handle it.</span>
                   </div>
                   <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-400">
-                    Build on the free plan with your own key, or move to a paid plan and ShadRox routes every request — no key to buy, top up or validate.
+                    Build on the free plan with your own key, or take a pack (₹699 or ₹1,299) and ShadRox routes every request — no key to buy, top up or validate.
                   </p>
                   <button
                     type="button"
@@ -598,7 +598,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
 
               <p className="text-[11px] text-neutral-400 leading-relaxed">
                 Free plan is BYOK and unmetered — Gemini, Groq and your own local or remote endpoints have no
-                cap and cost ₹0 from ShadRox. Paid tiers bill credits for the ShadRox shared key only.
+                cap and cost ₹0 from ShadRox. The Starter Pack bills credits for the ShadRox shared key only.
               </p>
 
               {lockedPlanIds.length > 0 && (
@@ -614,8 +614,8 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
               {/* Plans Tier Cards — beta state, not a shop. */}
               <section className="space-y-3">
                 <p className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-[11px] leading-relaxed text-neutral-400">
-                  Beta — every feature is unlocked on this build and nothing here is for sale.
-                  There is no checkout: choosing a tier only flips the plan recorded on this device.
+                  Beta — both packs show their real price (GST included), but no checkout is wired yet:
+                  choosing one only flips the plan recorded on this device and nothing is charged.
                 </p>
                 {PLANS.map((entry) => {
                   const isCurrent = entry.id === plan;

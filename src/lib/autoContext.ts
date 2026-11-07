@@ -47,9 +47,13 @@ export function buildSelectionInstruction(paths: readonly string[], query: strin
 function normalise(line: string): string {
   return line
     .trim()
-    .replace(/^[-*\d.)\s]+/, '')
+    .replace(/^(?:[-*•]|\d+[.)])\s*/, '')
     .replace(/^["'`]+|["'`]+$/g, '')
     .trim();
+}
+
+function lookupKey(path: string): string {
+  return path.replace(/\\/g, '/').toLowerCase();
 }
 
 /**
@@ -57,16 +61,18 @@ function normalise(line: string): string {
  *
  * Anything not on the candidate list is dropped rather than repaired: a small
  * model asked for a path it already has will sometimes answer with a plausible
- * one, and reading a wrong file is worse than reading one fewer file.
+ * one, and reading a wrong file is worse than reading one fewer file. The raw
+ * line is matched before decoration is stripped, so real paths that start with
+ * a digit or dot, or contain spaces, are never corrupted by list-marker cleanup.
  */
 export function parseSelectedPaths(answer: string, allowed: readonly string[], maxPick: number): string[] {
-  const byExactPath = new Map(allowed.map((path) => [path.toLowerCase(), path]));
+  const byExactPath = new Map(allowed.map((path) => [lookupKey(path), path]));
   const byBasename = new Map<string, string[]>();
   for (const path of allowed) {
-    const name = path.split('/').pop() ?? path;
-    const bucket = byBasename.get(name.toLowerCase()) ?? [];
+    const name = lookupKey(path).split('/').pop() ?? lookupKey(path);
+    const bucket = byBasename.get(name) ?? [];
     bucket.push(path);
-    byBasename.set(name.toLowerCase(), bucket);
+    byBasename.set(name, bucket);
   }
 
   const picked: string[] = [];
@@ -74,12 +80,24 @@ export function parseSelectedPaths(answer: string, allowed: readonly string[], m
 
   for (const rawLine of answer.split('\n')) {
     if (picked.length >= maxPick) break;
-    const line = normalise(rawLine);
-    if (!line || /\s/.test(line)) continue;
+    const trimmed = rawLine.trim();
+    if (!trimmed) continue;
 
-    const exact = byExactPath.get(line.toLowerCase());
-    const uniqueBasename = byBasename.get(line.toLowerCase());
-    const match = exact ?? (uniqueBasename && uniqueBasename.length === 1 ? uniqueBasename[0] : undefined);
+    let match: string | undefined;
+    for (const candidate of [trimmed, normalise(trimmed)]) {
+      if (!candidate) continue;
+      const key = lookupKey(candidate);
+      const exact = byExactPath.get(key);
+      if (exact) {
+        match = exact;
+        break;
+      }
+      const bucket = byBasename.get(key);
+      if (bucket && bucket.length === 1) {
+        match = bucket[0];
+        break;
+      }
+    }
     if (!match || seen.has(match)) continue;
 
     seen.add(match);

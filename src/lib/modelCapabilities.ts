@@ -32,6 +32,15 @@ export interface ModelCapabilities {
   maxOutput?: number;
   /** Which source produced the numbers, so a caller can log the precedence honestly. */
   source?: 'metadata_table' | 'pattern_table' | 'default';
+  /**
+   * Whether the model can call tools. `undefined` means unverified, not `false`
+   * — a route that requires it must treat unknown as "not usable" (fail closed).
+   */
+  toolCalls?: boolean;
+  /** Whether the model supports structured/JSON responses. `undefined` is unverified. */
+  structuredResponses?: boolean;
+  /** Whether the provider offers prompt caching for this model. `undefined` is unverified. */
+  cacheEligible?: boolean;
 }
 
 interface CapabilityPattern {
@@ -148,3 +157,51 @@ export function resolveBudgetCapabilities(provider: ProviderId, modelId: string)
 }
 
 export { DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_OUTPUT };
+
+/** The features a request needs before a route may be used for it. */
+export interface RequiredCapabilities {
+  toolCalls?: boolean;
+  structuredResponses?: boolean;
+  cacheEligible?: boolean;
+  /** The payload's input budget must fit inside this window. */
+  minContextWindow?: number;
+}
+
+export interface CapabilityCheck {
+  /** True only when every requirement is met by a verified `true`. */
+  satisfied: boolean;
+  /** Requirements the model explicitly lacks. */
+  missing: string[];
+  /** Requirements no registry entry proves either way — treated as unmet. */
+  unknown: string[];
+}
+
+/**
+ * Whether a model may serve a request that requires certain features. Unknown
+ * capability fails closed: `undefined` is not proof the feature exists, so a
+ * route that needs it is refused rather than silently degraded (plan.md S07).
+ */
+export function checkCapabilities(caps: ModelCapabilities, required: RequiredCapabilities): CapabilityCheck {
+  const missing: string[] = [];
+  const unknown: string[] = [];
+  const flag = (name: keyof RequiredCapabilities, want: boolean | undefined, have: boolean | undefined): void => {
+    if (!want) return;
+    if (have === undefined) unknown.push(name);
+    else if (!have) missing.push(name);
+  };
+  flag('toolCalls', required.toolCalls, caps.toolCalls);
+  flag('structuredResponses', required.structuredResponses, caps.structuredResponses);
+  flag('cacheEligible', required.cacheEligible, caps.cacheEligible);
+  if (required.minContextWindow !== undefined && caps.contextWindow < required.minContextWindow) {
+    missing.push('contextWindow');
+  }
+  return { satisfied: missing.length === 0 && unknown.length === 0, missing, unknown };
+}
+
+/**
+ * Whether a route or fallback change invalidates the earlier fit: a different
+ * context window or output ceiling means the payload must be refitted.
+ */
+export function routeNeedsRefit(before: ModelCapabilities, after: ModelCapabilities): boolean {
+  return before.contextWindow !== after.contextWindow || before.maxOutput !== after.maxOutput;
+}

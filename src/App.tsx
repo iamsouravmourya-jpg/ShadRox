@@ -108,11 +108,19 @@ import {
 import { decideAutoRoute } from './lib/autoRoute';
 import { decideOrchestration } from './lib/orchestrate';
 import { dequeueChatItem, enqueueChatItem, MAX_QUEUED_CHAT_MESSAGES, removeQueuedChatItem, type QueuedChatItem } from './lib/chatQueue';
+import { createRequestEnvelope, describeEnvelopeDrift, envelopeDrift, type RequestEnvelope } from './lib/requestEnvelope';
+import { retryCheck, undoVerdict } from './lib/agents/scopePreserve';
+import { buildContextManifest, type ContextManifest, type ContextSource } from './lib/contextManifest';
+import { restoreDraft } from './lib/promptTemplates';
+import { estimateTokens } from './lib/toolUtils';
 import { detectLanguage } from './lib/languages';
 import { getPlan, setPlan as persistPlan } from './lib/storage';
 import { getPlanMeta, isPlanSelectable } from './lib/plans';
 import { getMonthlyUsage, recordCreditSpend, settleTurnCredits } from './lib/quota';
 import { creditsForTurn } from './lib/usageCredits';
+import { normalizePermissionMode, type PermissionMode } from './lib/agent/runPolicy';
+import type { AttemptRecord } from './lib/taskUsage';
+import type { ResolvedPayer } from './lib/sharedKeyPolicy';
 import { globalRepairSession } from './lib/repairSession';
 import { browserRunStore } from './lib/autonomy/runStore';
 import type { AutonomyHost } from './lib/autonomy/ports';
@@ -224,6 +232,8 @@ interface QueuedChatDraft extends QueuedChatItem {
   pinnedSymbols: PinnedSymbol[];
   pendingRefine: RefinedPromptMeta | null;
   refineMode: RefineMode;
+  /** Frozen execution identity captured at send time (S01), not live app state. */
+  envelope: RequestEnvelope;
 }
 
 function orchestrationStatusOfRun(status: string): OrchestrationStatus {
@@ -474,6 +484,25 @@ export default function App() {
   const [contextNotice, setContextNotice] = useState<string | null>(null);
   const [activeStatusMessage, setActiveStatusMessage] = useState<string | null>(null);
   const [refineMode, setRefineMode] = useState<RefineMode>('code');
+  // Permission mode is the capability boundary: Ask and Plan never mutate the
+  // workspace, Agent may. Default is Agent so existing write/execute behavior is
+  // preserved; an explicit choice is remembered.
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => {
+    try {
+      const stored = window.localStorage.getItem('shadrox.permissionMode');
+      return stored === null ? 'agent' : normalizePermissionMode(stored);
+    } catch {
+      return 'agent';
+    }
+  });
+  const handlePermissionModeChange = useCallback((mode: PermissionMode) => {
+    setPermissionMode(mode);
+    try {
+      window.localStorage.setItem('shadrox.permissionMode', mode);
+    } catch {
+      /* ignore */
+    }
+  }, []);
   const [restoringCheckpointId, setRestoringCheckpointId] = useState<string | null>(null);
   const [activeCheckpointId, setActiveCheckpointId] = useState<string | null>(null);
   const [checkpointDiff, setCheckpointDiff] = useState<CheckpointDiff | null>(null);
@@ -590,6 +619,8 @@ export default function App() {
   const repoMapFiles = useRepoMapFiles(nativeWorkspaceId, folderTree);
   /** The map that went with the last request — what the audit panel shows. */
   const [sentRepoMap, setSentRepoMap] = useState('');
+  /** S05: the manifest of the last dispatched request, shown in the composer. */
+  const [contextManifest, setContextManifest] = useState<ContextManifest | null>(null);
 
   // The shell only needs a directory to run in, and a single-file workspace
   // still has one, so it is not gated behind the folder-only preview pipeline.
@@ -1789,6 +1820,7 @@ export default function App() {
       }
 
       const chunks: string[] = [];
+      let repoMapForManifest = '';
       if (folder) {
         core.push(...describeWorkspaceForPrompt({
           name: folder.name,
@@ -1874,6 +1906,7 @@ export default function App() {
           );
         }
         setSentRepoMap(signatureMap);
+        repoMapForManifest = signatureMap;
       } else if (contextFiles.length > 0) {
         const filesMap = buildRepoMap(contextFiles);
         core.push(`Workspace: ${contextFiles.length} attached file(s).`);
@@ -1882,6 +1915,7 @@ export default function App() {
           markUntrustedData(filesMap, 'attached workspace file contents')
         );
         setSentRepoMap(filesMap);
+        repoMapForManifest = filesMap;
       } else {
         setSentRepoMap('');
         core.push(
@@ -1949,11 +1983,81 @@ export default function App() {
         }
       }
 
+      // S05: the same sources the payload was built from, so the composer's
+      // preview and the request cannot drift apart.
+      const manifestSources: ContextSource[] = [];
+      const resolvedForManifest: string[] = [];
+      for (const symbol of selectedSymbols) {
+        manifestSources.push({
+          path: symbol.file,
+          kind: 'pin',
+          reason: `pinned symbol ${symbol.name}`,
+          ranges: symbol.line !== undefined ? [{ start: symbol.line, end: symbol.line + 1 }] : [],
+          fullFile: false,
+          freshness: 'fresh',
+          estimatedTokens: 0
+        });
+      }
+      for (const name of selectedFiles) {
+        const attachedFile = workspace.files.find((file) => file.name === name);
+        manifestSources.push({
+          path: name,
+          kind: 'attachment',
+          reason: 'attached by the user',
+          ranges: [],
+          fullFile: true,
+          freshness: 'fresh',
+          estimatedTokens: estimateTokens(attachedFile?.content ?? '')
+        });
+        resolvedForManifest.push(name);
+      }
+      if (workspace.activeFile) {
+        manifestSources.push({
+          path: workspace.activeFile.name,
+          kind: 'active',
+          reason: 'active editor file',
+          ranges: [],
+          fullFile: true,
+          freshness: 'fresh',
+          estimatedTokens: estimateTokens(workspace.activeFile.content)
+        });
+        resolvedForManifest.push(workspace.activeFile.name);
+      }
+      for (const file of diskFiles) {
+        manifestSources.push({
+          path: file.name,
+          kind: 'retrieved',
+          reason: 'auto-selected dependency',
+          ranges: [],
+          fullFile: true,
+          freshness: 'fresh',
+          estimatedTokens: estimateTokens(file.content)
+        });
+        resolvedForManifest.push(file.name);
+      }
+      if (repoMapForManifest) {
+        manifestSources.push({
+          path: 'repo map',
+          kind: 'map',
+          reason: 'navigation only — shapes, not source',
+          ranges: [],
+          fullFile: true,
+          freshness: 'fresh',
+          estimatedTokens: estimateTokens(repoMapForManifest)
+        });
+      }
+      const manifest = buildContextManifest({
+        sources: manifestSources,
+        targets: [...new Set([...selectedFiles, ...selectedSymbols.map((symbol) => symbol.file)])],
+        resolvedPaths: resolvedForManifest
+      });
+
       return {
         core: core.filter((line) => line.trim().length > 0),
         chunkHeader: chunks.length > 0 ? 'RELEVANT CONTEXT (auto-retrieved):' : '',
         chunks,
-        files
+        files,
+        manifest
       };
     },
     [
@@ -2643,9 +2747,10 @@ export default function App() {
         commit(withLanded.map((patch) =>
           patch.landed ? { ...patch, disk, diskMessage: outcome.message ?? undefined } : patch
         ));
-        // Billed only once the change actually landed — a rejected or rolled-back
-        // patch costs the user nothing beyond the turn they already paid for.
-        if (withLanded.some((patch) => patch.landed)) recordCreditSpend(plan, 'codeEdit');
+        // No second charge here: the token-based answer settlement already priced
+        // this turn, so applying an already-priced patch must not add a flat edit
+        // event. Two charges for one turn is how displayed credits and the settled
+        // balance drift apart (S11).
         if (applied.length > 0) {
           // A landed edit is the repair attempt for any failure this turn
           // captured; the re-run is what decides whether it healed. The card
@@ -2887,6 +2992,27 @@ export default function App() {
       const set = patchSets.find((entry) => entry.messageId === messageId);
       const patch = set?.patches[patchIndex];
       if (!patch || patch.status !== 'applied' || patch.originalContent === undefined) return;
+      // S17: refuse a stale revert. If the file no longer holds what this patch
+      // wrote, something newer edited it — restoring the old content would
+      // silently destroy that work, so the undo stops and says why.
+      if (patch.appliedContent !== undefined) {
+        const live = workspace.files.find(
+          (file) => file.name.replace(/\\/g, '/').toLowerCase() === patch.path.replace(/\\/g, '/').toLowerCase()
+        );
+        const verdict = undoVerdict(
+          { path: patch.path, baseContent: patch.appliedContent, stage: 'pre-apply' },
+          { exists: Boolean(live), content: live?.content ?? '' }
+        );
+        if (verdict !== 'safe') {
+          announce(
+            verdict === 'missing'
+              ? `Cannot undo ${patch.path}: the file is no longer open, so there is nothing to restore onto.`
+              : `Not undone — ${patch.path} has newer edits since this change landed. Revert or reconcile them first; undoing now would discard that work.`,
+            7000
+          );
+          return;
+        }
+      }
       const result = workspace.applyFilePatches([{ path: patch.path, content: patch.originalContent }]);
       const landed = result.updated[0] ?? result.created[0] ?? patch.landed;
       const reverted = { ...patch, status: 'reverted' as const, landed };
@@ -3032,12 +3158,32 @@ export default function App() {
 
     const mode = getRefineMode(requestRefineMode);
     const timestamp = formatTime();
+    const userMessageId = makeId('user');
+    // S17: freeze the request identity on the message itself, so a later retry or
+    // resume can compare against what was actually sent instead of live settings.
+    const requestEnvelope = submission?.envelope ?? createRequestEnvelope({
+      id: userMessageId,
+      workspaceId: nativeWorkspaceId,
+      prompt: text,
+      targets: [
+        ...requestFiles,
+        ...requestSymbols.map((symbol) => `${symbol.name} (${symbol.file})`)
+      ],
+      permissionMode,
+      refineMode: requestRefineMode,
+      plan,
+      payer: byok.useShadRoxKey ? 'shared' : 'byok',
+      provider: byok.activeProvider,
+      model: byok.selectedModel,
+      budgetCredits: runBudget.maxCredits
+    });
     const userMessage: ChatMessage = {
-      id: makeId('user'),
+      id: userMessageId,
       role: 'user',
       content: typed,
       timestamp,
       refinedMeta: requestPendingRefine ? { ...requestPendingRefine, mode: requestRefineMode } : undefined,
+      envelope: requestEnvelope,
       attachments:
         requestFiles.length > 0 || requestSymbols.length > 0
           ? [...requestFiles, ...requestSymbols.map((symbol) => `${symbol.name} (${symbol.file})`)]
@@ -3094,15 +3240,17 @@ export default function App() {
     const readerModel = autoReaderModel(text, mode.writesFiles ? 'edit' : 'chatter');
     let fit: ChatRequestFit;
     try {
+      const systemContext = await buildSystemContext(
+        text,
+        mode,
+        readerModel ? runContextPicker(readerModel) : undefined,
+        { attachedFiles: requestFiles, pinnedSymbols: requestSymbols }
+      );
+      if (systemContext.manifest) setContextManifest(systemContext.manifest);
       fit = fitChatRequest({
         contextWindow,
         messages: history,
-        system: await buildSystemContext(
-          text,
-          mode,
-          readerModel ? runContextPicker(readerModel) : undefined,
-          { attachedFiles: requestFiles, pinnedSymbols: requestSymbols }
-        )
+        system: systemContext
       });
     } catch (error) {
       if (abortRef.current === controller) abortRef.current = null;
@@ -3231,10 +3379,25 @@ export default function App() {
       tokens: 0,
       inputTokens: 0,
       outputTokens: 0,
+      cachedTokens: 0,
       credits: 0,
       durationMs: 0,
       firstTokenMs: null as number | null
     };
+
+    // Every provider attempt this turn dispatches (answer rounds, and any tool
+    // round the loop reports) lands in one ledger, so usage and provenance are
+    // reconciled from attempts rather than guessed from the last stream.
+    const turnAttempts: AttemptRecord[] = [];
+    const recordAttempt = (record: AttemptRecord) => { turnAttempts.push(record); };
+    // The payer is fixed for the whole turn: BYOK charges nothing, shared is
+    // metered. A queued request keeps the payer it was frozen with (S01), so a
+    // key switch while it waited cannot silently move the bill.
+    const resolvedPayer: ResolvedPayer = submission?.envelope?.payer
+      ?? (byok.useShadRoxKey ? 'shared' : 'byok');
+    // Repair/correction streams run after the loop, so their round numbers are
+    // offset well past the loop's own rounds to keep attempt ids unique.
+    let repairRoundSeq = DEFAULT_MAX_TOOL_ROUNDS + 100;
 
     /**
      * One model turn inside the tool loop. Tool fences are hidden while they
@@ -3242,9 +3405,10 @@ export default function App() {
      * only prose and edit blocks; the raw text still goes back to the loop,
      * which is where the calls are parsed.
      */
-    const streamOnce = async (loopMessages: ChatTurn[]): Promise<{ text: string; error: string | null }> => {
+    const streamOnce = async (loopMessages: ChatTurn[], round: number): Promise<{ text: string; error: string | null }> => {
       let roundText = '';
       let roundError: string | null = null;
+      const roundStartedAt = Date.now();
       const paint = (partial: string) => {
         const separator = reply && partial ? '\n\n' : '';
         setMessages((previous) => previous.map((message) => (
@@ -3296,13 +3460,32 @@ export default function App() {
               turnUsage.tokens += info.tokens;
               turnUsage.inputTokens += info.inputTokens ?? 0;
               turnUsage.outputTokens += info.outputTokens ?? 0;
+              turnUsage.cachedTokens += info.cachedInputTokens ?? 0;
               turnUsage.durationMs += info.durationMs ?? 0;
               if (turnUsage.firstTokenMs === null) turnUsage.firstTokenMs = info.firstTokenMs ?? null;
               const credits = creditsForTurn(info.model, { inputTokens: info.inputTokens, outputTokens: info.outputTokens });
               turnUsage.credits += credits;
-              // Charged per round: a tool round is a real billed turn, and the
-              // split only exists once that round's stream is over.
-              settleTurnCredits(plan, credits, 'chatter');
+              // One terminal record per dispatched round, charged once for the
+              // request's resolved payer and de-duplicated by the attempt id, so
+              // a repeated done/retry event cannot double-bill.
+              const attemptId = `${modelMessage.id}:answer:${round}`;
+              recordAttempt({
+                taskId: modelMessage.id,
+                attemptId,
+                role: 'answer',
+                provider: byok.activeProvider,
+                requestedModel: answerModel,
+                servedModel: info.servedModel ?? null,
+                state: info.incomplete ? 'incomplete' : 'completed',
+                usageSource: info.usageSource ?? (Number.isFinite(info.inputTokens) && Number.isFinite(info.outputTokens) ? 'provider' : 'unknown'),
+                inputTokens: info.inputTokens ?? null,
+                outputTokens: info.outputTokens ?? null,
+                cachedInputTokens: info.cachedInputTokens ?? null,
+                durationMs: info.durationMs ?? null,
+                startedAt: roundStartedAt,
+                reason: 'answer route'
+              });
+              settleTurnCredits(plan, credits, 'chatter', { payer: resolvedPayer, idempotencyKey: attemptId });
             },
             onError: (error) => { roundError = error; }
           }
@@ -3350,7 +3533,7 @@ export default function App() {
           ...fit.messages,
           { role: 'assistant', content: answerBeforeRepair },
           { role: 'user', content: ask }
-        ]);
+        ], repairRoundSeq++);
         const corrected = stripToolBlocks(repair.text);
         if (!controller.signal.aborted && corrected.trim()) {
           await applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true });
@@ -3385,7 +3568,7 @@ export default function App() {
               'Re-send the same change with the exact workspace-relative path in the fence info line of every block, for example ' +
               '```path=src/App.tsx followed by the ORIGINAL/UPDATED block. Output only the corrected code block(s) and nothing else.'
           }
-        ]);
+        ], repairRoundSeq++);
         const corrected = stripToolBlocks(correction.text);
         if (!controller.signal.aborted && corrected.trim()) {
           await applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true });
@@ -3403,6 +3586,12 @@ export default function App() {
         maxRounds: DEFAULT_MAX_TOOL_ROUNDS,
         external: mcpToolHandleRef.current ?? undefined,
         aborted: () => controller.signal.aborted,
+        // The permission mode is the execution boundary: Ask/Plan refuse every
+        // effectful call (writes, commands, MCP) inside the loop itself. A queued
+        // request keeps the mode it was frozen with (S01).
+        policy: { mode: submission?.envelope?.permissionMode ?? permissionMode },
+        signal: controller.signal,
+        onAttempt: recordAttempt,
         stream: streamOnce,
         onRound: (_round, text) => {
           // Show what is being read while the tools run; the real outcomes
@@ -3465,6 +3654,17 @@ export default function App() {
                 : task
             ))
           : loop.plan;
+        // Provenance for the answer header: which route model ran, what the
+        // provider said it served, and whether the usage figures are complete.
+        const answerAttempts = turnAttempts.filter((attempt) => attempt.role === 'answer');
+        const lastAnswerAttempt = answerAttempts[answerAttempts.length - 1];
+        const usageState: 'measured' | 'estimated' | 'pending' = turnAttempts.length === 0
+          ? 'pending'
+          : turnAttempts.some((attempt) => attempt.usageSource === 'unknown' || attempt.inputTokens === null || attempt.outputTokens === null)
+            ? 'pending'
+            : turnAttempts.some((attempt) => attempt.usageSource === 'estimated')
+              ? 'estimated'
+              : 'measured';
         setMessages((previous) => previous.map((message) => (
           message.id === modelMessage.id
             ? {
@@ -3484,7 +3684,12 @@ export default function App() {
                   tokens: turnUsage.tokens,
                   inputTokens: turnUsage.inputTokens,
                   outputTokens: turnUsage.outputTokens,
+                  cachedTokens: turnUsage.cachedTokens || undefined,
                   credits: turnUsage.credits,
+                  model: answerModel,
+                  servedModel: lastAnswerAttempt?.servedModel ?? null,
+                  usageState,
+                  attempts: turnAttempts.length,
                   firstTokenMs: turnUsage.firstTokenMs,
                   durationMs: turnUsage.durationMs
                 }
@@ -3514,6 +3719,7 @@ export default function App() {
     autoContext,
     openSettings,
     refineMode,
+    permissionMode,
     pendingRefine,
     attachedFiles,
     messages,
@@ -3609,7 +3815,12 @@ export default function App() {
         system
       });
       let credits = 0;
-      const machineCheckpoint = await workspace.markCheckpoint(makeId('run'), instruction);
+      let runAttemptSeq = 0;
+      // Headless workers obey the same permission mode as an interactive turn.
+      const runPolicy = { mode: permissionMode };
+      const runPayer: ResolvedPayer = byok.useShadRoxKey ? 'shared' : 'byok';
+      const runId = makeId('run');
+      const machineCheckpoint = await workspace.markCheckpoint(runId, instruction);
       try {
         const outcome = await runAgentTurn({
           instruction,
@@ -3618,6 +3829,7 @@ export default function App() {
           signal: request.signal,
           systemInstruction: fit.systemInstruction,
           maxToolRounds: DEFAULT_MAX_TOOL_ROUNDS,
+          policy: runPolicy,
           ports: {
             workspaceId: nativeWorkspaceId,
             external: mcpToolHandleRef.current ?? undefined,
@@ -3666,7 +3878,11 @@ export default function App() {
                       outputTokens: info.outputTokens
                     });
                     credits += spent;
-                    settleTurnCredits(plan, spent, 'chatter');
+                    runAttemptSeq += 1;
+                    settleTurnCredits(plan, spent, 'chatter', {
+                      payer: runPayer,
+                      idempotencyKey: `${runId}:${runAttemptSeq}`
+                    });
                   },
                   onError: (message) => { error = message; }
                 });
@@ -3699,6 +3915,7 @@ export default function App() {
       byok.selectedModel,
       byok.temperature,
       plan,
+      permissionMode,
       activeModel,
       buildSystemContext,
       workspace,
@@ -3941,16 +4158,45 @@ export default function App() {
   ]);
 
   const handleChatSend = useCallback((queuedSubmission?: QueuedChatDraft) => {
-    const submission: QueuedChatDraft = queuedSubmission ?? {
-      id: makeId('queued-chat'),
-      text: input.trim(),
-      attachedFiles: [...attachedFiles],
-      pinnedSymbols: [...pinnedSymbols],
-      pendingRefine: pendingRefine ? { ...pendingRefine } : null,
-      refineMode
+    const draftText = (queuedSubmission?.text ?? input).trim();
+    if (!draftText) return;
+    const draftFiles = [...(queuedSubmission?.attachedFiles ?? attachedFiles)];
+    const draftSymbols = [...(queuedSubmission?.pinnedSymbols ?? pinnedSymbols)];
+    const draftRefineMode = queuedSubmission?.refineMode ?? refineMode;
+    const draftPendingRefine = queuedSubmission
+      ? queuedSubmission.pendingRefine
+      : pendingRefine ? { ...pendingRefine } : null;
+    const submissionId = queuedSubmission?.id ?? makeId('queued-chat');
+    const submission: QueuedChatDraft = {
+      id: submissionId,
+      text: draftText,
+      attachedFiles: draftFiles,
+      pinnedSymbols: draftSymbols,
+      pendingRefine: draftPendingRefine,
+      refineMode: draftRefineMode,
+      // Freeze the execution identity (S01): a request that waits in the queue
+      // must bill and run as the request the user actually made, even if they
+      // later switch workspace, plan, key or model. A request dispatched *from*
+      // the queue already carries its frozen envelope — keep it verbatim.
+      envelope: queuedSubmission?.envelope ?? createRequestEnvelope({
+        id: submissionId,
+        workspaceId: nativeWorkspaceId,
+        prompt: draftText,
+        targets: [
+          ...draftFiles,
+          ...draftSymbols.map((symbol) => `${symbol.name} (${symbol.file})`)
+        ],
+        permissionMode,
+        refineMode: draftRefineMode,
+        plan,
+        payer: byok.useShadRoxKey ? 'shared' : 'byok',
+        provider: byok.activeProvider,
+        model: byok.selectedModel,
+        budgetCredits: runBudget.maxCredits
+      })
     };
-    const text = submission.text.trim();
-    if (!text) return;
+    const text = submission.text;
+    const frozen = submission;
 
     const busy = chatDispatchLockRef.current
       || isGenerating
@@ -3958,7 +4204,7 @@ export default function App() {
       || team.isRunning
       || Boolean(orchestrationRef.current);
     if (busy) {
-      const result = enqueueChatItem(queuedChatItemsRef.current, { ...submission, text });
+      const result = enqueueChatItem(queuedChatItemsRef.current, frozen);
       if (!result.accepted) {
         setToast(`Queue is full (${MAX_QUEUED_CHAT_MESSAGES} messages). Cancel one queued message before adding another.`);
         return;
@@ -3994,7 +4240,7 @@ export default function App() {
     }
 
     if (decision.kind === 'chat') {
-      void handleSend(text, undefined, submission).finally(() => {
+      void handleSend(text, undefined, frozen).finally(() => {
         chatDispatchLockRef.current = false;
       }).catch((error: unknown) => {
         const reason = error instanceof Error ? error.message : String(error);
@@ -4015,6 +4261,7 @@ export default function App() {
       refinedMeta: submission.pendingRefine
         ? { ...submission.pendingRefine, mode: submission.refineMode }
         : undefined,
+      envelope: submission.envelope,
       attachments:
         submission.attachedFiles.length > 0 || submission.pinnedSymbols.length > 0
           ? [...submission.attachedFiles, ...submission.pinnedSymbols.map((symbol) => `${symbol.name} (${symbol.file})`)]
@@ -4094,8 +4341,37 @@ export default function App() {
     if (!result.item) return;
     queuedChatItemsRef.current = result.queue;
     setQueuedChatItems(result.queue);
+    // A queued request was frozen against one workspace: it must not silently
+    // run somewhere else because the user switched folders while it waited (S01).
+    const frozen = result.item.envelope;
+    const current = createRequestEnvelope({
+      id: frozen.id,
+      workspaceId: nativeWorkspaceId,
+      prompt: frozen.prompt,
+      targets: frozen.targets,
+      permissionMode,
+      refineMode: result.item.refineMode,
+      plan,
+      payer: byok.useShadRoxKey ? 'shared' : 'byok',
+      provider: byok.activeProvider,
+      model: byok.selectedModel,
+      budgetCredits: runBudget.maxCredits
+    });
+    const drift = envelopeDrift(frozen, current);
+    if (drift.includes('workspace')) {
+      setToast(`A queued request was written for a different workspace, so it was not sent. Re-send it here to run it (${describeEnvelopeDrift(drift)}).`);
+      window.setTimeout(() => setToast(null), 6000);
+      return;
+    }
+    const moved = drift.filter((entry) => entry !== 'workspace');
+    if (moved.length > 0) {
+      // The bill and permission stay frozen to the submitted request; only say
+      // what changed underneath it so the difference is never silent.
+      setToast(`Your queued request ran with the settings it was sent with — ${describeEnvelopeDrift(moved)} since then.`);
+      window.setTimeout(() => setToast(null), 6000);
+    }
     handleChatSend(result.item);
-  }, [isGenerating, autonomy.isRunning, team.isRunning, queuedChatItems, handleChatSend, plan]);
+  }, [isGenerating, autonomy.isRunning, team.isRunning, queuedChatItems, handleChatSend, plan, nativeWorkspaceId, permissionMode, byok.activeProvider, byok.selectedModel, byok.useShadRoxKey]);
 
   /** Budget-gated dispatch shared by interval, save and webhook triggers. */
   const runAutomationRequest = useCallback(
@@ -4376,6 +4652,35 @@ export default function App() {
     if (lastUserIndex < 0) return;
 
     const lastUser = messages[lastUserIndex];
+    // S17: a retry runs as the request it was sent as, or it says why it cannot.
+    // Workspace and payer are never rebound silently; any other drift is disclosed.
+    const frozen = lastUser.envelope;
+    if (frozen) {
+      const current = createRequestEnvelope({
+        id: frozen.id,
+        workspaceId: nativeWorkspaceId,
+        prompt: frozen.prompt,
+        targets: frozen.targets,
+        permissionMode,
+        refineMode: frozen.refineMode,
+        plan,
+        payer: byok.useShadRoxKey ? 'shared' : 'byok',
+        provider: byok.activeProvider,
+        model: byok.selectedModel,
+        budgetCredits: runBudget.maxCredits
+      });
+      const check = retryCheck(frozen, current);
+      const blocking = check.drift.filter((entry) => entry === 'workspace' || entry === 'payer');
+      if (blocking.length > 0) {
+        setToast(`Regenerate would rebind this request (${describeEnvelopeDrift(blocking)}). Send it again as a new request instead.`);
+        window.setTimeout(() => setToast(null), 6000);
+        return;
+      }
+      if (check.drift.length > 0) {
+        setToast(`Regenerating with your current settings — ${describeEnvelopeDrift(check.drift)} since the original request.`);
+        window.setTimeout(() => setToast(null), 6000);
+      }
+    }
     const baseMessages = messages.slice(0, lastUserIndex);
     const history: ChatTurn[] = baseMessages
       .filter((message) => !message.streaming && message.content.trim())
@@ -4387,7 +4692,7 @@ export default function App() {
     setMessages(baseMessages);
     setPendingRefine(null);
     void handleSend(lastUser.content, history);
-  }, [handleSend, isGenerating, messages]);
+  }, [handleSend, isGenerating, messages, nativeWorkspaceId, permissionMode, plan, byok.useShadRoxKey, byok.activeProvider, byok.selectedModel, runBudget]);
 
   /**
    * Stream recovery: re-request an interrupted reply, continuing from the
@@ -4402,6 +4707,38 @@ export default function App() {
       const target = messages[index];
       const prefix = (resumePrefixes[messageId] || target.content || '').trim();
       if (!prefix) return;
+
+      // S17: resume finishes the request that was interrupted, so it must not
+      // rebind the workspace or the paying key underneath it. Other drift is
+      // disclosed; those two are refused and left for a fresh request.
+      const origin = messages.slice(0, index).reverse().find((message) => message.role === 'user');
+      const frozenResume = origin?.envelope;
+      if (frozenResume) {
+        const now = createRequestEnvelope({
+          id: frozenResume.id,
+          workspaceId: nativeWorkspaceId,
+          prompt: frozenResume.prompt,
+          targets: frozenResume.targets,
+          permissionMode,
+          refineMode,
+          plan,
+          payer: byok.useShadRoxKey ? 'shared' : 'byok',
+          provider: byok.activeProvider,
+          model: byok.selectedModel,
+          budgetCredits: runBudget.maxCredits
+        });
+        const resumeCheck = retryCheck(frozenResume, now);
+        const blockingResume = resumeCheck.drift.filter((entry) => entry === 'workspace' || entry === 'payer');
+        if (blockingResume.length > 0) {
+          setToast(`Resume would rebind this request (${describeEnvelopeDrift(blockingResume)}). Send it again as a new request instead.`);
+          window.setTimeout(() => setToast(null), 6000);
+          return;
+        }
+        if (resumeCheck.drift.length > 0) {
+          setToast(`Resuming with your current settings — ${describeEnvelopeDrift(resumeCheck.drift)} since the original request.`);
+          window.setTimeout(() => setToast(null), 6000);
+        }
+      }
 
       const mode = getRefineMode(refineMode);
       const history: ChatTurn[] = messages
@@ -4462,12 +4799,16 @@ export default function App() {
             onDone: (info) => {
               streamCompleted = true;
               // The turn that was interrupted charged nothing, so finishing it
-              // here is what pays for it — never both.
+              // here is what pays for it — never both. Bound to the request's
+              // payer and de-duplicated so a repeated resume cannot double-bill.
               const credits = creditsForTurn(info.model, {
                 inputTokens: info.inputTokens,
                 outputTokens: info.outputTokens
               });
-              settleTurnCredits(plan, credits, 'chatter');
+              settleTurnCredits(plan, credits, 'chatter', {
+                payer: byok.useShadRoxKey ? 'shared' : 'byok',
+                idempotencyKey: `${messageId}:resume`
+              });
               setResumePrefixes((previous) => {
                 const next = { ...previous };
                 delete next[messageId];
@@ -4485,6 +4826,10 @@ export default function App() {
                           inputTokens: info.inputTokens,
                           outputTokens: info.outputTokens,
                           credits,
+                          model: info.model,
+                          servedModel: info.servedModel ?? null,
+                          usageState: Number.isFinite(info.inputTokens) && Number.isFinite(info.outputTokens) ? 'measured' : 'pending',
+                          attempts: 1,
                           firstTokenMs: info.firstTokenMs ?? null,
                           durationMs: info.durationMs ?? null
                         }
@@ -4531,7 +4876,10 @@ export default function App() {
       byok.temperature,
       activeModel,
       applyPatchesFromReply,
-      buildSystemContext
+      buildSystemContext,
+      nativeWorkspaceId,
+      permissionMode,
+      runBudget
     ]
   );
 
@@ -4615,6 +4963,23 @@ export default function App() {
       setRefineStep('');
     }
   }, [input, isRefining, isGenerating, byok.apiKeyDraft, byok.activeProvider, byok.baseUrl, byok.selectedModel, workspace.files.length, workspace.activeFile, refineMode]);
+
+  /**
+   * S18: refinement is a deliberate, reversible step. While the refined text is
+   * still what sits in the composer, the user can put their own draft back.
+   */
+  const canUndoRefine = input.length > 0 && Boolean(pendingRefine?.refinedPrompt) && input === pendingRefine?.refinedPrompt;
+
+  const handleUndoRefine = useCallback(() => {
+    if (!pendingRefine) return;
+    const restored = restoreDraft({
+      text: pendingRefine.original,
+      mode: refineMode,
+      targets: [...attachedFiles, ...pinnedSymbols.map((symbol) => symbol.file)]
+    });
+    setInput(restored.text);
+    setPendingRefine(null);
+  }, [pendingRefine, refineMode, attachedFiles, pinnedSymbols]);
 
   const handleRestoreCheckpoint = useCallback(
     async (checkpointId: string) => {
@@ -5255,8 +5620,12 @@ export default function App() {
             isRefining={isRefining}
             refineStep={refineStep}
             onRefinePrompt={handleRefinePrompt}
+            onUndoRefine={handleUndoRefine}
+            canUndoRefine={canUndoRefine}
             refineMode={refineMode}
             onRefineModeChange={setRefineMode}
+            permissionMode={permissionMode}
+            onPermissionModeChange={handlePermissionModeChange}
             models={byok.models}
             selectedModel={byok.selectedModel}
             onSelectModel={byok.selectModel}
@@ -5296,6 +5665,7 @@ export default function App() {
             onToggleSemanticRetrieval={toggleSemanticRetrieval}
             repoMap={sentRepoMap}
             repoMapLoading={repoMapFiles.loading && sentRepoMap === ''}
+            contextManifest={contextManifest}
             onAcceptPatch={acceptPatch}
             onRejectPatch={rejectPatch}
             onAcceptAllPatches={acceptAllPatches}

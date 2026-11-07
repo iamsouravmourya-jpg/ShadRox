@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  admitReader,
   CONDENSE_MIN_INPUT_TOKENS,
   decideAutoRoute,
+  READER_MIN_CANDIDATES,
   type AutoInput
 } from './autoRoute';
 import { costRupees } from './modelRates';
@@ -57,30 +59,30 @@ describe('decideAutoRoute on a shared key', () => {
   });
 
   it('bills both passes off the rate table and rounds the credit total up to a tenth', () => {
-    // Condense 16k/4k on ling = ₹0.05; answer 4.8k/1.2k on deepseek = ₹0.08;
-    // ₹0.13 / ₹0.24 = 0.5417 credits, shown as 0.6 because a partial credit is
+    // Condense 16k/4k on ling = ₹0.06; answer 4.8k/1.2k on deepseek = ₹0.09;
+    // ₹0.15 / ₹0.35 = 0.43 credits, shown as 0.5 because a partial credit is
     // never quietly rounded down.
     const rupees =
       costRupees(LING, { inputTokens: 16_000, outputTokens: 4_000 }) +
       costRupees(DEEPSEEK, { inputTokens: 4_800, outputTokens: 1_200 });
-    assert.equal(rupees, 0.13);
-    assert.equal(HEAVY.credits, 0.6);
+    assert.equal(rupees, 0.15);
+    assert.equal(HEAVY.credits, 0.5);
     assert.ok(HEAVY.credits >= rupees / RUPEES_PER_CREDIT);
   });
 
   it('affords a premium answer only because the digest shrank the input', () => {
-    const premium = decideAutoRoute(input({ role: 'premium', plan: 'pro' }));
+    const premium = decideAutoRoute(input({ role: 'premium', plan: 'starter' }));
     assert.equal(premium.answerModel, KIMI);
     assert.equal(premium.withinBudget, true);
-    // ₹0.05 condense + ₹0.79 answer = ₹0.84 = exactly 3.5 credits; an unguarded
-    // ceil would let float noise push the boundary to 3.6.
-    assert.equal(premium.credits, 3.5);
-    // The same premium call on the raw 16k blows the ₹1.44 premium rate.
+    // ₹0.06 condense + ₹0.93 answer = ₹0.99, which is 2.83 of the ₹0.35 credit
+    // and is rounded to 2.9 rather than up to a whole 3.
+    assert.equal(premium.credits, 2.9);
+    // The same premium call on the raw 16k blows the ₹1.05 premium budget.
     assert.equal(routeRequest('premium', { inputTokens: 16_000, outputTokens: 1_200 }, KEY).withinBudget, false);
   });
 
   it('reports the routing saving as a multiple of the naive bill', () => {
-    assert.equal(HEAVY.savingsFactor, 18.5);
+    assert.equal(HEAVY.savingsFactor, 18.2);
     assert.equal(
       HEAVY.savingsFactor,
       routingSavings('edit', { inputTokens: 16_000, outputTokens: 1_200 }, SONNET, KEY).savedFactor
@@ -111,7 +113,7 @@ describe('decideAutoRoute on a shared key', () => {
     assert.equal(summarize.condenseModel, null);
     assert.equal(summarize.estInputTokens, 12_000);
     assert.match(summarize.reason, /already the cheap single pass/);
-    // The ₹0.024 overhead ceiling is not met by anything on this key.
+    // The ₹0.021 overhead ceiling is not met by anything on this key.
     assert.equal(summarize.withinBudget, false);
   });
 
@@ -145,7 +147,7 @@ describe('decideAutoRoute on the user’s own key', () => {
     const byok = decideAutoRoute(input({ isSharedKey: false }));
     assert.equal(byok.condenseModel, LING);
     assert.equal(byok.estInputTokens, 4_800);
-    assert.equal(byok.credits, 7.8);
+    assert.equal(byok.credits, 6.3);
     // No routing-savings multiple: the answer model was never routed, so any
     // factor here would describe a saving BYOK did not take.
     assert.equal(byok.savingsFactor, null);
@@ -161,7 +163,7 @@ describe('decideAutoRoute on the user’s own key', () => {
     assert.equal(small.enabled, false);
     assert.equal(small.condenseModel, null);
     assert.equal(small.answerModel, DEEPSEEK);
-    assert.equal(small.credits, 0.3);
+    assert.equal(small.credits, 0.2);
   });
 
   it('calls an unpriced BYOK model premium rather than pretending the turn is cheap', () => {
@@ -173,7 +175,7 @@ describe('decideAutoRoute on the user’s own key', () => {
     assert.match(mystery.reason, /not in the price registry/);
     assert.match(mystery.reason, /premium assumption/);
     // UNKNOWN_RATE is an upper bound, so the estimate must be the premium bill.
-    assert.equal(mystery.credits, 9.8);
+    assert.equal(mystery.credits, 8);
   });
 });
 
@@ -209,6 +211,35 @@ describe('decideAutoRoute on the free plan', () => {
   });
 });
 
+/**
+ * The pack's shared key serves exactly four models. This is the stack the ₹699
+ * price was computed on, so routing has to land each role on the model the
+ * margin was measured with: Nova Micro reads, Qwen3 Coder Flash writes,
+ * DeepSeek V4.1 Flash escalates.
+ */
+describe('the Starter Pack model stack', () => {
+  const PACK = [
+    'amazon/nova-micro-v1',
+    'google/gemini-2.5-flash-lite',
+    'qwen/qwen3-coder-flash',
+    'deepseek/deepseek-v4.1-flash'
+  ];
+
+  it('reads on Nova Micro, writes on Qwen3 Coder Flash, escalates on DeepSeek V4.1 Flash', () => {
+    assert.equal(routeRequest('select', { inputTokens: 16_000, outputTokens: 4_000 }, PACK).model, 'amazon/nova-micro-v1');
+    assert.equal(routeRequest('edit', { inputTokens: 15_000, outputTokens: 1_200 }, PACK).model, 'qwen/qwen3-coder-flash');
+    assert.equal(routeRequest('premium', { inputTokens: 4_800, outputTokens: 1_200 }, PACK).model, 'deepseek/deepseek-v4.1-flash');
+  });
+
+  it('keeps one 16k edit inside a single credit, which is what the ₹699 price assumes', () => {
+    const turn = decideAutoRoute(input({ availableModels: PACK }));
+    assert.equal(turn.condenseModel, 'amazon/nova-micro-v1');
+    assert.equal(turn.answerModel, 'qwen/qwen3-coder-flash');
+    assert.equal(turn.withinBudget, true);
+    assert.equal(turn.credits, 1);
+  });
+});
+
 describe('decideAutoRoute number hygiene', () => {
   it('never returns a negative credit figure or a negative token count', () => {
     const junk = decideAutoRoute(input({ estimatedInputTokens: -5_000, userModel: '', availableModels: [] }));
@@ -228,5 +259,52 @@ describe('decideAutoRoute number hygiene', () => {
   it('is deterministic: the same request decides the same way twice', () => {
     assert.deepEqual(decideAutoRoute(input()), decideAutoRoute(input()));
     assert.deepEqual(decideAutoRoute(input({ role: 'premium' })), decideAutoRoute(input({ role: 'premium' })));
+  });
+});
+
+/**
+ * S08 — the reader is a paid second pass, so it is admitted only when it nets
+ * a real saving on the writer's own bill. Explicit answers and confident
+ * deterministic selection skip it entirely.
+ */
+describe('admitReader (S08)', () => {
+  const NOVA = 'amazon/nova-micro-v1';
+  const GLM = 'z-ai/glm-4.7-flash';
+  const QWEN_FLASH = 'qwen/qwen3-coder-flash';
+
+  const base = { candidateCount: 40, rawTokens: 25_000, readerModel: NOVA };
+
+  it('never calls a reader when the request names its own targets', () => {
+    const decision = admitReader({ ...base, hasExplicitTargets: true, writerModel: QWEN_FLASH });
+    assert.equal(decision.admitted, false);
+    assert.equal(decision.readerCostRupees, 0);
+    assert.match(decision.reason, /names its own targets/);
+  });
+
+  it('skips the reader when the candidate set is small enough to select deterministically', () => {
+    const decision = admitReader({ ...base, candidateCount: READER_MIN_CANDIDATES - 1, hasExplicitTargets: false, writerModel: QWEN_FLASH });
+    assert.equal(decision.admitted, false);
+    assert.match(decision.reason, /select deterministically/);
+  });
+
+  it('skips the reader when there is too little context to pay for a second pass', () => {
+    const decision = admitReader({ ...base, rawTokens: CONDENSE_MIN_INPUT_TOKENS - 1, hasExplicitTargets: false, writerModel: QWEN_FLASH });
+    assert.equal(decision.admitted, false);
+    assert.match(decision.reason, /too little/);
+  });
+
+  it('admits the reader when an expensive writer makes the digest a net win', () => {
+    const decision = admitReader({ ...base, hasExplicitTargets: false, writerModel: QWEN_FLASH });
+    assert.equal(decision.admitted, true);
+    assert.ok((decision.netSavingFactor ?? 0) >= 0.2);
+    assert.ok(decision.writerAfterReaderRupees < decision.writerDirectRupees);
+    assert.match(decision.reason, /above the 20% bar/);
+  });
+
+  it('refuses the reader when a cheap writer already costs less than the digest plus the reader', () => {
+    const decision = admitReader({ ...base, hasExplicitTargets: false, writerModel: GLM });
+    assert.equal(decision.admitted, false);
+    assert.ok((decision.netSavingFactor ?? 1) < 0.2);
+    assert.match(decision.reason, /below the 20% bar/);
   });
 });

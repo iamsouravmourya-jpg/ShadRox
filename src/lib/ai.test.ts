@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { streamChat, createPrefixStripper, type StreamRetryNotice } from './ai';
+import {
+  streamChat,
+  createPrefixStripper,
+  refinePrompt,
+  MAX_STREAM_ATTEMPTS,
+  type StreamDoneInfo,
+  type StreamRetryNotice
+} from './ai';
 import {
   aiderRetryMessage,
   DEFAULT_RETRY_SETTINGS,
@@ -411,6 +418,8 @@ function errorResponse(status: number, message: string, headers: Record<string, 
 interface TurnResult {
   text: string;
   done: boolean;
+  doneCalls: number;
+  doneInfo: StreamDoneInfo | null;
   error: string | null;
   notices: StreamRetryNotice[];
   warnings: string[];
@@ -420,15 +429,25 @@ async function runTurn(
   fetchScript: Array<(call: number) => Response | Promise<Response>>,
   retry: Record<string, unknown>,
   extraOptions: Record<string, unknown> = {}
-): Promise<TurnResult & { calls: number }> {
+): Promise<TurnResult & { calls: number; bodies: Array<Record<string, unknown>> }> {
   const originalFetch = globalThis.fetch;
   let calls = 0;
-  globalThis.fetch = (async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
     const step = fetchScript[Math.min(calls, fetchScript.length - 1)];
     calls += 1;
     return step(calls);
   }) as typeof fetch;
-  const result: TurnResult = { text: '', done: false, error: null, notices: [], warnings: [] };
+  const result: TurnResult = {
+    text: '',
+    done: false,
+    doneCalls: 0,
+    doneInfo: null,
+    error: null,
+    notices: [],
+    warnings: []
+  };
   try {
     await streamChat(
       {
@@ -440,7 +459,7 @@ async function runTurn(
       },
       {
         onDelta: (chunk) => { result.text += chunk; },
-        onDone: () => { result.done = true; },
+        onDone: (info) => { result.done = true; result.doneCalls += 1; result.doneInfo = info; },
         onError: (message) => { result.error = message; },
         onRetry: (notice) => { result.notices.push(notice); },
         onWarning: (message) => { result.warnings.push(message); }
@@ -449,7 +468,7 @@ async function runTurn(
   } finally {
     globalThis.fetch = originalFetch;
   }
-  return { ...result, calls };
+  return { ...result, calls, bodies };
 }
 
 /** Fake monotonic clock; every backoff sleep advances it and is recorded. */
@@ -687,6 +706,285 @@ test('a silent stream hits the idle watchdog and replays as a Timeout', async ()
   assert.deepEqual(out.notices.map((n) => n.reason), ['Timeout']);
 });
 
+/* ------------------------------------------------------------------ *
+ * Terminal-state honesty: provenance passthrough, unconfirmed EOF and
+ * done-then-error. A completed turn is never replayed or re-priced, and
+ * an unconfirmed one is never reported as a zero-token success.
+ * ------------------------------------------------------------------ */
+
+const sseEvent = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
+
+test('a done event keeps cache, truncation and usage provenance instead of dropping them', async () => {
+  const cacheReport = {
+    mode: 'auto_prefix',
+    prefixTokens: 96,
+    prefixChars: 384,
+    breakpoints: 0,
+    markers: 0,
+    prefixShare: 0.42
+  };
+  const out = await runTurn(
+    [() => streamResponse([
+      sseDelta('Hi'),
+      sseEvent({
+        type: 'done',
+        tokens: 42,
+        inputTokens: 30,
+        outputTokens: 12,
+        cachedInputTokens: 8,
+        provider: 'groq',
+        model: 'requested-model',
+        servedModel: 'served-model-2026-11',
+        tier: 'shadrox',
+        finishReason: 'stop',
+        truncated: true,
+        promptCache: cacheReport,
+        usageSource: 'provider',
+        firstTokenMs: 180,
+        durationMs: 2400
+      })
+    ])],
+    fakeClock().retry
+  );
+  assert.equal(out.error, null);
+  assert.equal(out.calls, 1);
+  assert.equal(out.doneCalls, 1);
+  const info = out.doneInfo!;
+  assert.equal(info.tokens, 42);
+  assert.equal(info.inputTokens, 30);
+  assert.equal(info.outputTokens, 12);
+  assert.equal(info.cachedInputTokens, 8);
+  assert.equal(info.model, 'requested-model');
+  assert.equal(info.servedModel, 'served-model-2026-11');
+  assert.equal(info.tier, 'shadrox');
+  assert.equal(info.finishReason, 'stop');
+  assert.equal(info.truncated, true);
+  assert.deepEqual(info.promptCache, cacheReport);
+  assert.equal(info.usageSource, 'provider');
+  assert.equal(info.firstTokenMs, 180);
+  assert.equal(info.durationMs, 2400);
+  assert.equal(info.attempts, 1);
+  assert.equal(info.incomplete, undefined);
+});
+
+test('an estimated report, an explicit null served model and a null cache report survive', async () => {
+  const out = await runTurn(
+    [() => streamResponse([
+      sseDelta('x'),
+      sseEvent({
+        type: 'done',
+        tokens: 5,
+        provider: 'groq',
+        model: 'test',
+        tier: 'byok',
+        usageSource: 'estimated',
+        servedModel: null,
+        promptCache: null,
+        truncated: false
+      })
+    ])],
+    fakeClock().retry,
+    { apiKey: 'sk-user-key' }
+  );
+  assert.equal(out.doneInfo?.usageSource, 'estimated');
+  assert.equal(out.doneInfo?.servedModel, null);
+  assert.equal(out.doneInfo?.promptCache, null);
+  assert.equal(out.doneInfo?.truncated, false);
+});
+
+test('an unrecognized usage source is never promoted to a provider report', async () => {
+  const out = await runTurn(
+    [() => streamResponse([
+      sseDelta('x'),
+      sseEvent({ type: 'done', tokens: 5, provider: 'groq', model: 'test', tier: 'byok', usageSource: 'guessed', servedModel: 7, promptCache: 'lots' })
+    ])],
+    fakeClock().retry
+  );
+  assert.equal(out.doneInfo?.usageSource, undefined);
+  assert.equal(out.doneInfo?.servedModel, undefined);
+  assert.equal(out.doneInfo?.promptCache, undefined);
+});
+
+test('a done event without a tier keeps the request payer instead of guessing byok', async () => {
+  const noTier = sseEvent({ type: 'done', tokens: 7, provider: 'groq', model: 'test' });
+  const shared = await runTurn([() => streamResponse([sseDelta('x'), noTier])], fakeClock().retry);
+  assert.equal(shared.doneInfo?.tier, 'shadrox');
+  const byok = await runTurn(
+    [() => streamResponse([sseDelta('x'), noTier])],
+    fakeClock().retry,
+    { apiKey: '  sk-user-key  ' }
+  );
+  assert.equal(byok.doneInfo?.tier, 'byok');
+});
+
+test('EOF with visible output and no done is an explicit incomplete shared outcome', async () => {
+  const out = await runTurn([() => streamResponse([sseDelta('Partial answer')])], fakeClock().retry);
+  assert.equal(out.calls, 1, 'an unconfirmed turn is never replayed');
+  assert.equal(out.text, 'Partial answer', 'the partial text stays on screen');
+  assert.equal(out.error, null);
+  assert.equal(out.doneCalls, 1);
+  assert.equal(out.notices.length, 0);
+  const info = out.doneInfo!;
+  assert.equal(info.incomplete, true);
+  assert.equal(info.usageSource, 'unknown');
+  assert.equal(info.finishReason, 'stream-ended');
+  assert.equal(info.tier, 'shadrox', 'a shared request is never relabelled byok');
+  assert.equal(info.inputTokens, undefined, 'unknown usage is not a measured zero');
+  assert.equal(info.outputTokens, undefined);
+  assert.equal(info.cachedInputTokens, undefined);
+  assert.equal(info.servedModel, undefined);
+  assert.equal(info.promptCache, undefined);
+  assert.equal(info.attempts, 1);
+  assert.equal(out.warnings.length, 1);
+  assert.match(out.warnings[0], /incomplete/);
+});
+
+test('EOF with visible output on a BYOK request keeps the byok tier and unknown usage', async () => {
+  const out = await runTurn(
+    [() => streamResponse([sseDelta('Partial answer')])],
+    fakeClock().retry,
+    { apiKey: 'sk-user-key' }
+  );
+  assert.equal(out.calls, 1);
+  assert.equal(out.text, 'Partial answer');
+  assert.equal(out.error, null);
+  assert.equal(out.doneInfo?.tier, 'byok');
+  assert.equal(out.doneInfo?.incomplete, true);
+  assert.equal(out.doneInfo?.usageSource, 'unknown');
+  assert.equal(out.doneInfo?.outputTokens, undefined);
+});
+
+test('an empty stream that never confirms completion is an error, not a fabricated done', async () => {
+  const emptyBody = new ReadableStream<Uint8Array>({
+    start(controller) { controller.close(); }
+  });
+  const out = await runTurn(
+    [() => new Response(emptyBody, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })],
+    fakeClock().retry
+  );
+  assert.equal(out.calls, 1);
+  assert.equal(out.done, false);
+  assert.equal(out.doneCalls, 0);
+  assert.equal(out.text, '');
+  assert.match(out.error!, /empty response/);
+});
+
+test('a socket error after done cannot replay the request or overwrite completion', async () => {
+  const lateErrorBody = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(sseDelta('All done') + sseDone));
+    },
+    pull(controller) {
+      controller.error(new Error('socket reset after the terminal event'));
+    }
+  });
+  const out = await runTurn(
+    [
+      () => new Response(lateErrorBody, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      () => streamResponse([sseDelta('must not run'), sseDone])
+    ],
+    fakeClock().retry
+  );
+  assert.equal(out.calls, 1, 'a completed request is never re-sent');
+  assert.equal(out.text, 'All done');
+  assert.equal(out.doneCalls, 1);
+  assert.equal(out.doneInfo?.tokens, 3);
+  assert.equal(out.error, null);
+  assert.equal(out.warnings.length, 0);
+  assert.equal(out.notices.length, 0);
+});
+
+test('events after done in the same chunk are ignored, including a second done', async () => {
+  const out = await runTurn(
+    [() => streamResponse([
+      sseDelta('Finished'),
+      sseDone,
+      sseEvent({ type: 'error', message: 'late provider fault' }),
+      sseDelta(' must not appear'),
+      sseEvent({ type: 'done', tokens: 999, provider: 'groq', model: 'other', tier: 'shadrox' })
+    ])],
+    fakeClock().retry
+  );
+  assert.equal(out.calls, 1);
+  assert.equal(out.text, 'Finished');
+  assert.equal(out.doneCalls, 1, 'completion is delivered once, so it can only be charged once');
+  assert.equal(out.doneInfo?.tokens, 3);
+  assert.equal(out.doneInfo?.model, 'test');
+  assert.equal(out.error, null);
+  assert.equal(out.warnings.length, 0);
+});
+
+test('the terminal info counts every provider attempt the logical call made', async () => {
+  const out = await runTurn(
+    [
+      () => errorResponse(503, 'Service Unavailable.'),
+      () => streamResponse([sseDelta('back up'), sseDone])
+    ],
+    fakeClock().retry
+  );
+  assert.equal(out.calls, 2);
+  assert.equal(out.doneInfo?.attempts, 2);
+  assert.equal(out.notices.length, 1);
+  assert.equal(out.error, null);
+});
+
+test('total attempts stay bounded even when the caller raises maxAttempts', async () => {
+  const clock = fakeClock();
+  const out = await runTurn(
+    [() => errorResponse(500, 'Internal Server Error.')],
+    { ...clock.retry, maxAttempts: 500, maxElapsedMs: 600_000, maxDelayMs: 600_000 }
+  );
+  assert.equal(out.calls, MAX_STREAM_ATTEMPTS);
+  assert.equal(out.doneCalls, 0);
+  assert.equal(out.notices.length, MAX_STREAM_ATTEMPTS - 1);
+  assert.ok(out.notices.every((notice) => notice.maxAttempts === MAX_STREAM_ATTEMPTS));
+  assert.match(out.error!, new RegExp(`Giving up after ${MAX_STREAM_ATTEMPTS} attempts\\.`));
+});
+
+test('an idle timeout after visible output warns and never replays', async () => {
+  let timerArmed = 0;
+  const clock = fakeClock();
+  const stallingBody = new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(encoder.encode(sseDelta('Partial'))); },
+    pull() {}
+  });
+  const out = await runTurn(
+    [
+      () => new Response(stallingBody, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      () => streamResponse([sseDelta('must not run'), sseDone])
+    ],
+    {
+      ...clock.retry,
+      setTimer: (callback: () => void) => {
+        timerArmed += 1;
+        if (timerArmed === 2) queueMicrotask(callback);
+        return 0;
+      }
+    }
+  );
+  assert.equal(out.calls, 1);
+  assert.equal(out.text, 'Partial');
+  assert.equal(out.done, false);
+  assert.equal(out.notices.length, 0);
+  assert.equal(out.warnings.length, 1);
+  assert.match(out.warnings[0], /partial answer is kept/);
+  assert.match(out.error!, /silent/);
+});
+
+test('a resumed stream still sends the prefix, strips the echo and reports the real done', async () => {
+  const out = await runTurn(
+    [() => streamResponse([sseDelta('Here is a'), sseDelta(' server on port 3000.'), sseDone])],
+    fakeClock().retry,
+    { resumePrefix: 'Here is a' }
+  );
+  assert.deepEqual(out.bodies[0].resume, { prefix: 'Here is a' });
+  assert.equal(out.text, ' server on port 3000.');
+  assert.equal(out.error, null);
+  assert.equal(out.doneCalls, 1);
+  assert.equal(out.doneInfo?.incomplete, undefined);
+  assert.equal(out.doneInfo?.usageSource, undefined);
+});
+
 /* ---- classification + backoff unit tests (aider ports) ---- */
 
 test('aider OpenRouter "choices" quirk classifies as a retryable connection error', () => {
@@ -773,4 +1071,92 @@ test('aiderRetryMessage reproduces the aider notice text', () => {
     'The API provider has rate limited you. Try again later or check your quotas. ' +
       'Retrying in 2.0 seconds... (attempt 2 of 4)'
   );
+});
+
+/* ------------------------------------------------------------------ *
+ * Refine: the route's text pipeline is unchanged, and usage provenance
+ * is only ever reported when the route actually sent it.
+ * ------------------------------------------------------------------ */
+
+const REFINE_CORE = {
+  detectedLanguage: 'Hindi',
+  translatedText: 'build a server',
+  intent: 'Code change',
+  refinedPrompt: 'Build a Node HTTP server listening on port 3000.'
+};
+
+async function runRefine(payload: unknown) {
+  const originalFetch = globalThis.fetch;
+  let body: Record<string, unknown> | null = null;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }) as typeof fetch;
+  try {
+    const refined = await refinePrompt({
+      rawPrompt: 'server banao',
+      provider: 'groq',
+      groqKey: 'gsk-test-key',
+      contextInfo: 'Workspace has 2 file(s).',
+      mode: 'code'
+    });
+    return { refined, body: body as Record<string, unknown> | null };
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+test('refine invents no usage when the route reports none', async () => {
+  const { refined, body } = await runRefine(REFINE_CORE);
+  assert.deepEqual(refined, REFINE_CORE);
+  assert.equal(refined.usageSource, undefined);
+  assert.equal(refined.model, undefined);
+  assert.equal(refined.inputTokens, undefined);
+  assert.deepEqual(body?.apiKeyByProvider, { groq: 'gsk-test-key' });
+  assert.equal(body?.mode, 'code');
+});
+
+test('refine passes through the provenance the route provides', async () => {
+  const { refined } = await runRefine({
+    ...REFINE_CORE,
+    provider: 'groq',
+    model: 'llama-3.3-70b-versatile',
+    servedModel: 'llama-3.3-70b-versatile',
+    tier: 'byok',
+    usageSource: 'provider',
+    tokens: 120,
+    inputTokens: 100,
+    outputTokens: 20,
+    cachedInputTokens: 40,
+    durationMs: 350
+  });
+  assert.equal(refined.refinedPrompt, REFINE_CORE.refinedPrompt);
+  assert.equal(refined.provider, 'groq');
+  assert.equal(refined.model, 'llama-3.3-70b-versatile');
+  assert.equal(refined.servedModel, 'llama-3.3-70b-versatile');
+  assert.equal(refined.tier, 'byok');
+  assert.equal(refined.usageSource, 'provider');
+  assert.equal(refined.tokens, 120);
+  assert.equal(refined.inputTokens, 100);
+  assert.equal(refined.outputTokens, 20);
+  assert.equal(refined.cachedInputTokens, 40);
+  assert.equal(refined.durationMs, 350);
+});
+
+test('refine drops malformed usage rather than reporting it as measured', async () => {
+  const { refined } = await runRefine({
+    ...REFINE_CORE,
+    usageSource: 'guessed',
+    inputTokens: '100',
+    servedModel: 7,
+    tokens: Number.NaN
+  });
+  assert.deepEqual(refined, REFINE_CORE);
+  assert.equal('usageSource' in refined, false);
+  assert.equal('inputTokens' in refined, false);
+  assert.equal('servedModel' in refined, false);
+  assert.equal('tokens' in refined, false);
 });

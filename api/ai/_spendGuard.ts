@@ -1,4 +1,5 @@
 import type { ApiRequest } from '../_http.js';
+import type { ProviderId } from './_types.js';
 
 /**
  * A stateless abuse brake for the requests that spend ShadRox's shared key.
@@ -141,4 +142,66 @@ export function fitChunk(sent: number, ceiling: number, text: string): ChunkFit 
 /** Test seam: the bucket map is module state, so tests must be able to reset it. */
 export function resetSpendBuckets(): void {
   buckets.clear();
+}
+
+/* ------------------------------------------------------------------ *
+ * S12 admission contract — shared spend only, fail-closed.
+ *
+ * The brakes above are abuse protection, not entitlement. This is the typed
+ * hook point where a future authoritative service (trusted balance,
+ * reservations, bounded concurrency, authenticated payer) will plug in.
+ * Until such a hook is installed, an operator-key call that reaches
+ * `checkAdmission` is DENIED: missing entitlement fails closed. BYOK never
+ * consults admission — the caller's own key is the caller's own bill.
+ * No cloud/payment implementation lives here, and nothing enables the
+ * shared path by default.
+ * ------------------------------------------------------------------ */
+
+export interface AdmissionRequest {
+  scope: SpendScope;
+  provider: ProviderId;
+  model: string;
+  ip: string;
+  /** True when the caller's own key pays; admission is then always granted. */
+  byok: boolean;
+}
+
+export type AdmissionDenialReason =
+  | 'entitlement_missing'
+  | 'balance_exhausted'
+  | 'concurrency_limit'
+  | 'admission_unavailable';
+
+export type AdmissionDecision =
+  | { admitted: true; reservationId?: string; message?: string }
+  | { admitted: false; reason: AdmissionDenialReason; message?: string };
+
+export type AdmissionHook = (request: AdmissionRequest) => AdmissionDecision | Promise<AdmissionDecision>;
+
+let admissionHook: AdmissionHook | null = null;
+
+/** Install (or remove, with null) the authoritative admission service. */
+export function setAdmissionHook(hook: AdmissionHook | null): void {
+  admissionHook = hook;
+}
+
+/**
+ * Fail-closed admission for shared spend. No hook, a throwing hook, or a
+ * malformed decision all deny; only an explicit `admitted: true` from the
+ * installed authority grants. BYOK is exempt without touching the hook.
+ */
+export async function checkAdmission(request: AdmissionRequest): Promise<AdmissionDecision> {
+  if (request.byok) return { admitted: true };
+  const hook = admissionHook;
+  if (!hook) return { admitted: false, reason: 'entitlement_missing' };
+  try {
+    const decision = await hook(request);
+    if (decision && typeof decision === 'object') {
+      if (decision.admitted === true) return decision;
+      if (decision.admitted === false) return decision;
+    }
+    return { admitted: false, reason: 'admission_unavailable' };
+  } catch {
+    return { admitted: false, reason: 'admission_unavailable' };
+  }
 }

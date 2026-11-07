@@ -23,8 +23,9 @@ import {
 import { ADAPTERS, parseProviderId, resolveKeyAccess } from './_access.js';
 import { budgetRequest } from './_budget.js';
 import { promptCacheReport, shapeStablePrefix, type PromptCacheReport } from './_promptCache.js';
-import { resolveCustomEndpoint } from './_endpoint.js';
+import { resolveCustomEndpoint, runsOnTheUsersMachine } from './_endpoint.js';
 import {
+  checkAdmission,
   checkSharedKeySpend,
   clientIp,
   fitChunk,
@@ -32,6 +33,7 @@ import {
   rateLimitedMessage
 } from './_spendGuard.js';
 import type { ChatMessage, ChatRequestBody, NativeToolDefinition, ProviderId } from './_types.js';
+import type { MeteredStreamResult } from './_upstream.js';
 import { nativeToolDefinitions as parseNativeToolDefinitions } from './_toolCalls.js';
 
 const PROVIDER_LABEL: Record<ProviderId, string> = {
@@ -39,6 +41,12 @@ const PROVIDER_LABEL: Record<ProviderId, string> = {
   groq: 'Groq',
   custom: 'your custom endpoint'
 };
+
+// Serialized request overhead outside the message array: JSON keys, role
+// wrappers and SSE framing, plus a per-message allowance. Conservative on
+// purpose — the budget must fit the FINAL serialized request, not just history.
+const REQUEST_FRAMING_CHARS = 2_048;
+const PER_MESSAGE_FRAMING_CHARS = 64;
 
 export const config = { maxDuration: 60 };
 
@@ -144,18 +152,39 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   // Shared-key traffic only: a best-effort, in-process per-IP brake. BYOK calls
   // cost the operator nothing, so they never pass through this gate.
-  const decision = checkSharedKeySpend('chat', clientIp(req), byok);
+  const ip = clientIp(req);
+  const decision = checkSharedKeySpend('chat', ip, byok);
   if ('retryAfterSeconds' in decision) {
     res.setHeader('Retry-After', String(decision.retryAfterSeconds));
     sendError(res, 429, rateLimitedMessage(decision.retryAfterSeconds));
     return;
   }
 
+  // S12 admission: hosted operator-key spend needs an authoritative entitlement
+  // and fails closed until one is installed. The operator's own loopback backend
+  // keeps the existing exemption (same policy as the Pro-tier gate in _access),
+  // and BYOK never consults admission at all.
+  if (!byok && !runsOnTheUsersMachine()) {
+    const admission = await checkAdmission({ scope: 'chat', provider, model, ip, byok });
+    if (!admission.admitted) {
+      sendError(
+        res,
+        403,
+        admission.message ||
+          'ShadRox ki shared key ke liye admission abhi available nahi hai. Settings → BYOK me apni key add karo — BYOK requests hamesha chalti hain.'
+      );
+      return;
+    }
+  }
+
   // Enforce the model's context budget on the message history. The client
   // trims too, but the server is the boundary that actually spends the key.
-  // The system instruction is billed against the same window, so its tokens are
-  // subtracted before the history is trimmed.
-  const budget = budgetRequest(provider, model, messages, systemText || undefined);
+  // The system instruction AND the serialized tool schemas/framing are billed
+  // against the same window, so their tokens are subtracted before the history
+  // is trimmed.
+  const toolSchemaChars = toolDefinitions?.length ? JSON.stringify(toolDefinitions).length : 0;
+  const framingChars = toolSchemaChars + REQUEST_FRAMING_CHARS + messages.length * PER_MESSAGE_FRAMING_CHARS;
+  const budget = budgetRequest(provider, model, messages, systemText || undefined, framingChars);
   if (budget.trimmed > 0) {
     console.warn(
       `[ai] trimmed ${budget.trimmed} message(s) for ${model} (${budget.trimmedChars} chars dropped)`
@@ -165,8 +194,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   // across turns, and stamp the cache field where the provider family has one
   // (Anthropic content parts behind a custom OpenAI-compatible gateway). For
   // Gemini and Groq the plan emits no field and only guarantees placement,
-  // because their wire formats cache the common prefix implicitly.
-  const cachePlan = shapeStablePrefix(provider, model, budget.messages);
+  // because their wire formats cache the common prefix implicitly. The report
+  // covers the final payload shape — separate system instruction and tool
+  // schemas included — and the adapter replaces it with the post-fallback
+  // report whenever a downgrade changed what actually shipped.
+  const cachePlan = shapeStablePrefix(provider, model, budget.messages, {
+    systemInstruction: budget.systemInstruction,
+    toolDefinitions
+  });
   const cacheReport: PromptCacheReport = promptCacheReport(cachePlan);
   const shapedMessages = cachePlan.messages;
 
@@ -226,6 +261,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       tier: 'shadrox',
       finishReason: 'length',
       truncated: true,
+      // The stream was cut before any provider usage frame arrived: nothing
+      // here is provider-measured, and no served model was confirmed.
+      usageSource: 'estimated',
       promptCache: cacheReport,
       firstTokenMs,
       durationMs: Math.round(performance.now() - startedAt)
@@ -256,13 +294,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         toolCalls(calls) {
           if (capped || abort.signal.aborted || res.writableEnded || calls.length === 0) return;
           const serialized = JSON.stringify(calls);
-          const { head, capped: hitCeiling } = fitChunk(sentChars, ceiling, serialized);
+          const { capped: hitCeiling } = fitChunk(sentChars, ceiling, serialized);
           if (hitCeiling) {
             capped = true;
             abort.abort();
             return;
           }
-          sentChars += head.length;
+          // Tool calls ship whole or not at all, so the ceiling counts the full
+          // serialized length — the same sentChars ledger as deltas/reasoning.
+          sentChars += serialized.length;
           markFirstToken();
           emit({ type: 'tool_calls', calls });
         }
@@ -275,6 +315,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       return;
     }
 
+    const meta = result as MeteredStreamResult;
     sseSend(res, {
       type: 'done',
       tokens: result.tokens,
@@ -283,9 +324,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       ...(result.inputTokens !== undefined ? { inputTokens: result.inputTokens } : {}),
       ...(result.outputTokens !== undefined ? { outputTokens: result.outputTokens } : {}),
       ...(result.cachedInputTokens !== undefined ? { cachedInputTokens: result.cachedInputTokens } : {}),
+      usageSource: meta.usageSource ?? 'estimated',
+      // Only a model identity the provider itself reported — never the request
+      // echo — so the UI can say "requested / not confirmed" when it is absent.
+      ...(meta.servedModel ? { servedModel: meta.servedModel } : {}),
+      ...(meta.attempts !== undefined ? { attempts: meta.attempts } : {}),
+      ...(meta.droppedFeatures?.length ? { droppedFeatures: meta.droppedFeatures } : {}),
       // What this route asked the provider to cache, so the UI can tell a real
-      // 0-token hit apart from "the provider never reported a hit".
-      promptCache: cacheReport,
+      // 0-token hit apart from "the provider never reported a hit". The
+      // adapter's post-fallback report wins when the wire payload changed.
+      promptCache: meta.promptCache ?? cacheReport,
       provider,
       model,
       tier: byok ? 'byok' : 'shadrox',

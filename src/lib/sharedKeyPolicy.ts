@@ -2,6 +2,14 @@ import { BETA_UNLOCKED_PLANS } from './plans';
 import type { PlanTier } from './types';
 
 /**
+ * Who actually pays for a request. `byok` means the caller's own provider key
+ * carries it — ShadRox charges no credits and applies no shared-spend cap.
+ * `shared` means the operator's shared key carries it, which is the only path
+ * that is metered, admitted and settled.
+ */
+export type ResolvedPayer = 'byok' | 'shared';
+
+/**
  * Beta switch for ShadRox's server-side shared key. The surface opens as soon as
  * the operator unlocks any paid tier, so an unlocked plan can see the control
  * instead of the whole ladder being hidden behind one flat flag.
