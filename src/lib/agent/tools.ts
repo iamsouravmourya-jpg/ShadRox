@@ -7,6 +7,7 @@ import { globalRepairSession } from '../repairSession';
 import { describeFinish } from './finishTool';
 import { MCP_TOOL_PREFIX } from './mcpTools';
 import type { ExternalToolDefinition } from './mcpTools';
+import type { ToolEffect } from './runPolicy';
 
 /**
  * The read-only tools an assistant turn may call to explore the opened folder.
@@ -247,6 +248,33 @@ export function isControlTool(name: string): boolean {
   return CONTROL_TOOLS.has(name);
 }
 
+const NATIVE_TOOL_EFFECTS: Record<string, ToolEffect> = {
+  list_directory: 'read',
+  read_file: 'read',
+  find_files: 'read',
+  search_text: 'read',
+  problems: 'read',
+  git_state: 'read',
+  terminal_state: 'read',
+  debugger_state: 'read',
+  outline: 'read',
+  delete_file: 'write',
+  run_command: 'execute',
+  terminal_answer: 'execute',
+  update_tasks: 'control',
+  finish: 'control'
+};
+
+/**
+ * The capability class of a call, used by the run policy at the execution
+ * boundary. Anything not explicitly a native read/write/execute/control tool —
+ * every MCP tool and any unknown name — fails closed to `external`, so read-only
+ * modes deny it instead of guessing that an arbitrary server is safe.
+ */
+export function classifyToolEffect(name: string): ToolEffect {
+  return NATIVE_TOOL_EFFECTS[name] ?? 'external';
+}
+
 /** The instruction block that teaches the model to use the tools. */
 export function describeTools(maxRounds: number, external: ExternalToolDefinition[] = [], notes: string[] = []): string[] {
   const lines = [
@@ -319,6 +347,18 @@ function clipRuntimeValue(value: string): string {
 
 function refusal(message: string): ToolOutcome {
   return { ok: false, content: '', error: message, refused: true };
+}
+
+/**
+ * Only a typed not-found proves a path is absent. A permission error, a symlink
+ * refusal, a closed workspace or an unavailable bridge is NOT evidence of
+ * absence, so delete verification must report unverified rather than success.
+ */
+function isNotFoundError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === 'ENOENT' || code === 'ENOTDIR') return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /ENOENT|ENOTDIR|no such file|not found|does not exist|no longer in the workspace/i.test(message);
 }
 
 /** Names a call for the UI: `read_file src/a.ts` rather than a blob of JSON. */
@@ -429,18 +469,28 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           return refusal('delete_file needs confirm: true. Only delete when the user asked for this exact file.');
         }
         const deleted = await desktop.deletePath(workspaceId, path);
-        // A delete that did not happen must never be reported as done.
-        let stillThere = false;
+        // A delete that did not happen must never be reported as done, and a read
+        // that failed for any reason other than not-found must never prove absence.
+        let absence: 'present' | 'absent' | 'unverified' = 'unverified';
+        let verifyError = '';
         try {
           await desktop.readFile(workspaceId, path);
-          stillThere = true;
-        } catch {
-          stillThere = false;
+          absence = 'present';
+        } catch (error) {
+          if (isNotFoundError(error)) absence = 'absent';
+          else verifyError = error instanceof Error ? error.message : String(error);
         }
-        if (stillThere) {
+        if (absence === 'present') {
           return { ok: false, content: '', error: `${deleted.path} is still on disk after the delete call. Nothing was removed.` };
         }
-        return { ok: true, content: `Deleted ${deleted.kind} ${deleted.path} — verified gone from disk.` };
+        if (absence === 'absent') {
+          return { ok: true, content: `Deleted ${deleted.kind} ${deleted.path} — verified gone from disk.` };
+        }
+        return {
+          ok: false,
+          content: `Delete issued for ${deleted.kind} ${deleted.path}, but absence could not be verified: ${verifyError}. Do not claim it is gone.`,
+          error: `Deletion of ${deleted.path} is unverified: ${verifyError}`
+        };
       }
       case 'problems': {
         const paths = asStringArray(call.args.paths);

@@ -9,8 +9,8 @@
  * it can only see the usage frames this app streamed, so a cap here is a
  * client-side seatbelt, not accounting.
  *
- * Three numbers, all in credits (the same ₹0.24 unit every other meter in the
- * app uses, so a run budget and a day cap are comparable):
+ * Three numbers, all in credits (the same per-credit ceiling every other meter
+ * in the app uses, so a run budget and a day cap are comparable):
  * - `perTurnCredits` — one chat turn, including all of its tool rounds.
  * - `perDayCredits`  — everything spent today across sessions and runs.
  * - `perRunCredits`  — the ceiling handed to one autonomous run.

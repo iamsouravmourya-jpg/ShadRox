@@ -38,12 +38,23 @@ const CONVERSATION_TOKENS = 800;
 const ANSWER_OUTPUT_TOKENS = 1_200;
 
 /**
- * Below this the entire context is under a fifth of one ₹0.24 credit — 20k
- * tokens is exactly one credit on the default edit model — so a second pass
+ * Below this the entire context costs well under one credit, so a second pass
  * would buy back less than the round-trip and the risk of losing an identifier
  * are worth. The case this feature exists for is the 10-20k dump.
  */
 export const CONDENSE_MIN_INPUT_TOKENS = 4_000;
+
+/**
+ * Below this many candidates a deterministic selection is already confident:
+ * the picker caps its own selection, so a reader would only add a round-trip.
+ */
+export const READER_MIN_CANDIDATES = 8;
+
+/** A reader that cannot net this fraction of the writer's direct cost is not run. */
+export const READER_NET_SAVING_THRESHOLD = 0.2;
+
+/** The reader writes a path list plus short reasons; ~512 tokens is that. */
+export const READER_OUTPUT_TOKENS = 512;
 
 /** Roles a user turn can carry. `select` and `summarize` are the cheap passes
  *  themselves and `complete` is a single-pass fill-in, so none gets a digest. */
@@ -229,5 +240,83 @@ export function decideAutoRoute(input: AutoInput): AutoDecision {
     credits: metered ? creditsOf(rupees) : 0,
     savingsFactor,
     withinBudget
+  };
+}
+
+export interface ReaderAdmissionInput {
+  /** Explicit files/pins mean selection is already decided — no reader needed. */
+  hasExplicitTargets: boolean;
+  /** Candidate files the reader would choose among. */
+  candidateCount: number;
+  /** Context tokens the writer would otherwise read directly. */
+  rawTokens: number;
+  writerModel: string;
+  readerModel: string;
+}
+
+export interface ReaderAdmission {
+  admitted: boolean;
+  reason: string;
+  readerCostRupees: number;
+  writerDirectRupees: number;
+  writerAfterReaderRupees: number;
+  /** Net expected fraction of the writer's direct cost that is saved, or null when unknown. */
+  netSavingFactor: number | null;
+}
+
+/**
+ * Decide whether an optional reader pass is economically justified (S08).
+ *
+ * The reader is skipped when selection is already decided (explicit targets),
+ * when the candidate set is small enough to match deterministically, or when
+ * there is too little context to pay for a second call. Otherwise it is admitted
+ * only when the expected net saving — the writer's direct cost minus the digest
+ * writer cost minus the reader's own cost — clears the configured threshold.
+ *
+ * This is a break-even estimate, not a measured saving; a reader that omits a
+ * file the writer needed can still cost more in retries than it saves.
+ */
+export function admitReader(input: ReaderAdmissionInput): ReaderAdmission {
+  const raw = nonNegativeTokens(input.rawTokens);
+  const writerDirect =
+    input.writerModel && raw > 0 ? costRupees(input.writerModel, { inputTokens: raw, outputTokens: ANSWER_OUTPUT_TOKENS }) : 0;
+
+  if (input.hasExplicitTargets) {
+    return notAdmitted('the request names its own targets; a reader would add cost without deciding anything', writerDirect);
+  }
+  if (input.candidateCount < READER_MIN_CANDIDATES) {
+    return notAdmitted(`${input.candidateCount} candidate(s) is few enough to select deterministically`, writerDirect);
+  }
+  if (raw < CONDENSE_MIN_INPUT_TOKENS) {
+    return notAdmitted(`${raw} context tokens is too little to pay for a second pass`, writerDirect);
+  }
+
+  const digest = digestTokensFor(raw);
+  const readerCost = costRupees(input.readerModel, { inputTokens: raw, outputTokens: READER_OUTPUT_TOKENS });
+  const writerAfter = costRupees(input.writerModel, { inputTokens: digest + CONVERSATION_TOKENS, outputTokens: ANSWER_OUTPUT_TOKENS });
+  const netSaving = writerDirect - writerAfter - readerCost;
+  const netSavingFactor = writerDirect > 0 ? netSaving / writerDirect : null;
+  const admitted = netSavingFactor !== null && netSavingFactor >= READER_NET_SAVING_THRESHOLD;
+  const percent = netSavingFactor === null ? 'unknown' : `${Math.round(netSavingFactor * 100)}%`;
+  return {
+    admitted,
+    reason: admitted
+      ? `${input.readerModel} is expected to save ${percent} net, above the ${READER_NET_SAVING_THRESHOLD * 100}% bar`
+      : `the reader's expected net saving (${percent}) is below the ${READER_NET_SAVING_THRESHOLD * 100}% bar`,
+    readerCostRupees: readerCost,
+    writerDirectRupees: writerDirect,
+    writerAfterReaderRupees: writerAfter,
+    netSavingFactor
+  };
+}
+
+function notAdmitted(reason: string, writerDirectRupees: number): ReaderAdmission {
+  return {
+    admitted: false,
+    reason,
+    readerCostRupees: 0,
+    writerDirectRupees,
+    writerAfterReaderRupees: writerDirectRupees,
+    netSavingFactor: null
   };
 }

@@ -6,6 +6,7 @@ import type { FilePatch } from '../lib/markdown';
 import { loadHandleRecord, pruneHandles, saveHandles } from '../lib/fileHandles';
 import { addCheckpointCreatedPaths, listCheckpoints, loadCheckpointCreatedPaths, loadCheckpointFiles, mergeCheckpointFiles, saveCheckpoint, type CheckpointMeta } from '../lib/history';
 import { diffToCheckpoint, type CheckpointDiff } from '../lib/checkpointDiff';
+import { composerAfterCheckpointFailure } from '../lib/agents/scopePreserve';
 import { getSnapshot, pruneSnapshots, saveSnapshot } from '../lib/snapshots';
 import { getRecentWorkspaces, pushRecentWorkspace, removeRecentWorkspace } from '../lib/storage';
 import { getDesktopBridge, type DirectoryPage, type StagedTransaction, type WorkspaceChange } from '../lib/desktop';
@@ -1599,8 +1600,10 @@ export function useWorkspace(): UseWorkspaceResult {
         activeCheckpointRef.current = { id: meta.id, workspacePath: workspace.path };
         setCheckpoints((previous) => [meta, ...previous]);
         return meta.id;
-      } catch {
-        setDiskMessage('Checkpoint could not be recorded; rewind is unavailable for this turn.');
+      } catch (error) {
+        // S17: a failed checkpoint must leave the composer usable and say plainly
+        // that nothing changed — never a half-rewound state to reason about.
+        setDiskMessage(composerAfterCheckpointFailure(error instanceof Error ? error.message : String(error)).status);
         return null;
       } finally { machineStarting.current--; }
     },

@@ -116,17 +116,50 @@ export function stripToolBlocks(text: string): string {
   return parseBareToolCalls(stripped) ? '' : stripped;
 }
 
-export function serializeResults(results: Array<{ name: string; ok: boolean; content: string; error?: string }>, budget = MAX_ROUND_RESULT_CHARS): string {
-  // Six 24k reads are 144k characters of observation: the round pays for them
-  // out of the model's context. Split evenly instead of keeping the first calls
-  // whole and silently dropping the last ones.
-  const sizes = results.filter((result) => result.ok).map((result) => result.content.length);
-  const total = sizes.reduce((sum, size) => sum + size, 0);
-  const share = total > budget ? Math.max(MIN_RESULT_CHARS, Math.floor(budget / Math.max(1, sizes.length))) : null;
-  const payload = results.map((result) => (result.ok
-    ? { tool: result.name, ok: true, result: markUntrustedData(share === null ? result.content : cutToShare(result.content, share)) }
-    : { tool: result.name, ok: false, error: markUntrustedData(result.error ?? 'The tool failed.') }));
+interface ResultEntry {
+  name: string;
+  ok: boolean;
+  text: string;
+}
+
+function framePayload(payload: unknown): string {
   return `\`\`\`${RESULT_FENCE}\n${JSON.stringify(payload, null, 1)}\n\`\`\``;
+}
+
+function payloadOf(entries: ResultEntry[], share: number | null): unknown[] {
+  return entries.map((entry) => {
+    const text = share === null ? entry.text : cutToShare(entry.text, share);
+    return entry.ok
+      ? { tool: entry.name, ok: true, result: markUntrustedData(text) }
+      : { tool: entry.name, ok: false, error: markUntrustedData(text) };
+  });
+}
+
+export function serializeResults(results: Array<{ name: string; ok: boolean; content: string; error?: string }>, budget = MAX_ROUND_RESULT_CHARS): string {
+  // The whole observation is paid for out of the model's context: successful
+  // content, error strings and the JSON/fence/marker framing alike. Budget the
+  // serialized total, not just the happy-path bodies, so a round of failures or
+  // a wide framing cannot slip past the cap.
+  const entries: ResultEntry[] = results.map((result) => ({
+    name: result.name,
+    ok: result.ok,
+    text: result.ok ? result.content : (result.error ?? 'The tool failed.')
+  }));
+  const fixed = framePayload(payloadOf(entries.map((entry) => ({ ...entry, text: '' })), null)).length;
+  const variable = entries.reduce((sum, entry) => sum + entry.text.length, 0);
+  let share: number | null = null;
+  if (fixed + variable > budget) {
+    const available = Math.max(0, budget - fixed);
+    share = Math.max(MIN_RESULT_CHARS, Math.floor(available / Math.max(1, entries.length)));
+  }
+  let output = framePayload(payloadOf(entries, share));
+  // The cut markers themselves add characters; shrink until the framed result
+  // actually fits rather than trusting the first estimate.
+  while (output.length > budget && share !== null && share > MIN_RESULT_CHARS) {
+    share = Math.max(MIN_RESULT_CHARS, Math.floor(share * 0.8));
+    output = framePayload(payloadOf(entries, share));
+  }
+  return output;
 }
 
 export function markUntrustedData(content: string): string {
@@ -141,6 +174,17 @@ function cutToShare(content: string, limit: number): string {
   return `${content.slice(0, limit)}\n… [the round returned too much to keep: ${limit} of ${content.length} characters shown. Ask for one file or a narrower query at a time.]`;
 }
 
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === 'object') {
+    const source = value as Record<string, unknown>;
+    const ordered: Record<string, unknown> = {};
+    for (const key of Object.keys(source).sort()) ordered[key] = canonicalValue(source[key]);
+    return ordered;
+  }
+  return value;
+}
+
 export function serializeCallKey(call: ToolCall): string {
-  return `${call.name} ${JSON.stringify(call.args ?? {}, Object.keys(call.args ?? {}).sort())}`;
+  return `${call.name} ${JSON.stringify(canonicalValue(call.args ?? {}))}`;
 }

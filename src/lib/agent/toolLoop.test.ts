@@ -579,3 +579,84 @@ test('a command denied by the native approval gate is reported as refused', asyn
     assert.match(result.activity[0].output ?? '', /not approved/);
   });
 });
+
+const runCall = { name: 'run_command', args: { command: 'echo hi' } };
+
+test('ask mode refuses an execute call before it reaches the bridge', async () => {
+  let ran = 0;
+  await withBridge({
+    runCommand: async () => { ran += 1; return { stdout: 'hi\n', stderr: '', exitCode: 0 }; }
+  }, async () => {
+    const model = scripted([toolBlock([runCall]), 'I did not run it.']);
+    const result = await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      policy: { mode: 'ask' },
+      stream: model.stream
+    });
+    assert.equal(ran, 0, 'the command never reached the main-process bridge');
+    assert.equal(result.activity.length, 1);
+    assert.equal(result.activity[0].ok, false);
+    assert.equal(result.activity[0].refused, true);
+    assert.match(result.activity[0].error ?? '', /ask mode does not allow execute/);
+    assert.match(model.seen[1].at(-1).content, /was refused/);
+  });
+});
+
+test('agent mode runs the same execute call', async () => {
+  let ran = 0;
+  await withBridge({
+    runCommand: async () => { ran += 1; return { stdout: 'hi\n', stderr: '', exitCode: 0 }; }
+  }, async () => {
+    const model = scripted([toolBlock([runCall]), 'It printed hi.']);
+    const result = await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      policy: { mode: 'agent' },
+      stream: model.stream
+    });
+    assert.equal(ran, 1);
+    assert.equal(result.activity[0].ok, true);
+    assert.equal(result.activity[0].refused, undefined);
+  });
+});
+
+test('a read is allowed in ask mode: the boundary is the effect, not the mode', async () => {
+  await withBridge({
+    readFile: async (_id: string, path: string) => ({ name: path, content: 'const a = 1;', version: 'v1' })
+  }, async () => {
+    const model = scripted([toolBlock([readCall]), 'It declares const a.']);
+    const result = await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      policy: { mode: 'ask' },
+      stream: model.stream
+    });
+    assert.equal(result.activity.length, 1);
+    assert.equal(result.activity[0].ok, true);
+    assert.equal(result.activity[0].refused, undefined);
+  });
+});
+
+test('plan mode refuses a write, and the delete never touches disk', async () => {
+  let deleted = 0;
+  await withBridge({
+    deletePath: async () => { deleted += 1; return { path: 'src/a.ts', kind: 'file' }; }
+  }, async () => {
+    const model = scripted([toolBlock([{ name: 'delete_file', args: { path: 'src/a.ts', confirm: true } }]), 'Left it alone.']);
+    const result = await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      policy: { mode: 'plan' },
+      stream: model.stream
+    });
+    assert.equal(deleted, 0);
+    assert.equal(result.activity[0].ok, false);
+    assert.equal(result.activity[0].refused, true);
+    assert.match(result.activity[0].error ?? '', /plan mode does not allow write/);
+  });
+});

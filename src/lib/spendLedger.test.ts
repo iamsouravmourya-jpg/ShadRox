@@ -44,15 +44,15 @@ test('usage frames accumulate in session and daily spend', () => {
     inputTokens: 10_000,
     outputTokens: 1_000
   }, store, now);
-  assert.equal(credits, 0.6);
+  assert.equal(credits, 0.5);
   assert.deepEqual(readSpendSnapshot('workspace-a', store, now), {
     day: '2026-11-06',
-    sessionCredits: 0.6,
-    sessionRupees: 0.13,
-    dayCredits: 0.6,
-    dayRupees: 0.13
+    sessionCredits: 0.5,
+    sessionRupees: 0.15,
+    dayCredits: 0.5,
+    dayRupees: 0.15
   });
-  assert.equal(dailySpendGate('workspace-a', { ...CAPS_OFF, perDayCredits: 0.6 }, store, now).blocked, true);
+  assert.equal(dailySpendGate('workspace-a', { ...CAPS_OFF, perDayCredits: 0.5 }, store, now).blocked, true);
 });
 
 test('day totals roll over without losing the session total', () => {
@@ -66,7 +66,7 @@ test('day totals roll over without losing the session total', () => {
   }, store, firstDay);
   const snapshot = readSpendSnapshot('workspace-a', store, nextDay);
   assert.equal(snapshot.dayCredits, 0);
-  assert.equal(snapshot.sessionCredits, 0.6);
+  assert.equal(snapshot.sessionCredits, 0.5);
 });
 
 test('per-turn and per-run caps stop at the configured ceiling', () => {

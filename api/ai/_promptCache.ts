@@ -43,7 +43,7 @@
  */
 
 import { estimateTokens } from '../_http.js';
-import type { ChatMessage, ProviderId } from './_types.js';
+import type { ChatMessage, NativeToolDefinition, ProviderId } from './_types.js';
 
 /** How this provider expects cacheable prefixes to be communicated. */
 export type PromptCacheMode = 'cache_control' | 'system_instruction_prefix' | 'auto_prefix';
@@ -84,6 +84,24 @@ export interface StablePrefixPlan {
    * field, where a per-turn-changing key would defeat the routing.
    */
   conversationHash: string;
+  /** Characters of the separate top-level system instruction, when one is sent. */
+  systemChars?: number;
+  /** Serialized characters of the tool schemas, when they are sent. */
+  toolSchemaChars?: number;
+}
+
+/**
+ * The parts of the FINAL wire payload that live outside the message array.
+ * Pass them so the plan's counts and digests describe what the provider actually
+ * receives: the separate system instruction (Gemini `systemInstruction`, the
+ * leading OpenAI-style system message) and the tool schemas. `emitMarkers`
+ * overrides marker emission for a fallback that had to drop `cache_control`
+ * parts — the plan then honestly reports the unmarked wire dialect.
+ */
+export interface StablePrefixExtras {
+  systemInstruction?: string;
+  toolDefinitions?: NativeToolDefinition[];
+  emitMarkers?: boolean;
 }
 
 /** What the app needs to be told about one turn's cache posture. */
@@ -95,6 +113,10 @@ export interface PromptCacheReport {
   markers: number;
   /** Share (0..1) of the shaped request the stable prefix accounts for. */
   prefixShare: number;
+  /** Separate system-instruction characters included in the prefix, when sent. */
+  systemChars?: number;
+  /** Tool-schema characters included in the prefix, when sent. */
+  toolSchemaChars?: number;
 }
 
 /**
@@ -146,9 +168,14 @@ export function emitsCacheMarkers(provider: ProviderId, model: string): boolean 
 export function shapeStablePrefix(
   provider: ProviderId,
   model: string,
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  extras?: StablePrefixExtras
 ): StablePrefixPlan {
-  const mode = promptCacheMode(provider, model);
+  const wireMode = promptCacheMode(provider, model);
+  const wantsMarkers = wireMode === 'cache_control' && (extras?.emitMarkers ?? true);
+  // A fallback that dropped the markers sends the plain dialect: report what is
+  // actually on the wire, not what was originally planned.
+  const mode: PromptCacheMode = wireMode === 'cache_control' && !wantsMarkers ? 'auto_prefix' : wireMode;
 
   const system = messages.filter((message) => message.role === 'system');
   const history = messages.filter((message) => message.role !== 'system');
@@ -173,16 +200,26 @@ export function shapeStablePrefix(
   // Only the `cache_control` family gets the flag written into the message copy,
   // so an endpoint that does not speak Anthropic content parts sees the old
   // byte-identical body.
-  const marked = mode === 'cache_control' ? new Set(breakpoints) : new Set<number>();
+  const marked = wantsMarkers ? new Set(breakpoints) : new Set<number>();
   const shapedMessages = shaped.map((message, index) => ({
     ...message,
     ...(marked.has(index) ? { cacheEphemeral: true } : {})
   }));
 
   const prefix = prefixMessages({ messages: shapedMessages, cacheBreakpoints: breakpoints });
-  const prefixChars = prefix.reduce((sum, message) => sum + message.content.length, 0);
-  const prefixTokens = prefix.reduce((sum, message) => sum + estimateTokens(message.content), 0);
+  const systemText = extras?.systemInstruction && extras.systemInstruction.trim() ? extras.systemInstruction : '';
+  const toolBytes = extras?.toolDefinitions?.length ? JSON.stringify(extras.toolDefinitions) : '';
+  const hasExtras = Boolean(systemText || toolBytes);
+  const prefixChars =
+    systemText.length + toolBytes.length +
+    prefix.reduce((sum, message) => sum + message.content.length, 0);
+  const prefixTokens =
+    (systemText ? estimateTokens(systemText) : 0) +
+    (toolBytes ? estimateTokens(toolBytes) : 0) +
+    prefix.reduce((sum, message) => sum + estimateTokens(message.content), 0);
   const leading = systemOf(shapedMessages);
+  const prefixBytes = stablePrefixBytesOf(prefix);
+  const leadingBytes = stablePrefixBytesOf(leading);
 
   return {
     messages: shapedMessages,
@@ -191,8 +228,14 @@ export function shapeStablePrefix(
     markers: marked.size,
     prefixChars,
     prefixTokens,
-    prefixHash: fnv1aHex(stablePrefixBytesOf(prefix)),
-    conversationHash: fnv1aHex(stablePrefixBytesOf(leading))
+    // With extras the digests cover the separate system instruction and tool
+    // schemas too: a changed schema or instruction makes a hit impossible even
+    // when the message bytes are identical.
+    prefixHash: fnv1aHex(hasExtras ? JSON.stringify([systemText, toolBytes, prefixBytes]) : prefixBytes),
+    conversationHash: fnv1aHex(hasExtras ? JSON.stringify([systemText, toolBytes, leadingBytes]) : leadingBytes),
+    ...(hasExtras
+      ? { systemChars: systemText.length, toolSchemaChars: toolBytes.length }
+      : {})
   };
 }
 
@@ -282,13 +325,19 @@ export function supportsPromptCacheKey(url: string): boolean {
 
 /** What this turn asked the provider for, in the shape the SSE payload wants. */
 export function promptCacheReport(plan: StablePrefixPlan): PromptCacheReport {
-  const allChars = plan.messages.reduce((sum, message) => sum + message.content.length, 0);
+  const systemChars = plan.systemChars ?? 0;
+  const toolSchemaChars = plan.toolSchemaChars ?? 0;
+  const allChars =
+    systemChars + toolSchemaChars +
+    plan.messages.reduce((sum, message) => sum + message.content.length, 0);
   return {
     mode: plan.mode,
     prefixTokens: plan.prefixTokens,
     prefixChars: plan.prefixChars,
     breakpoints: plan.cacheBreakpoints.length,
     markers: plan.markers,
-    prefixShare: allChars > 0 ? Number((plan.prefixChars / allChars).toFixed(4)) : 0
+    prefixShare: allChars > 0 ? Number((plan.prefixChars / allChars).toFixed(4)) : 0,
+    ...(systemChars > 0 ? { systemChars } : {}),
+    ...(toolSchemaChars > 0 ? { toolSchemaChars } : {})
   };
 }

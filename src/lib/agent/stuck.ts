@@ -6,6 +6,10 @@ export interface StuckSignal {
 export interface StuckRound {
   calls: string[];
   changedFiles: number;
+  /** Successful outcomes this round; optional so older callers stay valid. */
+  okCount?: number;
+  /** Failed or refused outcomes this round. */
+  failedCount?: number;
 }
 
 const REPEAT_RUN = 3;
@@ -28,6 +32,7 @@ function keyList(calls: string[]): string {
 }
 
 function isQuiet(rounds: StuckRound[], index: number): boolean {
+  if (typeof rounds[index].changedFiles === 'number' && rounds[index].changedFiles > 0) return false;
   return signature(rounds[index].calls) === '' || signature(rounds[index].calls) === signature(rounds[index - 1].calls);
 }
 

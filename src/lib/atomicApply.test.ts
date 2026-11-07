@@ -118,6 +118,9 @@ test('a fully resolvable set becomes one job per pending patch', () => {
   assert.ok(plan.jobs.every((job) => !job.created));
   assert.deepEqual(plan.patches.map((patch) => patch.status), ['applied', 'applied', 'applied']);
   assert.equal(plan.patches[0].originalContent, 'const a = 1;\n');
+  // S17: the planned patch records exactly what it will write, so an undo can
+  // detect newer edits instead of reverting over them.
+  assert.deepEqual(plan.patches.map((patch) => patch.appliedContent), plan.jobs.map((job) => job.content));
 });
 
 test('a rewrite of an absent file is a created job with nothing to restore', () => {

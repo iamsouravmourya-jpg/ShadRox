@@ -1,15 +1,15 @@
 /**
  * Model price registry — USD per 1M tokens.
  *
- * Snapshot source: the gateway catalogue at
- * C:\Users\sourav\OneDrive\Desktop\Models.txt (2026-11-02). Rates move monthly,
- * so this table is the only place a per-token price may be written down; docs
- * and UI must derive from it rather than repeat numbers. Ids are matched
- * against the model, specific before general, first match wins — the same
- * shape as modelCapabilities, so a new release needs no code change.
+ * Snapshot source: the gateway catalogue the Starter Pack is priced from
+ * (2026-11-06, 433 models; earlier Models.txt snapshot 2026-11-02). Rates move
+ * monthly, so this table is the only place a per-token price may be written
+ * down; docs and UI must derive from it rather than repeat numbers. Ids are
+ * matched against the model, specific before general, first match wins — the
+ * same shape as modelCapabilities, so a new release needs no code change.
  *
  * Cached-input discounts are NOT modelled, so every number here is an upper
- * bound on the real bill.
+ * bound on the real bill — the pack's margin is computed on that worse number.
  */
 
 export interface ModelRate {
@@ -24,8 +24,12 @@ export interface TokenSplit {
   outputTokens: number;
 }
 
-/** Operator's FX assumption. A business number, but not a plan number. */
-export const USD_TO_INR = 84;
+/**
+ * Operator's landed-rupee assumption: ₹84 spot plus 18% GST, which is the
+ * catalogue's own ₹ column (e.g. $0.195 → ₹19.36). A business number, but not a
+ * plan number — the plan is priced once in credits (plans.ts), not here.
+ */
+export const USD_TO_INR = 99.26;
 
 /** Catalogue-wide invariants: batch variants are half price, fast ones double. */
 export const BATCH_RATIO = 0.5;
@@ -41,6 +45,8 @@ const PRICE_TABLE: Array<{ match: RegExp; rate: ModelRate }> = [
   // Purpose-built single-pass jobs: the output side is free.
   { match: /scaledown-(summarize|extract)/, rate: { input: 0.05, output: 0.0 } },
   // Selector / summarizer tier.
+  // The pack's reader: picks files and compresses context, never writes code.
+  { match: /nova-micro/, rate: { input: 0.035, output: 0.14 } },
   { match: /ling-3\.0-flash/, rate: { input: 0.02, output: 0.06 } },
   { match: /gpt-oss-20b/, rate: { input: 0.03, output: 0.14 } },
   { match: /qwen3\.7-flash/, rate: { input: 0.03, output: 0.13 } },
@@ -49,7 +55,7 @@ const PRICE_TABLE: Array<{ match: RegExp; rate: ModelRate }> = [
   { match: /ministral-3b/, rate: { input: 0.1, output: 0.1 } },
   { match: /nemotron-3-nano/, rate: { input: 0.05, output: 0.2 } },
   { match: /nemotron-nano-9b/, rate: { input: 0.06, output: 0.23 } },
-  { match: /glm-4\.7-flash/, rate: { input: 0.07, output: 0.4 } },
+  { match: /glm-4\.7-flash/, rate: { input: 0.06, output: 0.4 } },
   // Completion tier — billed at the tab rate, so it must stay near free.
   { match: /gpt-5-nano/, rate: { input: 0.05, output: 0.4 } },
   { match: /gpt-4\.1-nano/, rate: { input: 0.1, output: 0.4 } },
@@ -70,6 +76,10 @@ const PRICE_TABLE: Array<{ match: RegExp; rate: ModelRate }> = [
   { match: /gpt-5\.6-luna/, rate: { input: 0.2, output: 1.2 } },
   { match: /qwen3-coder-30b/, rate: { input: 0.15, output: 0.6 } },
   { match: /nemotron-3-super/, rate: { input: 0.15, output: 0.65 } },
+  // The value writer for the Heavy pack: 262K context, 80B/3B-active MoE.
+  { match: /qwen3-coder-next/, rate: { input: 0.12, output: 0.8 } },
+  // The pack's writer: 1M context, built for agentic tool-calling edits.
+  { match: /qwen3-coder-flash/, rate: { input: 0.195, output: 0.975 } },
   // Mid tier.
   { match: /deepseek-v4\.1-flash/, rate: { input: 0.3, output: 1.2 } },
   { match: /deepseek-v4-flash-vision/, rate: { input: 0.22, output: 0.65 } },

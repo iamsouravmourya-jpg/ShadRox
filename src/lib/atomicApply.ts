@@ -142,6 +142,9 @@ export function planAtomicApply(
     const job = jobs[jobIndex];
     nextPatches[patchIndex].status = 'applied';
     nextPatches[patchIndex].originalContent = job.originalContent;
+    // S17: remember exactly what landed so an undo can tell a stale revert from
+    // a clean one (see undoVerdict in agents/scopePreserve).
+    nextPatches[patchIndex].appliedContent = job.content;
   });
 
   return { ok: true, jobs, patches: nextPatches };

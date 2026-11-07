@@ -149,3 +149,46 @@ test('DEFAULT_MAX_OUTPUT is a positive integer', () => {
   assert.ok(Number.isInteger(DEFAULT_MAX_OUTPUT))
   assert.ok(DEFAULT_MAX_OUTPUT > 0)
 })
+
+// ── checkCapabilities (S07) ───────────────────────────────────────────────────
+
+import { checkCapabilities, routeNeedsRefit, type ModelCapabilities } from './modelCapabilities.js'
+
+test('an unverified feature fails closed, it is not treated as present', () => {
+  const caps: ModelCapabilities = { contextWindow: 100_000 }
+  const check = checkCapabilities(caps, { toolCalls: true })
+  assert.equal(check.satisfied, false)
+  assert.deepEqual(check.unknown, ['toolCalls'])
+  assert.deepEqual(check.missing, [])
+})
+
+test('a feature the model explicitly lacks is reported as missing', () => {
+  const caps: ModelCapabilities = { contextWindow: 100_000, toolCalls: false }
+  const check = checkCapabilities(caps, { toolCalls: true })
+  assert.equal(check.satisfied, false)
+  assert.deepEqual(check.missing, ['toolCalls'])
+  assert.deepEqual(check.unknown, [])
+})
+
+test('a verified feature satisfies the requirement', () => {
+  const caps: ModelCapabilities = { contextWindow: 200_000, toolCalls: true, structuredResponses: true }
+  assert.equal(checkCapabilities(caps, { toolCalls: true, structuredResponses: true }).satisfied, true)
+  // A requirement that is not asked for never affects the result.
+  assert.equal(checkCapabilities(caps, {}).satisfied, true)
+})
+
+test('a payload too big for the window is a missing capability, not a silent trim', () => {
+  const caps: ModelCapabilities = { contextWindow: 32_000 }
+  const check = checkCapabilities(caps, { minContextWindow: 100_000 })
+  assert.equal(check.satisfied, false)
+  assert.deepEqual(check.missing, ['contextWindow'])
+})
+
+test('a route change to a smaller window requires a refit', () => {
+  const big: ModelCapabilities = { contextWindow: 1_000_000, maxOutput: 8_192 }
+  const small: ModelCapabilities = { contextWindow: 131_072, maxOutput: 8_192 }
+  assert.equal(routeNeedsRefit(big, small), true)
+  assert.equal(routeNeedsRefit(small, small), false)
+  const smallerOutput: ModelCapabilities = { contextWindow: 131_072, maxOutput: 4_096 }
+  assert.equal(routeNeedsRefit(small, smallerOutput), true)
+})

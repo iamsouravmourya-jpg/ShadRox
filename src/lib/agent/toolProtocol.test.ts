@@ -163,3 +163,49 @@ test('call keys ignore argument order', () => {
   assert.equal(a, b);
   assert.notEqual(a, serializeCallKey({ name: 'read_file', args: { path: 'a.ts', start_line: 3 } }));
 });
+
+test('nested argument fields stay distinct instead of collapsing to one key', () => {
+  const doing = serializeCallKey({ name: 'update_tasks', args: { tasks: [{ id: 'a', subject: 'read', status: 'doing' }] } });
+  const done = serializeCallKey({ name: 'update_tasks', args: { tasks: [{ id: 'a', subject: 'read', status: 'done' }] } });
+  assert.notEqual(doing, done, 'a status change nested in tasks must not dedup away');
+  assert.match(doing, /doing/);
+  assert.match(done, /done/);
+  const deepA = serializeCallKey({ name: 'mcp__a__b', args: { filter: { where: { path: 'x' }, limit: 1 } } });
+  const deepB = serializeCallKey({ name: 'mcp__a__b', args: { filter: { where: { path: 'y' }, limit: 1 } } });
+  assert.notEqual(deepA, deepB);
+});
+
+test('call keys ignore nested object key order too', () => {
+  const a = serializeCallKey({ name: 'mcp__a__b', args: { filter: { limit: 1, where: { path: 'x', glob: '*.ts' } } } });
+  const b = serializeCallKey({ name: 'mcp__a__b', args: { filter: { where: { glob: '*.ts', path: 'x' }, limit: 1 } } });
+  assert.equal(a, b);
+});
+
+test('a round of large errors is bounded by the budget, not handed over whole', () => {
+  const wide = 'e'.repeat(24_000);
+  const payload = serializeResults([
+    { name: 'read_file', ok: false, content: '', error: wide },
+    { name: 'search_text', ok: false, content: '', error: wide },
+    { name: 'git_state', ok: false, content: '', error: wide }
+  ]);
+  assert.ok(payload.length < 60_000, `the error observation is bounded, was ${payload.length}`);
+  const parsed = JSON.parse(payload.replace(/^```shadrox:results\n/, '').replace(/\n```$/, ''));
+  assert.deepEqual(parsed.map((entry) => entry.tool), ['read_file', 'search_text', 'git_state']);
+  for (const entry of parsed) {
+    assert.equal(entry.ok, false);
+    assert.match(entry.error, /of 24000 characters/, 'every error keeps a visible cut marker');
+  }
+});
+
+test('the budget includes framing overhead so the framed observation fits', () => {
+  const budget = 4_000;
+  const payload = serializeResults([
+    { name: 'read_file', ok: true, content: 'x'.repeat(3_000) },
+    { name: 'search_text', ok: false, content: '', error: 'y'.repeat(3_000) }
+  ], budget);
+  assert.ok(payload.length <= budget, `framed observation must fit the budget, was ${payload.length} > ${budget}`);
+  assert.match(payload, /^```shadrox:results\n/);
+  assert.match(payload, /\n```$/);
+  const parsed = JSON.parse(payload.replace(/^```shadrox:results\n/, '').replace(/\n```$/, ''));
+  assert.equal(parsed.length, 2, 'no call is silently dropped to fit');
+});

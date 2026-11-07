@@ -35,12 +35,15 @@ import {
 } from 'lucide-react';
 import { maskFileWrites, renderMarkdownContent } from '../lib/markdown';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';import { getRefineMode, REFINE_MODES } from '../lib/ai';
+import type { PermissionMode } from '../lib/agent/runPolicy';
 import { getProviderMeta, type ModelInfo, type ModelTier } from '../lib/providers';
 import { getMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
 import { estimateTokens } from '../lib/toolUtils';
 import { computeHunks, groupedHunkId, hunkStats } from '../lib/editor/hunks';
 import { formatCredits, formatTokenSplit } from '../lib/usageCredits';
 import type { Skill } from '../lib/skills';
+import { contextManifestTotals, shouldSubmitOnEnter, type ContextManifest } from '../lib/contextManifest';
+import { applyTemplate, PROMPT_TEMPLATES } from '../lib/promptTemplates';
 import type { ChatMessage, PatchSet, PlanTier, RefineMode, SemanticStatus, SettingsTab, WorkspaceFile } from '../lib/types';
 import type { CheckpointMeta } from '../lib/history';
 import type { CheckpointDiff } from '../lib/checkpointDiff';
@@ -83,8 +86,14 @@ interface ChatPanelProps {
   isRefining: boolean;
   refineStep: string;
   onRefinePrompt: () => void;
+  /** S18: restore the pre-refinement draft; shown only while the refined text is still in the box. */
+  onUndoRefine?: () => void;
+  canUndoRefine?: boolean;
   refineMode: RefineMode;
   onRefineModeChange: (mode: RefineMode) => void;
+  /** Ask / Plan / Agent — the execution capability boundary for the next turn. */
+  permissionMode: PermissionMode;
+  onPermissionModeChange: (mode: PermissionMode) => void;
   models: ModelInfo[];
   selectedModel: string;
   onSelectModel: (modelId: string) => void;
@@ -125,6 +134,8 @@ interface ChatPanelProps {
   repoMap?: string;
   /** True while the first bounded read of a newly opened folder is running. */
   repoMapLoading?: boolean;
+  /** The exact sources and token cost of the last sent request (S05). */
+  contextManifest?: ContextManifest | null;
   /** `.shadrox/skills/*.md` of the opened folder; typed as `/name` in the composer. */
   skills?: Skill[];
   onAcceptPatch: (messageId: string, patchIndex: number) => void;
@@ -173,6 +184,55 @@ const MODE_ICONS: Record<RefineMode, typeof Code2> = {
   plan: FileText,
   complex: Brain
 };
+
+/**
+ * The permission modes shown in the composer. This is the capability boundary,
+ * not a reasoning level: Ask and Plan never mutate the workspace, Agent may.
+ */
+const PERMISSION_MODES: Array<{ id: PermissionMode; label: string; hint: string; icon: typeof Code2 }> = [
+  {
+    id: 'ask',
+    label: 'Ask',
+    hint: 'Read-only answers. The assistant may read files but never edit or run anything.',
+    icon: MessageSquarePlus
+  },
+  {
+    id: 'plan',
+    label: 'Plan',
+    hint: 'Read-only planning and architecture. No edits, no commands.',
+    icon: FileText
+  },
+  {
+    id: 'agent',
+    label: 'Agent',
+    hint: 'Full agent: may edit files and run commands you approve.',
+    icon: Zap
+  }
+];
+
+const PERMISSION_BUTTON_STYLE: Record<PermissionMode, string> = {
+  ask: 'border-sky-400/30 bg-sky-500/[.10] text-sky-200',
+  plan: 'border-amber-500/30 bg-amber-500/[.08] text-amber-300',
+  agent: 'border-violet-300/30 bg-violet-500/10 text-violet-200'
+};
+
+/**
+ * The honest one-line provenance for an answer (S10): the route the request
+ * asked for, the model the provider said it served when that differed, and the
+ * certainty of the usage figures. A served identity is only shown when the
+ * provider actually reported one — never inferred from the request.
+ */
+function describeAnswerRoute(metrics: NonNullable<ChatMessage['metrics']>, models: ModelInfo[]): string {
+  const requested = metrics.model
+    ? models.find((model) => model.id === metrics.model)?.label ?? metrics.model
+    : null;
+  if (!requested) return 'Served model not recorded';
+  if (metrics.servedModel && metrics.servedModel !== metrics.model) {
+    const served = models.find((model) => model.id === metrics.servedModel)?.label ?? metrics.servedModel;
+    return `${requested} → ${served}`;
+  }
+  return requested;
+}
 
 const ORCHESTRATION_STATUS: Record<NonNullable<ChatMessage['orchestration']>['status'], { label: string; tone: string }> = {
   planning: { label: 'planning', tone: 'text-violet-200 border-violet-300/25 bg-violet-500/10' },
@@ -918,8 +978,12 @@ export function ChatPanel({
   isRefining,
   refineStep,
   onRefinePrompt,
+  onUndoRefine,
+  canUndoRefine = false,
   refineMode,
   onRefineModeChange,
+  permissionMode,
+  onPermissionModeChange,
   models,
   selectedModel,
   onSelectModel,
@@ -952,6 +1016,7 @@ export function ChatPanel({
   onToggleSemanticRetrieval,
   repoMap = '',
   repoMapLoading = false,
+  contextManifest = null,
   skills = [],
   onToggleAutoContext,
   onAcceptPatch,
@@ -975,6 +1040,7 @@ export function ChatPanel({
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const modeMenuRef = useRef<HTMLDivElement>(null);
+  const permissionMenuRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
@@ -982,10 +1048,13 @@ export function ChatPanel({
   const [mentionIndex, setMentionIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
+  const [isPermissionMenuOpen, setIsPermissionMenuOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [isContextOpen, setIsContextOpen] = useState(false);
   const speech = useSpeechRecognition('en-US');
   const activeMode = getRefineMode(refineMode);
+  const activePermission = PERMISSION_MODES.find((mode) => mode.id === permissionMode) || PERMISSION_MODES[2];
+  const ActivePermissionIcon = activePermission.icon;
 
   /** `/name` in the composer is a project skill; a bare slash lists them all. */
   const slashName = /^\/([\w.-]*)$/.exec(input)?.[1]?.toLowerCase() ?? null;
@@ -995,6 +1064,33 @@ export function ChatPanel({
     if (slashName === '') return ordered.slice(0, 8);
     return ordered.filter((skill) => skillKey(skill.name).startsWith(slashName)).slice(0, 8);
   }, [slashName, slashDismissed, skills]);
+
+  /**
+   * S18: the same `/` surface offers the built-in prompt templates. A template is
+   * only composed when the user picks one — the composer is never rewritten on its own.
+   */
+  const templateMatches = useMemo(() => {
+    if (slashName === null || slashDismissed) return [];
+    if (slashName === '') return PROMPT_TEMPLATES;
+    return PROMPT_TEMPLATES.filter((template) => template.id.startsWith(slashName));
+  }, [slashName, slashDismissed]);
+
+  const slashMatches = useMemo(
+    () => [
+      ...templateMatches.map((template) => ({ kind: 'template' as const, template })),
+      ...skillMatches.map((skill) => ({ kind: 'skill' as const, skill }))
+    ],
+    [templateMatches, skillMatches]
+  );
+
+  /** Insert a picked slash option: a template composes guidance, a skill inserts its name. */
+  const acceptSlashOption = (option: (typeof slashMatches)[number]) => {
+    if (option.kind === 'template') {
+      handleInputChange(applyTemplate(option.template.id, input.replace(/^\/[\w.-]*$/, '')));
+    } else {
+      handleInputChange(`/${skillKey(option.skill.name)} `);
+    }
+  };
 
   const [usage, setUsage] = useState<UsageState>(() => getMonthlyUsage(plan));
 
@@ -1007,13 +1103,14 @@ export function ChatPanel({
 
   /** One dismissal path for every chat popover: outside click and Escape. */
   useEffect(() => {
-    if (!isModelMenuOpen && !isAttachMenuOpen && !isModeMenuOpen && !isContextOpen) return;
+    if (!isModelMenuOpen && !isAttachMenuOpen && !isModeMenuOpen && !isPermissionMenuOpen && !isContextOpen) return;
     const inside = (ref: { current: HTMLElement | null }, target: EventTarget | null) =>
       Boolean(ref.current && target instanceof Node && ref.current.contains(target));
     const closeOthers = (event: PointerEvent) => {
       if (!inside(modelMenuRef, event.target) && !inside(modelTriggerRef, event.target)) setIsModelMenuOpen(false);
       if (!inside(attachMenuRef, event.target)) setIsAttachMenuOpen(false);
       if (!inside(modeMenuRef, event.target)) setIsModeMenuOpen(false);
+      if (!inside(permissionMenuRef, event.target)) setIsPermissionMenuOpen(false);
       if (!inside(contextMenuRef, event.target)) setIsContextOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1021,6 +1118,7 @@ export function ChatPanel({
       setIsModelMenuOpen(false);
       setIsAttachMenuOpen(false);
       setIsModeMenuOpen(false);
+      setIsPermissionMenuOpen(false);
       setIsContextOpen(false);
     };
     document.addEventListener('pointerdown', closeOthers);
@@ -1029,7 +1127,7 @@ export function ChatPanel({
       document.removeEventListener('pointerdown', closeOthers);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [isModelMenuOpen, isAttachMenuOpen, isModeMenuOpen, isContextOpen]);
+  }, [isModelMenuOpen, isAttachMenuOpen, isModeMenuOpen, isPermissionMenuOpen, isContextOpen]);
 
   useEffect(() => {
     if (speech.transcript) onInputChange(speech.transcript);
@@ -1046,6 +1144,7 @@ export function ChatPanel({
   const activeModel = models.find((model) => model.id === selectedModel) || null;
   const canSend = input.trim().length > 0 && !isGenerating && !usage.isCapReached;
   const canQueue = input.trim().length > 0 && isGenerating && !usage.isCapReached;
+  const manifestTotals = contextManifest ? contextManifestTotals(contextManifest) : null;
   const lastAssistantId = [...messages].reverse().find((message) => message.role === 'model')?.id ?? null;
 
   /**
@@ -1246,6 +1345,46 @@ export function ChatPanel({
                     </span>
                   </div>
                 </div>
+                {contextManifest && manifestTotals && (
+                  <div className="border-b border-white/[0.07] px-3 py-2">
+                    <div className="mb-1 flex items-center justify-between">
+                      <p className="text-[10px] uppercase tracking-wider text-neutral-500">Request manifest</p>
+                      <span className="font-mono text-[10px] text-neutral-400">
+                        {manifestTotals.files} file(s) · ~{manifestTotals.tokens.toLocaleString('en-US')} tok
+                      </span>
+                    </div>
+                    {(manifestTotals.missing > 0 || manifestTotals.stale > 0 || manifestTotals.truncated > 0) && (
+                      <p className="mb-1 text-[10px] text-amber-300/90">
+                        {[
+                          manifestTotals.missing > 0 ? `missing: ${contextManifest.missing.join(', ')}` : '',
+                          manifestTotals.stale > 0 ? `${manifestTotals.stale} stale` : '',
+                          manifestTotals.truncated > 0 ? `${manifestTotals.truncated} truncated` : ''
+                        ].filter(Boolean).join(' · ')}
+                      </p>
+                    )}
+                    {contextManifest.sources.length === 0 ? (
+                      <p className="text-[10px] text-neutral-600">No sources resolved for this request.</p>
+                    ) : (
+                      <ul className="max-h-40 space-y-0.5 overflow-auto">
+                        {contextManifest.sources.slice(0, 24).map((source) => (
+                          <li
+                            key={`${source.kind}:${source.path}`}
+                            className="flex items-center justify-between gap-2 font-mono text-[10px]"
+                            title={`${source.reason} — ${source.path}`}
+                          >
+                            <span className="min-w-0 truncate text-neutral-400">{source.path}</span>
+                            <span className="shrink-0 text-neutral-600">{source.kind}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {contextManifest.deduped > 0 && (
+                      <p className="mt-1 text-[10px] text-neutral-600">
+                        {contextManifest.deduped} overlapping source(s) merged.
+                      </p>
+                    )}
+                  </div>
+                )}
                 <div className="px-3 py-2">
                   <p className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">Repo map sent with each request</p>
                   {repoMap ? (
@@ -1691,6 +1830,23 @@ export function ChatPanel({
                         Resume reply
                       </button>
                     )}
+                    {(() => {
+                      const metrics = message.metrics;
+                      if (!metrics?.model) return null;
+                      const usageLabel = metrics.usageState ?? 'pending';
+                      return (
+                        <span
+                          className="flex items-center gap-1 font-mono"
+                          title="Route model · usage certainty · credits billed by ShadRox (BYOK always 0)"
+                        >
+                          <Bot className="w-3 h-3" />
+                          {describeAnswerRoute(metrics, models)}
+                          {` · ${usageLabel}`}
+                          {metrics.credits !== undefined ? ` · ${formatCredits(metrics.credits)} credits` : ''}
+                          {metrics.attempts && metrics.attempts > 1 ? ` · ${metrics.attempts} attempts` : ''}
+                        </span>
+                      );
+                    })()}
                     {message.metrics && (message.metrics.tokens > 0 || message.metrics.firstTokenMs !== null) && (
                       <details className="font-mono text-neutral-600">
                         <summary className="flex cursor-pointer items-center gap-1">
@@ -1889,29 +2045,57 @@ export function ChatPanel({
 
         {/* Prompt Input Box */}
         <div className="relative rounded-2xl border border-white/[0.09] bg-white/[0.03] transition-colors focus-within:border-violet-300/40 focus-within:bg-white/[0.04]">
-          {skillMatches.length > 0 && (
+          {slashMatches.length > 0 && (
             <div className="absolute bottom-full left-2 right-2 z-20 mb-2 overflow-hidden rounded-xl border border-white/[0.09] bg-ink-900/95 py-1 shadow-2xl backdrop-blur-xl">
               <div className="border-b border-white/[0.07] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500">
-                Skill of this folder
+                Templates and skills
               </div>
-              {skillMatches.map((skill) => (
-                <button
-                  key={skill.path}
-                  type="button"
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    handleInputChange(`/${skillKey(skill.name)} `);
-                  }}
-                  className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer text-neutral-400 hover:bg-white/[0.04] hover:text-white"
-                >
-                  <span className="shrink-0 font-mono text-[11px] text-violet-200">/{skillKey(skill.name)}</span>
-                  <span className="min-w-0 flex-1 truncate text-[11px]">
-                    {skill.description || skill.whenToUse || 'no description'}
-                  </span>
-                </button>
-              ))}
+              {templateMatches.length > 0 && (
+                <>
+                  <div className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
+                    Prompt templates
+                  </div>
+                  {templateMatches.map((template) => (
+                    <button
+                      key={`template:${template.id}`}
+                      type="button"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        acceptSlashOption({ kind: 'template', template });
+                      }}
+                      className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer text-neutral-400 hover:bg-white/[0.04] hover:text-white"
+                    >
+                      <span className="shrink-0 font-mono text-[11px] text-violet-200">/{template.id}</span>
+                      <span className="min-w-0 flex-1 truncate text-[11px]">{template.label}</span>
+                    </button>
+                  ))}
+                </>
+              )}
+              {skillMatches.length > 0 && (
+                <>
+                  <div className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
+                    Skills of this folder
+                  </div>
+                  {skillMatches.map((skill) => (
+                    <button
+                      key={skill.path}
+                      type="button"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        acceptSlashOption({ kind: 'skill', skill });
+                      }}
+                      className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer text-neutral-400 hover:bg-white/[0.04] hover:text-white"
+                    >
+                      <span className="shrink-0 font-mono text-[11px] text-violet-200">/{skillKey(skill.name)}</span>
+                      <span className="min-w-0 flex-1 truncate text-[11px]">
+                        {skill.description || skill.whenToUse || 'no description'}
+                      </span>
+                    </button>
+                  ))}
+                </>
+              )}
               <div className="border-t border-white/[0.07] px-3 py-1 text-[10px] text-neutral-600">
-                Tab inserts the name · Esc hides
+                Tab inserts the first · Esc hides
               </div>
             </div>
           )}
@@ -1964,10 +2148,10 @@ export function ChatPanel({
             value={input}
             onChange={(event) => handleInputChange(event.target.value)}
             onKeyDown={(event) => {
-              if (skillMatches.length > 0) {
+              if (slashMatches.length > 0) {
                 if (event.key === 'Tab') {
                   event.preventDefault();
-                  handleInputChange(`/${skillKey(skillMatches[0].name)} `);
+                  acceptSlashOption(slashMatches[0]);
                   return;
                 }
                 if (event.key === 'Escape') {
@@ -1998,7 +2182,7 @@ export function ChatPanel({
                   return;
                 }
               }
-              if (event.key === 'Enter' && !event.shiftKey) {
+              if (shouldSubmitOnEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing })) {
                 event.preventDefault();
                 if (canSend || canQueue) onSend();
               }
@@ -2015,6 +2199,54 @@ export function ChatPanel({
 
           <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2">
             <div className="flex min-w-0 flex-auto flex-wrap items-center gap-1.5">
+              {/* Permission Mode — the capability boundary (Ask/Plan/Agent) */}
+              <div ref={permissionMenuRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsPermissionMenuOpen((open) => !open)}
+                  title={`Permission: ${activePermission.label} — ${activePermission.hint}`}
+                  className={`flex min-w-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${PERMISSION_BUTTON_STYLE[permissionMode]}`}
+                >
+                  <ActivePermissionIcon className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate font-medium">{activePermission.label}</span>
+                  <ChevronDown className="w-3 h-3 shrink-0 text-neutral-400" />
+                </button>
+
+                {isPermissionMenuOpen && (
+                  <div className="absolute bottom-9 left-0 z-20 w-72 overflow-hidden rounded-xl border border-white/[0.09] bg-ink-900/95 py-1 shadow-2xl backdrop-blur-xl">
+                    <div className="border-b border-white/[0.07] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                      Permission Mode
+                    </div>
+                    {PERMISSION_MODES.map((mode) => {
+                      const Icon = mode.icon;
+                      const isSelected = mode.id === permissionMode;
+                      return (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          onClick={() => {
+                            onPermissionModeChange(mode.id);
+                            setIsPermissionMenuOpen(false);
+                          }}
+                          className={`w-full px-3 py-2 text-left flex items-start justify-between transition-colors hover:bg-white/[0.05] cursor-pointer ${
+                            isSelected ? 'bg-violet-500/[.12] text-violet-100' : 'text-neutral-400'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2 min-w-0">
+                            <Icon className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${isSelected ? 'text-violet-300' : 'text-neutral-500'}`} />
+                            <div>
+                              <div className="text-xs font-medium text-neutral-200">{mode.label}</div>
+                              <div className="text-[10px] text-neutral-500 leading-tight mt-0.5">{mode.hint}</div>
+                            </div>
+                          </div>
+                          {isSelected && <Check className="w-3.5 h-3.5 text-violet-300 shrink-0 ml-2 mt-0.5" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
               {/* Work Mode Dropdown (Replaces old template option with Code, Plan, Complex) */}
               <div ref={modeMenuRef} className="relative">
                 <button
@@ -2135,6 +2367,18 @@ export function ChatPanel({
                   className="shrink-0 p-1.5 text-neutral-500 hover:text-white disabled:opacity-30 transition-colors cursor-pointer"
                 >
                   <Wand2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+
+              {/* S18: undo a refinement, restoring the draft the user actually typed */}
+              {canUndoRefine && onUndoRefine && (
+                <button
+                  type="button"
+                  onClick={onUndoRefine}
+                  title="Restore the prompt you typed before refining"
+                  className="shrink-0 p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+                >
+                  <Undo2 className="w-3.5 h-3.5" />
                 </button>
               )}
             </div>

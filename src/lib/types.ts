@@ -1,5 +1,7 @@
 export type Stage = 'STAGE_2' | 'STAGE_3';
 
+import type { RequestEnvelope } from './requestEnvelope';
+
 export type TabType = 'CODE' | 'PREVIEW' | 'PLAN' | 'PLUGINS' | 'AGENTS' | 'AUTOMATIONS';
 
 export type SettingsTab = 'CHAT' | 'PLAN' | 'GITHUB' | 'SECRETS' | 'TOOLS' | 'AUTOMATIONS';
@@ -16,7 +18,7 @@ export type SemanticStatus = 'off' | 'checking' | 'ready' | 'unavailable';
  * so the upgrade buttons just preview a tier locally.
  * Paid tiers are metered in credits, not messages.
  */
-export type PlanTier = 'free' | 'starter' | 'pro';
+export type PlanTier = 'free' | 'starter' | 'heavy';
 
 export type ViewportSize = 'desktop' | 'tablet' | 'mobile';
 
@@ -73,6 +75,12 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   refinedMeta?: RefinedPromptMeta;
+  /**
+   * S17: the frozen request identity this turn was sent with. Retry and resume
+   * compare against it so they cannot silently rebind workspace, payer, mode or
+   * model underneath the user.
+   */
+  envelope?: RequestEnvelope;
   attachments?: string[];
   attachedImage?: string;
   streaming?: boolean;
@@ -124,6 +132,17 @@ export interface ChatMessage {
      * no charge, because the balance would drift silently.
      */
     credits?: number;
+    /** The model the answer route requested, for provenance in the header. */
+    model?: string;
+    /** The provider-reported served model, or null when it was not returned. */
+    servedModel?: string | null;
+    /**
+     * How trustworthy the token/credit figures are. `pending` means at least one
+     * attempt reported no usage, so the number is incomplete rather than zero.
+     */
+    usageState?: 'measured' | 'estimated' | 'pending';
+    /** How many provider attempts (answer rounds, tool rounds) this turn dispatched. */
+    attempts?: number;
     firstTokenMs: number | null;
     durationMs: number | null;
   };
@@ -171,6 +190,12 @@ export interface ReviewPatch {
   failure?: string;
   /** File content captured before applying, so the change can be undone. */
   originalContent?: string;
+  /**
+   * S17: the exact content this patch wrote. Undo compares it against the live
+   * buffer so a revert is refused when newer edits have landed since — a stale
+   * restore must not destroy work the user did after the patch applied.
+   */
+  appliedContent?: string;
   /** Workspace-canonical name the buffer write landed on (patch paths may differ in case). */
   landed?: string;
   /** Whether the change reached the user's disk — the UI must not claim it did when it did not. */

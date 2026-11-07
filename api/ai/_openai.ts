@@ -1,9 +1,10 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
+import { DEFAULT_MAX_OUTPUT, resolveBudgetCapabilities } from '../../src/lib/modelCapabilities.js';
 import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
-import { shapeStablePrefix } from './_promptCache.js';
+import { promptCacheReport, shapeStablePrefix } from './_promptCache.js';
 import { UpstreamError, mergeOpenAiUsage, usageFields, type StreamRequest, type StreamResult, type StreamSink, type ThinkingLevel, type TokenUsage } from './_types.js';
 import { OpenAiToolCallCollector, rejectsNativeTools } from './_toolCalls.js';
-import { fetchUpstream } from './_upstream.js';
+import { AttemptCounter, fetchUpstream, type MeteredStreamResult } from './_upstream.js';
 
 const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
 
@@ -69,19 +70,23 @@ function reasoningText(delta: Record<string, unknown>): string {
 /**
  * Keeps the newest turns under a character budget, because Groq's smaller free
  * models cap prompt + completion per minute far below a full chat history. The
- * system prompt survives (capped) so instructions are not silently dropped.
+ * system prompt survives in its RESERVED share (a quarter of the budget, never
+ * more than its own length) so instructions are not silently dropped — and the
+ * returned system slice is exactly that reservation, never the accumulated
+ * body count, so system + body together cannot exceed the budget.
  */
-function clampMessages<T extends { role: string; content: string }>(
+export function clampMessages<T extends { role: string; content: string }>(
   messages: T[],
   charBudget: number
 ): T[] {
   const system = messages[0]?.role === 'system' ? messages[0] : null;
+  const reserved = system ? Math.min(system.content.length, Math.floor(charBudget * 0.25)) : 0;
   const body: T[] = [];
-  let used = system ? Math.min(system.content.length, Math.floor(charBudget * 0.25)) : 0;
+  let used = 0;
 
   for (let index = messages.length - 1; index >= (system ? 1 : 0); index -= 1) {
     const message = messages[index];
-    const room = charBudget - used;
+    const room = charBudget - reserved - used;
     if (room <= 0) break;
     if (message.content.length <= room) {
       body.unshift(message);
@@ -89,23 +94,27 @@ function clampMessages<T extends { role: string; content: string }>(
     } else {
       // Keep the tail of the message: the actual question is at the end.
       body.unshift({ ...message, content: message.content.slice(message.content.length - room) });
-      used = charBudget;
+      used = charBudget - reserved;
       break;
     }
   }
 
-  return system ? [{ ...system, content: system.content.slice(0, used) }, ...body] : body;
+  return system ? [{ ...system, content: system.content.slice(0, reserved) }, ...body] : body;
 }
 
 export async function streamGroq(request: StreamRequest, sink: StreamSink): Promise<StreamResult> {
   const { apiKey, model, temperature, thinking, signal } = request;
   const payloadMessages = buildMessages(request);
+  const attempts = new AttemptCounter();
+  const droppedFeatures: string[] = [];
+  const resolvedMaxOutput = resolveBudgetCapabilities(request.provider, model).maxOutput ?? DEFAULT_MAX_OUTPUT;
+  let servedModel: string | undefined;
 
   const send = (
     messages: Array<{ role: string; content: string }>,
     reasoningEffort?: ThinkingLevel,
     maxOutputTokens?: number,
-    attempts = 1,
+    fetchAttempts = 1,
     withTools = true
   ) =>
     fetchUpstream(
@@ -136,12 +145,13 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
         })
       },
       signal,
+      fetchAttempts,
       attempts
     );
 
   let messages = payloadMessages;
   let effort = thinking;
-  let maxOutputTokens: number | undefined;
+  let maxOutputTokens: number | undefined = resolvedMaxOutput;
   let withTools = Boolean(request.toolDefinitions?.length);
 
   // One attempt on the limit-aware calls: repeating an oversized request can
@@ -151,6 +161,7 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
 
   if (!response.ok && withTools && rejectsNativeTools(payload)) {
     withTools = false;
+    droppedFeatures.push('tools');
     response = await send(messages, effort, maxOutputTokens, 1, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
@@ -158,6 +169,7 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
   if (!response.ok && effort && /reasoning/i.test(payload)) {
     // Only some Groq models accept `reasoning_effort`; retry plainly otherwise.
     effort = undefined;
+    droppedFeatures.push('reasoning_effort');
     response = await send(messages, effort, maxOutputTokens, 1, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
@@ -167,13 +179,16 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
     // request needs, and Groq bills the *declared* output ceiling against the
     // limit up front. Shrink both sides of the request, then try once.
     const limits = groqLimits(payload);
-    maxOutputTokens = limits.outputTokensPerMinute
-      ? Math.max(256, limits.outputTokensPerMinute - 64)
-      : undefined;
+    if (limits.outputTokensPerMinute) {
+      const clamped = Math.min(resolvedMaxOutput, Math.max(256, limits.outputTokensPerMinute - 64));
+      if (clamped < resolvedMaxOutput) droppedFeatures.push('output_cap_clamped');
+      maxOutputTokens = clamped;
+    }
     if (limits.tokensPerMinute) {
       const output = maxOutputTokens ?? Math.min(1024, Math.floor(limits.tokensPerMinute / 2));
       const roomTokens = Math.max(512, limits.tokensPerMinute - output);
       messages = clampMessages(messages, roomTokens * 4);
+      droppedFeatures.push('history_clamp');
     }
     response = await send(messages, effort, maxOutputTokens, 1, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
@@ -221,6 +236,9 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
       toolCalls.add(delta.tool_calls);
     }
     if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason;
+    if (typeof parsed?.model === 'string' && parsed.model.trim()) {
+      servedModel = parsed.model.trim();
+    }
     usage = mergeOpenAiUsage(usage, parsed?.usage);
   });
 
@@ -252,5 +270,19 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
     );
   }
 
-  return { tokens: usage.total || estimateTokens(fullText), ...usageFields(usage), finishReason };
+  const toolText = calls.map((call) => `${call.name}${call.arguments}`).join('');
+  const result: MeteredStreamResult = {
+    tokens: usage.total || estimateTokens(fullText + toolText),
+    ...usageFields(usage),
+    finishReason,
+    usageSource: usage.total ? 'provider' : 'estimated',
+    attempts: attempts.count,
+    promptCache: promptCacheReport(shapeStablePrefix(request.provider, model, request.messages, {
+      systemInstruction: request.systemInstruction,
+      toolDefinitions: withTools ? request.toolDefinitions : undefined
+    })),
+    ...(servedModel ? { servedModel } : {}),
+    ...(droppedFeatures.length > 0 ? { droppedFeatures: [...droppedFeatures] } : {})
+  };
+  return result;
 }

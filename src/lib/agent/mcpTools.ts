@@ -247,7 +247,8 @@ export function discoveryNotes(discovery: McpDiscovery): string[] {
   return notes;
 }
 
-export function createMcpToolHandle(bridge: McpBridge | null): McpToolHandle {
+export function createMcpToolHandle(bridge: McpBridge | null, options?: { signal?: AbortSignal }): McpToolHandle {
+  const signal = options?.signal;
   let discovery = EMPTY_DISCOVERY;
   let routes = new Map<string, Route>();
   let disabled = new Set<string>();
@@ -275,7 +276,9 @@ export function createMcpToolHandle(bridge: McpBridge | null): McpToolHandle {
 
   const call = async (toolCall: ToolCall): Promise<ToolOutcome> => {
     if (!bridge) return refusal('No MCP bridge is available, so external tools cannot run.');
+    if (signal?.aborted) return refusal('The MCP call was cancelled before it ran.');
     await discover();
+    if (signal?.aborted) return refusal('The MCP call was cancelled before it ran.');
     const route = routes.get(toolCall.name);
     if (!route) {
       const serverPart = serverIdOfExternalName(toolCall.name);
@@ -297,6 +300,7 @@ export function createMcpToolHandle(bridge: McpBridge | null): McpToolHandle {
 
     let reply: McpCallReply;
     try {
+      if (signal?.aborted) return refusal('The MCP call was cancelled before it ran.');
       reply = await bridge.callMcpTool(route.serverId, route.toolName, args);
     } catch (cause) {
       return refusal(`MCP tool "${route.toolName}" on "${route.serverName}" failed: ${messageOf(cause)}`);

@@ -12,21 +12,22 @@ export interface PlanMeta {
 }
 
 /**
- * One credit is what ShadRox pays upstream for the cheapest useful call, in
- * rupees. Every multiplier below is expressed against that unit, so the credit
- * ladder is really a spend ladder: worst-case COGS = credits x this number.
+ * One credit is the ceiling on what ShadRox may pay upstream for it, landed in
+ * India (catalogue USD x the ₹/$ rate in modelRates, which includes GST). The
+ * ₹699 pack's 800 credits therefore cannot cost more than ₹280 to serve, and
+ * that ceiling is what leaves the margin at the price the pack is sold at.
  */
-export const RUPEES_PER_CREDIT = 0.24;
+export const RUPEES_PER_CREDIT = 0.35;
 
 export const CREDIT_RATES = {
-  /** Question, explanation, plan-mode reply — no file touched. */
-  chatter: 0.4,
-  /** Assistant wrote or patched a file with the fast-tier model. */
-  codeEdit: 1,
-  /** Escalated to a premium model for a refactor; billed only when it applies. */
-  premiumRefactor: 6,
+  /** Question, explanation, plan-mode reply on the reader model. */
+  chatter: 0.2,
+  /** Assistant wrote or patched a file on the coder model. */
+  codeEdit: 1.2,
+  /** Escalated to the refactor model; billed only when it applies. */
+  premiumRefactor: 3,
   /** One accepted ghost-text completion. */
-  tabCompletion: 0.1
+  tabCompletion: 0.06
 } as const;
 
 export type CreditRate = keyof typeof CREDIT_RATES;
@@ -34,11 +35,14 @@ export type CreditRate = keyof typeof CREDIT_RATES;
 /**
  * - Free (BYOK): all three options — Gemini, Groq and any custom
  *   OpenAI-compatible endpoint — unlimited and ₹0 forever. Nothing is gated.
- * - Starter: ₹399 + GST — 800 credits / month.
- * - Pro: ₹999 + GST — 2,200 credits / month (cheaper per credit than Starter).
+ * - Starter: ₹699 including GST — 800 credits / month (₹280 COGS ceiling).
+ * - Heavy: ₹1,299 including GST — 1,600 credits / month (₹560 COGS ceiling).
  *
- * Paid tiers buy convenience, not access the free tier withholds: no key to
- * fetch, routing that picks the model per task, and heavier context.
+ * Two packs, not a ladder: one for a student doing small-to-medium edits, one
+ * for a freelancer running agent loops and repo indexing all day. Both are
+ * priced so the worst-case month still leaves ₹296 / ₹510 after GST and the
+ * payment gateway, and the free BYOK route stays the escape hatch for anyone
+ * who would rather pay their provider.
  */
 export const PLANS: PlanMeta[] = [
   {
@@ -58,35 +62,35 @@ export const PLANS: PlanMeta[] = [
   },
   {
     id: 'starter',
-    label: 'Starter',
-    price: '₹399 + GST',
-    gstNote: '₹399 plus GST — shown in full before you pay',
+    label: 'Starter Pack',
+    price: '₹699',
+    gstNote: 'GST included — ₹699 is the full amount',
     creditsPerMonth: 800,
-    blurb: 'Skip the API-key choreography: ShadRox pays the provider and routes each task to a model that fits it.',
+    blurb: 'The zero-setup pack: ShadRox pays the provider, routes each task to the cheapest model that can do it, and meters real tokens against 800 credits.',
     popular: true,
     perks: [
       'No API key to buy, validate or top up — the shared key is wired in',
-      'Auto routing: chat gets a cheap fast model, code edits get a capable one, you choose nothing',
-      '800 credits a month — roughly 800 applied file edits, or ~2,000 chat-and-explain turns',
-      'One pooled budget: chat, edits and Tab completions all draw from the same 800',
-      'Failed and rolled-back requests are never billed',
+      'Reader model (Nova Micro) picks the context, GLM 4.7 Flash writes the patch, DeepSeek V4.1 Flash takes the hard refactors',
+      '800 credits a month — about 800 file edits, ~4,000 chat turns, or ~10,000 Tab completions',
+      'GST included in ₹699; failed and rolled-back requests are never billed',
+      'Free BYOK stays unlimited — your own key is never metered or capped',
       'Priority streaming and automated multi-file patching'
     ]
   },
   {
-    id: 'pro',
-    label: 'Pro',
-    price: '₹999 + GST',
-    gstNote: '₹999 plus GST — shown in full before you pay',
-    creditsPerMonth: 2200,
-    blurb: 'Same zero-setup key, bigger budget and the heavy-context features for real codebases.',
+    id: 'heavy',
+    label: 'Heavy Pack',
+    price: '₹1,299',
+    gstNote: 'GST included — ₹1,299 is the full amount',
+    creditsPerMonth: 1600,
+    blurb: 'For all-day agent work: twice the credits, a continuously indexed workspace, and room for long multi-file runs without watching the meter.',
     perks: [
-      '2,200 credits a month at a cheaper per-credit rate than Starter',
-      'Premium models for hard refactors, not just the fast tier',
-      'Extended context window with semantic retrieval across the workspace',
-      'Full checkpoint timeline — restore any applied change set instantly',
-      'Everything in Starter: no API key, auto routing, unbilled failures',
-      'Priority streaming and automated multi-file patching'
+      '1,600 credits a month — about 1,600 file edits, ~8,000 chat turns, or ~20,000 Tab completions',
+      'Continuous codebase indexing so large-context requests stay on the 1M-token coder model',
+      'Bigger autonomous budgets: team runs and multi-step plans can reserve more before they stop',
+      'Same zero-setup key and routing as Starter — no API key to buy, top up or validate',
+      'GST included in ₹1,299; failed and rolled-back requests are never billed',
+      'Free BYOK stays unlimited — your own key is never metered or capped'
     ]
   }
 ];
@@ -94,11 +98,11 @@ export const PLANS: PlanMeta[] = [
 export const DEFAULT_PLAN: PlanTier = 'free';
 
 /**
- * Beta-phase unlock list: the paid tiers the developer has opened for selection.
+ * Beta-phase unlock list: the paid packs the developer has opened for selection.
  * Free is always selectable; every other tier needs a name in this array. Empty
- * it to lock the whole ladder, add 'pro' to open Pro too.
+ * it to lock the whole ladder.
  */
-export const BETA_UNLOCKED_PLANS: PlanTier[] = ['starter'];
+export const BETA_UNLOCKED_PLANS: PlanTier[] = ['starter', 'heavy'];
 
 export function isPlanSelectable(plan: PlanTier): boolean {
   return plan === 'free' || BETA_UNLOCKED_PLANS.includes(plan);
@@ -136,12 +140,13 @@ export function getPlanEntitlementNote(plan: PlanTier, sharedKeyEligible: boolea
  * flip on this device only. Every upgrade control has to admit that.
  */
 export const BETA_UPGRADE_NOTE =
-  'Beta: nothing is charged and no payment is taken yet — this only flips your plan on this device.';
+  'Beta: no checkout is wired yet — the ₹699 Starter Pack unlocks on this device and no payment is taken.';
 
 /**
- * What the plan card may put where a price goes. No payment integration exists
- * in this repo, so a paid tier is listed at ₹0 today and the catalogue price is
- * shown only as a label, never as something that can be bought.
+ * What the plan card may put where a price goes. The pack's real price is the
+ * headline, because that is the number the business runs on; the note says
+ * outright that this build cannot charge it yet, so ₹699 never reads as a
+ * checkout that does not exist.
  */
 export function getPlanPriceDisplay(plan: PlanTier): { headline: string; note: string } {
   const meta = getPlanMeta(plan);
@@ -149,8 +154,8 @@ export function getPlanPriceDisplay(plan: PlanTier): { headline: string; note: s
     return { headline: meta.price, note: meta.gstNote };
   }
   return {
-    headline: '₹0 during beta',
-    note: `Listed at ${meta.price} — no payment is integrated in this build.`
+    headline: meta.price,
+    note: `${meta.gstNote} · no checkout in this beta`
   };
 }
 

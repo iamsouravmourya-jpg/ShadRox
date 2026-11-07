@@ -39,7 +39,7 @@ const BOOTSTRAP_BASENAMES = [
 ];
 
 /** Shorthand queries that mean "this whole project", not one file. */
-const PROJECT_TERMS = ['project', 'architecture', 'overview', 'structure', 'repo', 'codebase', 'explain'];
+const PROJECT_TERMS = ['project', 'architecture', 'overview', 'structure', 'repo', 'codebase'];
 
 /** Reads would throw on these, so do not spend a context slot on them. */
 const UNREADABLE_EXTENSIONS = new Set([
@@ -80,6 +80,38 @@ function score(path: string, terms: string[]): number {
   return score;
 }
 
+const PATH_BOUNDARY = /[\w.$/-]/;
+
+/** Whether the query literally names this path, not a substring of a longer one. */
+function mentionsPath(queryLower: string, pathLower: string): boolean {
+  let from = 0;
+  for (;;) {
+    const at = queryLower.indexOf(pathLower, from);
+    if (at < 0) return false;
+    const before = at > 0 ? queryLower[at - 1] : '';
+    const after = queryLower[at + pathLower.length] ?? '';
+    if (!PATH_BOUNDARY.test(before) && !PATH_BOUNDARY.test(after)) return true;
+    from = at + 1;
+  }
+}
+
+/** A query term equal to a file's basename or extension-less stem names it explicitly. */
+function explicitTargetScore(path: string, terms: string[]): number {
+  const base = basename(path);
+  const dot = base.lastIndexOf('.');
+  const stem = dot > 0 ? base.slice(0, dot) : base;
+  let value = 0;
+  for (const term of terms) {
+    if (term === base) value = Math.max(value, 3);
+    else if (stem.length >= 3 && term === stem) value = Math.max(value, 2);
+  }
+  return value;
+}
+
+function depthOf(entry: WorkspaceFileEntry): number {
+  return entry.path.split('/').length;
+}
+
 export interface CandidateOptions {
   maxFiles: number;
   maxBytesPerFile: number;
@@ -88,8 +120,9 @@ export interface CandidateOptions {
 }
 
 /**
- * Picks the files worth reading for this request: bootstrap files first (they
- * explain the project), then whatever the query names. Pure — no I/O — so the
+ * Picks the files worth reading for this request: exact paths and explicitly
+ * named targets first, bootstrap manifests only for a project-wide request
+ * that names no target, then fuzzy query matches. Pure — no I/O — so the
  * ranking is testable and the caller decides what reading costs.
  */
 export function selectContextCandidates(
@@ -97,6 +130,7 @@ export function selectContextCandidates(
   query: string,
   options: CandidateOptions
 ): string[] {
+  if (options.maxFiles <= 0) return [];
   const terms = queryTerms(query);
   const loaded = new Set(Array.from(options.loadedPaths ?? [], (path) => path.toLowerCase()));
   const readable = tree.filter(
@@ -110,22 +144,51 @@ export function selectContextCandidates(
 
   const chosen: string[] = [];
   const taken = new Set<string>();
+  const take = (path: string): boolean => {
+    if (!taken.has(path)) {
+      chosen.push(path);
+      taken.add(path);
+    }
+    return chosen.length >= options.maxFiles;
+  };
 
-  // A query about the whole project earns the root manifest; a query about one
-  // component should not spend half the budget on package.json.
-  if (terms.some((term) => PROJECT_TERMS.includes(term)) || terms.length === 0) {
+  const queryLower = query.toLowerCase().replace(/\\/g, '/');
+  const exact = readable
+    .filter((entry) => mentionsPath(queryLower, entry.path.toLowerCase()))
+    .sort((a, b) => depthOf(a) - depthOf(b) || a.path.localeCompare(b.path));
+  for (const entry of exact) {
+    if (take(entry.path)) return chosen;
+  }
+
+  const explicit = readable
+    .map((entry) => ({ entry, value: explicitTargetScore(entry.path, terms) }))
+    .filter((candidate) => candidate.value > 0)
+    .sort(
+      (a, b) =>
+        b.value - a.value ||
+        depthOf(a.entry) - depthOf(b.entry) ||
+        a.entry.path.localeCompare(b.entry.path)
+    );
+  for (const candidate of explicit) {
+    if (take(candidate.entry.path)) return chosen;
+  }
+
+  const hasExplicitTarget = exact.length > 0 || explicit.length > 0;
+
+  // A query about the whole project earns the root manifest; a query that names
+  // a file must not spend its budget on package.json instead of that file.
+  if (!hasExplicitTarget && (terms.length === 0 || terms.some((term) => PROJECT_TERMS.includes(term)))) {
     for (const name of BOOTSTRAP_BASENAMES) {
       // The shallowest match wins: a project's own manifest is at the root, and
-      // a build copy deeper in the tree must not outrank it.
+      // a build copy deeper in the tree must not outrank it. Basenames are
+      // compared case-insensitively so README.md matches readme.md on disk.
       let best: WorkspaceFileEntry | undefined;
       for (const entry of readable) {
-        if (basename(entry.path) !== name || taken.has(entry.path)) continue;
-        if (!best || entry.path.split('/').length < best.path.split('/').length) best = entry;
+        if (basename(entry.path) !== name.toLowerCase() || taken.has(entry.path)) continue;
+        if (!best || depthOf(entry) < depthOf(best)) best = entry;
       }
       if (!best) continue;
-      chosen.push(best.path);
-      taken.add(best.path);
-      if (chosen.length >= options.maxFiles) return chosen;
+      if (take(best.path)) return chosen;
     }
   }
 
@@ -135,10 +198,7 @@ export function selectContextCandidates(
     .sort((a, b) => b.value - a.value || a.path.length - b.path.length);
 
   for (const entry of ranked) {
-    if (taken.has(entry.path)) continue;
-    chosen.push(entry.path);
-    taken.add(entry.path);
-    if (chosen.length >= options.maxFiles) break;
+    if (take(entry.path)) break;
   }
 
   // Nothing matched — a vague query, or a project whose names say nothing. Still
@@ -147,12 +207,9 @@ export function selectContextCandidates(
   if (chosen.length === 0) {
     const shallowest = readable
       .slice()
-      .sort((a, b) => a.path.split('/').length - b.path.split('/').length || a.path.localeCompare(b.path));
+      .sort((a, b) => depthOf(a) - depthOf(b) || a.path.localeCompare(b.path));
     for (const entry of shallowest) {
-      if (taken.has(entry.path)) continue;
-      chosen.push(entry.path);
-      taken.add(entry.path);
-      if (chosen.length >= options.maxFiles) break;
+      if (take(entry.path)) break;
     }
   }
 

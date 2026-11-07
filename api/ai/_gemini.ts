@@ -1,9 +1,10 @@
 import { createSseDecoder } from '../../src/lib/sse.js';
+import { DEFAULT_MAX_OUTPUT, resolveBudgetCapabilities } from '../../src/lib/modelCapabilities.js';
 import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
-import { shapeStablePrefix } from './_promptCache.js';
+import { promptCacheReport, shapeStablePrefix } from './_promptCache.js';
 import { UpstreamError, mergeGeminiUsage, usageFields, type ChatMessage, type StreamRequest, type StreamResult, type StreamSink, type TokenUsage, type ToolCallEntry } from './_types.js';
 import { rejectsNativeTools } from './_toolCalls.js';
-import { fetchUpstream } from './_upstream.js';
+import { AttemptCounter, fetchUpstream, type MeteredStreamResult } from './_upstream.js';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -53,6 +54,10 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
   const shaped = cacheShaped(request);
   const contents = buildContents(request, shaped);
   const systemText = buildSystemInstruction(request, shaped);
+  const attempts = new AttemptCounter();
+  const droppedFeatures: string[] = [];
+  const maxOutputTokens = resolveBudgetCapabilities(request.provider, model).maxOutput ?? DEFAULT_MAX_OUTPUT;
+  let servedModel: string | undefined;
 
   const send = (generationConfig: Record<string, unknown>, withTools: boolean) =>
     fetchUpstream(
@@ -81,10 +86,12 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
             : {})
         })
       },
-      signal
+      signal,
+      2,
+      attempts
     );
 
-  const baseConfig: Record<string, unknown> = { temperature };
+  const baseConfig: Record<string, unknown> = { temperature, maxOutputTokens };
   if (thinking) {
     // Not every Gemini model exposes a thinking budget, so a rejection of this
     // field falls back to a plain request instead of failing the whole turn.
@@ -97,6 +104,7 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
 
   if (!response.ok && withTools && rejectsNativeTools(payload)) {
     withTools = false;
+    droppedFeatures.push('tools');
     response = await send(baseConfig, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
@@ -105,7 +113,8 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
     if (!/thinking|generation_config|Unknown name/i.test(payload)) {
       throw new UpstreamError(payload, response.status);
     }
-    response = await send({ temperature }, withTools);
+    droppedFeatures.push('thinking');
+    response = await send({ temperature, maxOutputTokens }, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 
@@ -158,6 +167,9 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
     }
 
     if (typeof candidate?.finishReason === 'string') finishReason = candidate.finishReason;
+    if (typeof parsed?.modelVersion === 'string' && parsed.modelVersion.trim()) {
+      servedModel = parsed.modelVersion.trim();
+    }
     usage = mergeGeminiUsage(usage, parsed?.usageMetadata);
   });
 
@@ -185,5 +197,21 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
     throw new Error('Model returned an empty response.');
   }
 
-  return { tokens: usage.total || estimateTokens(fullText), ...usageFields(usage), finishReason };
+  // Tool-call output is generated output too: the text-estimate fallback must
+  // count it exactly like the visible prose, or a tool-only turn bills as zero.
+  const toolText = toolCalls.map((call) => `${call.name}${call.arguments}`).join('');
+  const result: MeteredStreamResult = {
+    tokens: usage.total || estimateTokens(fullText + toolText),
+    ...usageFields(usage),
+    finishReason,
+    usageSource: usage.total ? 'provider' : 'estimated',
+    attempts: attempts.count,
+    promptCache: promptCacheReport(shapeStablePrefix(request.provider, model, request.messages, {
+      systemInstruction: request.systemInstruction,
+      toolDefinitions: withTools ? request.toolDefinitions : undefined
+    })),
+    ...(servedModel ? { servedModel } : {}),
+    ...(droppedFeatures.length > 0 ? { droppedFeatures: [...droppedFeatures] } : {})
+  };
+  return result;
 }

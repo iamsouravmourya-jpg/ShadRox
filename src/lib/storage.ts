@@ -132,18 +132,18 @@ export function setUseSharedKey(value: boolean): void {
 
 /**
  * The old ladder had tiers this one no longer has. Reading them maps the user
- * to their nearest successor instead of silently dropping them to Free; a
- * stored 'pro' is the one ambiguous value and resolves to the new Pro, which
- * grants more than the old tier did rather than less.
+ * to the Starter Pack rather than silently dropping a paying user to Free; the
+ * pack is the only paid tier, so every retired paid value resolves there.
  */
 const LEGACY_PLAN_MIGRATION: Record<string, PlanTier> = {
-  adv: 'pro',
-  enterprise: 'pro'
+  adv: 'heavy',
+  enterprise: 'heavy',
+  pro: 'heavy'
 };
 
 export function getPlan(): PlanTier {
   const raw = safeGet(STORE_KEYS.plan);
-  if (raw === 'free' || raw === 'starter' || raw === 'pro') return raw;
+  if (raw === 'free' || raw === 'starter' || raw === 'heavy') return raw;
   return LEGACY_PLAN_MIGRATION[raw ?? ''] ?? 'free';
 }
 

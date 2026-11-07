@@ -183,7 +183,14 @@ Teams share the same bounded tool loop and guarded patch path. Each agent's brie
 - Groq
 - Custom OpenAI-compatible endpoints (including Ollama, LM Studio, and compatible gateways)
 
-The beta runs on **Bring Your Own Key (BYOK)**. Add a provider key in Settings; model availability and charges depend on that provider. While your own key carries the request, nothing is metered and nothing is capped — ShadRox bills no credits for it. Credits and the monthly cap apply only to requests run on the optional ShadRox shared key, and no payment is taken in this beta.
+The beta runs on **Bring Your Own Key (BYOK)**. Add a provider key in Settings; model availability and charges depend on that provider. While your own key carries the request, nothing is metered and nothing is capped — ShadRox bills no credits for it.
+
+Two packs are the paid options, both GST-inclusive and both spent on the optional ShadRox shared key (Nova Micro reads context, Qwen3 Coder Flash writes patches, DeepSeek V4.1 Flash takes hard refactors):
+
+- **Starter — ₹699 / month, 800 credits.** Small-to-medium edits and chat; worst-case upstream cost ₹280, so the month still leaves ~₹296 after GST and payment fees.
+- **Heavy — ₹1,299 / month, 1,600 credits.** All-day agent runs plus continuous repo indexing; worst-case upstream cost ₹560, leaving ~₹510.
+
+One credit is capped at ₹0.35 of upstream spend. No checkout is wired in this beta: selecting a pack unlocks it on that device and no payment is taken.
 
 **Project context** is assembled locally for each request and can include:
 - Selected files

@@ -32,6 +32,7 @@ import {
   trimStageNote,
   type TrimStage
 } from './compaction/pairOrder';
+import type { ContextManifest } from './contextManifest';
 
 export const CHARS_PER_TOKEN = 4;
 export const TRIM_TO_LEN = 120;
@@ -53,6 +54,12 @@ export interface TrimResult {
   trimmedChars: number;
   /** Stages of the documented order this pass spent, in order. See `TRIM_ORDER`. */
   stages: TrimStage[];
+  /** True when the history still exceeds the budget after every safe cut: the
+   * newest ask is at its floor and cannot shrink further without losing intent.
+   * The caller must fail explicitly rather than send an over-window request. */
+  overflow: boolean;
+  /** True when a message in the newest turn (the current ask onward) was cut. */
+  newestTurnTrimmed: boolean;
 }
 
 /** Rough token count, matching Void's chars/4 heuristic. */
@@ -75,10 +82,19 @@ export function reservedOutputTokens(contextWindow: number, maxOutput?: number):
   return Math.max(Math.floor(contextWindow / 2), RESERVED_OUTPUT_FLOOR_TOKENS);
 }
 
-/** Maximum characters the request (messages) may occupy for a given model. */
-export function messageBudgetChars(contextWindow: number, maxOutput?: number): number {
+/** Maximum characters the request (messages) may occupy for a given model.
+ *
+ * `extraInputChars` accounts for input that is not a message: tool schemas and
+ * result/request framing. It is subtracted before the budget is returned. The
+ * `MIN_BUDGET_CHARS` floor is clamped to the capacity that actually remains, so
+ * a tiny window (or a large schema payload) can never be promised more characters
+ * than the model can accept. */
+export function messageBudgetChars(contextWindow: number, maxOutput?: number, extraInputChars = 0): number {
   const reserved = reservedOutputTokens(contextWindow, maxOutput);
-  return Math.max((contextWindow - reserved) * CHARS_PER_TOKEN, MIN_BUDGET_CHARS);
+  const available = Math.max(0, (contextWindow - reserved) * CHARS_PER_TOKEN);
+  const remaining = Math.max(0, available - Math.max(0, extraInputChars));
+  const floor = Math.min(MIN_BUDGET_CHARS, remaining);
+  return Math.max(remaining, floor);
 }
 
 const ROLE_MULTIPLIER: Record<BudgetedMessage['role'], number> = {
@@ -107,11 +123,12 @@ function indexMultiplier(index: number, count: number): number {
  *
  *   tool call/result payloads → older assistant prose → older typed asks (down
  *   to `USER_ASK_MIN_CHARS`) → and only as a last resort the ask floor itself.
- *   System blocks are never shrunk here (×0.01 plus `capSystemInstruction`),
- *   the newest turn is never touched, and a message is trimmed through
- *   `pairSafeShrink`, which folds the text *around* a tool fence and keeps the
- *   fence itself — so a truncated history can never end up holding a tool
- *   result whose call was cut away.
+ *   System blocks are never shrunk here (×0.01 plus `capSystemInstruction`).
+ *   The newest typed ask is protected down to `USER_ASK_MIN_CHARS`, never below;
+ *   if even that floor cannot fit, the result reports `overflow` rather than
+ *   slicing the intent. Every cut goes through `pairSafeShrink`, which folds the
+ *   text *around* a tool fence and keeps the fence itself — so a truncated
+ *   history can never end up holding a tool result whose call was cut away.
  *
  * Whole pair groups (a tool call and the observation that answered it) are
  * trimmed in the same pass, the way Cline drops them in the same pass.
@@ -120,14 +137,30 @@ export function trimMessagesToBudget(
   messages: BudgetedMessage[],
   contextWindow: number,
   maxOutput?: number,
+  extraInputChars = 0,
 ): TrimResult {
-  const budget = messageBudgetChars(contextWindow, maxOutput);
+  const budget = messageBudgetChars(contextWindow, maxOutput, extraInputChars);
   const result = messages.map((message) => ({ ...message }));
   let total = result.reduce((sum, message) => sum + message.content.length, 0);
   let trimmed = 0;
   let trimmedChars = 0;
   let iterations = 0;
+  let newestTurnTrimmed = false;
   const stages = new Set<TrimStage>();
+
+  // The newest typed ask (a user message without a tool fence) anchors the live
+  // turn. It is protected down to `USER_ASK_MIN_CHARS`, never below: if even that
+  // floor cannot fit, the pass reports `overflow` instead of slicing the intent.
+  let newestTurnStart = result.length - 1;
+  let newestAskIndex = -1;
+  for (let index = result.length - 1; index >= 0; index--) {
+    const message = result[index]!;
+    if (message.role === 'user' && !hasToolFence(message.content)) {
+      newestTurnStart = index;
+      newestAskIndex = index;
+      break;
+    }
+  }
 
   /** How short this message may get in this phase without breaking a tool pair. */
   const floorFor = (index: number, phase: 'staged' | 'last_resort'): number => {
@@ -135,9 +168,12 @@ export function trimMessagesToBudget(
     const structural = hasToolFence(message.content)
       ? pairFloorChars(message.content, TRIM_TO_LEN)
       : TRIM_TO_LEN;
+    if (index === newestAskIndex) {
+      // The current ask survives at its floor in every phase; it is the one
+      // message the last-resort pass may not reduce to the bare trim length.
+      return Math.max(structural, Math.min(USER_ASK_MIN_CHARS, message.content.length));
+    }
     if (phase === 'staged' && trimStageOf(message.role, message.content) === 'user_ask') {
-      // Cline's typed prompts survive, as an arithmetic floor rather than
-      // immunity: immunity would overflow the window on a single huge paste.
       return Math.max(structural, Math.min(USER_ASK_MIN_CHARS, message.content.length));
     }
     return structural;
@@ -161,16 +197,6 @@ export function trimMessagesToBudget(
       const last = result.length - 1;
       const groups = pairGroupsFromAnchors(pairAnchorIndices(result.map((message) => message.content)));
 
-      // The current turn starts at the newest typed ask (a user message without
-      // a tool fence); everything from there on is the live exchange.
-      let newestTurnStart = result.length - 1;
-      for (let index = result.length - 1; index >= 0; index--) {
-        const message = result[index]!;
-        if (message.role === 'user' && !hasToolFence(message.content)) {
-          newestTurnStart = index;
-          break;
-        }
-      }
       const pick = (skipNewestTurn: boolean, skipHead: boolean): number[] => {
         let chosen: number[] = [];
         let bestScore = -Infinity;
@@ -210,7 +236,8 @@ export function trimMessagesToBudget(
       victims.forEach((index) => {
         const message = result[index];
         const before = message.content.length;
-        const target = phase === 'staged' && trimStageOf(message.role, message.content) === 'user_ask'
+        const isAsk = trimStageOf(message.role, message.content) === 'user_ask';
+        const target = index === newestAskIndex || (phase === 'staged' && isAsk)
           ? Math.min(USER_ASK_MIN_CHARS, before)
           : TRIM_TO_LEN;
         const next = pairSafeShrink(message.content, target);
@@ -223,6 +250,7 @@ export function trimMessagesToBudget(
         message.content = next;
         trimmed += 1;
         trimmedChars += before - next.length;
+        if (newestAskIndex >= 0 && index >= newestTurnStart) newestTurnTrimmed = true;
         if (next.length <= target + 3) settled[index] = true;
       });
 
@@ -230,7 +258,14 @@ export function trimMessagesToBudget(
     }
   }
 
-  return { messages: result, trimmed, trimmedChars, stages: orderStages(stages) };
+  return {
+    messages: result,
+    trimmed,
+    trimmedChars,
+    stages: orderStages(stages),
+    overflow: total > budget,
+    newestTurnTrimmed
+  };
 }
 
 /** Void's weight for one message — the tie-breaker inside a stage. */
@@ -249,13 +284,61 @@ function orderStages(used: ReadonlySet<TrimStage>): TrimStage[] {
   return TRIM_ORDER.filter((stage) => used.has(stage));
 }
 
-/** Hard cap for the system instruction so a huge context dump cannot crowd out the reply. */
+const UNTRUSTED_BEGIN = '[[SHADROX_UNTRUSTED_DATA_BEGIN]]';
+const UNTRUSTED_END = '[[SHADROX_UNTRUSTED_DATA_END]]';
+
+function countUnescaped(text: string, marker: string): number {
+  let count = 0;
+  let index = text.indexOf(marker);
+  while (index !== -1) {
+    if (index === 0 || text[index - 1] !== '\\') count += 1;
+    index = text.indexOf(marker, index + marker.length);
+  }
+  return count;
+}
+
+function countFences(text: string): number {
+  return (text.match(/```/g) ?? []).length;
+}
+
+/** Hard cap for the system instruction so a huge context dump cannot crowd out
+ * the reply. The head/tail cut keeps untrusted-data wrappers and code fences
+ * balanced: a wrapper opened in the head is closed, one closed in the tail is
+ * re-opened, and any split is named explicitly in the cut marker. */
 export function capSystemInstruction(text: string, maxChars = MAX_SYSTEM_INSTRUCTION_CHARS): string {
   if (text.length <= maxChars) return text;
-  const marker = `\n\n… [system context trimmed, ${text.length} chars total] …\n\n`;
-  const headChars = Math.floor((maxChars - marker.length) * 0.6);
-  const tailChars = maxChars - marker.length - headChars;
-  return `${text.slice(0, headChars)}${marker}${text.slice(-tailChars)}`;
+  const plainMarker = `\n\n… [system context trimmed, ${text.length} chars total] …\n\n`;
+  const splitMarker = `\n\n… [system context trimmed, ${text.length} chars total; a data wrapper was split and re-balanced at the cut] …\n\n`;
+  if (maxChars <= plainMarker.length) return plainMarker.slice(0, Math.max(0, maxChars));
+
+  const repairReserve = UNTRUSTED_BEGIN.length + UNTRUSTED_END.length + 16;
+  const available = Math.max(0, maxChars - splitMarker.length - repairReserve);
+  const headChars = Math.floor(available * 0.6);
+  const tailChars = available - headChars;
+  let head = text.slice(0, headChars);
+  let tail = tailChars > 0 ? text.slice(-tailChars) : '';
+
+  let split = false;
+  if (countUnescaped(head, UNTRUSTED_BEGIN) > countUnescaped(head, UNTRUSTED_END)) {
+    head += `\n${UNTRUSTED_END}`;
+    split = true;
+  }
+  if (countFences(head) % 2 === 1) {
+    head += '\n```';
+    split = true;
+  }
+  if (countUnescaped(tail, UNTRUSTED_END) > countUnescaped(tail, UNTRUSTED_BEGIN)) {
+    tail = `${UNTRUSTED_BEGIN}\n${tail}`;
+    split = true;
+  }
+  if (countFences(tail) % 2 === 1) {
+    tail = `\`\`\`\n${tail}`;
+    split = true;
+  }
+
+  const marker = split ? splitMarker : plainMarker;
+  const capped = `${head}${marker}${tail}`;
+  return capped.length <= maxChars ? capped : capped.slice(0, maxChars);
 }
 
 /* ------------------------------------------------------------------ *
@@ -304,6 +387,11 @@ export interface SystemContext {
   chunks: string[];
   /** File excerpts shown verbatim; shrunk before the instruction is truncated. */
   files: SystemFileExcerpt[];
+  /**
+   * S05 manifest of the sources actually assembled for this request, so the
+   * composer preview is the same data the payload was built from.
+   */
+  manifest?: ContextManifest;
 }
 
 export interface FittedSystemContext {
@@ -323,17 +411,26 @@ export interface ChatRequestFit {
   /** Which stages of the documented trim order were spent. */
   stages: TrimStage[];
   system: FittedSystemContext;
+  /** True when the request cannot fit the window without cutting the newest ask
+   * below its floor or breaking a wrapper/tool pair. The caller must fail
+   * explicitly instead of sending an over-window request. */
+  overflow: boolean;
+  /** True when a message in the newest turn was shortened (not just older history). */
+  newestTurnTrimmed: boolean;
 }
 
 /**
  * The instruction ceiling for a model: 60% of the input budget, floored so tiny
- * windows still get a usable prompt, never above the global 80k cap.
+ * windows still get a usable prompt, never above the global 80k cap. The floor
+ * is clamped to the input budget that actually remains after `extraInputChars`
+ * (tool schemas + framing), so it can never exceed the real window.
  */
-export function systemInstructionBudgetChars(contextWindow: number, maxOutput?: number): number {
-  const inputBudget = messageBudgetChars(contextWindow, maxOutput);
+export function systemInstructionBudgetChars(contextWindow: number, maxOutput?: number, extraInputChars = 0): number {
+  const inputBudget = messageBudgetChars(contextWindow, maxOutput, extraInputChars);
+  const floor = Math.min(MIN_BUDGET_CHARS, inputBudget);
   return Math.min(
     MAX_SYSTEM_INSTRUCTION_CHARS,
-    Math.max(MIN_BUDGET_CHARS, Math.floor(inputBudget * SYSTEM_INSTRUCTION_RATIO))
+    Math.max(floor, Math.floor(inputBudget * SYSTEM_INSTRUCTION_RATIO))
   );
 }
 
@@ -351,9 +448,12 @@ function renderFile(excerpt: SystemFileExcerpt, content: string, truncated: bool
  * Fits the system instruction into `maxChars` by degrading it in a fixed
  * priority order: weakest retrieval chunks first, then file excerpts (halved
  * down to a floor), and only as a last resort a hard truncation with a notice.
+ * `extraInputChars` (tool schemas + framing) is subtracted from `maxChars` first
+ * so the instruction shares the window with the rest of the serialized request.
  * Never throws and never returns something over budget.
  */
-export function fitSystemContext(system: SystemContext, maxChars: number): FittedSystemContext {
+export function fitSystemContext(system: SystemContext, maxChars: number, extraInputChars = 0): FittedSystemContext {
+  maxChars = Math.max(0, maxChars - Math.max(0, extraInputChars));
   const core = system.core.map(scrubWorkspaceText).filter((section) => section.trim().length > 0);
   let kept = system.chunks.map(scrubWorkspaceText);
   const files = system.files.map((excerpt) => ({
@@ -437,7 +537,9 @@ export function fitSystemContext(system: SystemContext, maxChars: number): Fitte
 /**
  * The whole request, measured against the model's window: the instruction is
  * fitted first, then its tokens are subtracted from the window before the
- * history is trimmed. Same arithmetic as the server, run before sending.
+ * history is trimmed. `extraInputChars` accounts for the rest of the serialized
+ * request — tool schemas and result/request framing — so the full payload, not
+ * just the messages, is budgeted. Same arithmetic as the server, run before send.
  */
 export function fitChatRequest(options: {
   contextWindow: number;
@@ -445,16 +547,25 @@ export function fitChatRequest(options: {
   system?: SystemContext;
   /** The model's per-response ceiling, from `resolveBudgetCapabilities`. */
   maxOutput?: number;
+  /** Serialized input that is not a message: tool schemas + framing overhead. */
+  extraInputChars?: number;
 }): ChatRequestFit {
-  const systemCap = systemInstructionBudgetChars(options.contextWindow, options.maxOutput);
+  const extra = Math.max(0, options.extraInputChars ?? 0);
+  const systemCap = systemInstructionBudgetChars(options.contextWindow, options.maxOutput, extra);
   const system = options.system
     ? fitSystemContext(options.system, systemCap)
     : { text: '', degradation: 'none' as SystemDegradation, droppedChunks: 0, shrunkFiles: 0, budgetChars: systemCap };
 
   const systemTokens = system.text ? estimateTokens(system.text) : 0;
-  // Never let the instruction starve the conversation below a workable floor.
-  const effectiveWindow = Math.max(1_000, options.contextWindow - systemTokens);
-  const trimmed = trimMessagesToBudget(options.messages, effectiveWindow, options.maxOutput);
+  // Clamp to the window that actually remains; a floor here could exceed a tiny
+  // window and silently promise room the model does not have.
+  const effectiveWindow = Math.max(0, options.contextWindow - systemTokens);
+  const trimmed = trimMessagesToBudget(options.messages, effectiveWindow, options.maxOutput, extra);
+
+  const historyChars = trimmed.messages.reduce((sum, message) => sum + message.content.length, 0);
+  const requestTokens = systemTokens + Math.ceil(historyChars / CHARS_PER_TOKEN) + Math.ceil(extra / CHARS_PER_TOKEN);
+  const overflow = trimmed.overflow ||
+    requestTokens + reservedOutputTokens(effectiveWindow, options.maxOutput) > options.contextWindow;
 
   return {
     messages: trimmed.messages,
@@ -462,12 +573,19 @@ export function fitChatRequest(options: {
     trimmed: trimmed.trimmed,
     trimmedChars: trimmed.trimmedChars,
     stages: trimmed.stages,
-    system
+    system,
+    overflow,
+    newestTurnTrimmed: trimmed.newestTurnTrimmed
   };
 }
 
-/** Non-blocking one-line summary of what had to be dropped, or null. */
+/** Non-blocking one-line summary of what had to be dropped, or null. An
+ * impossible fit is reported as such, never dressed up as a successful trim. */
 export function contextFitNotice(fit: ChatRequestFit, modelLabel?: string): string | null {
+  const label = modelLabel ? ` for ${modelLabel}` : '';
+  if (fit.overflow) {
+    return `Context window is too small${label}: the current request cannot fit even after trimming. Send a smaller request or choose a model with a larger window.`;
+  }
   const { degradation, droppedChunks, shrunkFiles } = fit.system;
   const parts: string[] = [];
 
@@ -478,11 +596,15 @@ export function contextFitNotice(fit: ChatRequestFit, modelLabel?: string): stri
   }
   if (fit.trimmed > 0) {
     const stages = trimStageNote(fit.stages ?? []);
-    parts.push(stages
-      ? `${fit.trimmed} older message(s) shortened (${stages})`
-      : `${fit.trimmed} older message(s) shortened`);
+    if (fit.newestTurnTrimmed) {
+      parts.push(stages ? `the current turn was shortened (${stages})` : 'the current turn was shortened');
+    } else {
+      parts.push(stages
+        ? `${fit.trimmed} older message(s) shortened (${stages})`
+        : `${fit.trimmed} older message(s) shortened`);
+    }
   }
   if (parts.length === 0) return null;
 
-  return `Context window is full${modelLabel ? ` for ${modelLabel}` : ''}: ${parts.join(' + ')} to make room for the reply.`;
+  return `Context window is full${label}: ${parts.join(' + ')} to make room for the reply.`;
 }

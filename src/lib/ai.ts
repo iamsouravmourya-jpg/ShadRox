@@ -15,6 +15,9 @@ import {
   type ExInfo
 } from './ai/retryPolicy';
 import type { RefineMode } from './types';
+import type { UsageSource } from './taskUsage';
+
+export type { UsageSource };
 
 export interface ValidateKeyResult {
   latencyMs: number;
@@ -106,6 +109,15 @@ export interface StreamChatOptions {
   retry?: Partial<RetrySettings> & Partial<RetryClockDeps>;
 }
 
+export interface StreamPromptCacheInfo {
+  mode?: string;
+  prefixTokens?: number;
+  prefixChars?: number;
+  breakpoints?: number;
+  markers?: number;
+  prefixShare?: number;
+}
+
 export interface StreamDoneInfo {
   /** What the provider reported as the all-in total; the number shown in the UI. */
   tokens: number;
@@ -121,7 +133,15 @@ export interface StreamDoneInfo {
   /** Milliseconds until the first delta/reasoning chunk arrived. */
   firstTokenMs?: number | null;
   durationMs?: number | null;
+  promptCache?: StreamPromptCacheInfo | null;
+  truncated?: boolean;
+  servedModel?: string | null;
+  usageSource?: UsageSource;
+  incomplete?: boolean;
+  attempts?: number;
 }
+
+export const MAX_STREAM_ATTEMPTS = 8;
 
 /**
  * The retry notification hook — the port of aider's
@@ -278,6 +298,7 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
     const value = overrides[key];
     if (typeof value === 'number' && Number.isFinite(value) && value >= 0) settings[key] = value;
   });
+  settings.maxAttempts = Math.max(1, Math.min(settings.maxAttempts, MAX_STREAM_ATTEMPTS));
   const deps: RetryClockDeps = {
     now: overrides.now ?? REAL_RETRY_DEPS.now,
     sleep: overrides.sleep ?? REAL_RETRY_DEPS.sleep,
@@ -294,7 +315,7 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
 
   for (;;) {
     attempt += 1;
-    const failure = await runStreamAttempt(options, handlers, deps, settings);
+    const failure = await runStreamAttempt(options, handlers, deps, settings, attempt);
     if (!failure) return;
 
     const plan = planRetry({
@@ -348,11 +369,15 @@ class StreamIdleTimeoutError extends Error {
 const PARTIAL_KEPT_WARNING =
   'Connection dropped mid-reply — the partial answer is kept, press Resume to continue from it.';
 
+const UNCONFIRMED_EOF_WARNING =
+  'The stream ended before the model confirmed completion — the partial answer is kept as incomplete.';
+
 async function runStreamAttempt(
   options: StreamChatOptions,
   handlers: StreamChatHandlers,
   deps: RetryClockDeps,
-  settings: RetrySettings
+  settings: RetrySettings,
+  attempt: number
 ): Promise<RetryableFailure | null> {
   const {
     provider,
@@ -367,6 +392,8 @@ async function runStreamAttempt(
     resumePrefix,
     toolDefinitions
   } = options;
+
+  const resolvedTier = apiKey && apiKey.trim() ? 'byok' : 'shadrox';
 
   let response: Response;
   try {
@@ -437,7 +464,7 @@ async function runStreamAttempt(
   const stripPrefix = resumePrefix ? createPrefixStripper(resumePrefix) : null;
 
   const decoder = createSseDecoder(({ data }) => {
-    if (!data || data === '[DONE]') return;
+    if (!data || data === '[DONE]' || sawDone) return;
 
     let event: any;
     try {
@@ -445,6 +472,7 @@ async function runStreamAttempt(
     } catch {
       return;
     }
+    if (!event || typeof event !== 'object') return;
 
     if (event.type === 'delta' && typeof event.text === 'string') {
       receivedOutput = true;
@@ -472,10 +500,15 @@ async function runStreamAttempt(
         cachedInputTokens: typeof event.cachedInputTokens === 'number' ? event.cachedInputTokens : undefined,
         provider: event.provider ?? provider,
         model: event.model ?? model,
-        tier: event.tier ?? 'byok',
+        tier: event.tier ?? resolvedTier,
         finishReason: event.finishReason ?? null,
         firstTokenMs: typeof event.firstTokenMs === 'number' ? event.firstTokenMs : null,
-        durationMs: typeof event.durationMs === 'number' ? event.durationMs : null
+        durationMs: typeof event.durationMs === 'number' ? event.durationMs : null,
+        promptCache: readPromptCache(event.promptCache),
+        truncated: typeof event.truncated === 'boolean' ? event.truncated : undefined,
+        servedModel: readServedModel(event.servedModel),
+        usageSource: readUsageSource(event.usageSource),
+        attempts: attempt
       });
     } else if (event.type === 'error') {
       streamError = event.message || 'AI generation failed.';
@@ -483,14 +516,15 @@ async function runStreamAttempt(
   });
 
   try {
-    while (true) {
+    while (!sawDone) {
       const { done, value } = await readWithinIdleWindow(reader, deps, settings.idleTimeoutMs);
       if (done) break;
       decoder.push(textDecoder.decode(value, { stream: true }));
     }
-    decoder.flush();
+    if (!sawDone) decoder.flush();
   } catch (error) {
     await cancelQuietly(reader);
+    if (sawDone) return null;
     if (signal?.aborted) return null;
 
     if (error instanceof StreamIdleTimeoutError) {
@@ -525,6 +559,8 @@ async function runStreamAttempt(
     };
   }
 
+  if (sawDone) await cancelQuietly(reader);
+
   if (signal?.aborted) return null;
 
   if (streamError) {
@@ -539,16 +575,40 @@ async function runStreamAttempt(
     return null;
   }
 
-  if (!sawDone) {
-    if (receivedOutput) {
-      // The connection closed cleanly without a done event; finalise the UI
-      // instead of leaving the reply stuck in a streaming state.
-      handlers.onDone?.({ tokens: 0, provider, model, tier: 'byok', finishReason: 'stream-ended' });
-    } else {
-      handlers.onError('The model returned an empty response.');
-    }
+  if (sawDone) return null;
+
+  if (receivedOutput) {
+    handlers.onWarning?.(UNCONFIRMED_EOF_WARNING);
+    handlers.onDone?.({
+      tokens: 0,
+      provider,
+      model,
+      tier: resolvedTier,
+      finishReason: 'stream-ended',
+      incomplete: true,
+      usageSource: 'unknown',
+      attempts: attempt
+    });
+  } else {
+    handlers.onError('The model returned an empty response.');
   }
   return null;
+}
+
+function readPromptCache(value: unknown): StreamPromptCacheInfo | null | undefined {
+  if (value === null) return null;
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as StreamPromptCacheInfo;
+  return undefined;
+}
+
+function readServedModel(value: unknown): string | null | undefined {
+  if (typeof value === 'string') return value;
+  if (value === null) return null;
+  return undefined;
+}
+
+function readUsageSource(value: unknown): UsageSource | undefined {
+  return value === 'provider' || value === 'estimated' || value === 'unknown' ? value : undefined;
 }
 
 /**
@@ -627,6 +687,33 @@ export interface RefinedPrompt {
   translatedText: string;
   intent: string;
   refinedPrompt: string;
+  provider?: string;
+  model?: string;
+  servedModel?: string | null;
+  tier?: string;
+  tokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  usageSource?: UsageSource;
+  durationMs?: number | null;
+}
+
+function readRefineUsage(data: any): Partial<RefinedPrompt> {
+  const usage: Partial<RefinedPrompt> = {};
+  if (typeof data?.provider === 'string' && data.provider) usage.provider = data.provider;
+  if (typeof data?.model === 'string' && data.model) usage.model = data.model;
+  if (typeof data?.tier === 'string' && data.tier) usage.tier = data.tier;
+  const servedModel = readServedModel(data?.servedModel);
+  if (servedModel !== undefined) usage.servedModel = servedModel;
+  const usageSource = readUsageSource(data?.usageSource);
+  if (usageSource !== undefined) usage.usageSource = usageSource;
+  (['tokens', 'inputTokens', 'outputTokens', 'cachedInputTokens', 'durationMs'] as const).forEach((key) => {
+    const value = data?.[key];
+    if (typeof value === 'number' && Number.isFinite(value)) usage[key] = value;
+  });
+  if (data?.durationMs === null) usage.durationMs = null;
+  return usage;
 }
 
 /** Language -> English -> intent -> structured prompt pipeline. */
@@ -670,5 +757,12 @@ export async function refinePrompt(options: {
   if (!response.ok) {
     throw new Error(data?.error || 'Prompt refine failed.');
   }
-  return data as RefinedPrompt;
+  const refined = data as RefinedPrompt;
+  return {
+    detectedLanguage: refined.detectedLanguage,
+    translatedText: refined.translatedText,
+    intent: refined.intent,
+    refinedPrompt: refined.refinedPrompt,
+    ...readRefineUsage(data)
+  };
 }
