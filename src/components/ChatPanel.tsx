@@ -16,8 +16,6 @@ import {
   Loader2,
   ListTree,
   MessageSquarePlus,
-  Mic,
-  MicOff,
   Paperclip,
   Play,
   History,
@@ -29,12 +27,11 @@ import {
   Terminal,
   Undo2,
   Users,
-  Wand2,
   X,
   Zap
 } from 'lucide-react';
 import { maskFileWrites, renderMarkdownContent } from '../lib/markdown';
-import { useSpeechRecognition } from '../hooks/useSpeechRecognition';import { getRefineMode, REFINE_MODES } from '../lib/ai';
+import { getRefineMode, REFINE_MODES } from '../lib/ai';
 import type { PermissionMode } from '../lib/agent/runPolicy';
 import { getProviderMeta, type ModelInfo, type ModelTier } from '../lib/providers';
 import { getMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
@@ -48,6 +45,7 @@ import type { ChatMessage, PatchSet, PlanTier, RefineMode, SemanticStatus, Setti
 import type { CheckpointMeta } from '../lib/history';
 import type { CheckpointDiff } from '../lib/checkpointDiff';
 import { TimelineSlider } from './TimelineSlider';
+import { ShadRoxLogo } from './Logo';
 
 /** A symbol the user pinned with `@`, sent as an explicit context marker. */
 export interface PinnedSymbol {
@@ -1039,19 +1037,16 @@ export function ChatPanel({
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
-  const modeMenuRef = useRef<HTMLDivElement>(null);
-  const permissionMenuRef = useRef<HTMLDivElement>(null);
+  const runMenuRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
-  const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
-  const [isPermissionMenuOpen, setIsPermissionMenuOpen] = useState(false);
+  const [isRunMenuOpen, setIsRunMenuOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [isContextOpen, setIsContextOpen] = useState(false);
-  const speech = useSpeechRecognition('en-US');
   const activeMode = getRefineMode(refineMode);
   const activePermission = PERMISSION_MODES.find((mode) => mode.id === permissionMode) || PERMISSION_MODES[2];
   const ActivePermissionIcon = activePermission.icon;
@@ -1103,22 +1098,20 @@ export function ChatPanel({
 
   /** One dismissal path for every chat popover: outside click and Escape. */
   useEffect(() => {
-    if (!isModelMenuOpen && !isAttachMenuOpen && !isModeMenuOpen && !isPermissionMenuOpen && !isContextOpen) return;
+    if (!isModelMenuOpen && !isAttachMenuOpen && !isRunMenuOpen && !isContextOpen) return;
     const inside = (ref: { current: HTMLElement | null }, target: EventTarget | null) =>
       Boolean(ref.current && target instanceof Node && ref.current.contains(target));
     const closeOthers = (event: PointerEvent) => {
       if (!inside(modelMenuRef, event.target) && !inside(modelTriggerRef, event.target)) setIsModelMenuOpen(false);
       if (!inside(attachMenuRef, event.target)) setIsAttachMenuOpen(false);
-      if (!inside(modeMenuRef, event.target)) setIsModeMenuOpen(false);
-      if (!inside(permissionMenuRef, event.target)) setIsPermissionMenuOpen(false);
+      if (!inside(runMenuRef, event.target)) setIsRunMenuOpen(false);
       if (!inside(contextMenuRef, event.target)) setIsContextOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       setIsModelMenuOpen(false);
       setIsAttachMenuOpen(false);
-      setIsModeMenuOpen(false);
-      setIsPermissionMenuOpen(false);
+      setIsRunMenuOpen(false);
       setIsContextOpen(false);
     };
     document.addEventListener('pointerdown', closeOthers);
@@ -1127,12 +1120,7 @@ export function ChatPanel({
       document.removeEventListener('pointerdown', closeOthers);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [isModelMenuOpen, isAttachMenuOpen, isModeMenuOpen, isPermissionMenuOpen, isContextOpen]);
-
-  useEffect(() => {
-    if (speech.transcript) onInputChange(speech.transcript);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [speech.transcript]);
+  }, [isModelMenuOpen, isAttachMenuOpen, isRunMenuOpen, isContextOpen]);
 
   useEffect(() => {
     // Streaming rewrites `messages` on every delta; without this the pane
@@ -1253,7 +1241,6 @@ export function ChatPanel({
     pro: models.filter((model) => model.tier === 'pro')
   };
 
-  const ActiveModeIcon = MODE_ICONS[refineMode] || Code2;
 
   return (
     <div className="h-full flex flex-col bg-ink-950 select-text">
@@ -2194,28 +2181,34 @@ export function ChatPanel({
                 : 'Ask ShadRox to build, refactor, or explain code… (@ to attach a file or symbol)'
             }
             disabled={usage.isCapReached}
-            className="w-full resize-none rounded-2xl bg-transparent px-3.5 py-3 text-xs text-neutral-100 outline-none placeholder:text-neutral-600 disabled:opacity-50"
+            className="w-full resize-none rounded-2xl bg-transparent py-3 pl-10 pr-3.5 text-xs text-neutral-100 outline-none placeholder:text-neutral-600 disabled:opacity-50"
           />
+          <div className="pointer-events-none absolute left-3 top-3 text-emerald-300/80">
+            <ShadRoxLogo className="h-4 w-4" />
+          </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2">
             <div className="flex min-w-0 flex-auto flex-wrap items-center gap-1.5">
-              {/* Permission Mode — the capability boundary (Ask/Plan/Agent) */}
-              <div ref={permissionMenuRef} className="relative">
+              {/* One clear control for both execution access and work style. */}
+              <div ref={runMenuRef} className="relative">
                 <button
                   type="button"
-                  onClick={() => setIsPermissionMenuOpen((open) => !open)}
-                  title={`Permission: ${activePermission.label} — ${activePermission.hint}`}
+                  onClick={() => setIsRunMenuOpen((open) => !open)}
+                  title={`${activePermission.label} access · ${activeMode.label} work mode`}
                   className={`flex min-w-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${PERMISSION_BUTTON_STYLE[permissionMode]}`}
                 >
                   <ActivePermissionIcon className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate font-medium">{activePermission.label}</span>
+                  <span className="truncate font-medium">{activePermission.label} · {activeMode.label}</span>
                   <ChevronDown className="w-3 h-3 shrink-0 text-neutral-400" />
                 </button>
 
-                {isPermissionMenuOpen && (
+                {isRunMenuOpen && (
                   <div className="absolute bottom-9 left-0 z-20 w-72 overflow-hidden rounded-xl border border-white/[0.09] bg-ink-900/95 py-1 shadow-2xl backdrop-blur-xl">
                     <div className="border-b border-white/[0.07] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500">
-                      Permission Mode
+                      Run settings
+                    </div>
+                    <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
+                      Access
                     </div>
                     {PERMISSION_MODES.map((mode) => {
                       const Icon = mode.icon;
@@ -2226,7 +2219,7 @@ export function ChatPanel({
                           type="button"
                           onClick={() => {
                             onPermissionModeChange(mode.id);
-                            setIsPermissionMenuOpen(false);
+                            setIsRunMenuOpen(false);
                           }}
                           className={`w-full px-3 py-2 text-left flex items-start justify-between transition-colors hover:bg-white/[0.05] cursor-pointer ${
                             isSelected ? 'bg-violet-500/[.12] text-violet-100' : 'text-neutral-400'
@@ -2243,33 +2236,8 @@ export function ChatPanel({
                         </button>
                       );
                     })}
-                  </div>
-                )}
-              </div>
-
-              {/* Work Mode Dropdown (Replaces old template option with Code, Plan, Complex) */}
-              <div ref={modeMenuRef} className="relative">
-                <button
-                  type="button"
-                  onClick={() => setIsModeMenuOpen((open) => !open)}
-                  title={`Active mode: ${activeMode.label} — ${activeMode.hint}`}
-                  className={`flex min-w-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${
-                    refineMode === 'plan'
-                      ? 'border-amber-500/30 bg-amber-500/[.08] text-amber-300'
-                      : refineMode === 'complex'
-                        ? 'border-purple-400/30 bg-purple-500/[.10] text-purple-300'
-                        : 'border-violet-300/30 bg-violet-500/10 text-violet-200'
-                  }`}
-                >
-                  <ActiveModeIcon className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate font-medium">Mode</span>
-                  <ChevronDown className="w-3 h-3 shrink-0 text-neutral-400" />
-                </button>
-
-                {isModeMenuOpen && (
-                  <div className="absolute bottom-9 left-0 z-20 w-64 overflow-hidden rounded-xl border border-white/[0.09] bg-ink-900/95 py-1 shadow-2xl backdrop-blur-xl">
-                    <div className="border-b border-white/[0.07] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500">
-                      Select Work Mode
+                    <div className="border-t border-white/[0.07] px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
+                      Work style
                     </div>
                     {REFINE_MODES.map((mode) => {
                       const Icon = MODE_ICONS[mode.id];
@@ -2280,7 +2248,7 @@ export function ChatPanel({
                           type="button"
                           onClick={() => {
                             onRefineModeChange(mode.id);
-                            setIsModeMenuOpen(false);
+                            setIsRunMenuOpen(false);
                           }}
                           className={`w-full px-3 py-2 text-left flex items-start justify-between transition-colors hover:bg-white/[0.05] cursor-pointer ${
                             isSelected ? 'bg-violet-500/[.12] text-violet-100' : 'text-neutral-400'
@@ -2335,41 +2303,6 @@ export function ChatPanel({
                 )}
               </div>
 
-              {/* Speech to text */}
-              {speech.isSupported && (
-                <button
-                  type="button"
-                  onClick={() => (speech.isListening ? speech.stop() : speech.start())}
-                  title={speech.isListening ? 'Stop recording voice' : 'Dictate with microphone'}
-                  className={`shrink-0 p-1.5 transition-colors cursor-pointer ${
-                    speech.isListening ? 'text-red-400 animate-pulse' : 'text-neutral-500 hover:text-white'
-                  }`}
-                >
-                  {speech.isListening ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
-                </button>
-              )}
-              {speech.error && (
-                <span
-                  title={speech.error.message}
-                  className="max-w-36 shrink-0 truncate rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-[9.5px] text-amber-300"
-                >
-                  {speech.error.message}
-                </span>
-              )}
-
-              {/* Refine prompt button */}
-              {hasKey && (
-                <button
-                  type="button"
-                  onClick={onRefinePrompt}
-                  disabled={!input.trim() || isRefining || isGenerating}
-                  title="Auto-refine prompt with AI"
-                  className="shrink-0 p-1.5 text-neutral-500 hover:text-white disabled:opacity-30 transition-colors cursor-pointer"
-                >
-                  <Wand2 className="w-3.5 h-3.5" />
-                </button>
-              )}
-
               {/* S18: undo a refinement, restoring the draft the user actually typed */}
               {canUndoRefine && onUndoRefine && (
                 <button
@@ -2385,47 +2318,6 @@ export function ChatPanel({
 
             {/* Right side: toggles, token count & Send Button */}
             <div className="ml-auto flex shrink-0 items-center gap-1.5">
-              <label
-                title="Semantic: re-rank the retrieval shortlist with an on-device embedding model. Off = BM25 only."
-                className="flex shrink-0 items-center gap-1 text-[10px] uppercase tracking-wide text-neutral-500 hover:text-neutral-300 cursor-pointer select-none"
-              >
-                <input
-                  type="checkbox"
-                  checked={semanticRetrieval}
-                  onChange={onToggleSemanticRetrieval}
-                  disabled={semanticStatus === 'checking'}
-                  aria-label="Semantic retrieval"
-                  className="accent-violet-400 cursor-pointer disabled:opacity-40"
-                />
-                <span className="hidden sm:inline">Semantic</span>
-                {semanticStatus === 'checking' && <Loader2 className="w-3 h-3 shrink-0 animate-spin" />}
-                {semanticStatus === 'ready' && (
-                  <span className="font-mono normal-case text-neutral-600">{semanticChunkCount}</span>
-                )}
-                {semanticStatus === 'unavailable' && (
-                  <span
-                    className="text-amber-400/80"
-                    title="Local embeddings unavailable — install @huggingface/transformers to enable. Retrieval stays on BM25."
-                  >
-                    !
-                  </span>
-                )}
-              </label>
-
-              <label
-                title="Auto: a cheap model first picks which files this task needs, your answer model then reads those files from disk. Heavy repo context stops landing on the expensive model."
-                className="flex shrink-0 items-center gap-1 text-[10px] uppercase tracking-wide text-neutral-500 hover:text-neutral-300 cursor-pointer select-none"
-              >
-                <input
-                  type="checkbox"
-                  checked={autoContext}
-                  onChange={onToggleAutoContext}
-                  aria-label="Auto file context"
-                  className="accent-violet-400 cursor-pointer"
-                />
-                <span className="hidden sm:inline">Auto</span>
-              </label>
-
               {input.length > 0 && (
                 <span className="hidden text-[10px] text-neutral-500 font-mono xl:inline">
                   {input.length}c · ~{estimateTokens(input)} tok
