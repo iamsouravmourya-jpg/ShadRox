@@ -55,24 +55,16 @@ async function main() {
     electronMain: true
   });
 
-  const preloadBundle = path.join(electronDirectory, 'preload.bundle.cjs');
-  await bundle(path.join(sourceElectronDirectory, 'preload.cjs'), preloadBundle, ['electron']);
-  await compile(preloadBundle, path.join(electronDirectory, 'preload.jsc'), {
-    electron: true,
-    electronRenderer: true
-  });
-
   const serverBundle = outputPath('server.bundle.cjs');
   await bundle(path.join(projectDirectory, 'server.ts'), serverBundle, ['express', 'dotenv', 'vite']);
-  await compile(serverBundle, outputPath('server.jsc'));
+  await compile(serverBundle, outputPath('server.jsc'), {
+    electron: true,
+    electronMain: true
+  });
 
   fs.copyFileSync(path.join(sourceElectronDirectory, 'loader.cjs'), path.join(electronDirectory, 'loader.cjs'));
-  fs.copyFileSync(
-    path.join(sourceElectronDirectory, 'preload-loader.cjs'),
-    path.join(electronDirectory, 'preload-loader.cjs')
-  );
   for (const entry of fs.readdirSync(electronDirectory)) {
-    if (!['loader.cjs', 'main.jsc', 'preload-loader.cjs', 'preload.jsc'].includes(entry)) {
+    if (!['loader.cjs', 'main.jsc', 'preload.cjs'].includes(entry)) {
       fs.rmSync(path.join(electronDirectory, entry), { recursive: true, force: true });
     }
   }
