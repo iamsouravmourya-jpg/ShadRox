@@ -51,11 +51,27 @@ function limitHint(model: string, limits: GroqLimits): string {
  * hoisted and the volatile turn goes last (`auto_prefix` mode of
  * `./_promptCache.ts`) — no marker field, no unknown key in the body.
  */
-function buildMessages(request: StreamRequest): Array<{ role: string; content: string }> {
+type OpenAiMessage = {
+  role: string;
+  content: string | Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+  >;
+};
+
+function buildMessages(request: StreamRequest): OpenAiMessage[] {
   const shaped = shapeStablePrefix(request.provider, request.model, request.messages).messages;
-  const messages: Array<{ role: string; content: string }> = [];
+  const messages: OpenAiMessage[] = [];
   if (request.systemInstruction) messages.push({ role: 'system', content: request.systemInstruction });
-  shaped.forEach((message) => messages.push({ role: message.role, content: message.content }));
+  shaped.forEach((message) => messages.push({
+    role: message.role,
+    content: message.imageData
+      ? [
+          { type: 'text', text: message.content },
+          { type: 'image_url', image_url: { url: message.imageData } }
+        ]
+      : message.content
+  }));
   return messages;
 }
 
@@ -75,12 +91,14 @@ function reasoningText(delta: Record<string, unknown>): string {
  * returned system slice is exactly that reservation, never the accumulated
  * body count, so system + body together cannot exceed the budget.
  */
-export function clampMessages<T extends { role: string; content: string }>(
+export function clampMessages<T extends { role: string; content: unknown }>(
   messages: T[],
   charBudget: number
 ): T[] {
   const system = messages[0]?.role === 'system' ? messages[0] : null;
-  const reserved = system ? Math.min(system.content.length, Math.floor(charBudget * 0.25)) : 0;
+  const reserved = system
+    ? Math.min(typeof system.content === 'string' ? system.content.length : 0, Math.floor(charBudget * 0.25))
+    : 0;
   const body: T[] = [];
   let used = 0;
 
@@ -88,18 +106,23 @@ export function clampMessages<T extends { role: string; content: string }>(
     const message = messages[index];
     const room = charBudget - reserved - used;
     if (room <= 0) break;
-    if (message.content.length <= room) {
+    const text = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+    if (text.length <= room) {
       body.unshift(message);
-      used += message.content.length;
+      used += text.length;
     } else {
       // Keep the tail of the message: the actual question is at the end.
-      body.unshift({ ...message, content: message.content.slice(message.content.length - room) });
+      body.unshift(typeof message.content === 'string'
+        ? { ...message, content: message.content.slice(message.content.length - room) }
+        : message);
       used = charBudget - reserved;
       break;
     }
   }
 
-  return system ? [{ ...system, content: system.content.slice(0, reserved) }, ...body] : body;
+  return system
+    ? [{ ...system, content: typeof system.content === 'string' ? system.content.slice(0, reserved) : system.content }, ...body]
+    : body;
 }
 
 export async function streamGroq(request: StreamRequest, sink: StreamSink): Promise<StreamResult> {
@@ -111,7 +134,7 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
   let servedModel: string | undefined;
 
   const send = (
-    messages: Array<{ role: string; content: string }>,
+    messages: OpenAiMessage[],
     reasoningEffort?: ThinkingLevel,
     maxOutputTokens?: number,
     fetchAttempts = 1,
