@@ -31,6 +31,7 @@ const {
   signedPayloadOf,
   verifyChainText
 } = require('./proof-chain.cjs');
+const { redactCommandForProof } = require('./proof-redact.cjs');
 
 /** Ledger that receives failure receipts regardless of which folder is open. */
 const PROOF_APP_SCOPE = 'shadrox.app';
@@ -66,29 +67,29 @@ function normalizeReceipt(receipt) {
   const out = {
     id: receipt.id,
     source: receipt.source,
-    target: clipUtf8(String(receipt.target ?? ''), 4096),
+    target: clipUtf8(redactCommandForProof(String(receipt.target ?? '')), 4096),
     timestamp: receipt.timestamp,
     exitCode: Number.isSafeInteger(receipt.exitCode) ? receipt.exitCode : null,
-    errorMessage: clipUtf8(String(receipt.errorMessage ?? ''), 8192),
+    errorMessage: clipUtf8(redactCommandForProof(String(receipt.errorMessage ?? '')), 8192),
     status: receipt.status
   };
   for (const key of ALWAYS_PRESENT_KEYS) {
     if (receipt[key] === undefined) out[key] = undefined;
-    else out[key] = clipUtf8(String(receipt[key]), key === 'diffSummary' ? 4096 : 8192);
+    else out[key] = clipUtf8(redactCommandForProof(String(receipt[key])), key === 'diffSummary' ? 4096 : 8192);
   }
   out.diagnostics = Array.isArray(receipt.diagnostics)
     ? receipt.diagnostics.slice(0, 32).map((item) => ({
         file: clipUtf8(String(item?.file ?? ''), 512),
         line: Number.isSafeInteger(item?.line) ? item.line : 0,
-        message: clipUtf8(String(item?.message ?? ''), 1024),
+        message: clipUtf8(redactCommandForProof(String(item?.message ?? '')), 1024),
         ...(item?.severity === undefined ? {} : { severity: clipUtf8(String(item.severity), 32) })
       }))
     : [];
   out.consoleErrors = Array.isArray(receipt.consoleErrors)
-    ? receipt.consoleErrors.slice(0, 32).map((item) => clipUtf8(String(item ?? ''), 1024))
+    ? receipt.consoleErrors.slice(0, 32).map((item) => clipUtf8(redactCommandForProof(String(item ?? '')), 1024))
     : [];
   out.relevantFiles = Array.isArray(receipt.relevantFiles)
-    ? receipt.relevantFiles.slice(0, 64).map((item) => clipUtf8(String(item ?? ''), 512))
+    ? receipt.relevantFiles.slice(0, 64).map((item) => clipUtf8(redactCommandForProof(String(item ?? '')), 512))
     : [];
   for (const key of CONDITIONAL_KEYS) {
     if (receipt[key] === undefined) continue;
@@ -99,7 +100,7 @@ function normalizeReceipt(receipt) {
       if (Number.isSafeInteger(healedAt) && healedAt >= 0) out[key] = healedAt;
       continue;
     }
-    out[key] = clipUtf8(String(receipt[key]), 16384);
+    out[key] = clipUtf8(redactCommandForProof(String(receipt[key])), 16384);
   }
   return out;
 }
@@ -134,7 +135,9 @@ function milestoneToData(proof) {
       title: clipUtf8(String(proof.title ?? ''), 512),
       verifiedAt: proof.verifiedAt,
       verdict: ['passed', 'failed', 'unverified'].includes(proof.verdict) ? proof.verdict : 'unverified',
-      command: proof.command === undefined ? undefined : clipUtf8(String(proof.command), 4096),
+      command: proof.command === undefined
+        ? undefined
+        : clipUtf8(redactCommandForProof(String(proof.command)), 4096),
       exitCode: Number.isSafeInteger(proof.exitCode) ? proof.exitCode : proof.exitCode === null ? null : undefined,
       diagnosticsCount: Number.isSafeInteger(proof.diagnosticsCount) ? proof.diagnosticsCount : 0
     },

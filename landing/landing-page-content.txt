@@ -5,7 +5,7 @@ POSITIONING
 -----------
 ShadRox is a desktop coding workspace for people who want their project files, editor, AI chat, local preview, and terminal together in one app.
 
-Keep the promise grounded: projects are worked on locally, while prompts and the selected code context are sent to the AI provider when the user asks for AI help. Do not claim that code is never uploaded or that ShadRox has cloud project sync. A Google account is required to use the app. Paid plans exist (Starter ₹399 + GST, Pro ₹999 + GST, metered in credits), but they are locked in the current beta — visible in the app, not yet selectable — so do not present them as purchasable.
+Keep the promise grounded: projects are worked on locally, while prompts and the selected code context are sent to the AI provider when the user asks for AI help. Do not claim that code is never uploaded or that ShadRox has cloud project sync. A Google account is required to use the app. Paid plans exist (Starter ₹699 and Heavy ₹1,299, GST included), but they are locked in the current beta — visible in the app, not yet selectable — and prices may change before launch.
 
 
 HERO
@@ -109,7 +109,7 @@ Can I preview any project?
 Static sites and supported Node-based web projects are the current focus. Other backend runtimes are not supported yet, and some sites may block embedded previews.
 
 Are paid plans available?
-Paid plans are announced but not yet purchasable: Starter (₹399 + GST = ₹471/mo, 800 credits) and Pro (₹999 + GST = ₹1,179/mo, 2,200 credits) are visible in the app but locked in the current beta. A paid plan does not unlock anything you could already use for free — it removes the API-key setup and lets ShadRox route each task to a fitting model. A credit is ShadRox's internal spend unit (1 credit ≈ ₹0.24 of provider cost): chat costs 0.4, an applied code edit costs 1, an accepted completion costs 0.1, and a request that fails or gets rolled back is never billed. GST is charged on top and shown on the button, so nothing surprises you at checkout.
+Paid plans are announced but not yet purchasable: Starter (₹699, 800 credits) and Heavy (₹1,299, 1,600 credits) are visible in the app but locked in the current beta. Checkout and shared-key access are not enabled, and prices may change before launch. A paid plan does not unlock anything available on the free BYOK tier.
 
 Can I use a custom gateway (OpenRouter, Together, OpenAI, my own server) on the free tier?
 Yes, free and unlimited, with no trial clock. Any OpenAI-compatible endpoint you can point at — including Ollama or LM Studio running on your own machine — works on the Free (BYOK) tier exactly like Gemini and Groq: bring your key, pay your provider, and ShadRox adds no cap and no fee.

@@ -99,7 +99,9 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
         </div>
       </div>
 
-      <p className="pb-6 text-center text-[10px] text-zinc-600">By continuing you agree to the beta terms · shadrox.cyou</p>
+      <p className="pb-6 text-center text-[10px] text-zinc-600">
+        By continuing you agree to the <a className="underline hover:text-zinc-400" href="https://shadrox.cyou/beta-terms" target="_blank" rel="noreferrer">beta terms</a> and <a className="underline hover:text-zinc-400" href="https://shadrox.cyou/privacy" target="_blank" rel="noreferrer">privacy policy</a>.
+      </p>
     </div>
   );
 }

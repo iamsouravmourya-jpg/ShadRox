@@ -512,7 +512,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                     <span className="text-xs font-semibold">No API key? Let ShadRox handle it.</span>
                   </div>
                   <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-400">
-                    Build on the free plan with your own key, or take a pack (₹699 or ₹1,299) and ShadRox routes every request — no key to buy, top up or validate.
+                    Paid plans are locked during the beta. Use your own API key for now; the catalogue prices are ₹699 Starter and ₹1,299 Heavy, and may change before launch.
                   </p>
                   <button
                     type="button"

@@ -440,7 +440,9 @@ async function runStreamAttempt(
     const serverMessage: string | undefined =
       typeof data?.error === 'string' && data.error ? data.error : undefined;
     const exInfo = classifyFailure(response.status, serverMessage);
-    const message = serverMessage || `Request failed (HTTP ${response.status}).`;
+    const message = (serverMessage || `Request failed (HTTP ${response.status}).`)
+      .replace(/(?:sk|pk|ghp|github_pat|glpat|xox[baprs]-)[A-Za-z0-9._-]+/gi, '[redacted credential]')
+      .slice(0, 500);
     if (exInfo.retry) {
       return {
         exInfo,

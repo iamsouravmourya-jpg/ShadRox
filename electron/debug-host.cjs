@@ -33,6 +33,11 @@ const MAX_VARIABLES = 100;
 const MAX_VALUE_CHARS = 500;
 const MAX_EXPRESSION_CHARS = 500;
 const MAX_OUTPUT_CHARS = 4000;
+
+function scrubEnvironment(environment) {
+  const blocked = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|AUTH|CREDENTIAL|COOKIE|SESSION)/i;
+  return Object.fromEntries(Object.entries(environment).filter(([name]) => !blocked.test(name)));
+}
 const MAX_STDERR_TAIL = 4000;
 const MAX_TOTAL_OUTPUT = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 15000;
@@ -680,7 +685,7 @@ function createDebugHost(options) {
     });
   }
 
-  async function start(workspaceId, configName) {
+  async function start(workspaceId, configName, approveExternal = async () => true, bundledRoots = []) {
     const root = workspaceRoot(workspaceId);
     const configs = readLaunchConfigs(root);
     if (!configs.found) {
@@ -695,6 +700,14 @@ function createDebugHost(options) {
       throw new Error(configName
         ? `No launch configuration named "${configName}" in shadrox.debug.json.`
         : 'shadrox.debug.json has no launch configurations.');
+    }
+    const isBundled = bundledRoots.some((rootPath) => isPathInsideDirectory(rootPath, chosen.resolvedAdapterCommand));
+    if (!isBundled && !(await approveExternal({
+      command: chosen.resolvedAdapterCommand,
+      args: chosen.resolvedAdapterArgs,
+      cwd: chosen.cwdPath
+    }))) {
+      throw new Error('External debug adapter was not approved.');
     }
 
     // One session at a time: replacing the debuggee is the explicit start.
@@ -725,7 +738,7 @@ function createDebugHost(options) {
     try {
       child = spawn(chosen.resolvedAdapterCommand, chosen.resolvedAdapterArgs, {
         cwd: chosen.cwdPath,
-        env: process.env,
+        env: scrubEnvironment(process.env),
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true

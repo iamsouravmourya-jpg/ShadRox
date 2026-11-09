@@ -102,7 +102,9 @@ export const DEFAULT_PLAN: PlanTier = 'free';
  * Free is always selectable; every other tier needs a name in this array. Empty
  * it to lock the whole ladder.
  */
-export const BETA_UNLOCKED_PLANS: PlanTier[] = ['starter', 'heavy'];
+// Paid plans and the shared-key path are intentionally unavailable to beta
+// testers. The catalogue prices remain visible for the future launch window.
+export const BETA_UNLOCKED_PLANS: PlanTier[] = [];
 
 export function isPlanSelectable(plan: PlanTier): boolean {
   return plan === 'free' || BETA_UNLOCKED_PLANS.includes(plan);
@@ -140,7 +142,7 @@ export function getPlanEntitlementNote(plan: PlanTier, sharedKeyEligible: boolea
  * flip on this device only. Every upgrade control has to admit that.
  */
 export const BETA_UPGRADE_NOTE =
-  'Beta: no checkout is wired yet — the ₹699 Starter Pack unlocks on this device and no payment is taken.';
+  'Beta tester lock: ₹699 Starter and ₹1,299 Heavy are catalogue prices only. No checkout or shared-key access is available in this beta; prices may change before launch.';
 
 /**
  * What the plan card may put where a price goes. The pack's real price is the
@@ -162,7 +164,7 @@ export function getPlanPriceDisplay(plan: PlanTier): { headline: string; note: s
 /** One honest word for a tier's state, used as the card badge. */
 export function getPlanStateLabel(plan: PlanTier): string {
   if (!Number.isFinite(getPlanMeta(plan).creditsPerMonth)) return 'Free forever';
-  return isPlanSelectable(plan) ? 'Beta — all features unlocked' : 'Locked during beta';
+  return isPlanSelectable(plan) ? 'Available in beta' : 'Locked during beta';
 }
 
 export function getPlanMeta(plan: PlanTier): PlanMeta {

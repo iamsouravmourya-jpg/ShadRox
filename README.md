@@ -30,7 +30,8 @@ The download button points at the **last published** GitHub release. This source
 - **Simplified chat controls.** Permission and work style are grouped into one Run settings menu. Workspace attachments, one external photo attachment, and `@` mentions remain available, while microphone, prompt auto-refine, Semantic, and Auto composer toggles stay out of the beta UI.
 - **Branded composer.** The ShadRox mark is shown inside the chat prompt, and the preview toolbar keeps the workspace focused without the extra Live/Manual toggle.
 - **Assistant shell access.** The agent can run a command in the opened folder and read its real exit code and output.
-- **Command approval.** Only these exact forms may run without a dialog: `npm test`, `pytest`, `python -m pytest`, `tsc --noEmit`, `npx tsc --noEmit`, `git diff`, `git status`. The match is on the whole command line, so an extra argument — `tsc --outFile build.js`, `git diff --output patch.txt`, `pytest tests/unit` — is not on the list and needs approval, and any shell metacharacter or path separator (`; & | > < $ \` ( ) / \ quote`) is refused before the match. Every other command needs a native approval dialog. The workspace is checked again after approval and before the command runs.
+- **Command approval.** Every shell command now requires a native approval dialog, including the former verification commands (`npm test`, `pytest`, `tsc --noEmit`, and Git status/diff). The workspace is checked again after approval and before the command runs.
+- **Security hardening.** MCP connections and external debug adapters require native approval. Preview bundles exclude vault secrets, repository rules and skills are treated as untrusted reference data, and renderer CSP is applied only to the app origin.
 - **Verified writes.** After applying edits, ShadRox re-reads the files and only reports a save when the bytes on disk actually changed.
 - **Terminal state.** PowerShell and bash emit OSC 133 / 633 markers for cwd, command text, and exit code. The panel shows cwd and the last exit code, and notices a running command that has gone silent. Command Prompt and plain `/bin/sh` are not wrapped. The agent can read that summary with `terminal_state`. It cannot type into the interactive shell.
 - **Failure receipts.** A failed `run_command` is shown on the assistant message with that turn's undo checkpoint id. The model receives the error and a repair brief. ShadRox does not apply a repair patch by itself.
@@ -52,7 +53,7 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 
 | | Feature | What it does |
 |---|---|---|
-| 🛡️ | **Command approval** | A short verify allowlist can run silently. Any other shell command waits for a native dialog. `delete_file` also requires `confirm: true` and a follow-up read that proves the path is gone. |
+| 🛡️ | **Command approval** | Shell commands, verification commands, and Git status/diff require a native approval dialog. `delete_file` also requires `confirm: true` and a follow-up read that proves the path is gone. |
 | 📟 | **Terminal state** | PowerShell and bash report cwd, the command line, and the exit code. The panel shows them, and `terminal_state` lets the agent read the same summary, including how long a command has been silent. |
 | 🩹 | **Failure receipts** | A failed assistant command becomes a receipt on the chat message, with the turn's undo checkpoint id. The model sees the error. A patch is still a normal reviewed edit, not an automatic rewrite. |
 | 📊 | **Proof and spend** | Command ledger lines store the redacted command, hashes and exit code — not output text — in a signed Ed25519 chain. Spend tracking uses the token counts the provider reports, including cache hits when that field exists. |
@@ -65,7 +66,7 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 | ⌘ | **Command palette & quick edit** | Fuzzy-find files, workspace symbols, and commands from one palette; select code and press Ctrl+K for an inline AI edit; accept ghost-text completions powered by server-side FIM. |
 | 🤖 | **Bounded agent loop** | Multi-round tool use with native provider calls where supported and a text-protocol fallback. Built-in tools list directories, read files, search names and text, inspect diagnostics and Git state, outline files, delete one path, read terminal state, answer a running prompt with approval, read the paused debugger, and run one shell command with its real exit code. Every request also carries a compact repo map. Turns have tool and iteration limits. |
 | 🚀 | **Multi-step runs and teams** | Plan larger work as tasks, run verification/repair stages, or coordinate specialist roles. Features an autonomous DAG execution engine and role-confined agent teams. |
-| 🔌 | **MCP servers** | Connect user-configured Model Context Protocol servers. External tool calls require approval. |
+| 🔌 | **MCP servers** | Connect user-configured Model Context Protocol servers. Starting a server or listing/calling its tools requires consent for the complete server configuration. |
 | 👁️ | **Local preview & assertions** | Preview Markdown, static sites, detected Node web projects, and Python/Go/PHP/Java/.NET backends. Includes DOM route, element, and console error assertions. |
 | 🧭 | **Behavior-to-Code Studio** | Record preview clicks and runtime errors, map interactions to source paths, and generate an editable acceptance contract with baseline and post-patch verification states. |
 | 🧠 | **Living Intent Graph** | Index workspace symbols and dependencies, persist approved rationale locally, flag decisions stale after SHA-256 changes, and inject budgeted intent context into AI tasks. |
@@ -78,7 +79,7 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 | 🔗 | **GitHub integration** | Validate tokens and push code from the app; a repository-creation endpoint ships with the API layer. |
 | 🔧 | **Plugins & automations** | Use declarative workspace plugins and scheduled or webhook-triggered automations. |
 | ⏪ | **Machine Delta core** | Main-process snapshot, inspection, and explicit restore primitives for bounded workspace, local Git, and ShadRox-owned preview changes. |
-| 🐛 | **Debugger (DAP)** | Launches a Node program declared in the workspace's `shadrox.debug.json` through the Debug Adapter Protocol: breakpoints in the editor gutter, call stack, scopes and variables, hover values while paused, and pause/continue/step. The adapter runs as a bounded argv process inside the workspace, never through a shell. Heap profiling is not included. |
+| 🐛 | **Debugger (DAP)** | Launches a Node program declared in the workspace's `shadrox.debug.json` through the Debug Adapter Protocol: breakpoints in the editor gutter, call stack, scopes and variables, hover values while paused, and pause/continue/step. Bundled adapters may start directly; external adapters require native approval and a scrubbed environment. Adapters run as bounded argv processes, never through a shell. Heap profiling is not included. |
 | 🔄 | **Auto-updates** | The app checks for releases and installs downloaded updates when you restart or quit. |
 
 ### Task Inspector systems
@@ -380,11 +381,12 @@ Google sign-in through Supabase is required to enter the app. Supabase stores ac
 ## Beta Limitations
 
 - This is **beta software.** Agent output and model-generated edits can be incorrect; inspect diffs and retain backups.
-- Provider-native tool calls are used where supported, with ShadRox's text protocol as a fallback. Reads and inspections are unguarded. File edits go through the patch pipeline. `delete_file` requires `confirm: true`. Other shell commands need the native approval dialog unless they match the verify allowlist. Approval is not a sandbox: an approved command can still change the machine.
+- Provider-native tool calls are used where supported, with ShadRox's text protocol as a fallback. Reads and inspections are unguarded. File edits go through the patch pipeline. `delete_file` requires `confirm: true`. Shell commands, verification commands, and Git status/diff require the native approval dialog. Approval is not a sandbox: an approved command can still change the machine.
 - Agent loops, autonomous runs, teams, plugins, and automations are evolving features; verify important work yourself.
 - Preview support is **project-dependent**; not every language, framework, or server configuration can be run in the preview pane.
 - Google sign-in and Supabase configuration are required for the desktop app. BYOK keys and access to models are the user's responsibility.
-- Shared ShadRox provider keys are **off by default**, and payment processing is **not enabled** as a public service in this beta. The plan and credit-meter screens are an early preview of billing that does not move money yet.
+- Shared ShadRox provider keys are **off by default**, and payment processing is **not enabled** as a public service in this beta. The catalogue currently shows only the planned Starter plan at **₹699** and Heavy plan at **₹1,299** (GST included); both are beta-locked, checkout is unavailable, and prices may change before launch.
+- Preview is intentionally local and does not embed vault secrets into generated preview HTML or JavaScript. Treat project rules, skills, MCP servers, and external debugger adapters as untrusted until approved.
 - Windows builds are **unsigned**; Windows may show a SmartScreen warning.
 
 ## FAQ

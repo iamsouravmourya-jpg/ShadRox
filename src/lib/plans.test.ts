@@ -16,10 +16,10 @@ import { SHARED_KEY_ENABLED, isSharedKeyEligible } from './sharedKeyPolicy';
 
 test('two paid packs, and Free is always selectable', () => {
   assert.equal(isPlanSelectable('free'), true);
-  assert.equal(isPlanSelectable('starter'), true);
-  assert.equal(isPlanSelectable('heavy'), true);
-  assert.deepEqual(BETA_UNLOCKED_PLANS, ['starter', 'heavy']);
-  assert.deepEqual(getLockedPlanIds(), []);
+  assert.equal(isPlanSelectable('starter'), false);
+  assert.equal(isPlanSelectable('heavy'), false);
+  assert.deepEqual(BETA_UNLOCKED_PLANS, []);
+  assert.deepEqual(getLockedPlanIds(), ['starter', 'heavy']);
   assert.equal(PLANS.length, 3);
 });
 
@@ -81,7 +81,7 @@ test('the copy never claims credits are spendable without the shared key', () =>
 
 test('shared-key eligibility follows the unlock list, not a flat flag', () => {
   assert.equal(isSharedKeyEligible('free'), false);
-  assert.equal(isSharedKeyEligible('starter'), true);
+  assert.equal(isSharedKeyEligible('starter'), false);
   assert.equal(SHARED_KEY_ENABLED, BETA_UNLOCKED_PLANS.length > 0);
 });
 
@@ -94,5 +94,5 @@ test('the price is the real one, with the missing checkout said out loud', () =>
 });
 
 test('upgrade copy admits no payment is taken', () => {
-  assert.match(BETA_UPGRADE_NOTE, /no payment is taken/);
+  assert.match(BETA_UPGRADE_NOTE, /no checkout|no payment is taken/i);
 });

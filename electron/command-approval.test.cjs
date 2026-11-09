@@ -63,8 +63,8 @@ test('isAllowedVerifyCommand strictly accepts only safe test/typecheck binaries 
   assert.equal(isAllowedVerifyCommand('git diff `id`'), false);
 });
 
-test('allowlisted verification command executes silently without prompting showApproval', async () => {
-  const { options, calls, workspace } = fixture({ command: 'npm test' });
+test('verification commands require approval unless explicitly opted into the legacy allowlist', async () => {
+  const { options, calls, workspace } = fixture({ command: 'npm test', allowVerifyAllowlist: true });
   const result = await runWithCommandApproval(options);
 
   assert.deepEqual(calls.approval, []);

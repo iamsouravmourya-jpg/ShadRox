@@ -27,7 +27,7 @@ async function runWithCommandApproval({
   showApproval,
   getWorkspace,
   runCommand,
-  allowVerifyAllowlist = true
+  allowVerifyAllowlist = false
 }) {
   if (
     typeof workspaceId !== 'string' ||

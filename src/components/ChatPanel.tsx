@@ -2333,6 +2333,10 @@ export function ChatPanel({
                     event.target.value = '';
                     if (!file) return;
                     if (!file.type.startsWith('image/')) return;
+                    if (file.size > 10 * 1024 * 1024) {
+                      onAttachedImageChange(null);
+                      return;
+                    }
                     const reader = new FileReader();
                     reader.onload = () => {
                       if (typeof reader.result === 'string') onAttachedImageChange(reader.result);
