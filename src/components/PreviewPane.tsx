@@ -344,25 +344,7 @@ export function PreviewPane({
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
                   HMR
                 </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={onToggleAutoReload}
-                  title={
-                    autoReload
-                      ? `Auto-reloading on file changes${lastReloadAt ? ` · last ${new Date(lastReloadAt).toLocaleTimeString()}` : ''} — click to pause`
-                      : 'Auto reload paused — click to enable'
-                  }
-                  className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-mono transition-colors cursor-pointer shrink-0 ${
-                    autoReload
-                      ? 'border-emerald-500/25 bg-emerald-500/[.08] text-emerald-300 hover:bg-emerald-500/[.14]'
-                      : 'border-white/[0.09] text-neutral-500 hover:text-neutral-300'
-                  }`}
-                >
-                  <span className={`h-1.5 w-1.5 rounded-full ${autoReload ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-600'}`} />
-                  {autoReload ? 'Live' : 'Manual'}
-                </button>
-              )
+              ) : null
             )}
             {localPreviewState.status === 'ready' && (() => {
               const port = previewPortOf(localPreviewState.url);

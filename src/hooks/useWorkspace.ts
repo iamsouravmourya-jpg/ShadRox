@@ -510,6 +510,7 @@ export function useWorkspace(): UseWorkspaceResult {
   const openRecent = useCallback(
     async (entry: RecentEntry) => {
       setIsBusy(true);
+      setStatusMessage(`Reopening ${entry.name}… checking access and loading files`);
       try {
         const desktop = getDesktopBridge();
         if (desktop?.reopenWorkspace) {
@@ -519,7 +520,10 @@ export function useWorkspace(): UseWorkspaceResult {
               path: entry.path,
               filePaths: entry.filePaths
             });
-            if (!opened) return;
+            if (!opened) {
+              setStatusMessage(`Reopen cancelled for ${entry.name}.`);
+              return;
+            }
             mount(opened.name, opened.rootPath, opened.kind, opened.files.map((file) => ({
               ...file,
               language: detectLanguage(file.name)
@@ -531,7 +535,11 @@ export function useWorkspace(): UseWorkspaceResult {
               diskFileCountTruncated: opened.fileCountTruncated,
               diskFileTree: opened.fileTree
             });
-            if (opened.warnings.length > 0) setStatusMessage(opened.warnings.join(' '));
+            setStatusMessage(
+              opened.warnings.length > 0
+                ? opened.warnings.join(' ')
+                : `Reopened ${entry.name}. ${opened.files.length} file${opened.files.length === 1 ? '' : 's'} ready.`
+            );
             return;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -572,6 +580,7 @@ export function useWorkspace(): UseWorkspaceResult {
               'Reopened read-only — the browser did not grant write access, so saves will not reach disk.'
             );
           }
+          setStatusMessage(`Reopened ${entry.name}. ${snapshot.files.length} file${snapshot.files.length === 1 ? '' : 's'} ready.`);
           return;
         }
         // Entries saved before snapshots existed can only be restored by picking again.

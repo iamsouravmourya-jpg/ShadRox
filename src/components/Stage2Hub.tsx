@@ -1,4 +1,4 @@
-import { Clock, FileCode, FolderOpen, KeyRound, LogOut, X } from 'lucide-react';
+import { Clock, FileCode, FolderOpen, KeyRound, Loader2, LogOut, X } from 'lucide-react';
 import type { RecentEntry } from '../lib/types';
 
 interface Stage2HubProps {
@@ -316,13 +316,14 @@ export function Stage2Hub({
           {/* Status message */}
           {statusMessage && (
             <div
-              className="mt-4 w-full rounded-xl px-4 py-3 text-xs text-left"
+              className="mt-4 flex w-full items-center gap-2 rounded-xl px-4 py-3 text-xs text-left"
               style={{
                 border: '1px solid rgb(196 181 253 / .15)',
                 background: 'rgb(196 181 253 / .05)',
                 color: '#d4d4d8',
               }}
             >
+              {isBusy && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-violet-300" />}
               {statusMessage}
             </div>
           )}
