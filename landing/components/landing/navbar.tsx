@@ -18,40 +18,29 @@ const links = [
 export function Logo() {
   return (
     <a href="#top" className="group flex items-center gap-2.5" aria-label="ShadRox home">
-      {/* ShadRox SVG logo — shield with S-curve inside */}
       <svg
-        viewBox="0 0 36 36"
+        viewBox="0 0 32 32"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
         className="size-8 flex-shrink-0 transition-transform duration-300 group-hover:scale-105"
         aria-hidden="true"
       >
-        {/* Shield body */}
         <path
-          d="M18 3L5 8v9c0 7.5 5.6 14.5 13 16.5C25.4 31.5 31 24.5 31 17V8L18 3z"
-          fill="#0b0f1c"
-          stroke="#e2e8f0"
-          strokeWidth="1.8"
+          d="M6 7L16 3L26 7V16C26 22.5 16 29 16 29C16 29 6 22.5 6 16V7Z"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
           strokeLinejoin="round"
         />
-        {/* S-curve accent */}
         <path
-          d="M23 12H15a2.5 2.5 0 000 5h6a2.5 2.5 0 010 5h-7"
-          stroke="url(#s-grad)"
+          d="M20 11H13.5C12.1193 11 11 12.1193 11 13.5C11 14.8807 12.1193 16 13.5 16H18.5C19.8807 16 21 17.1193 21 18.5C21 19.8807 19.8807 21 18.5 21H11"
+          stroke="#10b981"
           strokeWidth="2.4"
           strokeLinecap="round"
           strokeLinejoin="round"
         />
-        {/* Corner dots */}
-        <circle cx="15" cy="12" r="1.5" fill="#a78bfa" />
-        <circle cx="22" cy="22" r="1.5" fill="#22d3ee" />
-        <defs>
-          <linearGradient id="s-grad" x1="14" y1="12" x2="23" y2="22" gradientUnits="userSpaceOnUse">
-            <stop stopColor="#8b5cf6"/>
-            <stop offset="0.55" stopColor="#6366f1"/>
-            <stop offset="1" stopColor="#22d3ee"/>
-          </linearGradient>
-        </defs>
+        <circle cx="11" cy="11" r="1.5" fill="#34d399" />
+        <circle cx="21" cy="21" r="1.5" fill="#34d399" />
       </svg>
       <span className="text-[15px] font-bold tracking-[-0.03em] text-[var(--ink)]">ShadRox</span>
     </a>
