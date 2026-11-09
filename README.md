@@ -32,6 +32,7 @@ The download button points at the **last published** GitHub release. This source
 - **Assistant shell access.** The agent can run a command in the opened folder and read its real exit code and output.
 - **Command approval.** Every shell command now requires a native approval dialog, including the former verification commands (`npm test`, `pytest`, `tsc --noEmit`, and Git status/diff). The workspace is checked again after approval and before the command runs.
 - **Security hardening.** MCP connections and external debug adapters require native approval. Preview bundles exclude vault secrets, repository rules and skills are treated as untrusted reference data, and renderer CSP is applied only to the app origin.
+- **Hardened production builds.** The production renderer is obfuscated with control-flow flattening, dead-code injection, hexadecimal identifiers, RC4-protected string arrays, and self-defending output. Electron main/preload code and the local API backend are bundled into V8 bytecode (`.jsc`) and their source files are removed from the packaged application. This protection is enabled only for production packaging; development remains readable and debuggable.
 - **Verified writes.** After applying edits, ShadRox re-reads the files and only reports a save when the bytes on disk actually changed.
 - **Terminal state.** PowerShell and bash emit OSC 133 / 633 markers for cwd, command text, and exit code. The panel shows cwd and the last exit code, and notices a running command that has gone silent. Command Prompt and plain `/bin/sh` are not wrapped. The agent can read that summary with `terminal_state`. It cannot type into the interactive shell.
 - **Failure receipts.** A failed `run_command` is shown on the assistant message with that turn's undo checkpoint id. The model receives the error and a repair brief. ShadRox does not apply a repair patch by itself.
@@ -319,6 +320,16 @@ npm run dev:landing
 | `npm run dist:win` | Build a Windows NSIS installer (no publish). |
 | `npm run dist:mac` | Build a macOS DMG. |
 | `npm run release:win` | Build and publish a Windows release (requires `GH_TOKEN`). |
+
+### Production build protection
+
+`npm run build:desktop` and `npm run dist:win` set `NODE_ENV=production` and run the complete hardening pipeline automatically:
+
+1. Vite obfuscates the renderer bundle with control-flow flattening (`0.80`), dead-code injection (`0.40`), hexadecimal identifiers, RC4 string-array encoding, and self-defending output.
+2. The Electron main process, preload bridge, and local API/backend are bundled and compiled to V8 bytecode with Bytenode.
+3. Original backend and Electron JavaScript/TypeScript source files are removed from the staging directory before Electron Builder creates the ASAR.
+
+`npm run dev` and `npm run dev:desktop` do not run this pipeline, so local debugging remains readable. Obfuscation and bytecode raise the cost of static inspection but cannot make a distributed application mathematically impossible to reverse-engineer; keep signing keys, provider secrets, and other confidential material out of the client.
 
 ## Project Structure
 

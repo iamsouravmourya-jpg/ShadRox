@@ -1,5 +1,6 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import obfuscatorPlugin from 'vite-plugin-javascript-obfuscator';
 import path from 'path';
 import {defineConfig, loadEnv} from 'vite';
 
@@ -13,7 +14,28 @@ export default defineConfig(({ mode, command }) => {
     }
   }
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      ...(command === 'build' && mode === 'production'
+        ? [
+            obfuscatorPlugin({
+              apply: 'build',
+              options: {
+                controlFlowFlattening: true,
+                controlFlowFlatteningThreshold: 0.8,
+                deadCodeInjection: true,
+                deadCodeInjectionThreshold: 0.4,
+                identifierNamesGenerator: 'hexadecimal',
+                selfDefending: true,
+                stringArray: true,
+                stringArrayEncoding: ['rc4'],
+                stringArrayThreshold: 1
+              }
+            })
+          ]
+        : [])
+    ],
     resolve: {
       alias: {
         '@': path.resolve(rootDir, '.'),

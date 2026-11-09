@@ -14,7 +14,7 @@ const outputDirectory = process.env.SHADROX_OUTPUT_DIR
   ? path.resolve(projectDirectory, process.env.SHADROX_OUTPUT_DIR)
   : path.join(projectDirectory, 'dist_desktop');
 const heapLimit = '--max-old-space-size=12288';
-const env = { ...process.env, NODE_OPTIONS: heapLimit };
+const env = { ...process.env, NODE_ENV: 'production', NODE_OPTIONS: heapLimit };
 const isWindows = process.platform === 'win32';
 
 // Root of the backend import graph that must exist in the packaged app.
@@ -172,6 +172,8 @@ function main() {
   copyIntoStage('package-lock.json', 'package-lock.json');
   copyIntoStage('.npmrc', '.npmrc');
 
+  run(process.execPath, [path.join(projectDirectory, 'scripts', 'secure-stage.mjs')], { shell: false });
+
   const packageJson = JSON.parse(fs.readFileSync(path.join(projectDirectory, 'package.json'), 'utf8'));
   const electronPackage = JSON.parse(fs.readFileSync(
     path.join(projectDirectory, 'node_modules', 'electron', 'package.json'),
@@ -179,16 +181,23 @@ function main() {
   ));
   packageJson.build.electronVersion = electronPackage.version;
   packageJson.build.directories.output = outputDirectory;
+  packageJson.main = 'electron/loader.cjs';
+  packageJson.build.files = [
+    'dist/**/*',
+    'electron/loader.cjs',
+    'electron/main.jsc',
+    'electron/preload-loader.cjs',
+    'electron/preload.jsc',
+    'server.jsc',
+    'assets/**/*',
+    'package.json',
+    '!node_modules/.cache/**'
+  ];
 
   // Replace the manual/fallback src/lib entry with the derived list so the staged
   // manifest ships exactly the files the resolver proved the backend reaches.
   // Order is irrelevant to electron-builder, so drop every existing src/lib/*
   // entry (including the fallback glob) and append the precise derived list.
-  const withoutLib = packageJson.build.files.filter(
-    (entry) => !entry.startsWith(`${RUNTIME_LIB_DIR}/`),
-  );
-  packageJson.build.files = [...withoutLib, ...runtimeLibFiles];
-
   fs.writeFileSync(path.join(stagingDirectory, 'package.json'), `${JSON.stringify(packageJson, null, 2)}\n`);
 
   run(isWindows ? 'npm.cmd' : 'npm', [

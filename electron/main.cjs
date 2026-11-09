@@ -714,19 +714,6 @@ async function startProtocolPreview(workspaceId, workspaceRoot, reportStatus, pr
   return { url, script: 'static' };
 }
 
-function configurePackagedEsbuild() {
-  if (!app.isPackaged) return;
-  const unpackedAppPath = app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked');
-  const executable = process.platform === 'win32' ? 'esbuild.exe' : path.join('bin', 'esbuild');
-  process.env.ESBUILD_BINARY_PATH = path.join(
-    unpackedAppPath,
-    'node_modules',
-    '@esbuild',
-    `${process.platform}-${process.arch}`,
-    executable
-  );
-}
-
 /**
  * The bridge is for ShadRox's own document only. Electron injects preload.cjs
  * into every frame of a webContents and the preview iframes live inside this
@@ -821,11 +808,8 @@ function storePort(port) {
 }
 
 async function startPackagedBackend() {
-  configurePackagedEsbuild();
-  const { register } = await import('tsx/esm/api');
-  register();
-  const serverUrl = pathToFileURL(path.join(app.getAppPath(), 'server.ts')).href;
-  const { startServer } = await import(serverUrl);
+  require('bytenode');
+  const { startServer } = require(path.join(app.getAppPath(), 'server.jsc'));
   const options = {
     mode: 'production',
     host: '127.0.0.1',
@@ -2845,7 +2829,7 @@ async function createWindow() {
           }
         }),
     webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
+      preload: path.join(__dirname, 'preload-loader.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,

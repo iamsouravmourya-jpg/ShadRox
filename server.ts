@@ -18,7 +18,8 @@ import { sharedKeyPathEnabled } from './api/ai/_access';
 
 dotenv.config();
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const serverFile = typeof __filename === 'string' ? __filename : fileURLToPath(import.meta.url);
+const serverDirectory = path.dirname(serverFile);
 
 /**
  * Local development server.
@@ -89,7 +90,7 @@ export async function startServer(options: {
     });
     app.use(vite.middlewares);
   } else {
-    const staticDirectory = options.staticDirectory ?? path.join(__dirname, 'dist');
+    const staticDirectory = options.staticDirectory ?? path.join(serverDirectory, 'dist');
     app.use(express.static(staticDirectory));
     app.get('*', (_req, res) => res.sendFile(path.join(staticDirectory, 'index.html')));
   }
@@ -124,7 +125,7 @@ export async function startServer(options: {
   };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && path.resolve(process.argv[1]) === serverFile) {
   void startServer().catch((error) => {
     console.error('[server] failed to start', error);
     process.exitCode = 1;
