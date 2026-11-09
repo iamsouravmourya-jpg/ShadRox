@@ -21,6 +21,8 @@ import { parseRevealMessage, type RevealSourceTarget } from '../lib/previewSourc
 import { getDesktopBridge, type DesktopPreviewOutput, type DesktopPreviewState, type PreviewProjectCandidate } from '../lib/desktop';
 import { globalRepairSession } from '../lib/repairSession';
 import { BackendPreview } from './BackendPreview';
+import type { BehaviorEvent } from '../lib/behavior/types';
+import { createBehaviorEvent } from '../lib/behavior/recorder';
 
 interface PreviewPaneProps {
   document: PreviewDocument | null;
@@ -51,6 +53,7 @@ interface PreviewPaneProps {
    * served HTML file, so the host can open it and reveal the line.
    */
   onRevealSource?: (target: RevealSourceTarget) => void;
+  onBehaviorEvent?: (event: BehaviorEvent) => void;
   /**
    * Enables the backend preview companion. Omit it to keep the original
    * single-preview layout untouched.
@@ -134,6 +137,7 @@ export function PreviewPane({
   onToggleAutoReload,
   lastReloadAt = null,
   onRevealSource,
+  onBehaviorEvent,
   workspaceId = null,
   backendEnabled = true,
   fullscreen = false,
@@ -240,7 +244,13 @@ export function PreviewPane({
         // Static-preview click-to-source: validate the payload shape/path here
         // and let the host resolve it against the open workspace.
         const target = parseRevealMessage(data);
-        if (target) onRevealSource?.(target);
+        if (target) {
+          onRevealSource?.(target);
+          onBehaviorEvent?.(createBehaviorEvent('click', {
+            target: `<${target.tag}${target.id ? `#${target.id}` : ''}>`,
+            path: target.path
+          }));
+        }
         return;
       }
       const time = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -255,11 +265,12 @@ export function PreviewPane({
         setLogs((prev) => [...prev.slice(-99), { type: 'error', message, timestamp: time }]);
         setIsConsoleOpen(true);
         onRuntimeError(message);
+        onBehaviorEvent?.(createBehaviorEvent('error', { target: 'preview', message }));
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [onRuntimeError, onRevealSource]);
+  }, [onBehaviorEvent, onRuntimeError, onRevealSource]);
 
   // Percentages can go stale in Electron when the panel resizes or loses a
   // scrollbar, so mirror the panel's content box onto the active preview frame.

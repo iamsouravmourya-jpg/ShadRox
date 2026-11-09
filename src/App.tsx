@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ArrowLeft, Bug, FolderOpen, FolderTree, GitBranch, Loader2, LogOut, MonitorPlay, Search, Settings, Terminal, UserRound } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Bug, FolderOpen, FolderTree, GitBranch, History, Loader2, LogOut, MonitorPlay, Search, Settings, Terminal, UserRound, X } from 'lucide-react';
 import { ShadRoxLogo } from './components/Logo';
 import { Stage2Hub } from './components/Stage2Hub';
 import { CodeEditor, PathPromptDialog, type DefinitionNavigation, type EditorQuickFixActions, type EditorSymbolActions, type PathPromptRequest, type RenameOutcome } from './components/CodeEditor';
@@ -12,6 +12,18 @@ import { SettingsDrawer } from './components/SettingsDrawer';
 import { useWorkspace } from './hooks/useWorkspace';
 import { useDebug } from './hooks/useDebug';
 import { DebugPanel } from './components/DebugPanel';
+import { useCapsules } from './hooks/useCapsules';
+import { useIntentGraph } from './hooks/useIntentGraph';
+import type { BehaviorEvent, AcceptanceContract } from './lib/behavior/types';
+import { appendBehaviorEvent } from './lib/behavior/recorder';
+import { generateAcceptanceContract } from './lib/behavior/contract';
+import { listOutcomes, recordOutcome, routeProfiles } from './lib/calibratedAuto/ledger';
+import { rankModelsByOutcome } from './lib/calibratedAuto/router';
+import type { OutcomeRecord } from './lib/calibratedAuto/types';
+import { TaskInspector } from './components/TaskInspector';
+import { loadCheckpointFiles } from './lib/history';
+import { getCapsule } from './lib/capsules/store';
+import type { CapsuleSpend } from './lib/capsules/types';
 import { useRepoMapFiles } from './hooks/useRepoMap';
 import { useDiagnostics } from './hooks/useDiagnostics';
 import { useOutline } from './hooks/useOutline';
@@ -461,6 +473,17 @@ export default function App() {
   const [diskToast, setDiskToast] = useState<string | null>(null);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [isDebugPanelOpen, setIsDebugPanelOpen] = useState(false);
+  const [showTaskInspector, setShowTaskInspector] = useState(false);
+  const [behaviorEvents, setBehaviorEvents] = useState<BehaviorEvent[]>([]);
+  const [behaviorContract, setBehaviorContract] = useState<AcceptanceContract | null>(null);
+  const [calibratedOutcomes, setCalibratedOutcomes] = useState<OutcomeRecord[]>(() => listOutcomes());
+  const [pendingCapsule, setPendingCapsule] = useState<{
+    taskId: string;
+    checkpointId: string;
+    promptIntent: string;
+    spend: CapsuleSpend | null;
+    machineDeltaRef: string | null;
+  } | null>(null);
   const [viewport, setViewport] = useState<ViewportSize>('desktop');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('CHAT');
@@ -678,6 +701,13 @@ export default function App() {
    */
   const activeFilePath = workspace.activeFile?.name ?? null;
   const workspaceRootPath = workspace.workspace?.path ?? null;
+  const capsules = useCapsules(workspaceRootPath);
+  const intentFiles = useMemo(
+    () => workspace.files.map((file) => ({ path: file.name, content: file.content })),
+    [workspace.files]
+  );
+  const intent = useIntentGraph(workspaceRootPath, intentFiles);
+  const calibratedProfiles = useMemo(() => routeProfiles(), [calibratedOutcomes]);
   /** True once shadrox.debug.json parsed into at least one configuration. */
   const debugBreakpointsEnabled = debug.config.configurations.length > 0;
   /** Where the debugger is paused, for the editor-header chip. */
@@ -1705,7 +1735,7 @@ export default function App() {
       const decision = decideAutoRoute({
         role,
         estimatedInputTokens: DISK_CONTEXT_TOKEN_ESTIMATE,
-        availableModels: byok.models.map((model) => model.id),
+        availableModels: rankModelsByOutcome('chat', byok.models.map((model) => model.id)),
         userModel: byok.selectedModel,
         isSharedKey: byok.useShadRoxKey,
         plan
@@ -1783,6 +1813,18 @@ export default function App() {
       const mcpNotes = discoveryNotes(mcpDiscovery);
 
       const core = [...CHAT_PROMPT_CORE, ...TOOL_DISCIPLINE_RULES, ''];
+      const intentContext = intent.getContext({
+        seeds: [
+          ...(workspace.activeFile?.name ? [workspace.activeFile.name] : []),
+          ...selectedFiles
+        ],
+        query,
+        tokenBudget: 900,
+        maxDecisions: 8
+      });
+      if (intentContext.text) {
+        core.push('LIVING INTENT (user-approved provenance; stale items require verification):', intentContext.text);
+      }
 
       if (mode.writesFiles) {
         core.push(
@@ -2075,7 +2117,8 @@ export default function App() {
       readDiskContextFiles,
       nativeWorkspaceId,
       repoMapFiles.files,
-      repoMapFiles.signatures
+      repoMapFiles.signatures,
+      intent.getContext
     ]
   );
 
@@ -2272,6 +2315,172 @@ export default function App() {
     setToast(message);
     window.setTimeout(() => setToast(null), ms);
   }, []);
+
+  const handleBehaviorEvent = useCallback((event: BehaviorEvent) => {
+    setBehaviorEvents((previous) => appendBehaviorEvent(previous, event));
+  }, []);
+
+  const handleGenerateContract = useCallback(() => {
+    setBehaviorContract(generateAcceptanceContract(behaviorEvents));
+  }, [behaviorEvents]);
+
+  const handleClearBehavior = useCallback(() => {
+    setBehaviorEvents([]);
+    setBehaviorContract(null);
+  }, []);
+
+  const handleContractUpdate = useCallback((contract: AcceptanceContract) => {
+    setBehaviorContract(contract);
+  }, []);
+
+  // --- change capsules -------------------------------------------------------
+
+  const applyCapsulePlan = useCallback(async (id: string, mode: 'replay' | 'revert') => {
+    const folder = workspace.workspace;
+    if (!folder || folder.kind !== 'folder') {
+      announce('Open a folder workspace to replay or revert a capsule.', 5000);
+      return;
+    }
+    if (isGenerating) {
+      announce('Finish the current turn before replaying or reverting a capsule.', 5000);
+      return;
+    }
+    const currentFiles = workspace.files.map((file) => ({ path: file.name, content: file.content }));
+    const plan = mode === 'replay'
+      ? await capsules.planReplay(id, currentFiles)
+      : await capsules.planRevert(id, currentFiles);
+    if (!plan.ok) {
+      announce(
+        `Capsule ${mode} refused — ${plan.conflicts.slice(0, 3).map((conflict) => `${conflict.path}: ${conflict.reason}`).join(' · ')}. No files changed.`,
+        7000
+      );
+      return;
+    }
+    if (plan.jobs.length === 0) {
+      announce('This capsule has no changes to apply.', 4000);
+      return;
+    }
+    // content:'' is ambiguous (a delete vs a truncate-to-empty); the recorded
+    // diff kind is what tells a deletion apart from a legitimate empty write.
+    const capsule = await getCapsule(id);
+    const normalize = (value: string) => value.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+    const kindByPath = new Map((capsule?.diffs ?? []).map((diff) => [normalize(diff.path), diff.kind]));
+    const writeJobs: AtomicPlanJob[] = [];
+    const deletePaths: string[] = [];
+    for (const job of plan.jobs) {
+      const kind = kindByPath.get(normalize(job.path));
+      const isDelete = (mode === 'replay' && kind === 'deleted') || (mode === 'revert' && kind === 'created');
+      if (isDelete) deletePaths.push(job.path);
+      else writeJobs.push(job);
+    }
+    const checkpointId = await workspace.markCheckpoint(makeId('capsule'), `Capsule ${mode}`, true, true);
+    try {
+      const editPaths = writeJobs.filter((job) => !job.created).map((job) => job.path);
+      if (editPaths.length > 0) await workspace.loadFilesForPatching(editPaths);
+      const applied = applyAtomicJobs(writeJobs, (updates) => workspace.applyFilePatches(updates));
+      for (const path of deletePaths) await workspace.deleteWorkspaceEntry(path);
+      const createdPaths = writeJobs.filter((job) => job.created).map((job) => job.path);
+      if (createdPaths.length > 0) await workspace.noteCheckpointCreated(createdPaths);
+      let diskNote = 'Applied in the editor only — save to write to disk.';
+      if (applied.length > 0 && workspace.canWriteToDisk) {
+        const outcome = await saveFilesAtomicWithHooks(applied);
+        if (outcome.failed && outcome.written === 0) {
+          workspace.applyFilePatches(revertAtomicJobs(writeJobs));
+          announce(outcome.message ?? 'The capsule change was not saved and was rolled back.', 7000);
+          return;
+        }
+        diskNote = outcome.written > 0
+          ? `${outcome.written} file${outcome.written === 1 ? '' : 's'} written to disk.`
+          : outcome.message ?? diskNote;
+      }
+      announce(
+        `Capsule ${mode}: ${applied.length} file${applied.length === 1 ? '' : 's'} updated${deletePaths.length > 0 ? `, ${deletePaths.length} deleted` : ''}. ${diskNote}`,
+        5000
+      );
+    } finally {
+      await workspace.finishMachineCheckpoint(checkpointId);
+    }
+  }, [workspace, capsules, announce, saveFilesAtomicWithHooks, isGenerating]);
+
+  const handleCapsuleExport = useCallback(async () => {
+    const exported = await capsules.exportJson();
+    if (exported.capsules.length === 0) {
+      announce('No capsules to export yet.', 4000);
+      return;
+    }
+    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `shadrox-capsules-${Date.now()}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    announce(`Exported ${exported.capsules.length} capsule${exported.capsules.length === 1 ? '' : 's'}.`, 4000);
+  }, [capsules, announce]);
+
+  const handleCapsuleImport = useCallback(async (data: unknown) => {
+    const result = await capsules.importJson(data);
+    if (result.imported === 0 && result.errors.length > 0) {
+      announce(`Capsule import failed — ${result.errors[0]}`, 6000);
+      return;
+    }
+    announce(
+      `Imported ${result.imported} capsule${result.imported === 1 ? '' : 's'}${result.skipped > 0 ? `, ${result.skipped} skipped` : ''}.`,
+      5000
+    );
+  }, [capsules, announce]);
+
+  const handleIntentExport = useCallback(() => {
+    const exported = intent.exportJson();
+    if (exported.decisions.length === 0) {
+      announce('No intent decisions to export yet.', 4000);
+      return;
+    }
+    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `shadrox-intent-${Date.now()}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    announce(`Exported ${exported.decisions.length} intent decision${exported.decisions.length === 1 ? '' : 's'}.`, 4000);
+  }, [intent, announce]);
+
+  const handleIntentImport = useCallback((data: unknown) => {
+    const result = intent.importJson(data);
+    announce(
+      result.imported > 0
+        ? `Imported ${result.imported} intent decision${result.imported === 1 ? '' : 's'}.`
+        : `Intent import failed — ${result.errors[0] ?? 'nothing new to import'}`,
+      5000
+    );
+  }, [intent, announce]);
+
+  // Capture runs after the turn's edits commit, so workspace.files is the fresh
+  // post-task snapshot rather than the stale closure captured at turn start.
+  useEffect(() => {
+    if (!pendingCapsule || !workspaceRootPath) return;
+    const request = pendingCapsule;
+    setPendingCapsule(null);
+    const postFiles = workspace.files.map((file) => ({ path: file.name, content: file.content }));
+    void (async () => {
+      try {
+        const baseFiles = await loadCheckpointFiles(request.checkpointId);
+        await capsules.capture({
+          taskId: request.taskId,
+          workspaceRoot: workspaceRootPath,
+          promptIntent: request.promptIntent,
+          baseFiles: (baseFiles ?? []).map((file) => ({ path: file.name, content: file.content })),
+          postFiles,
+          spend: request.spend,
+          machineDeltaRef: request.machineDeltaRef,
+          status: 'applied'
+        });
+      } catch {
+        // Capsule capture is best-effort and must never surface as a turn error.
+      }
+    })();
+  }, [pendingCapsule, workspaceRootPath, workspace.files, capsules.capture]);
 
   const closeReferences = useCallback(() => {
     referencesRequestId.current += 1;
@@ -3279,7 +3488,7 @@ export default function App() {
         ? decideAutoRoute({
             role: mode.writesFiles ? 'edit' : 'chatter',
             estimatedInputTokens: Math.round(sentChars / 4),
-            availableModels: byok.models.map((model) => model.id),
+            availableModels: rankModelsByOutcome(mode.writesFiles ? 'feature' : 'chat', byok.models.map((model) => model.id)),
             userModel: byok.selectedModel,
             isSharedKey: true,
             plan
@@ -3706,6 +3915,36 @@ export default function App() {
       finally {
         await workspace.finishMachineCheckpoint(machineCheckpoint);
         globalRepairSession.endTurn();
+        if (streamCompleted && machineCheckpoint && workspaceRootPath) {
+          setPendingCapsule({
+            taskId: modelMessage.id,
+            checkpointId: machineCheckpoint,
+            promptIntent: text,
+            spend: resolvedPayer === 'byok' ? null : {
+              provider: byok.activeProvider,
+              model: answerModel,
+              inputTokens: turnUsage.inputTokens,
+              outputTokens: turnUsage.outputTokens,
+              cachedTokens: turnUsage.cachedTokens,
+              estimatedCostUsd: null
+            },
+            machineDeltaRef: machineCheckpoint
+          });
+        }
+        if (streamCompleted) {
+          const outcome = recordOutcome({
+            taskType: mode.writesFiles ? 'feature' : 'chat',
+            route: answerRoute?.answerModel === byok.selectedModel ? 'writer' : (mode.writesFiles ? 'frontier' : 'reader'),
+            model: answerModel,
+            passed: true,
+            repairIterations: turnAttempts.length > 1 ? turnAttempts.length - 1 : 0,
+            inputTokens: turnUsage.inputTokens,
+            outputTokens: turnUsage.outputTokens,
+            latencyMs: turnUsage.durationMs,
+            verified: true
+          });
+          setCalibratedOutcomes((previous) => [outcome, ...previous].slice(0, 500));
+        }
         setIsGenerating(false);
         setActiveStatusMessage(null);
         chatDispatchLockRef.current = false;
@@ -5314,6 +5553,7 @@ export default function App() {
       onToggleAutoReload={togglePreviewAutoReload}
       lastReloadAt={previewSync.lastReloadAt}
       onRevealSource={(target) => void handleRevealSource(target)}
+      onBehaviorEvent={handleBehaviorEvent}
       fullscreen={isPreviewFullscreen}
       onToggleFullscreen={() => setIsPreviewFullscreen((fullscreen) => !fullscreen)}
       onClose={() => {
@@ -5442,6 +5682,57 @@ export default function App() {
         </div>
       )}
 
+      {showTaskInspector && (
+        <div
+          className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm"
+          onClick={() => setShowTaskInspector(false)}
+        >
+          <div
+            className="h-full w-full max-w-md overflow-y-auto border-l border-white/10 bg-ink-950 p-3 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <span className="font-mono text-[11px] uppercase tracking-wider text-neutral-400">Task Inspector</span>
+              <button
+                type="button"
+                onClick={() => setShowTaskInspector(false)}
+                title="Close task inspector"
+                aria-label="Close task inspector"
+                className="rounded p-1 text-zinc-500 transition-colors hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <TaskInspector
+              workspaceRoot={workspaceRootPath}
+              capsules={capsules.capsules}
+              loading={capsules.loading}
+              onRefresh={() => void capsules.refresh()}
+              onReplay={(id) => void applyCapsulePlan(id, 'replay')}
+              onRevert={(id) => void applyCapsulePlan(id, 'revert')}
+              onDelete={(id) => void capsules.remove(id)}
+              onExport={() => void handleCapsuleExport()}
+              onImport={(data) => void handleCapsuleImport(data)}
+              intentGraph={intent.graph}
+              intentDecisions={intent.decisions}
+              intentLoading={intent.loading}
+              onIntentRefresh={() => void intent.refresh()}
+              onAddDecision={(input) => void intent.addDecision(input)}
+              onDeleteDecision={(id) => void intent.removeDecision(id)}
+              onIntentExport={handleIntentExport}
+              onIntentImport={handleIntentImport}
+              behaviorEvents={behaviorEvents}
+              contract={behaviorContract}
+              onClearBehavior={handleClearBehavior}
+              onGenerateContract={handleGenerateContract}
+              onUpdateContract={handleContractUpdate}
+              outcomes={calibratedOutcomes}
+              routeProfiles={calibratedProfiles}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Rail + one main surface: the preview fills it until the user opens code. */}
       <div
         className="flex-1 min-h-0 flex flex-col md:grid"
@@ -5533,6 +5824,19 @@ export default function App() {
             }`}
           >
             <Bug className="h-[18px] w-[18px]" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowTaskInspector((open) => !open)}
+            aria-pressed={showTaskInspector}
+            title={showTaskInspector ? 'Close change capsules' : 'Change capsules'}
+            className={`flex h-9 w-9 items-center justify-center rounded-xl transition-colors cursor-pointer ${
+              showTaskInspector
+                ? 'bg-violet-500/15 text-violet-200'
+                : 'text-zinc-500 hover:bg-white/[0.06] hover:text-white'
+            }`}
+          >
+            <History className="h-[18px] w-[18px]" />
           </button>
 
           <div className="relative ml-auto md:ml-0 md:mt-auto">

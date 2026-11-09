@@ -62,6 +62,10 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 | 🚀 | **Multi-step runs and teams** | Plan larger work as tasks, run verification/repair stages, or coordinate specialist roles. Features an autonomous DAG execution engine and role-confined agent teams. |
 | 🔌 | **MCP servers** | Connect user-configured Model Context Protocol servers. External tool calls require approval. |
 | 👁️ | **Local preview & assertions** | Preview Markdown, static sites, detected Node web projects, and Python/Go/PHP/Java/.NET backends. Includes DOM route, element, and console error assertions. |
+| 🧭 | **Behavior-to-Code Studio** | Record preview clicks and runtime errors, map interactions to source paths, and generate an editable acceptance contract with baseline and post-patch verification states. |
+| 🧠 | **Living Intent Graph** | Index workspace symbols and dependencies, persist approved rationale locally, flag decisions stale after SHA-256 changes, and inject budgeted intent context into AI tasks. |
+| 📈 | **Outcome-Calibrated Auto** | Record route outcomes, pass rates, repair iterations, token use, and latency locally; Auto ranks models using verified historical results instead of token price alone. |
+| 🧩 | **Task Inspector** | One dock for capsules, Intent Graph, Behavior Studio, and Calibrated Auto. Capsule and intent data support offline JSON export/import. |
 | 🔀 | **Source control** | Inspect staged and unstaged Git changes, preview file diffs, stage or unstage, commit with AI-generated messages, switch local branches, and detect and resolve merge conflicts. |
 | 🔎 | **Workspace search & replace** | Search files on disk and in buffers, review matching results, and replace selected or matching text. |
 | ⏮️ | **Checkpoints** | Review assistant checkpoints and restore earlier workspace content. |
@@ -71,6 +75,16 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 | ⏪ | **Machine Delta core** | Main-process snapshot, inspection, and explicit restore primitives for bounded workspace, local Git, and ShadRox-owned preview changes. |
 | 🐛 | **Debugger (DAP)** | Launches a Node program declared in the workspace's `shadrox.debug.json` through the Debug Adapter Protocol: breakpoints in the editor gutter, call stack, scopes and variables, hover values while paused, and pause/continue/step. The adapter runs as a bounded argv process inside the workspace, never through a shell. Heap profiling is not included. |
 | 🔄 | **Auto-updates** | The app checks for releases and installs downloaded updates when you restart or quit. |
+
+### Task Inspector systems
+
+The Task Inspector groups the local-first engineering records that accompany an AI task:
+
+- **Behavior Studio** listens to preview bridge events such as source-mapped clicks and runtime errors. It keeps a bounded interaction history and turns it into an acceptance contract containing the target source location, observed failure, expected behavior, and reproduction steps.
+- **Living Intent Graph** scans loaded source files for symbols and dependency edges. User-approved decisions are stored in browser local storage, re-hashed against current files, and marked `stale` when their governing content changes.
+- **Outcome-Calibrated Auto** keeps a bounded local ledger of route, model, verification, repair, token, and latency outcomes. Model ordering is adjusted only when verified history exists; new models retain a neutral fallback order.
+
+These records remain local to the workspace/browser profile. Use the Inspector's export controls to create portable JSON backups; imports are validated before they are stored.
 
 ## Architecture
 
@@ -314,6 +328,9 @@ shadrox/
 │       ├── autonomy/     # Autonomous engine: DAG, run-loop, confinement, budget
 │       ├── automations/ # Schedulers, webhooks, declarative automations
 │       ├── editor/      # Search/replace, hunks, semantic tokens, references
+│       ├── behavior/    # Preview interaction events and acceptance contracts
+│       ├── calibratedAuto/ # Outcome ledger, route profiles, calibrated ranking
+│       ├── intent/      # Living intent graph, symbol dependencies, local decisions
 │       ├── debug/       # DAP framing, adapter/session rails, runtime capture for repair receipts
 │       ├── machine/     # Machine Delta support modules
 │       ├── plugins/     # Plugin manifest, loader, hook engine
