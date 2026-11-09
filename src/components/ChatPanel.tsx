@@ -19,6 +19,7 @@ import {
   Paperclip,
   Play,
   History,
+  Image,
   Send,
   ShieldAlert,
   ShieldCheck,
@@ -100,6 +101,8 @@ interface ChatPanelProps {
   onOpenSettings: (tab?: SettingsTab) => void;
   attachedFiles: string[];
   onAttachedFilesChange: (fileNames: string[]) => void;
+  attachedImage: string | null;
+  onAttachedImageChange: (image: string | null) => void;
   /** Symbols from the active file; choosing one pins it and attaches its file. */
   symbols?: MentionSymbol[];
   pinnedSymbols: PinnedSymbol[];
@@ -990,6 +993,8 @@ export function ChatPanel({
   onOpenSettings,
   attachedFiles,
   onAttachedFilesChange,
+  attachedImage,
+  onAttachedImageChange,
   symbols = [],
   pinnedSymbols,
   onPinnedSymbolsChange,
@@ -1037,6 +1042,7 @@ export function ChatPanel({
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const runMenuRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
@@ -1534,6 +1540,13 @@ export function ChatPanel({
                 ))}
               </div>
             )}
+            {message.attachedImage && (
+              <img
+                src={message.attachedImage}
+                alt="Attached photo"
+                className="mb-1 max-h-40 max-w-[70%] rounded-lg border border-white/[0.09] object-contain"
+              />
+            )}
 
             {message.role === 'user' ? (
               <div className="max-w-[85%] rounded-2xl rounded-br-md border border-violet-300/15 bg-gradient-to-b from-violet-500/[0.14] to-violet-500/[0.07] px-3.5 py-2.5 text-neutral-100 leading-relaxed whitespace-pre-wrap shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
@@ -1962,6 +1975,15 @@ export function ChatPanel({
                 ) : (
                   <FileCode2 className="h-3 w-3 shrink-0 text-violet-300/80" />
                 )}
+                {attachedImage && (
+                  <div className="mb-2 flex items-center gap-2 rounded-lg border border-emerald-300/20 bg-emerald-500/[.06] px-2 py-1.5">
+                    <img src={attachedImage} alt="Attached photo preview" className="h-10 w-10 rounded object-cover" />
+                    <span className="flex-1 text-[11px] text-emerald-200">One photo attached</span>
+                    <button type="button" onClick={() => onAttachedImageChange(null)} aria-label="Remove attached photo" className="text-neutral-500 hover:text-white cursor-pointer">
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                )}
                 <span className="truncate font-mono">{name}</span>
                 <button
                   type="button"
@@ -2301,6 +2323,31 @@ export function ChatPanel({
                     ))}
                   </div>
                 )}
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = '';
+                    if (!file) return;
+                    if (!file.type.startsWith('image/')) return;
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      if (typeof reader.result === 'string') onAttachedImageChange(reader.result);
+                    };
+                    reader.readAsDataURL(file);
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  title="Attach one photo"
+                  className="shrink-0 p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+                >
+                  <Image className="h-3.5 w-3.5" />
+                </button>
               </div>
 
               {/* S18: undo a refinement, restoring the draft the user actually typed */}

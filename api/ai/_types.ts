@@ -7,6 +7,7 @@ export type ThinkingLevel = 'low' | 'high';
 export interface ChatMessage {
   role: ChatRole;
   content: string;
+  imageData?: string;
   /**
    * Set by `shapeStablePrefix()` on a cache breakpoint, for the one provider
    * family whose wire format carries a cache field (`cache_control` content
@@ -19,6 +20,7 @@ export interface ChatMessage {
 export interface ChatMessageInput {
   role?: string;
   content?: string;
+  imageData?: string;
 }
 
 export interface ChatRequestBody {

@@ -241,6 +241,7 @@ type OrchestrationStatus = NonNullable<ChatMessage['orchestration']>['status'];
 
 interface QueuedChatDraft extends QueuedChatItem {
   attachedFiles: string[];
+  attachedImage: string | null;
   pinnedSymbols: PinnedSymbol[];
   pendingRefine: RefinedPromptMeta | null;
   refineMode: RefineMode;
@@ -497,6 +498,7 @@ export default function App() {
   const queuedChatItemsRef = useRef<QueuedChatDraft[]>([]);
   const chatDispatchLockRef = useRef(false);
   const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
+  const [attachedImage, setAttachedImage] = useState<string | null>(null);
   const [pinnedSymbols, setPinnedSymbols] = useState<PinnedSymbol[]>([]);
   const [pendingRefine, setPendingRefine] = useState<RefinedPromptMeta | null>(null);
   const [isRefining, setIsRefining] = useState(false);
@@ -3363,6 +3365,7 @@ export default function App() {
     setInput('');
     setPendingRefine(null);
     setAttachedFiles([]);
+    setAttachedImage(null);
     setPinnedSymbols([]);
 
     const mode = getRefineMode(requestRefineMode);
@@ -3392,6 +3395,7 @@ export default function App() {
       content: typed,
       timestamp,
       refinedMeta: requestPendingRefine ? { ...requestPendingRefine, mode: requestRefineMode } : undefined,
+      attachedImage: submission.attachedImage ?? undefined,
       envelope: requestEnvelope,
       attachments:
         requestFiles.length > 0 || requestSymbols.length > 0
@@ -3442,7 +3446,8 @@ export default function App() {
         files: workspace.files,
         bridge: desktopBridge,
         workspaceId: nativeWorkspaceId
-      })
+      }),
+      ...(submission.attachedImage ? { imageData: submission.attachedImage } : {})
     });
     // The system instruction is measured first and subtracted from the window,
     // so the history is trimmed against what is actually left for it.
@@ -3961,6 +3966,7 @@ export default function App() {
     permissionMode,
     pendingRefine,
     attachedFiles,
+    attachedImage,
     messages,
     autoReaderModel,
     runContextPicker,
@@ -4400,6 +4406,7 @@ export default function App() {
     const draftText = (queuedSubmission?.text ?? input).trim();
     if (!draftText) return;
     const draftFiles = [...(queuedSubmission?.attachedFiles ?? attachedFiles)];
+    const draftImage = queuedSubmission?.attachedImage ?? attachedImage;
     const draftSymbols = [...(queuedSubmission?.pinnedSymbols ?? pinnedSymbols)];
     const draftRefineMode = queuedSubmission?.refineMode ?? refineMode;
     const draftPendingRefine = queuedSubmission
@@ -4410,6 +4417,7 @@ export default function App() {
       id: submissionId,
       text: draftText,
       attachedFiles: draftFiles,
+      attachedImage: draftImage,
       pinnedSymbols: draftSymbols,
       pendingRefine: draftPendingRefine,
       refineMode: draftRefineMode,
@@ -4453,6 +4461,7 @@ export default function App() {
       setInput('');
       setPendingRefine(null);
       setAttachedFiles([]);
+      setAttachedImage(null);
       setPinnedSymbols([]);
       return;
     }
@@ -5938,6 +5947,8 @@ export default function App() {
             onOpenSettings={openSettings}
             attachedFiles={attachedFiles}
             onAttachedFilesChange={setAttachedFiles}
+            attachedImage={attachedImage}
+            onAttachedImageChange={setAttachedImage}
             symbols={outline.symbols.map((symbol) => ({
               name: symbol.name,
               kind: symbol.kind,

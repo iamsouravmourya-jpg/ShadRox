@@ -41,7 +41,15 @@ function buildContents(request: StreamRequest, shaped: readonly ChatMessage[]) {
     .filter((message) => message.role !== 'system')
     .map((message) => ({
       role: message.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: message.content }]
+      parts: [
+        { text: message.content },
+        ...(message.imageData ? [{
+          inlineData: {
+            mimeType: message.imageData.slice(5, message.imageData.indexOf(';')),
+            data: message.imageData.slice(message.imageData.indexOf(',') + 1)
+          }
+        }] : [])
+      ]
     }));
 }
 

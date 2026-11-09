@@ -113,6 +113,7 @@ export function enumValue<T extends string>(raw: Raw, key: string, values: reado
 export interface ChatMessageInputShape {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  imageData?: string;
 }
 
 const CHAT_ROLES = ['user', 'assistant', 'system'] as const;
@@ -136,7 +137,7 @@ export function chatMessages(raw: Raw, key = 'messages'): ChatMessageInputShape[
   }
 
   return value
-    .filter((entry): entry is { role?: unknown; content?: unknown } =>
+    .filter((entry): entry is { role?: unknown; content?: unknown; imageData?: unknown } =>
       Boolean(entry && typeof entry === 'object')
     )
     .map((entry) => {
@@ -150,7 +151,15 @@ export function chatMessages(raw: Raw, key = 'messages'): ChatMessageInputShape[
         );
       }
       if (!CHAT_ROLES.includes(role as (typeof CHAT_ROLES)[number])) return null;
-      return { role: role as ChatMessageInputShape['role'], content };
+      const imageData = entry.imageData;
+      if (imageData !== undefined && (typeof imageData !== 'string' || imageData.length > 1_200_000 || !/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\r\n]+$/i.test(imageData))) {
+        throw new RequestRejectedError(400, '`imageData` valid data URL hona chahiye.');
+      }
+      return {
+        role: role as ChatMessageInputShape['role'],
+        content,
+        ...(imageData ? { imageData } : {})
+      };
     })
     .filter((entry): entry is ChatMessageInputShape => entry !== null);
 }

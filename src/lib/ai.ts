@@ -27,6 +27,7 @@ export interface ValidateKeyResult {
 export interface ChatTurn {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  imageData?: string;
 }
 
 /** How much reasoning the upstream model should spend before answering. */
