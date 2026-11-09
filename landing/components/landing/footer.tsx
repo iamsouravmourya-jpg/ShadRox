@@ -15,7 +15,7 @@ const cols = [
   {
     title: 'Download',
     links: [
-      { label: 'Windows (v0.0.6)', href: 'https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.6-Setup.exe' },
+      { label: 'Windows (v0.0.7)', href: 'https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.7-Setup.exe' },
       { label: 'All releases',    href: 'https://github.com/iamsouravmourya-jpg/ShadRox/releases' },
     ],
   },
