@@ -156,6 +156,13 @@ export function resolveBudgetCapabilities(provider: ProviderId, modelId: string)
   return resolveCapabilities(provider, modelId);
 }
 
+export function modelSupportsVision(provider: ProviderId, modelId: string): boolean {
+  const id = modelId.toLowerCase();
+  if (provider === 'gemini') return /gemini|flash|pro/.test(id);
+  if (provider === 'groq') return /vision|llama-4|meta-llama\/llama-4/.test(id);
+  return /vision|multimodal|gpt-4o|gpt-4\.1|claude-3|gemini|llama-4/.test(id);
+}
+
 export { DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_OUTPUT };
 
 /** The features a request needs before a route may be used for it. */

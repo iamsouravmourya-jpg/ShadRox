@@ -117,6 +117,7 @@ let gitSafetyCache = { root: null, context: null };
 let automationWebhook = null;
 let automationWebhookWorkspaceId = null;
 const mcpClients = new Map();
+const mcpConsentHashes = new Set();
 const previewStartGenerations = new Map();
 const previewRuntime = createPreviewRuntime({
   onOutput: (output) => mainWindow?.webContents.send('preview:output', output),
@@ -281,7 +282,25 @@ function installPreviewRequestGuard() {
       callback({});
       return;
     }
+
     callback({ cancel: !isTrustedPreviewRequest(details) });
+  });
+}
+
+function installRendererCsp() {
+  const csp = [
+    "default-src 'self'", "base-uri 'self'", "object-src 'none'",
+    "frame-ancestors 'none'", "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob: https:",
+    "font-src 'self' data:", "connect-src 'self' https: http://127.0.0.1:* http://localhost:*",
+    "worker-src 'self' blob:"
+  ].join('; ');
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    if (rendererOrigin && details.url.startsWith(rendererOrigin)) {
+      callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [csp] } });
+      return;
+    }
+    callback({});
   });
 }
 
@@ -835,16 +854,33 @@ async function startPackagedBackend() {
   return backend;
 }
 
+function tokenizeCommand(command) {
+  const tokens = [];
+  const pattern = /"([^"]*)"|'([^']*)'|([^\s]+)/g;
+  let match;
+  while ((match = pattern.exec(command)) !== null) tokens.push(match[1] ?? match[2] ?? match[3]);
+  return tokens;
+}
+
 function executeCommand(command, cwd) {
   return new Promise((resolve) => {
-    exec(command, {
+    if (/[;&|<>`$()\\\r\n]/.test(command)) {
+      resolve({ stdout: '', stderr: 'Shell metacharacters are not allowed.', exitCode: 1 });
+      return;
+    }
+    const argv = tokenizeCommand(command);
+    if (argv.length === 0) {
+      resolve({ stdout: '', stderr: 'Command is empty.', exitCode: 1 });
+      return;
+    }
+    const env = resolveTerminalPlan({ mode: 'agent' }).env;
+    const child = execFile(argv[0], argv.slice(1), {
       cwd,
       timeout: 120_000,
       maxBuffer: 2 * 1024 * 1024,
       windowsHide: true,
-      // Same credential-scrubbed agent environment the assistant's shell mode uses,
-      // so a one-shot command can never read a stored key out of `$env`.
-      env: resolveTerminalPlan({ mode: 'agent' }).env
+      shell: false,
+      env
     }, (error, stdout, stderr) => {
       resolve({
         stdout: String(stdout || ''),
@@ -908,17 +944,28 @@ async function gitSafetyContext(workspaceRoot) {
   const probeArgs = buildGitArgv(['rev-parse', '--absolute-git-dir'], options);
   const probe = await runGit(workspaceRoot, probeArgs);
   const gitDir = probe.ok ? probe.stdout.trim() : '';
+  let gitDirInsideWorkspace = false;
+  if (gitDir && path.isAbsolute(gitDir)) {
+    try {
+      const realRoot = fs.realpathSync.native(workspaceRoot);
+      const realGitDir = fs.realpathSync.native(gitDir);
+      gitDirInsideWorkspace = isPathInsideDirectory(realRoot, realGitDir);
+    } catch {
+      gitDirInsideWorkspace = false;
+    }
+  }
 
   let drivers = [];
   let complete = false;
-  if (gitDir && path.isAbsolute(gitDir)) {
+  if (gitDirInsideWorkspace) {
     const collected = await collectRepoFilterDrivers(gitDir);
     drivers = collected.drivers;
     complete = collected.complete;
   }
 
   const context = {
-    complete,
+    complete: complete && gitDirInsideWorkspace,
+    gitDirInsideWorkspace,
     filterDrivers: drivers,
     probeArgs: buildGitArgv(['rev-parse', '--is-inside-work-tree'], options),
     statusArgs: buildGitArgv(['status', '--porcelain=v1', '--branch'], { ...options, filterDrivers: drivers }),
@@ -938,6 +985,7 @@ async function requireGitWorkspace(workspaceId) {
     throw new Error('A trusted Git executable is unavailable.');
   }
   const context = await gitSafetyContext(workspace.root);
+  if (!context.gitDirInsideWorkspace) throw new Error('The Git directory resolves outside the opened workspace.');
   const probe = await runGit(workspace.root, context.probeArgs);
   if (!probe.ok || probe.stdout.trim() !== 'true') throw new Error('The opened folder is not a Git repository.');
   return { workspace, context };
@@ -1027,7 +1075,24 @@ function registerDebugHandlers() {
 
   ipcMain.handle('debug:start', async (event, workspaceId, configName) => {
     assertTrustedRenderer(event);
-    return debugHost.start(workspaceId, typeof configName === 'string' ? configName : undefined);
+    return debugHost.start(
+      workspaceId,
+      typeof configName === 'string' ? configName : undefined,
+      async ({ command, args, cwd }) => {
+        const choice = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          buttons: ['Cancel', 'Start debugger'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+          title: 'Approve external debug adapter',
+          message: 'This workspace wants to start an external debug adapter.',
+          detail: `Command: ${command}\nArguments: ${args.join(' ') || '(none)'}\nDirectory: ${cwd}`
+        });
+        return choice.response === 1;
+      },
+      [app.getAppPath()]
+    );
   });
 
   ipcMain.handle('debug:stop', async (event, workspaceId) => {
@@ -2164,11 +2229,22 @@ function registerIpcHandlers() {
         scriptCommand: script.command,
         missingDependencies
       };
+      const choice = await dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        buttons: ['Cancel', 'Run preview'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+        title: 'Approve project preview',
+        message: 'This project preview may install dependencies and run its dev script.',
+        detail: `${installNotice}\n\nCommand:\n${script.command}\n\nProject:\n${relativeProjectPath}`
+      });
+      if (choice.response !== 1) return { status: 'approval-required', approval: request };
       reportStatus(
         `Detected ${relativeProjectPath}: "${manager} run ${script.name}" (${script.command}). ` +
-        `${installNotice} Starting automatically.`
+        `${installNotice} Starting after approval.`
       );
-      return { status: 'approval-required', approval: request };
+      approval = { ...request, approved: true };
     }
     if (approval.manifestHash !== project.manifestHash) {
       throw new Error('The project package.json changed while awaiting approval. Review the detected command and try again.');
@@ -2267,7 +2343,8 @@ function registerIpcHandlers() {
         return choice.response === 1;
       },
       getWorkspace: (id) => workspaceAccess.getWorkspace(id),
-      runCommand: executeCommand
+      runCommand: executeCommand,
+      allowVerifyAllowlist: false
     });
     const run = approval.approved
       ? approval.result
@@ -2497,6 +2574,33 @@ function registerIpcHandlers() {
 }
 
 function registerIntegrationHandlers() {
+  async function requireMcpConsent(server) {
+    const consentKey = createHash('sha256')
+      .update(JSON.stringify({
+        transport: server.transport,
+        command: server.command,
+        args: server.args,
+        cwd: server.cwd,
+        url: server.url,
+        headers: server.headers,
+        env: server.env
+      }))
+      .digest('hex');
+    if (mcpConsentHashes.has(consentKey)) return;
+    const choice = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['Cancel', 'Connect'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: 'Approve MCP server',
+      message: 'Allow ShadRox to start this MCP process?',
+      detail: `Command: ${server.command}\nArguments: ${(server.args || []).join(' ') || '(none)'}\nDirectory: ${server.cwd || '(default)'}`
+    });
+    if (choice.response !== 1) throw new Error('MCP connection cancelled.');
+    mcpConsentHashes.add(consentKey);
+  }
+
   ipcMain.handle('mcp:list-servers', (event) => {
     assertTrustedRenderer(event);
     return listMcpServerConfigs();
@@ -2517,11 +2621,18 @@ function registerIntegrationHandlers() {
 
   ipcMain.handle('mcp:connect', async (event, id) => {
     assertTrustedRenderer(event);
+    const server = findMcpServerConfig(id);
+    if (!server) throw new Error('That MCP server is not configured.');
+    await requireMcpConsent(server);
     return listMcpToolsFor(id);
   });
 
   ipcMain.handle('mcp:list-tools', async (event, serverId) => {
     assertTrustedRenderer(event);
+    const server = findMcpServerConfig(serverId);
+    if (!server) throw new Error('That MCP server is not configured.');
+    if (!server.enabled) throw new Error('That MCP server is disabled. Enable it in Settings first.');
+    await requireMcpConsent(server);
     return listMcpToolsFor(serverId);
   });
 
@@ -2537,6 +2648,7 @@ function registerIntegrationHandlers() {
     const server = findMcpServerConfig(serverId);
     if (!server) throw new Error('That MCP server is not configured.');
     if (!server.enabled) throw new Error('That MCP server is disabled. Enable it in Settings first.');
+    await requireMcpConsent(server);
     const result = await getMcpClient(server).callTool(name, toolArguments);
     return {
       isError: result.isError === true,
@@ -2826,6 +2938,7 @@ app.whenReady().then(async () => {
 
   allowLoopbackPreviewCertificates();
   installPreviewRequestGuard();
+  installRendererCsp();
   protocol.handle(PREVIEW_SCHEME, handlePreviewRequest);
   locateGitExecutable();
   registerIpcHandlers();

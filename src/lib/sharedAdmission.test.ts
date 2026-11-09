@@ -33,7 +33,7 @@ describe('SharedAdmissionGate (S12)', () => {
   });
 
   it('holds the first parallel reservation so the second cannot double-spend (S12)', () => {
-    const gate = new SharedAdmissionGate({ spentCredits: 790 });
+    const gate = new SharedAdmissionGate({ spentCredits: 790, enabled: true });
     const first = gate.admit(input({ requestId: 'a', estimateCredits: 8 }));
     const second = gate.admit(input({ requestId: 'b', estimateCredits: 8 }));
     assert.equal(first.admitted, true);
@@ -43,7 +43,7 @@ describe('SharedAdmissionGate (S12)', () => {
   });
 
   it('keeps the hold when the provider reports no usage instead of charging zero (S12)', () => {
-    const gate = new SharedAdmissionGate();
+    const gate = new SharedAdmissionGate({ enabled: true });
     const decision = gate.admit(input({ requestId: 'a', estimateCredits: 12 }));
     const settlement = gate.settle(decision.reservationId as string, null);
     assert.equal(settlement.settled, false);
@@ -53,7 +53,7 @@ describe('SharedAdmissionGate (S12)', () => {
   });
 
   it('refunds the unused part of the reservation when actual usage is lower (S12)', () => {
-    const gate = new SharedAdmissionGate();
+    const gate = new SharedAdmissionGate({ enabled: true });
     const decision = gate.admit(input({ estimateCredits: 20 }));
     const settlement = gate.settle(decision.reservationId as string, 7);
     assert.equal(settlement.settled, true);
@@ -65,7 +65,7 @@ describe('SharedAdmissionGate (S12)', () => {
   });
 
   it('settles a reservation once — a duplicate key is not double-charged (S12)', () => {
-    const gate = new SharedAdmissionGate();
+    const gate = new SharedAdmissionGate({ enabled: true });
     const decision = gate.admit(input({ estimateCredits: 20 }));
     const id = decision.reservationId as string;
     gate.settle(id, 7, { idempotencyKey: 'turn-1' });
@@ -75,7 +75,7 @@ describe('SharedAdmissionGate (S12)', () => {
   });
 
   it('releases a reservation without charging when the request never dispatched (S12)', () => {
-    const gate = new SharedAdmissionGate();
+    const gate = new SharedAdmissionGate({ enabled: true });
     const decision = gate.admit(input({ estimateCredits: 30 }));
     const released = gate.release(decision.reservationId as string);
     assert.equal(released.settled, true);
@@ -89,7 +89,7 @@ describe('SharedAdmissionGate (S12)', () => {
     const disabled = new SharedAdmissionGate({ enabled: false });
     assert.equal(disabled.admit(input()).admitted, false);
 
-    const gate = new SharedAdmissionGate();
+    const gate = new SharedAdmissionGate({ enabled: true });
     assert.equal(gate.admit(input({ estimateCredits: 0 })).admitted, false);
     assert.equal(gate.admit(input({ estimateCredits: Number.NaN })).admitted, false);
 

@@ -379,7 +379,8 @@ test('5. Preview document assembly, index.html template preservation, and error 
   assert.ok(bundledDoc.includes('h1 { color: green; }'), 'Bundle CSS must be injected');
   assert.ok(bundledDoc.includes('shadrox-preview'), 'Preview error bridge must be injected');
   assert.ok(bundledDoc.includes('console.log("running");'), 'Bundle JavaScript must be injected');
-  assert.ok(bundledDoc.includes('API_URL'), 'Virtual secret must be injected into window.process.env');
+  assert.ok(bundledDoc.includes('"NODE_ENV":"development"'), 'Preview keeps only safe environment metadata');
+  assert.ok(!bundledDoc.includes('https://api.example.com'), 'Preview must not embed secret values');
   assert.ok(
     bundledDoc.includes("new RegExp('^' + route.pattern + '$')"),
     'API bridge source must remain intact when inserted into the document'

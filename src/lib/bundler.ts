@@ -707,13 +707,11 @@ export async function bundleProject(
     }
   };
 
-  // Virtual secret definitions injected directly into runtime without disk .env file
+  // Vault values must never be embedded into a browser bundle. Preview code
+  // can be inspected, committed, or served to an untrusted page.
   const define: Record<string, string> = {
     'process.env.NODE_ENV': '"development"'
   };
-  secrets.forEach((s) => {
-    define[`process.env.${s.key}`] = JSON.stringify(s.value);
-  });
 
   // Vite's env object, so `import.meta.env.DEV` and any missing key resolve
   // instead of throwing on an undefined `import.meta.env` in the sandbox.
@@ -724,9 +722,6 @@ export async function bundleProject(
     SSR: false,
     BASE_URL: '/'
   };
-  secrets.forEach((s) => {
-    viteEnv[s.key] = s.value;
-  });
   define['import.meta.env'] = JSON.stringify(viteEnv);
 
   // Use a virtual stdin entry that imports the workspace entry. This ensures
@@ -799,14 +794,10 @@ export function bundleDocument(
   const importMap = { imports: result.importMap };
 
   const virtualEnvObj: Record<string, string> = { NODE_ENV: 'development' };
-  secrets.forEach((s) => {
-    virtualEnvObj[s.key] = s.value;
-  });
 
   const apiBridge = result.routes.length > 0 ? `<script>${apiMockBridge(result.routes)}</script>` : '';
 
   const headInjections = `
-<script src="https://cdn.tailwindcss.com"></script>
 <style>${baseStyle}</style>
 <style>${result.css}</style>
 <script type="importmap">${JSON.stringify(importMap)}</script>

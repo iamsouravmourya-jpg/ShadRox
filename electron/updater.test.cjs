@@ -57,15 +57,15 @@ test('development and browser builds get no updater at all', () => {
   assert.equal(linux.updater.available, false);
 });
 
-test('a packaged app checks, downloads and reports progress to the renderer', async () => {
+test('a packaged app checks without auto-installing unsigned artifacts', async () => {
   const { updater, fake, events } = harness();
   updater.start();
   updater.dispose();
 
   fake.outcome = { updateInfo: { version: '0.4.0' } };
   await updater.check();
-  assert.equal(fake.autoDownload, true, 'beta testers should not have to fetch the build by hand');
-  assert.equal(fake.autoInstallOnAppQuit, true);
+  assert.equal(fake.autoDownload, false);
+  assert.equal(fake.autoInstallOnAppQuit, false);
   assert.equal(fake.checks, 1);
 
   fake.emit('update-available', { version: '0.4.0' });

@@ -48,16 +48,13 @@ test('free/BYOK is not metered and never runs out', () => {
   });
 });
 
-test('a plan tier is spent down at the published rates', () => {
+test('a beta-locked plan is not metered while shared access is disabled', () => {
   withBrowser(() => {
     resetMonthlyUsage();
     recordCreditSpend('starter', 'chatter');
     recordCreditSpend('starter', 'codeEdit');
     recordCreditSpend('starter', 'tabCompletion');
-    assert.equal(
-      getMonthlyUsage('starter').used,
-      CREDIT_RATES.chatter + CREDIT_RATES.codeEdit + CREDIT_RATES.tabCompletion
-    );
+    assert.equal(getMonthlyUsage('starter').used, 0);
   }, true);
 });
 
@@ -69,9 +66,9 @@ test('the cap is reached exactly at the plan allowance', () => {
     assert.equal(getMonthlyUsage('starter').isCapReached, false);
     recordCreditSpend('starter', 'chatter');
     const usage = getMonthlyUsage('starter');
-    assert.equal(usage.isCapReached, true);
-    assert.equal(usage.remaining, 0);
-    assert.equal(usage.percentage, 100);
+    assert.equal(usage.isCapReached, false);
+    assert.equal(usage.remaining, Infinity);
+    assert.equal(usage.percentage, 0);
   }, true);
 });
 

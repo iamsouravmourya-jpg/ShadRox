@@ -3,11 +3,9 @@
 /**
  * Automatic updates over GitHub Releases (electron-updater).
  *
- * Deliberately quiet: a failed check — offline machine, blocked network, API
- * rate limit — is logged and never shown to the user, because a beta that
- * nags about updates is worse than one that waits. Only two things reach the
- * screen: a progress channel for the UI, and one dialog when a new build has
- * finished downloading.
+ * Update failures are sent to the renderer so beta testers can report them.
+ * Unsigned artifacts must never install themselves without an explicit user
+ * action.
  */
 
 const STARTUP_DELAY_MS = 15_000;
@@ -34,8 +32,8 @@ function createUpdater({
 
   const autoUpdater = injected || require('electron-updater').autoUpdater;
 
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.logger = { info: log, warn: log, error: log, debug: log };
 
   autoUpdater.on('checking-for-update', () => broadcast({ state: 'checking' }));  autoUpdater.on('update-available', (info) => broadcast({ state: 'available', version: info.version }));
