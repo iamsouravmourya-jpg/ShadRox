@@ -7,6 +7,7 @@ import {defineConfig, loadEnv} from 'vite';
 const rootDir = import.meta.dirname ?? path.resolve('.');
 
 export default defineConfig(({ mode, command }) => {
+  const obfuscationEnabled = process.env.SHADROX_OBFUSCATE !== '0';
   if (command === 'build') {
     const env = loadEnv(mode, rootDir, '');
     if (!env.VITE_SUPABASE_URL || !env.VITE_SUPABASE_ANON_KEY) {
@@ -17,7 +18,7 @@ export default defineConfig(({ mode, command }) => {
     plugins: [
       react(),
       tailwindcss(),
-      ...(command === 'build' && mode === 'production'
+      ...(command === 'build' && mode === 'production' && obfuscationEnabled
         ? [
             obfuscatorPlugin({
               apply: 'build',
@@ -27,7 +28,7 @@ export default defineConfig(({ mode, command }) => {
                 deadCodeInjection: true,
                 deadCodeInjectionThreshold: 0.4,
                 identifierNamesGenerator: 'hexadecimal',
-                selfDefending: true,
+                selfDefending: false,
                 stringArray: true,
                 stringArrayEncoding: ['rc4'],
                 stringArrayThreshold: 1

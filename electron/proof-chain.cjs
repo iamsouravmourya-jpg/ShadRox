@@ -36,7 +36,14 @@
  * silently, and refuses values that have no deterministic encoding.
  */
 
-const crypto = require('node:crypto');
+const crypto = typeof process !== 'undefined' && process.versions?.node
+  ? require('node:crypto')
+  : null;
+
+function byteLength(text) {
+  if (typeof Buffer !== 'undefined') return Buffer.byteLength(text, 'utf8');
+  return new TextEncoder().encode(text).byteLength;
+}
 
 const RECORD_VERSION = 1;
 const GENESIS_HASH = '0'.repeat(64);
@@ -78,7 +85,7 @@ function fail(message) {
 function canonicalJson(value, options = {}) {
   const limit = options.maxBytes ?? MAX_CANONICAL_BYTES;
   const text = encodeCanonical(value, 0, { budget: limit });
-  if (Buffer.byteLength(text, 'utf8') > limit) {
+  if (byteLength(text) > limit) {
     fail(`Canonical proof payload exceeds the ${limit} byte limit.`);
   }
   return text;
@@ -117,7 +124,7 @@ function encodeCanonical(value, depth, state) {
 
 function bounded(render, state) {
   const text = render();
-  state.budget -= Buffer.byteLength(text, 'utf8');
+  state.budget -= byteLength(text);
   if (state.budget < 0) fail('Proof payload is too large to canonicalize.');
   return text;
 }
@@ -265,7 +272,7 @@ function lineOf(record) {
   }
   const text = JSON.stringify(ordered);
   if (/[\r\n]/.test(text)) fail('Proof record serialized to a value containing a line break.');
-  const bytes = Buffer.byteLength(text, 'utf8');
+  const bytes = byteLength(text);
   if (bytes > MAX_LINE_BYTES) fail(`Proof record is ${bytes} bytes; the per-line limit is ${MAX_LINE_BYTES}.`);
   return text;
 }
@@ -409,9 +416,9 @@ function sanitizeData(data, overrides = {}) {
 }
 
 function clipUtf8(text, maxBytes) {
-  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  if (byteLength(text) <= maxBytes) return text;
   let end = text.length;
-  while (end > 0 && Buffer.byteLength(text.slice(0, end), 'utf8') > maxBytes) end = Math.floor(end * 0.9);
+  while (end > 0 && byteLength(text.slice(0, end)) > maxBytes) end = Math.floor(end * 0.9);
   return `${text.slice(0, end)}…[clipped]`;
 }
 

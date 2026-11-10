@@ -2871,7 +2871,15 @@ async function createWindow() {
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (!isSameOriginAsRenderer(url, rendererOrigin)) event.preventDefault();
   });
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (isMainFrame) {
+      console.error('[renderer] failed to load', { errorCode, errorDescription, validatedURL });
+    }
+  });
   mainWindow.webContents.on('console-message', (details) => {
+    if (details.level === 'error') {
+      console.error('[renderer] console error', details.message);
+    }
     const workspaceId = getPreviewWorkspaceIdForUrl(details.frame?.url || '');
     if (!workspaceId || typeof details.message !== 'string') return;
     const level = details.level === 'error' ? 'error' : details.level === 'warning' ? 'warn' : 'log';
