@@ -180,6 +180,7 @@ import {
 import type {
   ChatMessage,
   PatchSet,
+  PersistedWriteOutcome,
   PlanTier,
   RecentEntry,
   RefineMode,
@@ -296,6 +297,33 @@ function settleRestoredOrchestration(messages: ChatMessage[]): ChatMessage[] {
     };
   });
   return changed ? settled : messages;
+}
+
+/**
+ * Per-file write outcomes worth persisting, with the same precedence the chat
+ * bullets use: a failure outranks a pending review, which outranks a success.
+ */
+function summarizeWriteOutcomes(patches: ReviewPatch[]): Record<string, PersistedWriteOutcome> {
+  const byPath = new Map<string, { path: string; statuses: ReviewPatch['status'][] }>();
+  for (const patch of patches) {
+    const key = normalizeSlashes(patch.path).toLowerCase();
+    const entry = byPath.get(key);
+    if (entry) entry.statuses.push(patch.status);
+    else byPath.set(key, { path: patch.path, statuses: [patch.status] });
+  }
+  const outcomes: Record<string, PersistedWriteOutcome> = {};
+  for (const { path, statuses } of byPath.values()) {
+    outcomes[path] = statuses.includes('failed')
+      ? 'failed'
+      : statuses.includes('pending')
+        ? 'pending'
+        : statuses.includes('applied')
+          ? 'applied'
+          : statuses.every((status) => status === 'rejected')
+            ? 'skipped'
+            : 'reverted';
+  }
+  return outcomes;
 }
 
 // --- background runs ---------------------------------------------------------
@@ -1091,8 +1119,15 @@ export default function App() {
    */
   useEffect(() => {
     if (!restoreWorkspaceId || shouldSkipHistoryWrite(messages)) return;
-    saveConversation(historyStore, restoreWorkspaceId, messages);
-  }, [historyStore, messages, restoreWorkspaceId]);
+    // Patch sets live only in memory; fold their final outcomes into the stored
+    // transcript so a reopened chat does not call landed edits "not applied".
+    const withOutcomes = messages.map((message) => {
+      const set = patchSets.find((entry) => entry.messageId === message.id);
+      if (!set || set.patches.length === 0) return message;
+      return { ...message, writeOutcomes: { ...message.writeOutcomes, ...summarizeWriteOutcomes(set.patches) } };
+    });
+    saveConversation(historyStore, restoreWorkspaceId, withOutcomes);
+  }, [historyStore, messages, patchSets, restoreWorkspaceId]);
 
   /**
    * The snapshot invariant, in one place: what is persisted always describes
@@ -3285,16 +3320,17 @@ export default function App() {
 
       if (patches.length === 0) {
         if (blockedPaths.length > 0) await options.onFailures?.(blockedPaths);
-        const scan = extractFilePatches(fullReply, workspace.files);
-        // An example snippet in an answer is not an edit attempt. Only a
-        // SEARCH/REPLACE block that lost its file path is worth a retry.
-        const looksLikeEdit = fullReply.includes('<<<<<<< ORIGINAL');
-        if (scan.unmapped > 0 && looksLikeEdit) {
+        // An example snippet in an answer is not an edit attempt. But any
+        // SEARCH/REPLACE or apply_patch grammar means the model tried to edit:
+        // zero extracted patches must never pass as a clean answer, even when
+        // the fence was cut off before a path could be counted.
+        const looksLikeEdit = fullReply.includes('<<<<<<< ORIGINAL') || fullReply.includes('*** Begin Patch');
+        if (looksLikeEdit) {
           if (options.onUnmapped) {
             await options.onUnmapped();
             return;
           }
-          setToast('Response contained code blocks without explicit file paths — changes were not applied.');
+          setToast('The reply contained edit blocks, but none could be applied — nothing was changed.');
           window.setTimeout(() => setToast(null), 6000);
         }
         return;

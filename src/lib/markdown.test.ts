@@ -97,3 +97,31 @@ test('two writes to one path leave one bullet, two paths leave two', () => {
   );
   assert.equal(twoPaths.split('\n').filter((line) => line.startsWith('- ')).length, 2, twoPaths);
 });
+
+test('the write bullet reflects the apply outcome, never the reply shape', () => {
+  const reply = ['```ts path=src/a.ts', 'export const a = 2;', '```'].join('\n');
+  const files = [{ name: 'src/a.ts', content: 'export const a = 1;' }];
+  assert.match(maskFileWrites(reply, files, () => 'applied'), /- src\/a\.ts — change applied/);
+  assert.match(maskFileWrites(reply, files, () => 'failed'), /not applied — see Changes below/);
+  assert.match(maskFileWrites(reply, files, () => 'pending'), /awaiting review/);
+  assert.match(maskFileWrites(reply, files, () => 'streaming'), /writing change/);
+  // Without a known outcome the bullet must not claim success.
+  assert.match(maskFileWrites(reply, files), /- src\/a\.ts — not applied/);
+});
+
+test('a truncated fence never claims a patched file', () => {
+  const reply = ['```ts path=src/a.ts', '<<<<<<< ORIGINAL', 'const a = 1;', '======='].join('\n');
+  const files = [{ name: 'src/a.ts', content: 'const a = 1;' }];
+  const masked = maskFileWrites(reply, files, () => 'unapplied');
+  assert.match(masked, /not applied/);
+  assert.doesNotMatch(masked, /patched/);
+});
+
+test('restored history without an outcome record claims neither success nor failure', () => {
+  const reply = ['```ts path=src/a.ts', 'export const a = 2;', '```'].join('\n');
+  const files = [{ name: 'src/a.ts', content: 'export const a = 1;' }];
+  const masked = maskFileWrites(reply, files, () => 'historic');
+  assert.match(masked, /- src\/a\.ts — change from an earlier session/);
+  assert.doesNotMatch(masked, /not applied/);
+  assert.doesNotMatch(masked, /change applied/);
+});

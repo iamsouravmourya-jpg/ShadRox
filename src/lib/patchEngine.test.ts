@@ -819,3 +819,83 @@ test('refusalReason reads the typed marker and ignores ordinary SEARCH blocks', 
   });
   assert.deepEqual(parsed, { code: 'MOVE_NOT_SUPPORTED', reason: 'rename by hand' });
 });
+
+test('a reply cut off mid SEARCH/REPLACE fence is a typed refusal, never a silent drop', () => {
+  const reply = [
+    'Here is the fix:',
+    '```ts path=src/a.ts',
+    '<<<<<<< ORIGINAL',
+    'const a = 1;',
+    '=======',
+    'const a = 2;'
+  ].join('\n');
+  const scan = extractUnifiedPatchScan(reply, [{ name: 'src/a.ts', content: 'const a = 1;\n' }]);
+  assert.equal(scan.patches.length, 1, 'the edit intent still reaches review');
+  assert.equal(scan.rejected.length, 1);
+  assert.equal(scan.rejected[0].path, 'src/a.ts');
+  assert.equal(scan.rejected[0].code, 'TRUNCATED_BLOCK');
+
+  const onDisk = 'const a = 1;\n';
+  const resolved = resolvePatchContent(scan.patches[0], onDisk);
+  assert.equal(resolved.content, onDisk, 'zero bytes: a half-streamed edit never lands');
+  assert.equal(resolved.refusal?.code, 'TRUNCATED_BLOCK');
+});
+
+test('a truncated fence whose first line names the file is still reported', () => {
+  const reply = ['```ts', 'src/a.ts', '<<<<<<< ORIGINAL', 'const a = 1;'].join('\n');
+  const scan = extractUnifiedPatchScan(reply, [{ name: 'src/a.ts', content: 'const a = 1;\n' }]);
+  assert.equal(scan.rejected.length, 1);
+  assert.equal(scan.rejected[0].code, 'TRUNCATED_BLOCK');
+  assert.equal(scan.rejected[0].path, 'src/a.ts');
+});
+
+test('a truncated example fence without edit intent is not an edit attempt', () => {
+  const reply = ['```ts', 'const example = 1;'].join('\n');
+  const scan = extractUnifiedPatchScan(reply, [{ name: 'src/a.ts', content: 'const a = 1;\n' }]);
+  assert.deepEqual(scan.patches, []);
+  assert.deepEqual(scan.rejected, []);
+});
+
+test('a truncated apply_patch fence with a declared path is reported', () => {
+  const reply = ['```diff path=src/a.ts', '*** Begin Patch', '*** Update File: src/a.ts', '@@', '-const a = 1;'].join('\n');
+  const scan = extractUnifiedPatchScan(reply, [{ name: 'src/a.ts', content: 'const a = 1;\n' }]);
+  assert.equal(scan.rejected.length, 1);
+  assert.equal(scan.rejected[0].code, 'TRUNCATED_BLOCK');
+});
+
+test('SEARCH markers without a complete block refuse instead of rewriting raw markers into the file', () => {
+  const reply = ['```ts path=src/a.ts', '<<<<<<< ORIGINAL', 'const a = 1;', '```'].join('\n');
+  const scan = extractUnifiedPatchScan(reply, [{ name: 'src/a.ts', content: 'const a = 1;\n' }]);
+  assert.equal(scan.patches.length, 1);
+  assert.equal(scan.patches[0].kind, 'searchReplace', 'never a whole-file rewrite of raw markers');
+  assert.equal(scan.rejected.length, 1);
+  assert.equal(scan.rejected[0].code, 'MALFORMED_SEARCH_REPLACE');
+
+  const onDisk = 'const a = 1;\n';
+  const resolved = resolvePatchContent(scan.patches[0], onDisk);
+  assert.equal(resolved.content, onDisk, 'raw markers never reach the file');
+  assert.equal(resolved.refusal?.code, 'MALFORMED_SEARCH_REPLACE');
+});
+
+test('a complete block followed by a cut-off block refuses the file with a typed reason', () => {
+  const reply = [
+    '```ts path=src/a.ts',
+    '<<<<<<< ORIGINAL',
+    'const a = 1;',
+    '=======',
+    'const a = 2;',
+    '>>>>>>> UPDATED',
+    '<<<<<<< ORIGINAL',
+    'const b = 1;',
+    '```'
+  ].join('\n');
+  const onDisk = 'const a = 1;\nconst b = 1;\n';
+  const scan = extractUnifiedPatchScan(reply, [{ name: 'src/a.ts', content: onDisk }]);
+  assert.equal(scan.rejected.length, 1);
+  assert.equal(scan.rejected[0].code, 'TRUNCATED_BLOCK');
+  assert.match(scan.rejected[0].reason, /1 of 2/);
+
+  const resolved = resolvePatchContent(scan.patches[0], onDisk);
+  assert.equal(resolved.refusal?.code, 'TRUNCATED_BLOCK');
+  assert.ok(resolved.failures.length > 0, 'the plan fails, so auto-apply writes zero bytes');
+});

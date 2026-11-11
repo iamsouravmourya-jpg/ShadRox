@@ -1,4 +1,4 @@
-import type { ChatMessage } from './types';
+import type { ChatMessage, PersistedWriteOutcome } from './types';
 
 /**
  * The chat transcript used to live only in React state, so closing the folder —
@@ -123,6 +123,21 @@ function sanitizeMessage(raw: unknown, position: number): ChatMessage | null {
       .map((tool) => ({ name: tool.name, label: tool.label, ok: tool.ok === true, error: typeof tool.error === 'string' ? tool.error : undefined }));
   }
   if (typeof message.toolRounds === 'number') stored.toolRounds = message.toolRounds;
+  // A stored turn is history by definition; the chat uses this to avoid
+  // claiming "not applied" for edits whose live patch set no longer exists.
+  stored.restored = true;
+  if (message.writeOutcomes && typeof message.writeOutcomes === 'object') {
+    const outcomes: Record<string, PersistedWriteOutcome> = {};
+    for (const [path, state] of Object.entries(message.writeOutcomes)) {
+      if (
+        path &&
+        (state === 'applied' || state === 'pending' || state === 'failed' || state === 'skipped' || state === 'reverted')
+      ) {
+        outcomes[path] = state;
+      }
+    }
+    if (Object.keys(outcomes).length > 0) stored.writeOutcomes = outcomes;
+  }
   return stored;
 }
 

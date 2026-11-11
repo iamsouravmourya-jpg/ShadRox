@@ -510,6 +510,9 @@ function patchPathKey(path: string): string {
  *    zero patches, zero errors and no verification. It now becomes a refusal
  *    patch (the plan fails with a readable reason) and is reported in
  *    `rejected` so a caller can surface it directly.
+ *  - A fence or SEARCH/REPLACE block the reply cut off mid-way is a refusal
+ *    too. A silent skip there let the chat claim "patched" for a change that
+ *    never landed; the typed refusal instead drives the one-shot repair round.
  */
 export function extractUnifiedPatchScan(content: string, files: KnownFile[] = []): UnifiedPatchScan {
   const entries: Array<{ patch: UnifiedPatch; rejected?: RejectedPatch }> = [];
@@ -530,11 +533,36 @@ export function extractUnifiedPatchScan(content: string, files: KnownFile[] = []
   };
 
   for (const block of scanFencedBlocks(content)) {
-    if (!block.terminated) continue;
-
     let body = block.body.replace(/\s+$/, '');
     const info = block.info;
     let context = block.context;
+
+    if (!block.terminated) {
+      // A reply that died mid-fence still declared an edit. Skipping it
+      // silently is how the chat ends up claiming "patched" for a change that
+      // never landed — an explicit edit intent becomes a refusal instead.
+      if (!looksLikeClinePatch(body)) {
+        const lines = body.split('\n');
+        const head = lines[0]?.trim() ?? '';
+        if (head && !head.startsWith('<') && resolveTarget(head, '', '', files)) {
+          body = lines.slice(1).join('\n');
+          context = `${context} ${head}`;
+        }
+      }
+      const declared =
+        /(?:path|file|filename|filepath)\s*[:=]/i.test(info) ||
+        body.includes(SEARCH_ORIGINAL_MARKER) ||
+        looksLikeClinePatch(body);
+      const target = declared ? resolveTarget(info, context, body, files) : null;
+      if (target) {
+        const reason = `The reply ended in the middle of the code block for ${target}, so the change is incomplete and nothing was applied. Re-send the complete block, closing the fence and every ORIGINAL/=======/UPDATED section.`;
+        add(
+          { path: target, kind: 'searchReplace', blocks: [refusalBlock(reason, 'TRUNCATED_BLOCK')] },
+          { path: target, code: 'TRUNCATED_BLOCK', reason }
+        );
+      }
+      continue;
+    }
 
     if (looksLikeClinePatch(body)) {
       for (const entry of clinePatchBodyToUnifiedPatches(body, info, context, files)) {
@@ -563,9 +591,31 @@ export function extractUnifiedPatchScan(content: string, files: KnownFile[] = []
     }
 
     const blocks = parseSearchReplaceBlocks(body);
-    if (blocks.length > 0) {
+    if (blocks.length > 0 || body.includes(SEARCH_ORIGINAL_MARKER)) {
       const target = resolveTarget(info, context, body, files);
-      if (target) add({ path: target, kind: 'searchReplace', blocks });
+      if (target) {
+        const started = body.split('\n').filter((line) => line.trim() === SEARCH_ORIGINAL_MARKER).length;
+        if (blocks.length === 0) {
+          // Markers without a single complete block used to fall through to a
+          // whole-file rewrite — pasting raw markers into the user's file.
+          const reason = `The search/replace block for ${target} is malformed — no complete ORIGINAL / ======= / UPDATED section could be parsed, so nothing was applied. Re-send the block with all three markers.`;
+          add(
+            { path: target, kind: 'searchReplace', blocks: [refusalBlock(reason, 'MALFORMED_SEARCH_REPLACE')] },
+            { path: target, code: 'MALFORMED_SEARCH_REPLACE', reason }
+          );
+        } else if (started > blocks.length) {
+          // The parser tolerates an unfinished trailing block; at the end of a
+          // turn that tolerance is a silent partial edit. Refuse the file with
+          // a typed reason so the repair round re-sends the missing blocks.
+          const reason = `Only ${blocks.length} of ${started} search/replace blocks for ${target} were complete — the reply cut off mid-block, so nothing was applied. Re-send the missing blocks in full.`;
+          add(
+            { path: target, kind: 'searchReplace', blocks: [...blocks, refusalBlock(reason, 'TRUNCATED_BLOCK')] },
+            { path: target, code: 'TRUNCATED_BLOCK', reason }
+          );
+        } else {
+          add({ path: target, kind: 'searchReplace', blocks });
+        }
+      }
       continue;
     }
 

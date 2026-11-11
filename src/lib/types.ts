@@ -177,7 +177,14 @@ export interface ChatMessage {
   selfHealingProof?: import('./repairProof').FailureReceipt;
   /** Exact spend and prompt cache savings recorded for this turn. */
   spendLedgerRecord?: import('./spendLedger').TokenSpendRecord;
+  /** Final per-file write outcomes, persisted so restored history stays honest. */
+  writeOutcomes?: Record<string, PersistedWriteOutcome>;
+  /** True when this message came back from storage instead of this session. */
+  restored?: boolean;
 }
+
+/** Write outcomes that survive in chat history; transient states never persist. */
+export type PersistedWriteOutcome = 'applied' | 'pending' | 'failed' | 'skipped' | 'reverted';
 
 /** A single file change proposed by one assistant reply, awaiting review. */
 export interface ReviewPatch {
