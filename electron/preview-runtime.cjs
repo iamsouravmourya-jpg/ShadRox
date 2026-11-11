@@ -1055,13 +1055,22 @@ function createPreviewRuntime({
             readinessTimer = setTimeout(() => {
               readinessTimer = null;
               if (settled || duplicateNextServerDetected || record.child.exitCode != null) return;
-              settled = true;
-              clearTimeout(timeout);
-              clearInterval(probeTimer);
-              record.url = url;
-              record.rejectReady = null;
-              emit(workspaceId, 'ready', `Local preview is responding at ${url}`);
-              resolve({ url, port: portOfUrl(url), script: script.name, hmr: hasHmrSupport(script.command) });
+              void (async () => {
+                // The port scan probes 127.0.0.1, but Next.js only accepts HMR
+                // from the host it printed (localhost). When the scan wins the
+                // race, swap back to the hinted URL for the same port so hot
+                // reload stays same-origin inside the preview pane.
+                const hinted = [...hintedUrls].find((hint) => hint !== url && portOfUrl(hint) === port);
+                const finalUrl = hinted && (await probeHttp(hinted)) ? hinted : url;
+                if (settled || duplicateNextServerDetected || record.child.exitCode != null) return;
+                settled = true;
+                clearTimeout(timeout);
+                clearInterval(probeTimer);
+                record.url = finalUrl;
+                record.rejectReady = null;
+                emit(workspaceId, 'ready', `Local preview is responding at ${finalUrl}`);
+                resolve({ url: finalUrl, port: portOfUrl(finalUrl), script: script.name, hmr: hasHmrSupport(script.command) });
+              })();
             }, 350);
           }
         } finally {

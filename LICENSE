@@ -3,25 +3,62 @@ ShadRox — Proprietary Software License
 
 Copyright (c) 2026 Sourav Maurya. All rights reserved.
 
-This software, its source code, its design and its name are the exclusive
-intellectual property of Sourav Maurya ("the Owner").
+This software, its source code, its compiled and bytecode forms, its
+obfuscated bundles, its design, its documentation and its name are the
+exclusive intellectual property of Sourav Maurya ("the Owner").
 
-No part of this repository may be copied, reproduced, modified, translated,
-distributed, sublicensed, published, hosted, sold, or used to create derivative
-works, in whole or in part, by any means, without the prior written permission
-of the Owner.
+1. No license granted.
+The source code is published for viewing and reference only. Access to it,
+to a packaged installer, or to a running copy of the software does not grant
+any license, right of use, or ownership interest. No rights are granted by
+implication, estoppel, or otherwise.
 
-The source code is published for viewing and reference only. Access to it does
-not grant any license, right of use, or ownership interest. No rights are
-granted by implication, estoppel, or otherwise.
+2. Prohibited acts.
+Without the prior written permission of the Owner, you may not, in whole or
+in part, by any means or tool:
+  a. copy, reproduce, modify, translate, distribute, sublicense, publish,
+     host, mirror, sell, rent, or otherwise exploit the software or any part
+     of it, or create derivative works from it;
+  b. reverse engineer, decompile, disassemble, decrypt, or otherwise attempt
+     to derive or reconstruct source code, algorithms, or design from the
+     software, including from its V8 bytecode (`.jsc`), obfuscated bundles,
+     or any other compiled or protected form;
+  c. circumvent, disable, bypass, or interfere with any obfuscation,
+     bytecode compilation, integrity check, or other technical protection
+     measure applied to the software;
+  d. remove, alter, or obscure any copyright, license, or proprietary notice
+     included in the software or its packaging.
 
+3. Termination.
+Any breach of these terms automatically terminates the limited permission to
+view the published materials. Upon termination you must cease all use of the
+software and destroy every copy in your possession or control. Sections 2, 4
+and 5 survive termination.
+
+4. Enforcement.
+The Owner may seek injunctive relief and damages for any breach, without the
+requirement of posting bond where permitted by law. Failure to enforce any
+provision on one occasion is not a waiver of the right to enforce it later.
+
+5. Mandatory law.
+Nothing in this license limits rights that applicable law grants you and
+that cannot be waived by contract (for example, mandatory interoperability
+or decompilation rights under certain jurisdictions). Any such right may be
+exercised only to the extent, and for the purposes, that the applicable law
+actually permits, and never to copy or redistribute the software beyond what
+that law allows.
+
+6. Third-party components.
 Third-party dependencies listed in package.json remain the property of their
-respective authors and are governed by their own license terms.
+respective authors and are governed by their own license terms. Nothing here
+restricts rights those licenses grant in the third-party components
+themselves.
 
-For commercial licensing, partnership, or any other permission request, contact
-the Owner.
-
+7. Warranty disclaimer.
 TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE SOFTWARE IS PROVIDED "AS IS",
 WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. THE OWNER SHALL NOT BE
-LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE SOFTWARE OR
-THE USE OF IT.
+LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE SOFTWARE
+OR THE USE OF IT.
+
+For commercial licensing, partnership, or any other permission request,
+contact the Owner.

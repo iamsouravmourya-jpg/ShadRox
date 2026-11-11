@@ -187,6 +187,8 @@ function main() {
     'electron/loader.cjs',
     'electron/main.jsc',
     'electron/preload.cjs',
+    'electron/ts-worker.cjs',
+    'electron/shell-integration/**/*',
     'server.jsc',
     'assets/**/*',
     'package.json',

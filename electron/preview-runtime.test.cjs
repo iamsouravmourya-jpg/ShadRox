@@ -269,6 +269,68 @@ test('starts on the pinned port when it is free and appends no override', async 
   assert.equal(await (await fetch(result.url)).text(), 'served by fake dev server');
 });
 
+test('keeps the host the dev server printed so Next.js HMR stays same-origin', async (context) => {
+  // The synthetic readiness scan only probes COMMON_DEV_PORTS, so the race
+  // against the printed URL needs a port from that list, free on both stacks.
+  const bindFree = (port, host) => new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(false));
+    probe.listen(port, host, () => probe.close(() => resolve(true)));
+  });
+  let base = null;
+  for (const port of [3000, 3001, 3002, 4173, 4174, 4200, 4321, 5000, 5173, 5174, 8000, 8001, 8080, 8081, 9000]) {
+    if (await bindFree(port, '127.0.0.1') && await bindFree(port, '::1')) { base = port; break; }
+  }
+  assert.ok(base, 'A free common dev port is required for the readiness race.');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-hmr-origin-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  await writeProject(root, `next dev -p ${base}`);
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.pid = 5100;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  const server = http.createServer((_request, response) => response.end('served by fake next server'));
+  // Graceful close only: a server-side FIN burst would leave the port in
+  // TIME_WAIT and poison the next test run's port selection on Windows.
+  const closeServer = (done) => server.close(done);
+  child.kill = () => {
+    closeServer();
+    return true;
+  };
+  const spawnProcess = (command, args) => {
+    if (command === 'taskkill.exe') {
+      closeServer(() => {
+        child.exitCode = 1;
+        child.emit('close', 1);
+      });
+      const killer = new EventEmitter();
+      setImmediate(() => killer.emit('close', 0));
+      return killer;
+    }
+    if (!/\brun dev\b/.test([command, ...args].join(' '))) {
+      const probe = new EventEmitter();
+      probe.exitCode = 0;
+      setImmediate(() => probe.emit('close', 0));
+      return probe;
+    }
+    // Both hosts answer (localhost falls back to IPv4), but the printed Local
+    // URL lands after the port scan's first synthetic probe, so the scan wins
+    // the readiness race unless the hinted host is preferred.
+    server.listen(base, '127.0.0.1', () => {
+      setTimeout(() => child.stdout.write(`Local: http://localhost:${base}/\n`), 500);
+    });
+    return child;
+  };
+  const runtime = createPreviewRuntime({ spawnProcess, readyTimeout: 6000 });
+  context.after(() => runtime.stopAll());
+
+  const result = await runtime.start('hmr-origin-workspace', root);
+  assert.equal(result.url, `http://localhost:${base}/`);
+  assert.equal(result.port, base);
+  assert.equal(result.hmr, true);
+});
+
 test('relocates over a foreign process on the pinned port without killing it', async (context) => {
   const base = await findFreePortRun(2);
   const squatter = net.createServer();
