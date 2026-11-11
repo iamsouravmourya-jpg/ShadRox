@@ -9,31 +9,43 @@ import { APP_VERSION } from '@/lib/download'
 const faqs = [
   {
     q: 'Can I download ShadRox now?',
-    a: `Yes. The Download for Windows button installs the latest beta (v${APP_VERSION}) on Windows 10 or 11, 64-bit. You do not need a form or approval. Windows may show a SmartScreen warning because the build is not code-signed yet — choose More and then Run anyway.`,
+    a: `Yes. The latest beta installer (v${APP_VERSION}) is for Windows 10 or 11, 64-bit. The Windows build is unsigned, so SmartScreen may show a warning — verify the download source before choosing More → Run anyway.`,
   },
   {
-    q: 'Do I need a ShadRox account?',
-    a: 'Yes. On first launch the app asks you to continue with Google. It opens your browser, you pick a Google account, and the app receives a session. ShadRox stores only your email, name, avatar URL, app version, and platform. There is no password to create and no subscription.',
-  },
-  {
-    q: 'How do updates work?',
-    a: 'The app checks for a newer release when it starts and downloads it in the background. The update installs when you restart or quit the app — you never have to re-download the installer. The download link on this page always points at the latest release.',
+    q: 'Do I need an account?',
+    a: 'Yes. Google sign-in through Supabase is required to enter the desktop app. Account profile fields include email, name, avatar, app version, and platform. There is no password to create.',
   },
   {
     q: 'Does ShadRox store my project in the cloud?',
-    a: 'No. The desktop workspace opens and edits project files on your computer. There is no ShadRox cloud project sync. When you ask the AI for help, the prompt and the project context you include are sent to the Gemini or Groq provider you selected.',
+    a: 'No. Project files are opened and edited on your computer. ShadRox does not sync project folders to a cloud workspace.',
   },
   {
-    q: 'Where is my AI provider key stored?',
-    a: 'Your key is saved only on your device in an encrypted local store. Requests go from your machine directly to the provider. ShadRox servers never receive your provider key. Your provider may charge for usage.',
+    q: 'What is sent when I use AI?',
+    a: 'Only the prompt and project context you choose are sent to the AI provider configured for that request. AI providers process that data under their own data-handling terms.',
   },
   {
     q: 'Which AI providers are supported?',
-    a: 'The current app supports Gemini, Groq, and custom OpenAI-compatible endpoints — including Ollama and LM Studio running locally. Model availability and limits depend on your provider account.',
+    a: 'Google Gemini, Groq, and custom OpenAI-compatible endpoints, including compatible local gateways such as Ollama and LM Studio. Model availability and charges depend on your provider.',
+  },
+  {
+    q: 'Where is my AI key stored?',
+    a: 'The desktop app stores provider keys in OS-backed encrypted storage. AI requests go from your machine to the configured provider; the key is not sent to ShadRox.',
+  },
+  {
+    q: 'Can the agent make changes on its own?',
+    a: 'Not silently. Inspection tools are read-only. The agent can run one shell command at a time in your opened folder and gets its real exit code back, but approval is default-deny: only a short allowlist of exact verify forms (npm test, pytest, python -m pytest, tsc --noEmit, npx tsc --noEmit, git diff, git status) runs without a prompt, and every other command opens a native approval dialog first. File edits go through a guarded patch and review flow; unsafe changes are held for review. Deleting a path needs an explicit confirm plus a follow-up read that proves it is gone. Agent and autonomous workflows are beta, so inspect results and keep backups.',
+  },
+  {
+    q: 'How do updates work?',
+    a: 'The app checks for a newer release on start and tells you when an update is ready. Restart only after reviewing the release. If a rebuilt installer keeps the same version number — like the second v0.0.8 build — auto-update cannot detect it, so install that one manually from the release page.',
+  },
+  {
+    q: 'Are billing and credits enabled?',
+    a: 'No. The beta runs on bring-your-own-key: your provider bills you directly, and ShadRox neither meters nor caps those turns. The ₹699 Starter and ₹1,299 Heavy catalogue plans are locked beta prices only; checkout and shared-key access are not enabled, and prices may change before launch.',
   },
   {
     q: 'Can I preview any project?',
-    a: 'Static sites, supported Node-based web projects, and detected Python, Go, PHP, Java, and .NET backends are supported. The runtime must be installed on your machine. Some external sites may also block embedded previews.',
+    a: 'ShadRox supports Markdown, static sites, detected Node web projects, and detected Python, Go, PHP, Java, and .NET backends. The project runtime must be installed, and not every configuration is supported.',
   },
   {
     q: 'Can I preview a README or Markdown file?',
@@ -45,12 +57,13 @@ const faqs = [
   },
   {
     q: 'Who is behind ShadRox?',
-    a: 'ShadRox is a solo project built by Sourav Maurya, a 19-year-old full-stack developer and AI engineer based in Delhi, India. There is no company behind it — the app, the website, and the GitHub repo are all maintained by one person, in the open.',
+    a: 'ShadRox is a solo project built by Sourav Maurya, a 19-year-old full-stack developer and AI engineer based in Delhi, India. There is no company behind it — the app, the website, and the GitHub repo are all maintained by one person.',
   },
 ]
 
-export function Faq() {
+export function Faq({ limit }: { limit?: number }) {
   const [open, setOpen] = useState<number | null>(0)
+  const items = limit ? faqs.slice(0, limit) : faqs
 
   return (
     <section id="faq" className="border-t border-[var(--line)] bg-[var(--bg2)] px-5 py-20 lg:px-8 lg:py-28">
@@ -65,7 +78,7 @@ export function Faq() {
         </Reveal>
 
         <div className="divide-y divide-[var(--line)] rounded-3xl border border-[var(--line)] bg-[var(--card)] overflow-hidden">
-          {faqs.map((item, i) => {
+          {items.map((item, i) => {
             const isOpen = open === i
             return (
               <Reveal key={item.q} delay={i * 50}>

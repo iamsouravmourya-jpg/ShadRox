@@ -1,36 +1,41 @@
 'use client'
 
+import Link from 'next/link'
+import { APP_VERSION, GITHUB_REPO, RELEASES_URL } from '@/lib/download'
 import { Logo } from './navbar'
 
 const cols = [
   {
     title: 'Product',
     links: [
-      { label: 'Features',    href: '#features' },
-      { label: 'How it works', href: '#flow' },
-      { label: 'Privacy',     href: '#privacy' },
-      { label: 'Preview support', href: '#features' },
+      { label: 'Features',        href: '/features' },
+      { label: 'AI agent',        href: '/agent' },
+      { label: 'How it works',    href: '/how-it-works' },
+      { label: 'Preview support', href: '/preview-support' },
+      { label: 'Privacy',         href: '/privacy' },
     ],
   },
   {
     title: 'Download',
     links: [
-      { label: 'Windows (v0.0.8)', href: 'https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.8-Setup.exe' },
-      { label: 'All releases',    href: 'https://github.com/iamsouravmourya-jpg/ShadRox/releases' },
+      { label: `Windows (v${APP_VERSION})`, href: '/download' },
+      { label: 'All releases',              href: '/releases' },
+      { label: `v${APP_VERSION} release notes`, href: `${GITHUB_REPO}/releases/tag/v${APP_VERSION}`, external: true },
     ],
   },
   {
     title: 'Support',
     links: [
-      { label: 'FAQ',           href: '#faq' },
-      { label: 'Report an issue', href: 'https://github.com/iamsouravmourya-jpg/ShadRox/issues' },
+      { label: 'FAQ',             href: '/faq' },
+      { label: 'Report an issue', href: `${GITHUB_REPO}/issues`, external: true },
     ],
   },
   {
     title: 'Project',
     links: [
-      { label: 'shadrox.cyou',   href: 'https://www.shadrox.cyou' },
-      { label: 'About the maker', href: 'https://www.linkedin.com/in/sourav-maurya-45b272377' },
+      { label: 'About the maker', href: '/about' },
+      { label: 'GitHub repo',     href: GITHUB_REPO, external: true },
+      { label: 'shadrox.cyou',    href: 'https://www.shadrox.cyou', external: true },
     ],
   },
 ]
@@ -48,14 +53,14 @@ export function Footer() {
               A native desktop workspace for working on local projects. Editor, AI chat,
               preview, Git tools and terminal — in one app.
             </p>
-            <p className="mt-4 text-xs text-[var(--mut)]">
+            <p className="mt-4 text-xs leading-5 text-[var(--mut)]">
               Built solo by{' '}
-              <a
-                href="https://www.linkedin.com/in/sourav-maurya-45b272377"
-                className="underline hover:text-[var(--ac)] transition"
+              <Link
+                href="/about"
+                className="underline underline-offset-2 transition hover:text-[var(--ac)]"
               >
                 Sourav Maurya
-              </a>
+              </Link>
               {' '}— a 19-year-old developer &amp; AI engineer from Delhi, India 🇮🇳
             </p>
           </div>
@@ -69,12 +74,21 @@ export function Footer() {
               <ul className="space-y-2.5">
                 {col.links.map((l) => (
                   <li key={l.label}>
-                    <a
-                      href={l.href}
-                      className="text-sm text-[var(--mut)] transition hover:text-[var(--ac)] hover:translate-x-1 inline-block"
-                    >
-                      {l.label}
-                    </a>
+                    {'external' in l && l.external ? (
+                      <a
+                        href={l.href}
+                        className="inline-block text-sm text-[var(--mut)] transition hover:translate-x-1 hover:text-[var(--ac)]"
+                      >
+                        {l.label}
+                      </a>
+                    ) : (
+                      <Link
+                        href={l.href}
+                        className="inline-block text-sm text-[var(--mut)] transition hover:translate-x-1 hover:text-[var(--ac)]"
+                      >
+                        {l.label}
+                      </Link>
+                    )}
                   </li>
                 ))}
               </ul>

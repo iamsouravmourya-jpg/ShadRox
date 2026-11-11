@@ -1,13 +1,20 @@
 'use client'
 
-import { Check, Cloud, FolderTree, KeyRound, Monitor, Sparkles } from 'lucide-react'
+import { Check, Cloud, FolderTree, KeyRound, Monitor, ShieldCheck, Sparkles } from 'lucide-react'
 import { Reveal } from './reveal'
 
-const guarantees = [
+const allowlist = ['npm test', 'pytest', 'python -m pytest', 'tsc --noEmit', 'npx tsc --noEmit', 'git diff', 'git status']
+
+const guarantees: {
+  icon: typeof FolderTree
+  title: string
+  text: string
+  chips?: string[]
+}[] = [
   {
     icon: FolderTree,
     title: 'Project files stay on your disk',
-    text: 'ShadRox edits files locally. There is no ShadRox cloud project sync.',
+    text: 'ShadRox edits files locally. There is no ShadRox cloud project sync — the app opens the folder you pick.',
   },
   {
     icon: KeyRound,
@@ -17,12 +24,18 @@ const guarantees = [
   {
     icon: Monitor,
     title: 'Only prompt + context go to AI',
-    text: 'When you ask AI for help, the prompt and the context you choose are sent to the provider you selected. Nothing else is uploaded.',
+    text: 'When you ask AI for help, the prompt and the context you choose are sent to the provider you selected. Point it at Ollama or LM Studio and the prompt stays on your PC.',
+  },
+  {
+    icon: ShieldCheck,
+    title: 'Guarded commands, default-deny',
+    text: 'Only these exact verify forms run without a prompt. One extra argument or a shell operator breaks the match, so everything else waits for a native approval dialog — and the workspace is re-checked between approval and execution.',
+    chips: allowlist,
   },
   {
     icon: Sparkles,
-    title: 'Minimum account data',
-    text: 'Google sign-in stores only email, name, avatar URL, app version, and platform. No passwords, no subscription attached at sign-in.',
+    title: 'Reviewable changes',
+    text: 'Edits arrive as diffs. Unsafe patches are held for review instead of written in place, and file notes report the real apply outcome.',
   },
 ]
 
@@ -45,8 +58,7 @@ export function Privacy() {
               <p className="mt-5 max-w-xl text-sm leading-7 text-[var(--mut)]">
                 Your project folder is opened and edited on your computer. When you send a message
                 to AI, the prompt and the project context included with that request are sent to
-                the provider you selected. Do not shorten this to "your code never leaves your
-                device" — that would be inaccurate when AI features are used.
+                the provider you selected — and your key never touches ShadRox servers.
               </p>
 
               {/* Data flow diagram */}
@@ -82,7 +94,7 @@ export function Privacy() {
           {/* Right — guarantee cards */}
           <Reveal variant="scale" delay={120}>
             <div className="grid gap-4">
-              {guarantees.map(({ icon: Icon, title, text }, i) => (
+              {guarantees.map(({ icon: Icon, title, text, chips }, i) => (
                 <div
                   key={title}
                   className="flex gap-4 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-5 transition-all duration-300 hover:translate-x-1.5 hover:border-[var(--ac)] hover:shadow-[4px_0_20px_var(--glow)]"
@@ -94,12 +106,24 @@ export function Privacy() {
                   <div>
                     <h4 className="mb-1 text-sm font-bold text-[var(--ink)]">{title}</h4>
                     <p className="text-[13px] leading-5 text-[var(--mut)]">{text}</p>
+                    {chips && (
+                      <div className="mt-2.5 flex flex-wrap gap-1.5">
+                        {chips.map((c) => (
+                          <code
+                            key={c}
+                            className="rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[10px] text-[var(--ink2)]"
+                          >
+                            {c}
+                          </code>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
               <div className="flex items-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--bg2)] px-5 py-3.5 text-sm font-semibold text-[var(--ink)]">
                 <Check className="size-4 text-emerald-500 shrink-0" />
-                Local files · Provider-powered AI · Minimum account data
+                Local files · Provider-powered AI · Guarded commands
               </div>
             </div>
           </Reveal>
