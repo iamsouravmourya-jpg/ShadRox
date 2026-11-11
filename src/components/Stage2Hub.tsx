@@ -1,5 +1,6 @@
 import { Clock, FileCode, FolderOpen, KeyRound, Loader2, LogOut, X } from 'lucide-react';
 import type { RecentEntry } from '../lib/types';
+import { ShadRoxLogo } from './Logo';
 
 interface Stage2HubProps {
   recents: RecentEntry[];
@@ -28,30 +29,7 @@ function formatRelativeTime(timestamp: number): string {
 function ShadRoxWordmark() {
   return (
     <div className="flex items-center gap-2.5">
-      <svg
-        viewBox="0 0 32 32"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        className="size-7 shrink-0"
-        aria-hidden="true"
-      >
-        <path
-          d="M6 7L16 3L26 7V16C26 22.5 16 29 16 29C16 29 6 22.5 6 16V7Z"
-          stroke="white"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M20 11H13.5C12.1193 11 11 12.1193 11 13.5C11 14.8807 12.1193 16 13.5 16H18.5C19.8807 16 21 17.1193 21 18.5C21 19.8807 19.8807 21 18.5 21H11"
-          stroke="#10b981"
-          strokeWidth="2.4"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <circle cx="11" cy="11" r="1.5" fill="#34d399" />
-        <circle cx="21" cy="21" r="1.5" fill="#34d399" />
-      </svg>
+      <ShadRoxLogo className="size-7 shrink-0" />
       <span className="text-[15px] font-semibold tracking-[-0.03em] text-white">ShadRox</span>
     </div>
   );

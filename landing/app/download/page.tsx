@@ -26,9 +26,9 @@ export const metadata: Metadata = {
 }
 
 const INSTALLER_NAME = `ShadRox-v${APP_VERSION}-Setup.exe`
-const FILE_BYTES = '139,211,256'
+const FILE_BYTES = '143,707,240'
 const SHA512 =
-  'eQT4F9OPF5gbfQcinRx6Hx4WHG13ILYQHkAhALKgEIZVKhtrEKlZHUuDW+ewT3FC9SyCDil4ZyXvRzT40miSAA=='
+  'cSdlFFUliP0eRAXJfAj+Ry2d157o2N+FozA8+8hSilzdXxW4Fv/r+9NqsUjlSmb4oD7NHczCQk2NCsbTDypGkg=='
 const PS_CMD = `Get-FileHash .\\${INSTALLER_NAME} -Algorithm SHA512`
 
 const steps = [
