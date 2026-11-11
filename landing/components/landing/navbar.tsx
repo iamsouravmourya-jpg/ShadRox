@@ -1,23 +1,25 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { Download, Menu, X } from 'lucide-react'
 import { useScrolled } from '@/hooks/use-scrolled'
 import { WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import { useTheme } from './theme-provider'
+import { AnnBar } from './ann-bar'
 import { cn } from '@/lib/utils'
 
 const links = [
-  { label: 'Features',    href: '#features' },
-  { label: 'How it works', href: '#flow' },
-  { label: 'Privacy',     href: '#privacy' },
-  { label: 'FAQ',         href: '#faq' },
-  { label: 'Download',    href: '#download' },
+  { label: 'Features',     href: '/features' },
+  { label: 'How it works', href: '/how-it-works' },
+  { label: 'Agent',        href: '/agent' },
+  { label: 'Privacy',      href: '/privacy' },
+  { label: 'FAQ',          href: '/faq' },
 ]
 
 export function Logo() {
   return (
-    <a href="#top" className="group flex items-center gap-2.5" aria-label="ShadRox home">
+    <Link href="/" className="group flex items-center gap-2.5" aria-label="ShadRox home">
       <svg
         viewBox="0 0 32 32"
         fill="none"
@@ -43,7 +45,7 @@ export function Logo() {
         <circle cx="21" cy="21" r="1.5" fill="#34d399" />
       </svg>
       <span className="text-[15px] font-bold tracking-[-0.03em] text-[var(--ink)]">ShadRox</span>
-    </a>
+    </Link>
   )
 }
 
@@ -104,19 +106,20 @@ export function Navbar() {
           : 'border-b border-transparent bg-transparent',
       )}
     >
+      <AnnBar />
       <nav className="mx-auto flex max-w-[1180px] items-center justify-between px-5 py-4 lg:px-8">
         <Logo />
 
         {/* Desktop links */}
         <div className="hidden items-center gap-0.5 text-sm text-[var(--mut)] md:flex">
           {links.map((l) => (
-            <a
+            <Link
               key={l.href}
               href={l.href}
               className="nav-link rounded-full px-3.5 py-2 font-medium transition hover:bg-[var(--bg2)] hover:text-[var(--ink)]"
             >
               {l.label}
-            </a>
+            </Link>
           ))}
         </div>
 
@@ -150,7 +153,7 @@ export function Navbar() {
       >
         <div className="mx-5 flex flex-col gap-1 py-4 text-sm text-[var(--mut)]">
           {links.map((l, i) => (
-            <a
+            <Link
               key={l.href}
               href={l.href}
               onClick={() => setOpen(false)}
@@ -158,7 +161,7 @@ export function Navbar() {
               style={{ transitionDelay: open ? `${i * 35}ms` : '0ms' }}
             >
               {l.label}
-            </a>
+            </Link>
           ))}
           <a
             href={WINDOWS_DOWNLOAD_URL}

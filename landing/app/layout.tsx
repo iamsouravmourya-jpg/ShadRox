@@ -81,7 +81,7 @@ const jsonLd = {
       applicationCategory: 'DeveloperApplication',
       operatingSystem: 'Windows 10, Windows 11 (64-bit)',
       softwareVersion: APP_VERSION,
-      dateModified: '2026-11-05',
+      dateModified: '2026-11-09',
       url: SITE_URL,
       downloadUrl: WINDOWS_DOWNLOAD_URL,
       offers: { '@type': 'Offer', price: '0', priceCurrency: 'INR', availability: 'https://schema.org/InStock' },

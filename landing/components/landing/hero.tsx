@@ -8,15 +8,17 @@ import { WorkspaceMockup } from './workspace-mockup'
 export function Hero() {
   return (
     <section className="relative mx-auto max-w-[1180px] px-5 pb-20 pt-28 lg:px-8 lg:pb-28 lg:pt-36">
-      {/* Orbs */}
-      <div
-        className="pointer-events-none absolute -left-40 top-0 size-[560px] rounded-full blur-[120px]"
-        style={{ background: 'radial-gradient(circle, rgba(109,74,255,0.16), transparent 70%)' }}
-      />
-      <div
-        className="pointer-events-none absolute -right-32 top-20 size-[460px] rounded-full blur-[120px]"
-        style={{ background: 'radial-gradient(circle, rgba(236,72,153,0.12), transparent 70%)' }}
-      />
+      {/* Orbs — clipped below lg so they can't widen the mobile layout viewport */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden lg:overflow-visible">
+        <div
+          className="pointer-events-none absolute -left-40 top-0 size-[560px] rounded-full blur-[120px]"
+          style={{ background: 'radial-gradient(circle, rgba(109,74,255,0.16), transparent 70%)' }}
+        />
+        <div
+          className="pointer-events-none absolute -right-32 top-20 size-[460px] rounded-full blur-[120px]"
+          style={{ background: 'radial-gradient(circle, rgba(236,72,153,0.12), transparent 70%)' }}
+        />
+      </div>
 
       <div className="relative mx-auto max-w-3xl text-center">
         {/* Eyebrow pill */}

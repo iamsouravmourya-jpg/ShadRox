@@ -21,7 +21,7 @@ const features: Feature[] = [
   {
     icon: MessagesSquare,
     title: 'AI chat & queue',
-    text: 'Use Gemini, Groq or any OpenAI-compatible endpoint with your own BYOK key. Queue follow-up messages while a turn is running, review proposed diffs before applying, and dictate prompts by voice.',
+    text: 'Use Gemini, Groq or any OpenAI-compatible endpoint with your own BYOK key. Queue follow-up messages while a turn is running, review proposed diffs before applying, and dictate prompts by voice. File notes report the real apply outcome, and long code blocks stay collapsed until you open them.',
     span: 4,
     visual: (
       <div className="mt-5 grid gap-2 text-xs">
@@ -118,7 +118,7 @@ export function Features() {
               delay={(i % 3) * 90}
               className={
                 span === 4 ? 'md:col-span-2 lg:col-span-4' :
-                span === 3 ? 'lg:col-span-3' : undefined
+                span === 3 ? 'lg:col-span-3' : 'lg:col-span-2'
               }
             >
               <div

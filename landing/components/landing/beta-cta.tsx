@@ -6,7 +6,7 @@ import { Reveal } from './reveal'
 
 export function BetaCta() {
   return (
-    <section id="beta" className="border-t border-[var(--line)] bg-[var(--bg)] px-5 py-20 lg:px-8 lg:py-28">
+    <section id="get-shadrox" className="border-t border-[var(--line)] bg-[var(--bg)] px-5 py-20 lg:px-8 lg:py-28">
       <div className="mx-auto max-w-[1180px]">
         <Reveal variant="scale">
           <div
@@ -62,7 +62,7 @@ export function BetaCta() {
 
               <p className="mt-5 text-xs text-white/60">
                 Windows may warn about an unsigned installer — More → Run anyway.
-                New versions download and install automatically.
+                The app checks for newer releases when it starts.
               </p>
 
               <p className="mt-6 text-xs text-white/70">
