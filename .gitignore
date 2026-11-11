@@ -18,4 +18,9 @@ vibe_images/
 *.log
 .env*
 !.env.example
+# Internal working docs — kept locally, never published.
+/mvp-audit.txt
+/security-audit.txt
+landing/landing-page-content.txt
+landing/AGENTS.md
 
