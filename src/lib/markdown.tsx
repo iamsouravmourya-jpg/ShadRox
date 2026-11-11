@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, Copy } from 'lucide-react';
+import { Check, ChevronRight, Copy } from 'lucide-react';
 
 /**
  * Chat replies come back as markdown, and a model asked for a report answers in
@@ -190,9 +190,12 @@ function inlineNodes(tokens: InlineToken[], keyPrefix: string): React.ReactNode[
   });
 }
 
-/** Fenced block with a quiet header (language + copy) — like a real editor card. */
+/** Fenced block with a quiet header (language + copy) — like a real editor card.
+ * Long blocks start collapsed so one reply does not turn into a wall of code. */
 function CodeBlock({ code, lang }: { code: string; lang?: string }) {
   const [copied, setCopied] = React.useState(false);
+  const lineCount = code.split('\n').length;
+  const [open, setOpen] = React.useState(lineCount <= 10);
   const timer = React.useRef<number | null>(null);
 
   React.useEffect(() => () => {
@@ -213,8 +216,17 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
 
   return (
     <div className="overflow-hidden rounded-xl border border-white/[0.07] bg-ink-950/80">
-      <div className="flex items-center justify-between gap-2 border-b border-white/[0.05] bg-white/[0.025] px-2.5 py-1">
-        <span className="font-mono text-[9.5px] uppercase tracking-wider text-neutral-500">{lang ?? 'code'}</span>
+      <div className="flex items-center justify-between gap-2 bg-white/[0.025] px-2.5 py-1">
+        <button
+          type="button"
+          onClick={() => setOpen((prev) => !prev)}
+          title={open ? 'Collapse this block' : 'Expand this block'}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left cursor-pointer"
+        >
+          <ChevronRight className={`size-2.5 shrink-0 text-neutral-500 transition-transform ${open ? 'rotate-90' : ''}`} />
+          <span className="font-mono text-[9.5px] uppercase tracking-wider text-neutral-500">{lang ?? 'code'}</span>
+          <span className="font-mono text-[9px] text-neutral-600">{lineCount} line{lineCount === 1 ? '' : 's'}</span>
+        </button>
         <button
           type="button"
           onClick={copy}
@@ -225,9 +237,11 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      <pre className="overflow-x-auto p-3 font-mono text-[11.5px] leading-relaxed text-neutral-200">
-        <code>{code}</code>
-      </pre>
+      {open && (
+        <pre className="overflow-x-auto border-t border-white/[0.05] p-3 font-mono text-[11.5px] leading-relaxed text-neutral-200">
+          <code>{code}</code>
+        </pre>
+      )}
     </div>
   );
 }
@@ -507,13 +521,34 @@ export function extractFilePatches(content: string, files: KnownFile[] = []): Pa
 }
 
 /**
+ * What actually happened to a proposed file write. The chat bullet must say
+ * this, never what the reply's shape merely suggests — a streamed block that
+ * was dropped or refused is "not applied", not "patched".
+ */
+export type PatchWriteOutcome =
+  | 'streaming'
+  | 'applied'
+  | 'pending'
+  | 'failed'
+  | 'skipped'
+  | 'reverted'
+  | 'unapplied'
+  | 'historic';
+
+export type PatchOutcomeLookup = (path: string) => PatchWriteOutcome;
+
+/**
  * The chat view of a reply: file writes are replaced by a one-line note.
  *
  * The assistant streams whole files, but those go straight into the editor, so
  * repeating them in the chat is just noise. Blocks that are not tied to a real
  * file (examples) are left exactly as the model wrote them.
+ *
+ * The note's wording comes from the apply outcome when the caller supplies it;
+ * without one it defaults to "not applied", because a bullet is not proof that
+ * anything landed.
  */
-export function maskFileWrites(content: string, files: KnownFile[] = []): string {
+export function maskFileWrites(content: string, files: KnownFile[] = [], outcome?: PatchOutcomeLookup): string {
   const lines = content.split('\n');
   const output: string[] = [];
   const masked = new Set<string>();
@@ -550,17 +585,28 @@ export function maskFileWrites(content: string, files: KnownFile[] = []): string
 
     if (target) {
       const key = target.toLowerCase();
-      const known = files.some((file) => file.name === target);
-      const hasSearchReplace = body.includes('<<<<<<< ORIGINAL');
       // Two fences for one path are two edits, not two files: the Changes list
       // already shows both, so a second bullet would only read as a duplicate.
       if (!masked.has(key)) {
         masked.add(key);
-        output.push(
-          hasSearchReplace
-            ? `- ${target} — patched via search/replace, open in code editor`
-            : `- ${target} — ${known ? 'updated' : 'created'}, open in code editor`
-        );
+        const state = outcome ? outcome(target) : 'unapplied';
+        const label =
+          state === 'applied'
+            ? 'change applied'
+            : state === 'pending'
+              ? 'change awaiting review'
+              : state === 'failed'
+                ? 'not applied — see Changes below'
+                : state === 'skipped'
+                  ? 'change skipped'
+                  : state === 'reverted'
+                    ? 'change reverted'
+                    : state === 'streaming'
+                      ? 'writing change…'
+                      : state === 'historic'
+                        ? 'change from an earlier session'
+                        : 'not applied';
+        output.push(`- ${target} — ${label}`);
       }
     } else {
       output.push(lines[index], ...bodyLines);

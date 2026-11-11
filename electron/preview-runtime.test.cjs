@@ -332,7 +332,7 @@ test('keeps the host the dev server printed so Next.js HMR stays same-origin', a
 });
 
 test('relocates over a foreign process on the pinned port without killing it', async (context) => {
-  const base = await findFreePortRun(2);
+  const base = await findFreePortRun(1);
   const squatter = net.createServer();
   await new Promise((resolve, reject) => {
     squatter.once('error', reject);
@@ -348,14 +348,18 @@ test('relocates over a foreign process on the pinned port without killing it', a
   context.after(() => runtime.stopAll());
 
   const result = await runtime.start('foreign-port-workspace', root);
-  assert.equal(result.port, base + 1);
-  assert.equal(result.url, `http://127.0.0.1:${base + 1}/`);
+  // The exact relocation target depends on what else is free at scan time —
+  // parallel test files can take base+1 between the probe and the scan — so
+  // assert the invariant (moved above the squatter, every surface agrees on
+  // the chosen port) instead of a racy fixed number.
+  assert.ok(result.port > base, `expected relocation above ${base}, got ${result.port}`);
+  assert.equal(result.url, `http://127.0.0.1:${result.port}/`);
   const devCall = calls.find(({ invocation }) => invocation.includes(' run dev '));
-  assert.match(devCall.invocation, new RegExp(`--port ${base + 1}`));
-  assert.equal(devCall.options.env.PORT, String(base + 1));
+  assert.match(devCall.invocation, new RegExp(`--port ${result.port}`));
+  assert.equal(devCall.options.env.PORT, String(result.port));
   assert.ok(output.some((entry) =>
     entry.type === 'status' &&
-    entry.message.includes(`Port ${base} is already used by another local server. Starting on port ${base + 1} instead.`)
+    entry.message.includes(`Port ${base} is already used by another local server. Starting on port ${result.port} instead.`)
   ));
   assert.ok(await isPortBusy(base), 'The foreign listener must survive the preview start.');
 });

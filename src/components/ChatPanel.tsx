@@ -31,7 +31,7 @@ import {
   X,
   Zap
 } from 'lucide-react';
-import { maskFileWrites, renderMarkdownContent } from '../lib/markdown';
+import { maskFileWrites, renderMarkdownContent, type PatchWriteOutcome } from '../lib/markdown';
 import { getRefineMode, REFINE_MODES } from '../lib/ai';
 import type { PermissionMode } from '../lib/agent/runPolicy';
 import { getProviderMeta, type ModelInfo, type ModelTier } from '../lib/providers';
@@ -350,6 +350,12 @@ function ThinkingTrace({ reasoning, streaming }: { reasoning: string; streaming?
   const [open, setOpen] = useState(Boolean(streaming));
   const wordCount = useMemo(() => reasoning.trim().split(/\s+/).filter(Boolean).length, [reasoning]);
 
+  // The trace is for watching the thought happen; once the answer lands it
+  // folds away so the reply, not the scaffolding, owns the chat.
+  useEffect(() => {
+    if (!streaming) setOpen(false);
+  }, [streaming]);
+
   return (
     <div className="mb-2.5 rounded-xl border border-violet-500/20 bg-violet-950/15 p-2.5 text-[11px]">
       <button
@@ -566,7 +572,7 @@ function ToolActivityFeed({ tools, streaming }: { tools: NonNullable<ChatMessage
   const heldCount = tools.filter((t) => t.refused).length;
 
   return (
-    <div className="mb-2 rounded-xl border border-white/[0.08] bg-white/[0.02] p-2.5 text-[11px]">
+    <div className="mb-2 rounded-xl border border-white/[0.08] bg-white/[0.02] px-2.5 py-2 text-[11px]">
       <button
         type="button"
         onClick={() => setExpanded((prev) => !prev)}
@@ -1605,14 +1611,36 @@ export function ChatPanel({
                   <ThinkingTrace reasoning={message.reasoning} streaming={message.streaming} />
                 )}
 
-                {message.content ? (
-                  renderMarkdownContent(maskFileWrites(message.content, workspaceFiles))
-                ) : message.streaming ? (
-                  <span className="inline-flex items-center gap-2 text-neutral-500">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-300" />
-                    Thinking...
-                  </span>
-                ) : null}
+                {(() => {
+                  if (!message.content) {
+                    return message.streaming ? (
+                      <span className="inline-flex items-center gap-2 text-neutral-500">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-300" />
+                        Thinking...
+                      </span>
+                    ) : null;
+                  }
+                  // A bullet may only claim what actually happened to the write:
+                  // the patch set's status is the truth, the reply shape is not.
+                  const patchSet = patchSets.find((set) => set.messageId === message.id);
+                  const outcomeFor = (path: string): PatchWriteOutcome => {
+                    if (message.streaming) return 'streaming';
+                    const rows = patchSet?.patches.filter((patch) => samePath(patch.path, path)) ?? [];
+                    if (rows.length > 0) {
+                      if (rows.some((row) => row.status === 'failed')) return 'failed';
+                      if (rows.some((row) => row.status === 'pending')) return 'pending';
+                      if (rows.some((row) => row.status === 'applied')) return 'applied';
+                      if (rows.every((row) => row.status === 'rejected')) return 'skipped';
+                      return 'reverted';
+                    }
+                    const recorded = Object.entries(message.writeOutcomes ?? {}).find(([stored]) => samePath(stored, path));
+                    if (recorded) return recorded[1];
+                    // Old history has no outcome record; claiming "not applied"
+                    // for it would be the same lie in the other direction.
+                    return message.restored ? 'historic' : 'unapplied';
+                  };
+                  return renderMarkdownContent(maskFileWrites(message.content, workspaceFiles, outcomeFor));
+                })()}
 
                 {(() => {
                   const patchSet = patchSets.find((set) => set.messageId === message.id);
@@ -1830,33 +1858,22 @@ export function ChatPanel({
                         Resume reply
                       </button>
                     )}
-                    {(() => {
-                      const metrics = message.metrics;
-                      if (!metrics?.model) return null;
-                      const usageLabel = metrics.usageState ?? 'pending';
-                      return (
-                        <span
-                          className="flex items-center gap-1 font-mono"
-                          title="Route model · usage certainty · credits billed by ShadRox (BYOK always 0)"
-                        >
-                          <Bot className="w-3 h-3" />
-                          {describeAnswerRoute(metrics, models)}
-                          {` · ${usageLabel}`}
-                          {metrics.credits !== undefined ? ` · ${formatCredits(metrics.credits)} credits` : ''}
-                          {metrics.attempts && metrics.attempts > 1 ? ` · ${metrics.attempts} attempts` : ''}
-                        </span>
-                      );
-                    })()}
-                    {message.metrics && (message.metrics.tokens > 0 || message.metrics.firstTokenMs !== null) && (
+                    {message.metrics?.model && (
                       <details className="font-mono text-neutral-600">
                         <summary className="flex cursor-pointer items-center gap-1">
                           <Zap className="w-3 h-3" />
                           Usage
                         </summary>
-                        <span className="mt-1 block" title="Time to first token · input/output tokens · credits billed · total duration">
-                          {message.metrics.firstTokenMs !== null ? `${message.metrics.firstTokenMs}ms` : '—'}
+                        <span
+                          className="mt-1 block"
+                          title="Route model · usage certainty · credits billed by ShadRox (BYOK always 0) · tokens · duration"
+                        >
+                          {describeAnswerRoute(message.metrics, models)}
+                          {` · ${message.metrics.usageState ?? 'pending'}`}
+                          {message.metrics.credits !== undefined ? ` · ${formatCredits(message.metrics.credits)} credits` : ''}
+                          {message.metrics.attempts && message.metrics.attempts > 1 ? ` · ${message.metrics.attempts} attempts` : ''}
+                          {message.metrics.firstTokenMs !== null ? ` · ${message.metrics.firstTokenMs}ms` : ''}
                           {message.metrics.tokens > 0 ? ` · ${formatTokenSplit(message.metrics, message.metrics.tokens)}` : ''}
-                          {message.metrics.credits !== undefined ? ` · ${formatCredits(message.metrics.credits)}` : ''}
                           {message.metrics.durationMs ? ` · ${(message.metrics.durationMs / 1000).toFixed(1)}s` : ''}
                         </span>
                       </details>

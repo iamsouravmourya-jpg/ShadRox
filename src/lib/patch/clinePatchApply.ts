@@ -505,7 +505,11 @@ export type ClineRefusalCode =
 	/** The apply_patch body could not be parsed at all. */
 	| "PARSE_ERROR"
 	/** A fence that declared a file and then wrote no body (a deletion). */
-	| "EMPTY_BODY";
+	| "EMPTY_BODY"
+	/** The reply ended mid-fence or mid-block, so the edit is incomplete. */
+	| "TRUNCATED_BLOCK"
+	/** SEARCH/REPLACE markers present but no complete block could be parsed. */
+	| "MALFORMED_SEARCH_REPLACE";
 
 export type ClinePatchEntry =
 	| { path: string; kind: "searchReplace"; blocks: Array<{ original: string; updated: string }> }

@@ -140,3 +140,40 @@ test('corrupt storage is ignored instead of breaking the chat panel', () => {
   saveConversation(store, 'folder-a', [turn('1', 'model', 'still works')]);
   assert.deepEqual(loadConversation(store, 'folder-a')?.map((m) => m.content), ['still works']);
 });
+
+test('write outcomes survive a restart so restored bullets stay honest', () => {
+  const store = memoryStore();
+  const edited: ChatMessage = {
+    ...turn('2', 'model', 'done'),
+    writeOutcomes: { 'src/a.ts': 'applied', 'src/b.ts': 'failed' }
+  };
+  saveConversation(store, 'folder-a', [turn('1', 'user', 'edit it'), edited]);
+  const restored = loadConversation(store, 'folder-a');
+  assert.ok(restored);
+  assert.deepEqual(restored[1].writeOutcomes, { 'src/a.ts': 'applied', 'src/b.ts': 'failed' });
+  assert.equal(restored[1].restored, true);
+  assert.equal(restored[0].restored, true);
+});
+
+test('a stored outcome that is not a real state is dropped, not replayed', () => {
+  const store = memoryStore();
+  store.setItem(
+    'shadrox.chat.history',
+    JSON.stringify({
+      'folder-a': {
+        messages: [
+          {
+            id: '1',
+            role: 'model',
+            content: 'done',
+            writeOutcomes: { 'src/a.ts': 'applied', 'src/b.ts': 'patched', 'src/c.ts': 42, '': 'applied' }
+          }
+        ],
+        updatedAt: 1
+      }
+    })
+  );
+  const restored = loadConversation(store, 'folder-a');
+  assert.ok(restored);
+  assert.deepEqual(restored[0].writeOutcomes, { 'src/a.ts': 'applied' });
+});
