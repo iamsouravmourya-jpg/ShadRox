@@ -1,7 +1,7 @@
 {
   "name": "shadrox",
   "private": true,
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Native desktop AI engineering workspace with BYOK and live project preview.",
   "author": "Sourav Maurya",
   "license": "UNLICENSED",
@@ -64,6 +64,7 @@
     "electron-builder": "^26.18.1",
     "esbuild": "^0.28.2",
     "esbuild-wasm": "^0.28.2",
+    "javascript-obfuscator": "^4.2.2",
     "lucide-react": "^0.546.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
@@ -117,6 +118,10 @@
         "filter": [
           "**/*.d.ts"
         ]
+      },
+      {
+        "from": "electron/shell-integration",
+        "to": "shell-integration"
       }
     ],
     "win": {

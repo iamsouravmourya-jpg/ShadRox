@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ArrowLeft, Bug, FolderOpen, FolderTree, GitBranch, History, Loader2, LogOut, MonitorPlay, Search, Settings, Terminal, UserRound, X } from 'lucide-react';
 import { ShadRoxLogo } from './components/Logo';
 import { Stage2Hub } from './components/Stage2Hub';
@@ -193,7 +193,12 @@ import type {
   WorkspaceFile
 } from './lib/types';
 
-const TerminalPanel = lazy(() => import('./components/TerminalPanel').then((module) => ({ default: module.TerminalPanel })));
+// Statically imported (not React.lazy): the production renderer is bundled into
+// a single chunk, so the lazy split bought nothing, and the build-time JS
+// obfuscator rewrites the import() specifier into a runtime string that Vite
+// cannot resolve — opening the terminal crashed the whole renderer to a blank
+// page ("Failed to fetch dynamically imported module .../TerminalPanel").
+import { TerminalPanel } from './components/TerminalPanel';
 
 /**
  * How much of a folder workspace the prompt may see when no tabs are open.

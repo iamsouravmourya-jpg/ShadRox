@@ -11,6 +11,7 @@ let pty = null;
 try { pty = require('node-pty'); } catch { /* PTY support may be unavailable in an unbuilt development install. */ }
 const { createWorkspaceAccess } = require('./workspace.cjs');
 const { runWithCommandApproval } = require('./command-approval.cjs');
+const { findPlantedShim, WINDOWS_CMD_SHIMS } = require('./verify-allowlist.cjs');
 const {
   createWorkspaceConsent,
   resolveFileReopen,
@@ -291,8 +292,12 @@ function installRendererCsp() {
   const csp = [
     "default-src 'self'", "base-uri 'self'", "object-src 'none'",
     "frame-ancestors 'none'", "script-src 'self' 'unsafe-inline'",
-    "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob: https:",
-    "font-src 'self' data:", "connect-src 'self' https: http://127.0.0.1:* http://localhost:*",
+    "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob: http: https:",
+    "font-src 'self' data: http: https:", "connect-src 'self' https: http://127.0.0.1:* http://localhost:*",
+    // The preview iframe is the user's own dev server on an arbitrary loopback
+    // port, which 'self' (the app origin) does not cover: without frame-src it
+    // falls back to default-src and the preview renders blank.
+    "frame-src 'self' http://127.0.0.1:* http://localhost:* shadrox-preview:",
     "worker-src 'self' blob:"
   ].join('; ');
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -846,9 +851,41 @@ function tokenizeCommand(command) {
   return tokens;
 }
 
+// cmd.exe adds %, ^ and ! to the POSIX metacharacter set; the .cmd shim path
+// below runs through cmd.exe, so all of them are rejected up front.
+const COMMAND_METACHARACTERS = /[;&|<>`$()\\%^!\r\n]/;
+
+// Only spaces survive the metacharacter gate, so a token never carries a quote
+// or backslash that would need escaping inside the cmd.exe line.
+function quoteCmdToken(token) {
+  return /\s/.test(token) ? `"${token}"` : token;
+}
+
+// Resolve a bare command name to a trusted absolute executable by scanning PATH
+// and skipping the working directory, so a binary planted in the workspace root
+// (which CreateProcess searches first) can never shadow the real tool.
+function resolveWindowsExecutable(name, cwd, env) {
+  const pathValue = env.PATH || env.Path || process.env.PATH || process.env.Path || '';
+  let cwdKey;
+  try { cwdKey = path.resolve(cwd).toLowerCase(); } catch { cwdKey = null; }
+  for (const dir of pathValue.split(path.delimiter)) {
+    if (!dir) continue;
+    let dirKey;
+    try { dirKey = path.resolve(dir).toLowerCase(); } catch { continue; }
+    if (cwdKey && dirKey === cwdKey) continue;
+    for (const suffix of ['.cmd', '.exe', '.bat', '.com']) {
+      const candidate = path.join(dir, name + suffix);
+      try {
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+      } catch { /* unreadable PATH entry */ }
+    }
+  }
+  return null;
+}
+
 function executeCommand(command, cwd) {
   return new Promise((resolve) => {
-    if (/[;&|<>`$()\\\r\n]/.test(command)) {
+    if (COMMAND_METACHARACTERS.test(command)) {
       resolve({ stdout: '', stderr: 'Shell metacharacters are not allowed.', exitCode: 1 });
       return;
     }
@@ -858,20 +895,52 @@ function executeCommand(command, cwd) {
       return;
     }
     const env = resolveTerminalPlan({ mode: 'agent' }).env;
-    const child = execFile(argv[0], argv.slice(1), {
+    const options = {
       cwd,
       timeout: 120_000,
       maxBuffer: 2 * 1024 * 1024,
       windowsHide: true,
-      shell: false,
       env
-    }, (error, stdout, stderr) => {
-      resolve({
-        stdout: String(stdout || ''),
-        stderr: String(stderr || ''),
-        exitCode: error ? (typeof error.code === 'number' ? error.code : 1) : 0
-      });
+    };
+    const finish = (error, stdout, stderr) => resolve({
+      stdout: String(stdout || ''),
+      stderr: String(stderr || ''),
+      exitCode: error ? (typeof error.code === 'number' ? error.code : 1) : 0
     });
+
+    if (process.platform !== 'win32') {
+      execFile(argv[0], argv.slice(1), { ...options, shell: false }, finish);
+      return;
+    }
+
+    // CreateProcess searches cwd before PATH; refuse a binary-shaped file planted
+    // in the project root rather than letting it shadow the approved tool.
+    const planted = findPlantedShim(argv, cwd, (candidate) => {
+      try { return fs.existsSync(candidate); } catch { return false; }
+    }, process.platform);
+    if (planted) {
+      resolve({ stdout: '', stderr: `Refusing to run "${argv[0]}": a file with that name exists in the project folder.`, exitCode: 1 });
+      return;
+    }
+
+    const base = argv[0];
+    const isShim = WINDOWS_CMD_SHIMS.has(base.toLowerCase()) || /\.(cmd|bat)$/i.test(base);
+    if (isShim) {
+      const resolved = resolveWindowsExecutable(base.replace(/\.(cmd|bat)$/i, ''), cwd, env);
+      if (!resolved) {
+        resolve({ stdout: '', stderr: `Command not found on PATH: ${base}`, exitCode: 1 });
+        return;
+      }
+      // execFile cannot spawn .cmd/.bat without a shell (CVE-2024-27980), and
+      // shell:true with an argv array concatenates unescaped (DEP0190). Pass one
+      // pre-quoted line as the file with no args; Node wraps it for cmd /d /s /c,
+      // which strips the outer quotes and runs the quoted executable + args.
+      const line = [resolved, ...argv.slice(1)].map(quoteCmdToken).join(' ');
+      execFile(line, [], { ...options, shell: true }, finish);
+      return;
+    }
+
+    execFile(base, argv.slice(1), { ...options, shell: false }, finish);
   });
 }
 

@@ -35,6 +35,26 @@ async function compile(source, output, options = {}) {
   fs.rmSync(source, { force: true });
 }
 
+// Deliberately lighter than the renderer's vite obfuscation profile: the
+// worker bundle inlines the TypeScript compiler (~10MB), where control-flow
+// flattening and dead-code injection would multiply build time and memory for
+// no extra protection of our own logic. stringArray still strips every
+// readable literal and identifier from the shipped file.
+async function obfuscateFile(file) {
+  const { default: JavaScriptObfuscator } = await import('javascript-obfuscator');
+  const source = fs.readFileSync(file, 'utf8');
+  const result = JavaScriptObfuscator.obfuscate(source, {
+    compact: true,
+    identifierNamesGenerator: 'hexadecimal',
+    selfDefending: false,
+    stringArray: true,
+    stringArrayEncoding: ['base64'],
+    stringArrayThreshold: 1,
+    target: 'node'
+  });
+  fs.writeFileSync(file, result.getObfuscatedCode(), 'utf8');
+}
+
 async function main() {
   if (process.env.NODE_ENV !== 'production') {
     throw new Error('Secure staging requires NODE_ENV=production.');
@@ -62,9 +82,25 @@ async function main() {
     electronMain: true
   });
 
+  // The diagnostics worker is spawned by file path at runtime
+  // (new Worker(__dirname + '/ts-worker.cjs')), so it must survive as a real
+  // file. Bundle it standalone — its require of ts-service.cjs (and that
+  // module's desktop-security) would otherwise point at sources the cleanup
+  // loop deletes. typescript-legacy stays external: inlining the compiler
+  // would make this the one readable source file in the shipped app, and the
+  // worker thread shares the main process's module resolution, so the bare
+  // require still resolves inside app.asar.
+  const workerPath = path.join(electronDirectory, 'ts-worker.cjs');
+  await bundle(
+    path.join(sourceElectronDirectory, 'ts-worker.cjs'),
+    workerPath,
+    ['typescript-legacy']
+  );
+  if (process.env.SHADROX_OBFUSCATE !== '0') await obfuscateFile(workerPath);
+
   fs.copyFileSync(path.join(sourceElectronDirectory, 'loader.cjs'), path.join(electronDirectory, 'loader.cjs'));
   for (const entry of fs.readdirSync(electronDirectory)) {
-    if (!['loader.cjs', 'main.jsc', 'preload.cjs'].includes(entry)) {
+    if (!['loader.cjs', 'main.jsc', 'preload.cjs', 'ts-worker.cjs', 'shell-integration'].includes(entry)) {
       fs.rmSync(path.join(electronDirectory, entry), { recursive: true, force: true });
     }
   }
