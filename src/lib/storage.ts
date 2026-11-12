@@ -1,5 +1,5 @@
 import type { ProviderId } from './providers';
-import type { PlanTier, RecentEntry } from './types';
+import type { RecentEntry } from './types';
 import {
   deleteSecretItem,
   mirrorSecureItem,
@@ -13,8 +13,6 @@ const STORE_KEYS = {
   apiKey: (provider: ProviderId) => `shadrox.byok.${provider}`,
   selectedModel: (provider: ProviderId) => `shadrox.model.${provider}`,
   activeProvider: 'shadrox.provider.active',
-  useSharedKey: 'shadrox.key.shared',
-  plan: 'shadrox.plan',
   recents: 'shadrox.recents',
   /** The custom endpoint's base URL. Not a credential, so it stays in plain storage. */
   customBaseUrl: 'shadrox.endpoint.custom.baseurl',
@@ -120,35 +118,29 @@ export function setSelectedModel(provider: ProviderId, modelId: string): void {
   if (modelId) safeSet(STORE_KEYS.selectedModel(provider), modelId);
 }
 
-/** Whether the user runs on ShadRox's shared key instead of their own. */
-export function getUseSharedKey(): boolean {
-  return safeGet(STORE_KEYS.useSharedKey) === 'true';
-}
-
-export function setUseSharedKey(value: boolean): void {
-  if (value) safeSet(STORE_KEYS.useSharedKey, 'true');
-  else safeRemove(STORE_KEYS.useSharedKey);
-}
+/**
+ * Keys written by builds that sold plans and a ShadRox shared key. ShadRox is
+ * Free + BYOK only now, so nothing reads them any more.
+ */
+const RETIRED_ENTITLEMENT_KEYS = ['shadrox.plan', 'shadrox.key.shared'];
 
 /**
- * The old ladder had tiers this one no longer has. Reading them maps the user
- * to the Starter Pack rather than silently dropping a paying user to Free; the
- * pack is the only paid tier, so every retired paid value resolves there.
+ * Called once at boot. A machine still holding an old paid-plan value or a
+ * shared-key opt-in must come up as Free + BYOK rather than in a state the
+ * current build has no UI for, so the values are deleted instead of
+ * interpreted. Desktop mirrors non-secret settings into the encrypted store as
+ * well, so both copies go. localStorage can throw in a locked-down renderer; a
+ * failed cleanup must never block startup.
  */
-const LEGACY_PLAN_MIGRATION: Record<string, PlanTier> = {
-  adv: 'heavy',
-  enterprise: 'heavy',
-  pro: 'heavy'
-};
-
-export function getPlan(): PlanTier {
-  const raw = safeGet(STORE_KEYS.plan);
-  if (raw === 'free' || raw === 'starter' || raw === 'heavy') return raw;
-  return LEGACY_PLAN_MIGRATION[raw ?? ''] ?? 'free';
-}
-
-export function setPlan(plan: PlanTier): void {
-  safeSet(STORE_KEYS.plan, plan);
+export function purgeLegacyEntitlements(): void {
+  for (const key of RETIRED_ENTITLEMENT_KEYS) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+    removeSecureItem(key);
+  }
 }
 
 export function getRecentWorkspaces(): RecentEntry[] {

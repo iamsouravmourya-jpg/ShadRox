@@ -10,7 +10,7 @@
  * Tasks run one at a time, on purpose. Every task's turn goes through the app's
  * single workspace, so two agents editing at once would produce a patch that
  * applies against bytes the other one already changed. Bounded concurrency here
- * means a hard task cap and a hard credit cap, not a thread pool.
+ * means a hard task cap and a hard spend cap, not a thread pool.
  *
  * When the last task settles, one closing turn reads the run as a whole. Each task
  * only ever checked its own files, so a prop Frontend renamed and Backend never
@@ -174,7 +174,7 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
 
     if (deps.tracker.exhausted()) {
       state.status = 'stopped-budget';
-      state.error = `Stopped at the ${deps.budget.maxCredits}-credit cap. ${countPending(state.tasks)} task(s) did not run.`;
+      state.error = `Stopped at the spend cap of ${deps.budget.maxCredits}. ${countPending(state.tasks)} task(s) did not run.`;
       break;
     }
 
@@ -197,7 +197,7 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
         // than staying flagged as running in a persisted state.
         next.status = 'pending';
         state.status = 'stopped-budget';
-        state.error = `Stopped before "${next.title}": the next turn is estimated at ${estimate} credits and the team cap is ${deps.budget.maxCredits}.`;
+        state.error = `Stopped before "${next.title}": the next turn is estimated at ${estimate} spend and the team cap is ${deps.budget.maxCredits}.`;
         outcome = 'stopped';
         break;
       }
@@ -377,7 +377,7 @@ async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Pro
   deps.ports.onEvent({
     type: 'team:log',
     text: skipped
-      ? `Integration pass skipped: the closing turn needs about ${estimate} credits and the team has ${left} left.`
+      ? `Integration pass skipped: the closing turn needs about ${estimate} spend and the team has ${left} left.`
       : `Integration: ${role} is checking ${mergedFiles.length} changed file(s) together.`
   });
 
@@ -507,7 +507,7 @@ async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Pro
 function integrationSkipReason(deps: TeamDeps): string {
   return deps.ports.isCancellationRequested()
     ? 'the user stopped the team'
-    : 'the credit cap left no room for it';
+    : 'the spend cap left no room for it';
 }
 
 /** The one thing a red merge row needs: which file, and what the checker said. */

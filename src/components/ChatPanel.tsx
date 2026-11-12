@@ -13,6 +13,7 @@ import {
   FileCode2,
   FileDiff,
   FileText,
+  KeyRound,
   Loader2,
   ListTree,
   MessageSquarePlus,
@@ -35,14 +36,13 @@ import { maskFileWrites, renderMarkdownContent, type PatchWriteOutcome } from '.
 import { getRefineMode, REFINE_MODES } from '../lib/ai';
 import type { PermissionMode } from '../lib/agent/runPolicy';
 import { getProviderMeta, type ModelInfo, type ModelTier } from '../lib/providers';
-import { getMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
 import { estimateTokens } from '../lib/toolUtils';
 import { computeHunks, groupedHunkId, hunkStats } from '../lib/editor/hunks';
-import { formatCredits, formatTokenSplit } from '../lib/usageCredits';
+import { formatTokenSplit } from '../lib/usageCredits';
 import type { Skill } from '../lib/skills';
 import { contextManifestTotals, shouldSubmitOnEnter, type ContextManifest } from '../lib/contextManifest';
 import { applyTemplate, PROMPT_TEMPLATES } from '../lib/promptTemplates';
-import type { ChatMessage, PatchSet, PlanTier, RefineMode, SemanticStatus, SettingsTab, WorkspaceFile } from '../lib/types';
+import type { ChatMessage, PatchSet, RefineMode, SemanticStatus, SettingsTab, WorkspaceFile } from '../lib/types';
 import type { CheckpointMeta } from '../lib/history';
 import type { CheckpointDiff } from '../lib/checkpointDiff';
 import { TimelineSlider } from './TimelineSlider';
@@ -97,7 +97,6 @@ interface ChatPanelProps {
   selectedModel: string;
   onSelectModel: (modelId: string) => void;
   hasKey: boolean;
-  plan: PlanTier;
   onOpenSettings: (tab?: SettingsTab) => void;
   attachedFiles: string[];
   onAttachedFilesChange: (fileNames: string[]) => void;
@@ -995,7 +994,6 @@ export function ChatPanel({
   selectedModel,
   onSelectModel,
   hasKey,
-  plan,
   onOpenSettings,
   attachedFiles,
   onAttachedFilesChange,
@@ -1099,15 +1097,6 @@ export function ChatPanel({
     }
   };
 
-  const [usage, setUsage] = useState<UsageState>(() => getMonthlyUsage(plan));
-
-  useEffect(() => {
-    setUsage(getMonthlyUsage(plan));
-    return onQuotaChange(() => {
-      setUsage(getMonthlyUsage(plan));
-    });
-  }, [plan]);
-
   /** One dismissal path for every chat popover: outside click and Escape. */
   useEffect(() => {
     if (!isModelMenuOpen && !isAttachMenuOpen && !isRunMenuOpen && !isContextOpen) return;
@@ -1142,8 +1131,8 @@ export function ChatPanel({
   }, [messages]);
 
   const activeModel = models.find((model) => model.id === selectedModel) || null;
-  const canSend = input.trim().length > 0 && !isGenerating && !usage.isCapReached;
-  const canQueue = input.trim().length > 0 && isGenerating && !usage.isCapReached;
+  const canSend = input.trim().length > 0 && !isGenerating;
+  const canQueue = input.trim().length > 0 && isGenerating;
   const manifestTotals = contextManifest ? contextManifestTotals(contextManifest) : null;
   const lastAssistantId = [...messages].reverse().find((message) => message.role === 'model')?.id ?? null;
 
@@ -1229,24 +1218,6 @@ export function ChatPanel({
     }
   };
 
-  const quotaTone = usage.isCapReached
-    ? {
-        pill: 'border-rose-900/70 bg-rose-950/40 text-rose-300',
-        icon: 'text-rose-400'
-      }
-    : usage.percentage >= 70
-      ? {
-          pill: 'border-amber-900/60 bg-amber-950/30 text-amber-300',
-          icon: 'text-amber-400'
-        }
-      : {
-          pill: 'border-violet-300/25 bg-violet-500/[.07] text-violet-300 hover:border-violet-300/45',
-          icon: 'text-violet-300'
-        };
-
-  /** BYOK keys, and plans with no monthly cap, have no meaningful used/limit ratio. */
-  const quotaHasNoCap = usage.isUnlimited || Math.round(usage.limit) === 0;
-
   const groupedModels: Record<ModelTier, ModelInfo[]> = {
     free: models.filter((model) => model.tier === 'free'),
     own: models.filter((model) => model.tier === 'own'),
@@ -1281,21 +1252,15 @@ export function ChatPanel({
         </button>
 
         <div className="flex shrink-0 items-center gap-1.5">
-          {/* Monthly Quota Indicator Pill */}
+          {/* One product state: your own key, nothing billed by ShadRox. */}
           <button
             type="button"
-            onClick={() => onOpenSettings('PLAN')}
-            title={
-              quotaHasNoCap
-                ? `No monthly cap — ${Math.round(usage.used)} credits used this month. Manage plan in Settings.`
-                : `Credits: ${Math.round(usage.used)}/${Math.round(usage.limit)} used this month (${Math.floor(usage.remaining)} left)`
-            }
-            className={`flex items-center gap-1 rounded-full px-2 py-1 border text-[10px] tracking-wide transition-colors cursor-pointer ${quotaTone.pill}`}
+            onClick={() => onOpenSettings('CHAT')}
+            title="ShadRox bills nothing — every token is paid to the provider key you saved in Settings."
+            className="flex items-center gap-1 rounded-full border border-violet-300/25 bg-violet-500/[.07] px-2 py-1 text-[10px] tracking-wide text-violet-300 transition-colors hover:border-violet-300/45 cursor-pointer"
           >
-            <Zap className={`w-3 h-3 ${quotaTone.icon}`} />
-            <span className="font-mono">
-              {quotaHasNoCap ? 'BYOK' : `${Math.round(usage.used)}/${Math.round(usage.limit)}`}
-            </span>
+            <KeyRound className="w-3 h-3 text-violet-300" />
+            <span className="font-mono">BYOK</span>
           </button>
 
           <div ref={contextMenuRef} className="relative">
@@ -1866,11 +1831,10 @@ export function ChatPanel({
                         </summary>
                         <span
                           className="mt-1 block"
-                          title="Route model · usage certainty · credits billed by ShadRox (BYOK always 0) · tokens · duration"
+                          title="Route model · usage certainty · tokens · duration"
                         >
                           {describeAnswerRoute(message.metrics, models)}
                           {` · ${message.metrics.usageState ?? 'pending'}`}
-                          {message.metrics.credits !== undefined ? ` · ${formatCredits(message.metrics.credits)} credits` : ''}
                           {message.metrics.attempts && message.metrics.attempts > 1 ? ` · ${message.metrics.attempts} attempts` : ''}
                           {message.metrics.firstTokenMs !== null ? ` · ${message.metrics.firstTokenMs}ms` : ''}
                           {message.metrics.tokens > 0 ? ` · ${formatTokenSplit(message.metrics, message.metrics.tokens)}` : ''}
@@ -1931,22 +1895,6 @@ export function ChatPanel({
 
       {/* Input Area & Prompt Box */}
       <div className="shrink-0 border-t border-white/[0.07] p-3 bg-ink-950">
-        {/* Monthly Cap Warning Banner */}
-        {usage.isCapReached && (
-          <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-rose-500/25 bg-rose-500/[.07] p-2 text-[11px] text-rose-300">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-              <span className="truncate">Out of credits this month ({Math.round(usage.used)}/{Math.round(usage.limit)})</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => onOpenSettings('PLAN')}
-              className="shrink-0 rounded-md bg-rose-500 px-2.5 py-0.5 text-[10px] font-semibold text-white transition-colors hover:bg-rose-400 cursor-pointer"
-            >
-              Settings
-            </button>
-          </div>
-        )}
 
         {/* Live Agent Phase / Activity Status */}
         {activeStatusMessage && (
@@ -2214,12 +2162,7 @@ export function ChatPanel({
               }
             }}
             rows={3}
-            placeholder={
-              usage.isCapReached
-                ? 'Monthly message cap reached. Manage usage in Settings...'
-                : 'Ask ShadRox to build, refactor, or explain code… (@ to attach a file or symbol)'
-            }
-            disabled={usage.isCapReached}
+            placeholder="Ask ShadRox to build, refactor, or explain code… (@ to attach a file or symbol)"
             className="w-full resize-none rounded-2xl bg-transparent py-3 pl-10 pr-3.5 text-xs text-neutral-100 outline-none placeholder:text-neutral-600 disabled:opacity-50"
           />
           <div className="pointer-events-none absolute left-3 top-3 text-emerald-300/80">
@@ -2418,11 +2361,7 @@ export function ChatPanel({
                   type="button"
                   onClick={() => onSend()}
                   disabled={!canSend}
-                  title={
-                    usage.isCapReached
-                      ? 'Monthly message cap reached. Manage usage in Settings.'
-                      : 'Send message (Enter)'
-                  }
+                  title="Send message (Enter)"
                   className="flex items-center gap-1.5 rounded-lg bg-violet-300 px-3.5 py-1.5 text-[11px] font-semibold text-[#16121f] transition-colors hover:bg-violet-200 disabled:opacity-30 disabled:hover:bg-violet-300 cursor-pointer"
                 >
                   <Send className="w-3 h-3" />

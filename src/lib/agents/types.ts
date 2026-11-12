@@ -89,7 +89,7 @@ export interface TeamMessage {
 }
 
 export interface TeamBudget {
-  /** Hard ceiling for one team run, in the same credits the meter bills. */
+  /** Hard ceiling for one team run, in the same spend units the run budget counts. */
   maxCredits: number;
   /** Members the coordinator may create before the plan is rejected. */
   maxTasks: number;

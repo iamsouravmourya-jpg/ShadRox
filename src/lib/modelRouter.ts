@@ -10,8 +10,15 @@
 
 import { CREDIT_RATES, RUPEES_PER_CREDIT, type CreditRate } from './plans';
 import { USD_TO_INR, costRupees, costUsd, isPriced, type TokenSplit } from './modelRates';
-import type { PlanTier } from './types';
 import type { ResolvedPayer } from './sharedKeyPolicy';
+
+/**
+ * Keys for the operator-owned shared stack. ShadRox sells no plans, so nothing
+ * in the product can produce one of these values; the matrix is kept because
+ * `api/ai/_access.ts` can still be run with a shared key by an operator, and it
+ * must not drift onto a model no tier ever approved.
+ */
+export type SharedPlanKey = 'starter' | 'heavy';
 
 export type RouteRole = 'select' | 'summarize' | 'chatter' | 'edit' | 'premium' | 'complete';
 
@@ -183,7 +190,7 @@ const SHARED_TASK_ROLE: Record<SharedTaskClass, RouteRole> = {
  * These are exact IDs, deliberately: a shared request must not drift onto a
  * "cheapest model in the family" that the plan never approved.
  */
-const APPROVED_SHARED: Record<'starter' | 'heavy', Partial<Record<SharedTaskClass, string>>> = {
+const APPROVED_SHARED: Record<SharedPlanKey, Partial<Record<SharedTaskClass, string>>> = {
   starter: {
     'file-selection': 'amazon/nova-micro-v1',
     chat: 'google/gemini-2.5-flash-lite',
@@ -204,7 +211,7 @@ const APPROVED_SHARED: Record<'starter' | 'heavy', Partial<Record<SharedTaskClas
 };
 
 export interface SharedRouteInput {
-  plan: PlanTier;
+  plan: SharedPlanKey;
   taskClass: SharedTaskClass;
   tokens: TokenSplit;
 }
@@ -219,9 +226,8 @@ export interface SharedRouteChoice {
   reason: string;
 }
 
-/** The approved model for a tier/class, or null when the plan has none. */
-export function approvedSharedModel(plan: PlanTier, taskClass: SharedTaskClass): string | null {
-  if (plan !== 'starter' && plan !== 'heavy') return null;
+/** The approved model for a tier/class, or null when the stack has none. */
+export function approvedSharedModel(plan: SharedPlanKey, taskClass: SharedTaskClass): string | null {
   return APPROVED_SHARED[plan][taskClass] ?? null;
 }
 
@@ -241,10 +247,7 @@ export function routeSharedTask({ plan, taskClass, tokens }: SharedRouteInput): 
       rupees: 0,
       credits: 0,
       withinBudget: false,
-      reason:
-        plan === 'free'
-          ? 'the free plan is BYOK — it has no shared model to route'
-          : `${plan} has no approved ${taskClass} model, and no substitute is chosen`
+      reason: `${plan} has no approved ${taskClass} model, and no substitute is chosen`
     };
   }
   if (!isPriced(model)) {

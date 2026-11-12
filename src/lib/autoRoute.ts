@@ -8,7 +8,7 @@
  * modelRates / modelRouter / plans; nothing in this file sets one.
  */
 
-import { RUPEES_PER_CREDIT, getPlanMeta } from './plans';
+import { RUPEES_PER_CREDIT } from './plans';
 import { costRupees, isPriced, type TokenSplit } from './modelRates';
 import {
   routeRequest,
@@ -16,7 +16,6 @@ import {
   routingSavings,
   type RouteRole
 } from './modelRouter';
-import type { PlanTier } from './types';
 
 /**
  * A verbatim digest keeps about a quarter of what it was handed: paths,
@@ -121,7 +120,6 @@ export interface AutoInput {
   availableModels: string[];
   userModel: string;
   isSharedKey: boolean;
-  plan: PlanTier;
 }
 export interface AutoDecision {
   enabled: boolean;
@@ -171,12 +169,14 @@ export function decideAutoRoute(input: AutoInput): AutoDecision {
   const userModel = input.userModel || '';
   const operatorOwned = routingIsOperatorOwned(input.isSharedKey);
 
-  // quota.ts treats a non-finite monthly allotment as unmetered and spends no
-  // credit against it. That removes the answer-side swap (ShadRox is not paying
-  // for the call, so the user's own model choice stands) but NOT the cheap first
-  // pass: on BYOK every context token is billed to the user's own key, so reading
-  // the repo with the cheapest model is a saving they actually receive.
-  const metered = Number.isFinite(getPlanMeta(input.plan).creditsPerMonth);
+  // Only an operator-paid request may have its answer model swapped. On BYOK
+  // every context token is billed to the user's own key, so the model they
+  // picked is theirs to keep: ShadRox does not replace it. The cheap first pass
+  // stays available either way, because reading the repo with the cheapest
+  // priced model is a saving they actually receive.
+  //
+  // `credits` here is the internal cost estimate, not a bill: with no plan to
+  // meter it is what lets a run say "this turn is expensive" before it happens.
 
   const digest = digestTokensFor(rawTokens);
   const condenseSplit: TokenSplit = { inputTokens: rawTokens, outputTokens: digest };
@@ -186,7 +186,7 @@ export function decideAutoRoute(input: AutoInput): AutoDecision {
 
   const answerInput = condenseModel ? digest + CONVERSATION_TOKENS : rawTokens;
   const answerSplit: TokenSplit = { inputTokens: answerInput, outputTokens: ANSWER_OUTPUT_TOKENS };
-  const routeAnswer = operatorOwned && metered;
+  const routeAnswer = operatorOwned;
   const answerRoute = routeAnswer ? routeRequest(input.role, answerSplit, models) : null;
   const answerModel = (routeAnswer ? answerRoute?.model : null) || userModel;
 
@@ -198,16 +198,10 @@ export function decideAutoRoute(input: AutoInput): AutoDecision {
     : null;
   const savingsFactor = savings && savings.savedFactor > 0 ? savings.savedFactor : null;
 
-  const withinBudget = metered
-    ? (answerRoute ? answerRoute.withinBudget : isPriced(answerModel)) && (condenseRoute ? condenseRoute.withinBudget : true)
-    : isPriced(answerModel);
+  const withinBudget = (answerRoute ? answerRoute.withinBudget : isPriced(answerModel)) && (condenseRoute ? condenseRoute.withinBudget : true);
 
   const parts: string[] = [];
-  if (!metered) {
-    parts.push(
-      'Free (BYOK) has no credit meter — every token is paid to your own provider, so the answer stays on the model you picked'
-    );
-  } else if (answerRoute && !answerRoute.model) {
+  if (answerRoute && !answerRoute.model) {
     parts.push(`no priceable model on this key, so the answer stays on ${userModel || 'the request model'}`);
   } else if (routeAnswer && answerRoute) {
     parts.push(`answer on ${answerModel} — ${answerRoute.reason}`);
@@ -237,7 +231,7 @@ export function decideAutoRoute(input: AutoInput): AutoDecision {
     reason: parts.join('. ') + '.',
     estInputTokens: answerInput,
     estOutputTokens: ANSWER_OUTPUT_TOKENS,
-    credits: metered ? creditsOf(rupees) : 0,
+    credits: creditsOf(rupees),
     savingsFactor,
     withinBudget
   };

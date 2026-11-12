@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { validateProviderKey } from '../lib/ai';
 import {
-  DEFAULT_SHARED_MODEL,
   buildModelList,
-  buildSharedModelList,
   defaultModelFor,
   describeKeyFormatProblem,
   detectProviderFromKey,
@@ -20,16 +18,13 @@ import {
   getCustomBaseUrl,
   getCustomExtraModels,
   getSelectedModel,
-  getUseSharedKey,
   setActiveProvider as persistActiveProvider,
   setApiKey,
   setCustomBaseUrl as persistCustomBaseUrl,
   setCustomExtraModels as persistCustomExtraModels,
-  setSelectedModel as persistSelectedModel,
-  setUseSharedKey as persistUseSharedKey
+  setSelectedModel as persistSelectedModel
 } from '../lib/storage';
 import type { KeyStatus } from '../lib/types';
-import { SHARED_KEY_ENABLED } from '../lib/sharedKeyPolicy';
 
 interface UseByokResult {
   activeProvider: ProviderId;
@@ -42,8 +37,6 @@ interface UseByokResult {
   models: ModelInfo[];
   selectedModel: string;
   selectModel: (modelId: string) => void;
-  useShadRoxKey: boolean;
-  setUseShadRoxKey: (value: boolean) => void;
   temperature: number;
   setTemperature: (value: number) => void;
   /** Current key for the active provider, or '' when the user has none. */
@@ -90,16 +83,7 @@ export function useByok(): UseByokResult {
   }));
   const [baseUrl, setBaseUrlState] = useState<string>(() => getCustomBaseUrl());
   const [extraModels, setExtraModelsState] = useState<string[]>(() => getCustomExtraModels());
-  const [useShadRoxKey, setUseShadRoxKeyState] = useState<boolean>(
-    () => SHARED_KEY_ENABLED && getUseSharedKey()
-  );
   const [temperature, setTemperature] = useState(0.7);
-
-  const setUseShadRoxKey = useCallback((value: boolean) => {
-    if (!SHARED_KEY_ENABLED) return;
-    setUseShadRoxKeyState(value);
-    persistUseSharedKey(value);
-  }, []);
 
   const validateKey = useCallback(
     async (provider: ProviderId) => {
@@ -191,8 +175,6 @@ export function useByok(): UseByokResult {
           return { ...previous, [provider]: chosen };
         });
 
-        if (provider === activeProvider) setUseShadRoxKey(false);
-
         setKeyStatus((previous) => ({
           ...previous,
           [provider]: {
@@ -212,7 +194,7 @@ export function useByok(): UseByokResult {
         }));
       }
     },
-    [apiKeyDraft, activeProvider, baseUrl, extraModels, setUseShadRoxKey]
+    [apiKeyDraft, baseUrl, extraModels]
   );
 
   // Re-validate keys that are already saved so the model list is ready on load.
@@ -273,19 +255,15 @@ export function useByok(): UseByokResult {
     const known = new Set(listed.map((model) => model.id));
     return [...listed, ...buildModelList('custom', extraModels).filter((model) => !known.has(model.id))];
   }, [activeProvider, modelsByProvider, extraModels]);
-  const sharedModels = useMemo(() => buildSharedModelList(activeProvider), [activeProvider]);
 
-  // With the shared key there is no user key to enumerate models from, so the
-  // picker falls back to ShadRox's static Pro catalog.
-  const models = useShadRoxKey ? sharedModels : byokModels;
+  const models = byokModels;
 
   const selectedModel = useMemo(() => {
-    const list = useShadRoxKey ? sharedModels : byokModels;
-    if (list.length === 0) return '';
+    if (byokModels.length === 0) return '';
     const stored = selectedByProvider[activeProvider];
-    if (stored && list.some((model) => model.id === stored)) return stored;
-    return useShadRoxKey ? DEFAULT_SHARED_MODEL[activeProvider] : defaultModelFor(activeProvider, list);
-  }, [useShadRoxKey, sharedModels, byokModels, selectedByProvider, activeProvider]);
+    if (stored && byokModels.some((model) => model.id === stored)) return stored;
+    return defaultModelFor(activeProvider, byokModels);
+  }, [byokModels, selectedByProvider, activeProvider]);
 
   const activeKey = savedKeys[activeProvider] || '';
 
@@ -301,8 +279,6 @@ export function useByok(): UseByokResult {
       models,
       selectedModel,
       selectModel,
-      useShadRoxKey,
-      setUseShadRoxKey,
       temperature,
       setTemperature,
       activeKey,
@@ -322,8 +298,6 @@ export function useByok(): UseByokResult {
       models,
       selectedModel,
       selectModel,
-      useShadRoxKey,
-      setUseShadRoxKey,
       temperature,
       activeKey,
       baseUrl,

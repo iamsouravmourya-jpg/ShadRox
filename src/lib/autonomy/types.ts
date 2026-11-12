@@ -137,8 +137,9 @@ export interface PlanError {
 
 export interface RunBudget {
   /**
-   * Hard ceiling for one run, in the same credits the meter bills. The operator
-   * owns this number; the loop stops at it rather than asking mid-flight.
+   * Hard ceiling for one run, in the internal cost unit (₹0.35 of upstream
+   * spend). Nothing bills it — it exists so the loop stops instead of running
+   * a user's own key down forever. The operator owns this number.
    */
   maxCredits: number;
   maxAttemptsPerMilestone: number;
@@ -146,9 +147,9 @@ export interface RunBudget {
 }
 
 /**
- * 20 credits is a quarter of a Starter month (800) and roughly 20 applied edits;
- * 3 attempts is what the salvageable repair loop used, and it is the reason that
- * loop could not burn a key forever.
+ * 20 is roughly 20 applied edits, which is what a run is worth before a human
+ * should look at it; 3 attempts is what the salvageable repair loop used, and
+ * it is the reason that loop could not burn a key forever.
  */
 export const DEFAULT_RUN_BUDGET: RunBudget = {
   maxCredits: 20,

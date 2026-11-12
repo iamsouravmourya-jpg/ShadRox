@@ -250,7 +250,7 @@ test('an aborted turn fails the task and is not retried', async () => {
   assert.equal(h.turns.length, 1);
 });
 
-test('the team stops at the credit cap and leaves the rest pending', async () => {
+test('the team stops at the spend cap and leaves the rest pending', async () => {
   // One turn costs exactly one edit, so a one-edit cap must stop before task two.
   const h = harness({ tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] }, { ...DEFAULT_TEAM_BUDGET, maxCredits: CREDIT_RATES.codeEdit });
   h.setTurn((unit) => ({ reply: `reply for ${unit.id}`, patchesApplied: 0, patchFailures: [], creditsSpent: CREDIT_RATES.codeEdit, aborted: false }));
@@ -258,7 +258,7 @@ test('the team stops at the credit cap and leaves the rest pending', async () =>
   assert.equal(state.status, 'stopped-budget');
   assert.equal(state.tasks[0].status, 'passed');
   assert.equal(state.tasks[1].status, 'pending');
-  assert.match(state.error ?? '', /1\.2-credit cap/);
+  assert.match(state.error ?? '', /spend cap of 1\.2/);
 });
 
 test('the team stops before a turn that would exceed the cap, returning the task to pending', async () => {
@@ -267,7 +267,7 @@ test('the team stops before a turn that would exceed the cap, returning the task
   assert.equal(state.status, 'stopped-budget');
   assert.equal(state.tasks[0].status, 'pending');
   assert.equal(h.turns.length, 0);
-  assert.match(state.error ?? '', /estimated at 1\.2 credits/);
+  assert.match(state.error ?? '', /estimated at 1\.2 spend/);
 });
 
 test('cancellation stops between tasks and marks the run cancelled', async () => {

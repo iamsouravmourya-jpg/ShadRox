@@ -165,7 +165,7 @@ function toTaskStatus(value: unknown): BackgroundTaskStatus {
     : 'pending';
 }
 
-function formatCredits(value: number): string {
+function formatSpend(value: number): string {
   return String(Math.round(value * 10) / 10);
 }
 
@@ -491,19 +491,18 @@ export function canResume(snapshot: BackgroundRunSnapshot, currentWorkspaceRoot:
   if (budgetRemaining(snapshot) < MIN_RESUME_CREDITS) {
     return {
       ok: false,
-      reason: `The budget is spent (${formatCredits(snapshot.creditsSpent)} of ${formatCredits(snapshot.budgetCredits)} credits).`
+      reason: `The run's spend budget is used up (${formatSpend(snapshot.creditsSpent)} of ${formatSpend(snapshot.budgetCredits)}).`
     };
   }
   return { ok: true };
 }
 
-/** One line for the chat resume prompt: what is left and what it has cost. */
+/** One line for the chat resume prompt: what is left and what it has spent. */
 export function resumeSummary(snapshot: BackgroundRunSnapshot): string {
   const total = snapshot.tasks.length;
   const left = snapshot.tasks.filter((task) => task.status === 'pending' || task.status === 'running').length;
   const taskWord = total === 1 ? 'task' : 'tasks';
-  const creditWord = snapshot.creditsSpent === 1 ? 'credit' : 'credits';
-  return `Resume: ${left} of ${total} ${taskWord} left, ${formatCredits(snapshot.creditsSpent)} ${creditWord} spent of ${formatCredits(snapshot.budgetCredits)}.`;
+  return `Resume: ${left} of ${total} ${taskWord} left, ${formatSpend(snapshot.creditsSpent)} spent of the ${formatSpend(snapshot.budgetCredits)} budget.`;
 }
 
 function runIdOf(raw: string): string | null {

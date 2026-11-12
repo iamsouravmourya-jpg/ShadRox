@@ -11,7 +11,7 @@ import type { AutonomyEvent } from './types';
 /** The log keeps the tail; a long run must not grow the panel without bound. */
 export const MAX_LOG_LINES = 200;
 
-/** One line per event, or null for the ones that only move the credit meter. */
+/** One line per event, or null for an event this build does not describe. */
 export function describeEvent(event: AutonomyEvent): string | null {
   switch (event.type) {
     case 'plan:created':
@@ -27,7 +27,7 @@ export function describeEvent(event: AutonomyEvent): string | null {
     case 'milestone:review':
       return `"${event.id}": ${event.paths.length} file(s) await review.`;
     case 'credit':
-      return `Spent ${event.spent} credits (run total ${event.total}).`;
+      return `Spent ${event.spent} of the run budget (total ${event.total}).`;
     case 'log':
       return event.text;
     case 'run:done':
