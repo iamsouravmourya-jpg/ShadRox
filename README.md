@@ -477,3 +477,5 @@ Built with care by [Sourav Maurya](https://github.com/iamsouravmourya-jpg)
 [Download](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.8-Setup.exe) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Issues](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
 
 </div>
+
+<!-- Setup test -->
