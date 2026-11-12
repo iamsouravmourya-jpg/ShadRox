@@ -52,7 +52,8 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
             </div>
             <h1 className="text-2xl font-semibold tracking-[-0.03em]">Sign in to ShadRox</h1>
             <p className="mt-2 text-sm leading-relaxed text-zinc-400">
-              One Google account for the beta. Your projects and API keys stay on this device.
+              One Google account for the beta. Your projects and API keys stay on this device; AI requests go from here straight to
+              the provider you choose.
             </p>
           </div>
 
@@ -92,8 +93,9 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
           <div className="mt-8 flex items-start gap-2 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-3 text-[11px] leading-relaxed text-zinc-500">
             <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-400/70" />
             <span>
-              Sign-in creates only your account row (email and name). ShadRox never receives your code, your project files, or your
-              BYOK key (Gemini, Groq, or your own endpoint).
+              Sign-in creates only your account row (email and name). ShadRox's servers never receive your code, your project
+              files, or your BYOK key (Gemini, Groq, or your own endpoint) — but the prompt and the project context you send do go
+              to the AI provider you pick, under that provider's own terms.
             </span>
           </div>
         </div>

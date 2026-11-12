@@ -77,6 +77,12 @@ export interface TeamTask {
   filesRead?: string[];
   /** The one line the next agents read instead of the raw reply. */
   summary?: string;
+  /**
+   * Tool calls this task has really made, summed across its attempts. Absent
+   * while no host has reported a count, so the run's tool-call ceiling is never
+   * tripped by a number nobody measured.
+   */
+  toolCalls?: number;
 }
 
 export interface TeamMessage {
@@ -94,6 +100,12 @@ export interface TeamBudget {
   /** Members the coordinator may create before the plan is rejected. */
   maxTasks: number;
   maxAttemptsPerTask: number;
+  /** Turns the whole team may take, however they fall across its tasks. */
+  maxTurns: number;
+  /** Tool calls the whole team may make, enforced when the host reports real counts. */
+  maxToolCalls: number;
+  /** Wall-clock ceiling for one stretch of running, in ms. */
+  maxWallClockMs: number;
 }
 
 /**
@@ -104,10 +116,13 @@ export interface TeamBudget {
 export const DEFAULT_TEAM_BUDGET: TeamBudget = {
   maxCredits: 24,
   maxTasks: 6,
-  maxAttemptsPerTask: 2
+  maxAttemptsPerTask: 2,
+  maxTurns: 18,
+  maxToolCalls: 90,
+  maxWallClockMs: 20 * 60 * 1000
 };
 
-export type TeamStatus = 'planning' | 'running' | 'done' | 'failed' | 'cancelled' | 'stopped-budget';
+export type TeamStatus = 'planning' | 'running' | 'done' | 'failed' | 'paused' | 'cancelled' | 'stopped-budget';
 
 /** ─── The closing integration turn ─────────────────────────────────────────
  *

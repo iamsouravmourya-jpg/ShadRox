@@ -13,15 +13,16 @@
  * pollution. Stale decisions are surfaced with an explicit flag, never silently
  * trusted or dropped.
  *
- * Decisions are stored locally (IndexedDB), export/import as portable JSON, and
- * their title/body are scrubbed of credential-shaped values before storage
- * (reusing `envSafety.scrubWorkspaceText`). Hashing lives in `proof/ledger`
- * (sha256Hex); symbol/dependency scanning reuses `repoMap` (extractSignatures,
- * buildGraph); token accounting reuses `contextBudget` (estimateTokens).
+ * Decisions are stored locally (localStorage, keyed by workspace root), never
+ * synced, export/import as portable JSON, and their title/body are scrubbed of
+ * credential-shaped values before storage (reusing `envSafety.scrubWorkspaceText`).
+ * Hashing lives in `proof/ledger` (sha256Hex); symbol/dependency scanning reuses
+ * `repoMap` (extractSignatures, buildGraph); token accounting reuses
+ * `contextBudget` (estimateTokens).
  *
  * This file is the shared contract imported by graph/store, the useIntentGraph
- * hook, and the IntentGraphPanel UI. Keep it dependency-light: types only, plus
- * the two format constants.
+ * hook, and the intent tab of TaskInspector. Keep it dependency-light: types
+ * only, plus the two format constants.
  */
 
 export const INTENT_FORMAT = 'shadrox-intent-graph' as const;
@@ -50,9 +51,12 @@ export type DecisionKind = 'rationale' | 'invariant' | 'rejected';
 /**
  * `stale` means a governing file changed since the decision was approved; the
  * decision is kept and flagged for review, never deleted. `fresh` means every
- * governing file still hashes to its approved base.
+ * governing file still hashes to its approved base. `unknown` means at least
+ * one governing file is not in the current index — the app indexes the files it
+ * has open, so a closed file is evidence of nothing, and claiming either freshness
+ * or staleness about it would be a guess.
  */
-export type DecisionStatus = 'fresh' | 'stale';
+export type DecisionStatus = 'fresh' | 'stale' | 'unknown';
 
 export type DecisionSource = 'user' | 'agent';
 
@@ -175,4 +179,32 @@ export interface DecisionPatch {
   targets?: DecisionTarget[];
   baseHashes?: Record<string, string>;
   capsuleRef?: string | null;
+}
+
+/** One indexed edge answering a dependency question, with its provenance. */
+export interface DependencyEvidence {
+  /** Workspace-relative, normalized path of the file on the far end. */
+  path: string;
+  /** Edge strength as `repoMap` scored it (imports weigh more than mentions). */
+  weight: number;
+  /** Whether that end is itself in the index; false means the edge points at a name nobody read. */
+  indexed: boolean;
+}
+
+/** The answer to "what does this file depend on / what depends on it". */
+export interface DependencyAnswer {
+  question: string;
+  /** False when no indexed file or symbol matched — there is then no answer to give. */
+  resolved: boolean;
+  subject: string | null;
+  askedFor: 'depends-on' | 'depended-by' | 'both';
+  dependsOn: DependencyEvidence[];
+  dependedBy: DependencyEvidence[];
+  /** Symbols the index found in the subject file. */
+  symbols: string[];
+  /** 0..1: how the subject was identified and how far the index reaches. */
+  confidence: number;
+  /** Plain-language reasons behind `confidence`, shown with the answer. */
+  reasons: string[];
+  truncated: boolean;
 }

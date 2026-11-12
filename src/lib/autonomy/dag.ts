@@ -22,9 +22,21 @@ export interface SchedulableNode extends DependencyNode {
   status: string;
 }
 
-/** A dependency is satisfied only when it exists and has actually passed. */
+/**
+ * A dependency counts as advanced when it passed, or when it finished without
+ * anything disproving it (`unverified`). Treating an unverified node as still
+ * runnable would stall the whole plan on a milestone that merely had no checker;
+ * treating it as `passed` would let one unproven step vouch for everything below
+ * it. It advances, and it stays labelled for what it was.
+ */
+const ADVANCED_STATUSES = new Set(['passed', 'unverified']);
+
+/** A dependency is satisfied only when it exists and has actually advanced. */
 export function dependenciesSatisfied<T extends SchedulableNode>(node: T, all: T[]): boolean {
-  return node.dependsOn.every((id) => all.find((candidate) => candidate.id === id)?.status === 'passed');
+  return node.dependsOn.every((id) => {
+    const status = all.find((candidate) => candidate.id === id)?.status;
+    return status !== undefined && ADVANCED_STATUSES.has(status);
+  });
 }
 
 /** True when at least one dependency failed or was itself blocked — this node can never run. */

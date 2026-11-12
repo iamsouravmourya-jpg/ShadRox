@@ -18,7 +18,7 @@
  * the only moment anything looks at all the changed files at once.
  */
 
-import { estimateTurn } from '../autonomy/budget';
+import { ceilingReached, estimateTurn, toolCallsReported, type WorkUsage } from '../autonomy/budget';
 import { countPending, findBlocked, nextRunnable } from '../autonomy/dag';
 import { buildRepairBrief } from '../autonomy/feedback';
 import type { CreditTracker } from '../autonomy/run-loop';
@@ -57,6 +57,12 @@ export interface TeamDeps {
   checkpoint: (goal: string) => Promise<void> | void;
   persist: (state: TeamState) => void;
   now: () => number;
+  /**
+   * The Stop/Pause button's signal, handed to every task turn so an in-flight
+   * request ends when the user asks. Absent means the driver has nothing to
+   * abort with, and a halt is only noticed between turns.
+   */
+  turnSignal?: () => AbortSignal | undefined;
   /**
    * Who carries the closing integration turn: `coordinator` (default, may repair)
    * or `reviewer` (reads and reports). Anything else falls back to the coordinator.
@@ -106,6 +112,30 @@ function firstLine(text: string): string {
   return trim(line, 200);
 }
 
+/**
+ * What the team has spent of its non-money ceilings, read off the tasks rather
+ * than a counter the driver has to keep in sync — so a resumed plan still counts
+ * the turns its earlier pass made.
+ */
+function workUsage(tasks: readonly TeamTask[], elapsedMs: number): WorkUsage {
+  return {
+    turns: tasks.reduce((sum, task) => sum + task.attempts, 0),
+    toolCalls: toolCallsReported(tasks),
+    elapsedMs
+  };
+}
+
+/**
+ * Why the user asked the team to take no more turns, or null when they have not.
+ * Stop outranks Pause when both were pressed: one ends the run, the other only
+ * waits, and the team cannot do both.
+ */
+function userHalt(ports: TeamPorts): 'cancelled' | 'paused' | null {
+  if (ports.isCancellationRequested()) return 'cancelled';
+  if (ports.isPauseRequested?.()) return 'paused';
+  return null;
+}
+
 /** What the team already knows, oldest kept out once the window fills. */
 function sharedContext(state: TeamState): string {
   const lines = state.messages
@@ -116,10 +146,15 @@ function sharedContext(state: TeamState): string {
 }
 
 /** The task's one-line contribution to the team's shared context. */
-function summarise(task: TeamTask, outcome: 'passed' | 'failed'): string {
+function summarise(task: TeamTask, outcome: 'passed' | 'unverified' | 'failed'): string {
   const notes = task.lastReport?.notes ?? [];
   if (outcome === 'failed') {
     return `"${task.title}" did not pass after ${task.attempts} attempt${task.attempts === 1 ? '' : 's'}: ${notes.join('; ') || 'no checker could run'}.`;
+  }
+  if (outcome === 'unverified') {
+    // Teammates build on this, so the note says what is actually true: the work
+    // is done and nothing disproved it, but nothing proved it either.
+    return `"${task.title}" is unverified — nothing checked it (${notes.join('; ') || 'no checker could run'}). Treat it as unproven.`;
   }
   if (task.expectedFiles.length === 0) {
     return `"${task.title}" — ${firstLine(task.report) || 'no reply'}`;
@@ -167,14 +202,30 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
   let checkpointed = false;
   /** File-changing tasks that finished without a check that could prove them. */
   const unverified: string[] = [];
+  /**
+   * Set when a turn reported that the user ended it. The halt flags are normally
+   * already set by then, but a team must never claim `done` because a host said
+   * "stopped" without also saying which button was pressed.
+   */
+  let endedByUser: 'cancelled' | 'paused' | null = null;
+  // The clock starts with the driving, not with the plan: a team stopped on
+  // Tuesday and resumed on Friday is not four days out of a time ceiling.
+  const clockStart = deps.now();
 
-  while (!deps.ports.isCancellationRequested()) {
+  while (userHalt(deps.ports) === null) {
     const next = nextRunnable(state.tasks);
     if (!next) break;
 
     if (deps.tracker.exhausted()) {
       state.status = 'stopped-budget';
       state.error = `Stopped at the spend cap of ${deps.budget.maxCredits}. ${countPending(state.tasks)} task(s) did not run.`;
+      break;
+    }
+
+    const ceiling = ceilingReached(deps.budget, workUsage(state.tasks, deps.now() - clockStart));
+    if (ceiling) {
+      state.status = 'stopped-budget';
+      state.error = `${ceiling.message} ${countPending(state.tasks)} task(s) did not run.`;
       break;
     }
 
@@ -187,17 +238,43 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
     next.attempts = 0;
     deps.ports.onEvent({ type: 'task:start', id: next.id, assignee: next.assignee });
 
-    let outcome: 'passed' | 'failed' | 'stopped' = 'failed';
+    let outcome: 'passed' | 'unverified' | 'failed' | 'stopped' = 'failed';
+    /** Set when a turn's real cost pushed the team past its cap. */
+    let overSpend: number | null = null;
     for (let attempt = 1; attempt <= deps.budget.maxAttemptsPerTask; attempt += 1) {
-      if (deps.ports.isCancellationRequested()) break;
+      if (userHalt(deps.ports) !== null) {
+        // The task was set running above. Leaving it `running` in a persisted
+        // state would tell the next panel that work is in flight which died
+        // here, so it is filed as stopped — or back as pending when it never
+        // got a turn at all.
+        next.status = next.attempts > 0 ? 'stopped' : 'pending';
+        outcome = 'stopped';
+        break;
+      }
 
       const estimate = estimateTurn(next);
-      if (deps.tracker.spent() + estimate > deps.budget.maxCredits) {
+      // The estimate is a prediction; what this task has already cost is
+      // evidence, so a task that runs dearer than predicted is refused on the
+      // higher of the two.
+      const observed = next.attempts > 0 ? Math.round((next.creditsSpent / next.attempts) * 10) / 10 : 0;
+      const reserve = Math.max(estimate, observed);
+      if (deps.tracker.spent() + reserve > deps.budget.maxCredits) {
         // Nothing has been attempted yet, so the task goes back to pending rather
         // than staying flagged as running in a persisted state.
         next.status = 'pending';
         state.status = 'stopped-budget';
-        state.error = `Stopped before "${next.title}": the next turn is estimated at ${estimate} spend and the team cap is ${deps.budget.maxCredits}.`;
+        state.error = `Stopped before "${next.title}": the next turn is estimated at ${reserve} spend and the team cap is ${deps.budget.maxCredits}.`;
+        outcome = 'stopped';
+        break;
+      }
+
+      // A turn can take minutes, so the ceilings are read again at the point
+      // where one more turn would otherwise be paid for.
+      const midCeiling = ceilingReached(deps.budget, workUsage(state.tasks, deps.now() - clockStart));
+      if (midCeiling) {
+        next.status = next.attempts > 0 ? 'stopped' : 'pending';
+        state.status = 'stopped-budget';
+        state.error = `${midCeiling.message} ${countPending(state.tasks)} task(s) did not run.`;
         outcome = 'stopped';
         break;
       }
@@ -215,7 +292,10 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
         goal,
         milestone: unit,
         feedback: prior ?? undefined,
-        feedbackText: prior ? buildRepairBrief(unit, prior, next.patchFailures, attempt - 1) : undefined
+        feedbackText: prior ? buildRepairBrief(unit, prior, next.patchFailures, attempt - 1) : undefined,
+        // Without this the Stop button only lands between tasks, so a teammate's
+        // paid turn keeps streaming after the user asked for it to end.
+        signal: deps.turnSignal?.()
       });
       next.touchedFiles = [...new Set([...(next.touchedFiles ?? []), ...(turn.touchedFiles ?? [])])];
       next.filesRead = [...new Set([...(next.filesRead ?? []), ...(turn.filesRead ?? [])])];
@@ -230,18 +310,29 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
       next.patchesApplied += turn.patchesApplied;
       next.patchFailures = turn.patchFailures;
       next.creditsSpent = Math.round((next.creditsSpent + turn.creditsSpent) * 10) / 10;
+      if (typeof turn.toolCalls === 'number') {
+        next.toolCalls = (next.toolCalls ?? 0) + turn.toolCalls;
+      }
       // The real cost is settled after the turn, from the tokens the provider
       // reported; the estimate before it is only the gate that stops a runaway.
-      deps.tracker.credit(turn.creditsSpent);
+      const settled = deps.tracker.credit(turn.creditsSpent);
+      if (!settled.allowed) overSpend = settled.spent;
       state.creditsSpent = deps.tracker.spent();
       deps.ports.onEvent({ type: 'task:verdict', id: next.id, verdict: report.verdict, report });
       deps.ports.onEvent({ type: 'credit', spent: turn.creditsSpent, total: state.creditsSpent });
       deps.persist(state);
 
       if (turn.aborted) {
-        next.status = 'failed';
-        outcome = 'failed';
-        deps.ports.onEvent({ type: 'team:log', text: `"${next.title}" was interrupted mid-turn.` });
+        // A turn the user ended and a turn that died are different outcomes: one
+        // is a stop to honour, the other a failure to report and repair.
+        const byUser = turn.stopped === true || userHalt(deps.ports) !== null;
+        next.status = byUser ? 'stopped' : 'failed';
+        outcome = byUser ? 'stopped' : 'failed';
+        if (byUser) endedByUser = userHalt(deps.ports) ?? 'cancelled';
+        deps.ports.onEvent({
+          type: 'team:log',
+          text: `"${next.title}" was ${byUser ? 'stopped' : 'interrupted'} mid-turn.`
+        });
         break;
       }
 
@@ -252,8 +343,11 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
       }
 
       if (report.verdict === 'unverified') {
-        next.status = 'passed';
-        outcome = 'passed';
+        // Its own status, never rewritten to `passed`: the team advances because
+        // nothing was disproved, but this task stays marked unproven everywhere
+        // the status travels — panel, summary report, shared note, resumed run.
+        next.status = 'unverified';
+        outcome = 'unverified';
         if (next.expectedFiles.length > 0) {
           unverified.push(`${next.title}: ${report.notes.join('; ') || 'no checker could run'}`);
         }
@@ -283,11 +377,22 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
 
     postMessage(state, next, outcome, deps);
     deps.persist(state);
+
+    // The estimate let this turn start; the real cost is the evidence. One turn
+    // may overshoot because nobody can refuse a turn not yet run — many may
+    // not, so the team stops on the overshoot instead of rediscovering it.
+    if (overSpend !== null) {
+      state.status = 'stopped-budget';
+      state.error = `Stopped at the spend cap of ${deps.budget.maxCredits}: "${next.title}" has taken ${next.creditsSpent} and the team is at ${overSpend}, so no further turn is started. ${countPending(state.tasks)} task(s) did not run.`;
+      deps.persist(state);
+      break;
+    }
   }
 
-  if (deps.ports.isCancellationRequested() && state.status === 'running') {
-    state.status = 'cancelled';
-    state.error = `Cancelled with ${countPending(state.tasks)} task(s) left.`;
+  const halt = userHalt(deps.ports) ?? endedByUser;
+  if (halt && state.status === 'running') {
+    state.status = halt;
+    state.error = `${halt === 'paused' ? 'Paused' : 'Cancelled'} with ${countPending(state.tasks)} task(s) left.`;
   }
 
   for (const blocked of findBlocked(state.tasks)) {
@@ -300,11 +405,15 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
   state.creditsSpent = deps.tracker.spent();
   if (state.status === 'running') {
     const unresolved = state.tasks.filter((task) => task.status === 'failed' || task.status === 'blocked');
+    // Only an unverified step that owned files is worth an alarm: a read-only
+    // task has nothing to prove, and saying so on every one of them would train
+    // the user to ignore the warning that matters.
+    const unproven = state.tasks.filter((task) => task.status === 'unverified' && task.expectedFiles.length > 0);
     state.status = unresolved.length > 0 ? 'failed' : 'done';
     if (unresolved.length > 0) {
       state.error = `${unresolved.length} of ${state.tasks.length} tasks did not complete.`;
-    } else if (unverified.length > 0) {
-      state.error = `${unverified.length} file-changing task(s) finished without a check that could prove them — ${unverified.join('; ')}.`;
+    } else if (unproven.length > 0) {
+      state.error = `${unproven.length} of ${state.tasks.length} tasks finished unverified — nothing checked them, so they are not claimed as passed.${unverified.length > 0 ? ` (${unverified.join('; ')}).` : ''}`;
     }
   }
 
@@ -344,7 +453,11 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
 /** Whether this run has an end to merge at all. */
 function canIntegrate(state: TeamState, deps: TeamDeps): boolean {
   if (deps.ports.isCancellationRequested()) return false;
-  if (state.status === 'planning' || state.status === 'cancelled' || state.status === 'stopped-budget') return false;
+  // A halted team has no end to merge: it stopped because the user asked, not
+  // because the work finished, so an integration turn would spend credits on a
+  // run they intend to continue.
+  if (userHalt(deps.ports) !== null) return false;
+  if (state.status === 'planning' || state.status === 'cancelled' || state.status === 'paused' || state.status === 'stopped-budget') return false;
   if (state.tasks.some((task) => task.status === 'pending' || task.status === 'running')) return false;
   return changedFileUnion(state.tasks).length > 0;
 }
@@ -551,7 +664,7 @@ function previousFailure(task: TeamTask): VerificationReport | null {
  * a `blocked` note so its dependents (and the reviewer reading the shared
  * context) see why the work stopped there.
  */
-function postMessage(state: TeamState, task: TeamTask, outcome: 'passed' | 'failed', deps: TeamDeps): void {
+function postMessage(state: TeamState, task: TeamTask, outcome: 'passed' | 'unverified' | 'failed', deps: TeamDeps): void {
   const message: TeamMessage = {
     from: task.assignee,
     to: 'team',

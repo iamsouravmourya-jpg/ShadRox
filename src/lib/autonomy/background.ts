@@ -27,7 +27,7 @@ export const BACKGROUND_KEEP_LIMIT = 5;
 
 export type BackgroundMode = 'autonomy' | 'team';
 export type BackgroundStatus = 'running' | 'paused' | 'stopped' | 'done' | 'failed';
-export type BackgroundTaskStatus = 'pending' | 'running' | 'passed' | 'failed' | 'blocked';
+export type BackgroundTaskStatus = 'pending' | 'running' | 'passed' | 'unverified' | 'failed' | 'blocked';
 
 /** The only slice of a milestone/task the resume line needs. */
 export interface BackgroundTaskSummary {
@@ -100,7 +100,7 @@ export interface BackgroundRunStore {
 }
 
 const STATUSES: readonly BackgroundStatus[] = ['running', 'paused', 'stopped', 'done', 'failed'];
-const TASK_STATUSES: readonly BackgroundTaskStatus[] = ['pending', 'running', 'passed', 'failed', 'blocked'];
+const TASK_STATUSES: readonly BackgroundTaskStatus[] = ['pending', 'running', 'passed', 'unverified', 'failed', 'blocked'];
 
 /**
  * Secrets still reach this module through a goal or an event line. They are
@@ -174,8 +174,9 @@ function defaultEvent(
   status: BackgroundStatus,
   tasks: BackgroundTaskSummary[]
 ): string {
-  const done = tasks.filter((task) => task.status === 'passed').length;
-  return `${mode === 'team' ? 'Team' : 'Run'} ${status}: ${done} of ${tasks.length} tasks complete.`;
+  const passed = tasks.filter((task) => task.status === 'passed').length;
+  const unverified = tasks.filter((task) => task.status === 'unverified').length;
+  return `${mode === 'team' ? 'Team' : 'Run'} ${status}: ${passed} of ${tasks.length} tasks passed${unverified ? `, ${unverified} unverified` : ''}.`;
 }
 
 function summarizeTask(source: BackgroundTaskSource, index: number): BackgroundTaskSummary {

@@ -132,6 +132,57 @@ describe('decideAutoRoute on a shared key', () => {
   });
 });
 
+/**
+ * The outcome ledger reaches routing as `outcomePreference`: models ordered by
+ * verified runs. It is a tie-break among the candidates the budget already
+ * allows — with no ledger, or a ledger that names models this key does not
+ * serve, the price table alone decides, exactly as it did before D3.
+ */
+describe('decideAutoRoute with an outcome ranking', () => {
+  const NOVA = 'amazon/nova-micro-v1';
+  const CODER_30B = 'qwen/qwen3-coder-30b';
+  const RANKED = [DEEPSEEK, CODER_30B, 'qwen/qwen3-coder', NOVA, LING];
+
+  it('lets a proven edit model take the answer when it is still inside the budget', () => {
+    const ranked = decideAutoRoute(input({ availableModels: RANKED, outcomePreference: [CODER_30B] }));
+    assert.equal(ranked.answerModel, CODER_30B);
+    assert.equal(ranked.withinBudget, true);
+    assert.match(ranked.reason, /best-proven edit model inside ₹0\.42 — ₹0\.14, ₹0\.05 above the cheapest/);
+    // The reader pass is not ranked by an edit model's record: price still
+    // chooses it, because nothing in the preference list serves that role.
+    assert.equal(ranked.condenseModel, LING);
+  });
+
+  it('ranks the reader pass from the same list when a select model is on it', () => {
+    const ranked = decideAutoRoute(input({ availableModels: RANKED, outcomePreference: [NOVA] }));
+    assert.equal(ranked.condenseModel, NOVA);
+    assert.equal(ranked.answerModel, DEEPSEEK);
+    assert.match(ranked.reason, /best-proven select model inside ₹0\.13 — ₹0\.11, ₹0\.06 above the cheapest/);
+  });
+
+  it('buys the cheapest model in every class when there is no ledger behind the list', () => {
+    assert.deepEqual(
+      decideAutoRoute(input({ availableModels: RANKED })),
+      decideAutoRoute(input({ availableModels: RANKED, outcomePreference: ['google/gemini-3-flash'] })),
+      'a ranking of models this key does not serve must be indistinguishable from no ranking'
+    );
+    const plain = decideAutoRoute(input({ availableModels: RANKED }));
+    assert.equal(plain.answerModel, DEEPSEEK);
+    assert.equal(plain.condenseModel, LING);
+    assert.match(plain.reason, /cheapest edit model inside ₹0\.42/);
+  });
+
+  it('still never substitutes the answer model on the user’s own key', () => {
+    const byok = decideAutoRoute(input({ isSharedKey: false, availableModels: RANKED, outcomePreference: [CODER_30B, NOVA] }));
+    assert.equal(byok.answerModel, SONNET);
+    assert.match(byok.reason, /routing does not replace it/);
+    // The digest pass is a saving the user actually receives, so it does obey
+    // the ranking even on BYOK.
+    assert.equal(byok.condenseModel, NOVA);
+    assert.equal(byok.savingsFactor, null);
+  });
+});
+
 describe('decideAutoRoute on the user’s own key', () => {
   it('never substitutes a cheaper answer model on BYOK', () => {
     const byok = decideAutoRoute(input({ isSharedKey: false }));

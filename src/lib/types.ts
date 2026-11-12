@@ -152,7 +152,7 @@ export interface ChatMessage {
   /** An automatic run/team turn, rendered inline instead of a separate panel. */
   orchestration?: {
     kind: 'autonomy' | 'team';
-    status: 'planning' | 'running' | 'done' | 'failed' | 'stopped' | 'budget';
+    status: 'planning' | 'running' | 'done' | 'failed' | 'paused' | 'stopped' | 'budget';
     /** Why Auto escalated this request instead of answering it directly. */
     reason: string;
     /** Hard ceiling the engine enforces for this run, in credits. */

@@ -14,12 +14,19 @@ import { useDebug } from './hooks/useDebug';
 import { DebugPanel } from './components/DebugPanel';
 import { useCapsules } from './hooks/useCapsules';
 import { useIntentGraph } from './hooks/useIntentGraph';
+import type { DecisionInput } from './lib/intent/types';
 import type { BehaviorEvent, AcceptanceContract } from './lib/behavior/types';
 import { appendBehaviorEvent } from './lib/behavior/recorder';
 import { generateAcceptanceContract } from './lib/behavior/contract';
+import { acceptanceOutcome, describeEvidence } from './lib/behavior/verification';
+import { useAcceptance } from './hooks/useAcceptance';
 import { listOutcomes, recordOutcome, routeProfiles } from './lib/calibratedAuto/ledger';
-import { rankModelsByOutcome } from './lib/calibratedAuto/router';
-import type { OutcomeRecord } from './lib/calibratedAuto/types';
+import { rankModels } from './lib/calibratedAuto/router';
+import { listPreferences, setPreferredModel } from './lib/calibratedAuto/preferences';
+import type { ModelPreferences } from './lib/calibratedAuto/preferences';
+import { NO_APPLY, outcomeOfReader, outcomeOfTurn, testRunsFrom } from './lib/calibratedAuto/evidence';
+import type { ApplyOutcome, IntroducedDiagnostics, TurnToolCall, VerificationCard } from './lib/calibratedAuto/evidence';
+import type { CalibratedTaskType, OutcomeRecord } from './lib/calibratedAuto/types';
 import { TaskInspector } from './components/TaskInspector';
 import { loadCheckpointFiles } from './lib/history';
 import { getCapsule } from './lib/capsules/store';
@@ -129,7 +136,8 @@ import { restoreDraft } from './lib/promptTemplates';
 import { estimateTokens } from './lib/toolUtils';
 import { detectLanguage } from './lib/languages';
 import { creditsForTurn } from './lib/usageCredits';
-import { normalizePermissionMode, type PermissionMode } from './lib/agent/runPolicy';
+import { normalizePermissionMode, holdReplyApply, type PermissionMode } from './lib/agent/runPolicy';
+import { commandApprovalNotice } from './lib/agent/commandGuard';
 import type { AttemptRecord } from './lib/taskUsage';
 import type { ResolvedPayer } from './lib/sharedKeyPolicy';
 import { globalRepairSession } from './lib/repairSession';
@@ -239,6 +247,12 @@ interface ActiveOrchestration {
   kind: 'autonomy' | 'team';
   budgetCredits: number;
   seenRunning: boolean;
+  /**
+   * True when this card continues a run that already exists. A resumed run keeps
+   * its original `startedAt`, so the "is this the run I just started" check has to
+   * compare the goal alone — otherwise a resume looks like a run that never began.
+   */
+  resumed?: boolean;
 }
 
 type OrchestrationStatus = NonNullable<ChatMessage['orchestration']>['status'];
@@ -253,12 +267,44 @@ interface QueuedChatDraft extends QueuedChatItem {
   envelope: RequestEnvelope;
 }
 
+/**
+ * One apply pass, reported so the turn can log evidence rather than intent.
+ * `verification` and `diagnostics` stay absent when the pass never reached the
+ * checks — an unanswered check is no data, not a failure.
+ */
+interface ReviewSetOutcome {
+  applied: string[];
+  failures: string[];
+  verification?: VerificationCard | null;
+  diagnostics?: IntroducedDiagnostics | null;
+}
+
+/**
+ * What one Auto reader pass produced, written by the pass itself.
+ *
+ * `ran` distinguishes a picker call that happened from a turn that skipped it —
+ * a short request needs no second pass and must never be recorded against the
+ * model that would have run it.
+ */
+interface PickerReport {
+  model: string;
+  ran: boolean;
+  shortlist: number;
+  answered: boolean;
+  picked: number;
+  durationMs: number;
+}
+
 function orchestrationStatusOfRun(status: string): OrchestrationStatus {
   switch (status) {
     case 'done':
       return 'done';
     case 'failed':
       return 'failed';
+    case 'paused':
+      // Its own state, never folded into 'stopped': a paused run can continue,
+      // and the card offers Resume only when it can.
+      return 'paused';
     case 'cancelled':
       return 'stopped';
     case 'stopped-budget':
@@ -662,6 +708,8 @@ export default function App() {
   const projectSkills = projectSkillsState[0];
   const setProjectSkills = projectSkillsState[1];
   const rulesNoteRef = useRef('');
+  /** Why the calibrated picker ran on the model it picked, for the context note. */
+  const routingNoteRef = useRef('');
   const mcpToolHandleRef = useRef<McpToolHandle | null>(null);
   const automationStatesRef = useRef<Record<string, AutomationState>>({});
   const automationRootRef = useRef<string | null>(null);
@@ -749,7 +797,15 @@ export default function App() {
     [workspace.files]
   );
   const intent = useIntentGraph(workspaceRootPath, intentFiles);
-  const calibratedProfiles = useMemo(() => routeProfiles(), [calibratedOutcomes]);
+  // The ledger is only useful read per task: a model that is good at refactors
+  // and hopeless at tests averages out to "fine", which is not a fact.
+  const [calibratedTaskType, setCalibratedTaskType] = useState<CalibratedTaskType>('chat');
+  const [modelPins, setModelPins] = useState<ModelPreferences>(() => listPreferences());
+  const calibratedProfiles = useMemo(() => routeProfiles(calibratedTaskType), [calibratedTaskType, calibratedOutcomes, modelPins]);
+  const calibratedRanking = useMemo(
+    () => rankModels({ taskType: calibratedTaskType, models: byok.models.map((model) => model.id) }),
+    [calibratedTaskType, byok.models, calibratedOutcomes, modelPins]
+  );
   /** True once shadrox.debug.json parsed into at least one configuration. */
   const debugBreakpointsEnabled = debug.config.configurations.length > 0;
   /** Where the debugger is paused, for the editor-header chip. */
@@ -965,7 +1021,7 @@ export default function App() {
         if (!desktop || !nativeWorkspaceId || commands >= MAX_PLUGIN_COMMANDS_PER_BATCH) continue;
         commands += 1;
         void desktop
-          .runCommand(nativeWorkspaceId, run.action.argv)
+          .runCommand(nativeWorkspaceId, run.action.argv, commandApprovalNotice(run.action.argv))
           .catch((error) => warnBridgeError('plugin-command', error));
       }
     },
@@ -1330,6 +1386,11 @@ export default function App() {
     });
   }, []);
 
+  const announce = useCallback((message: string, ms = 4500) => {
+    setToast(message);
+    window.setTimeout(() => setToast(null), ms);
+  }, []);
+
   /** Every atomic save reports only successfully written paths to hooks and automations. */
   const saveFilesAtomicWithHooks = useCallback(
     async (names: string[]) => {
@@ -1343,9 +1404,16 @@ export default function App() {
   /** Saves, then re-runs diagnostics so the problem list reflects disk. */
   const saveAllFiles = useCallback(async () => {
     const names = [...dirtyFilesRef.current];
-    if (names.length > 0) await saveFilesAtomicWithHooks(names);
+    if (names.length > 0) {
+      const outcome = await saveFilesAtomicWithHooks(names);
+      // Every other save path says so when the disk refuses; Ctrl+S was silent,
+      // which left the user believing unsaved edits were already on disk.
+      if (outcome.failed) {
+        announce(`Save failed — ${outcome.message ?? 'the disk write did not complete.'} Press Ctrl+S to try again.`, 7000);
+      }
+    }
     diagnostics.refresh();
-  }, [saveFilesAtomicWithHooks, diagnostics.refresh]);
+  }, [announce, saveFilesAtomicWithHooks, diagnostics.refresh]);
 
   const openSettings = useCallback((tab: SettingsTab = 'CHAT') => {
     setSettingsTab(tab);
@@ -1748,17 +1816,26 @@ export default function App() {
       // context it is protecting, so it always earns its own call. Nothing is
       // forced here: the user's own key pays for every context token, and the
       // reader pass is taken because it makes that call cheaper, not because
-      // anyone else is billed.
+      // anyone else is billed. The calibrated order only reorders the models
+      // that already fit the route budget — price still sets the ceiling.
+      const modelIds = byok.models.map((model) => model.id);
+      const ranked = rankModels({ taskType: 'chat', models: modelIds, outcomes: calibratedOutcomes });
       const decision = decideAutoRoute({
         role,
         estimatedInputTokens: DISK_CONTEXT_TOKEN_ESTIMATE,
-        availableModels: rankModelsByOutcome('chat', byok.models.map((model) => model.id)),
+        availableModels: modelIds,
         userModel: byok.selectedModel,
-        isSharedKey: false
+        isSharedKey: false,
+        outcomePreference: ranked.map((entry) => entry.model)
       });
+      // Says out loud which model the first pass runs on and why — the record
+      // behind the pick, not just the pick.
+      routingNoteRef.current = decision.condenseModel
+        ? `Picker ${decision.condenseModel}: ${ranked.find((entry) => entry.model === decision.condenseModel)?.reason ?? 'no model has verified history, so price chose it'}.`
+        : '';
       return decision.condenseModel;
     },
-    [autoContext, byok.activeKey, byok.models, byok.selectedModel, workspace.workspace]
+    [autoContext, byok.activeKey, byok.models, byok.selectedModel, calibratedOutcomes, workspace.workspace]
   );
 
   /**
@@ -1767,12 +1844,15 @@ export default function App() {
    * by parseSelectedPaths and the bytes come from disk regardless.
    */
   const runContextPicker = useCallback(
-    (readerModel: string) => async (shortlist: string[], query: string): Promise<string[]> => {
+    (readerModel: string, report?: PickerReport) => async (shortlist: string[], query: string): Promise<string[]> => {
       let answer = '';
+      let answered = true;
       const controller = new AbortController();
       // A stuck cheap model must not hold the user's request hostage; the
       // lexical shortlist is a perfectly good answer without it.
       const timer = window.setTimeout(() => controller.abort(), PICKER_TIMEOUT_MS);
+      let picked: string[] = [];
+      const startedAt = Date.now();
       try {
         await streamChat(
           {
@@ -1792,13 +1872,26 @@ export default function App() {
             },
             onError: () => {
               answer = '';
+              answered = false;
             }
           }
         );
+        picked = parseSelectedPaths(answer, shortlist, MAX_PICKER_PICKS);
+      } catch {
+        // Aborted or refused: the pass is not a verdict on the model, so it is
+        // reported as never answered and the ledger writes no judgement.
+        answered = false;
       } finally {
         window.clearTimeout(timer);
       }
-      return parseSelectedPaths(answer, shortlist, MAX_PICKER_PICKS);
+      if (report) {
+        report.ran = true;
+        report.shortlist = shortlist.length;
+        report.answered = answered;
+        report.picked = picked.length;
+        report.durationMs = Date.now() - startedAt;
+      }
+      return picked;
     },
     [byok.activeProvider, byok.baseUrl, byok.activeKey]
   );
@@ -1839,7 +1932,7 @@ export default function App() {
         maxDecisions: 8
       });
       if (intentContext.text) {
-        core.push('LIVING INTENT (user-approved provenance; stale items require verification):', intentContext.text);
+        core.push('LIVING INTENT (user-approved provenance; STALE items may no longer hold and UNVERIFIED items were never checked against code — re-read the file before relying on either):', intentContext.text);
       }
 
       if (mode.writesFiles) {
@@ -2320,11 +2413,6 @@ export default function App() {
     byok.activeKey
   ]);
 
-  const announce = useCallback((message: string, ms = 4500) => {
-    setToast(message);
-    window.setTimeout(() => setToast(null), ms);
-  }, []);
-
   const handleBehaviorEvent = useCallback((event: BehaviorEvent) => {
     setBehaviorEvents((previous) => appendBehaviorEvent(previous, event));
   }, []);
@@ -2338,9 +2426,23 @@ export default function App() {
     setBehaviorContract(null);
   }, []);
 
-  const handleContractUpdate = useCallback((contract: AcceptanceContract) => {
-    setBehaviorContract(contract);
-  }, []);
+  /**
+   * Behavior-to-code acceptance. The panel's buttons and the apply path share
+   * this one runner, so a phase can only change through a verdict the preview
+   * harness produced — there is no code path that writes `passed` from a click.
+   */
+  const acceptance = useAcceptance({
+    bridge: desktop,
+    workspaceId: nativeWorkspaceId,
+    previewReady: localRuntime.status === 'ready',
+    contract: behaviorContract,
+    setContract: setBehaviorContract
+  });
+
+  const handleRunCheck = useCallback(async (phase: 'baseline' | 'postPatch') => {
+    const result = await acceptance.run(phase);
+    announce(result.message, 7000);
+  }, [acceptance, announce]);
 
   // --- change capsules -------------------------------------------------------
 
@@ -2438,6 +2540,21 @@ export default function App() {
       5000
     );
   }, [capsules, announce]);
+
+  const handleAddDecision = useCallback(async (input: DecisionInput) => {
+    const decision = await intent.addDecision(input);
+    if (!decision) {
+      announce('The decision was not saved — this workspace cannot write local storage.', 5000);
+      return;
+    }
+    const governed = Object.keys(input.baseHashes).length;
+    announce(
+      governed === 0
+        ? 'Saved. None of its files are indexed yet, so it will read as unverified until one is open.'
+        : `Saved. It now tracks ${governed} file${governed === 1 ? '' : 's'} for change.`,
+      4500
+    );
+  }, [intent, announce]);
 
   const handleIntentExport = useCallback(() => {
     const exported = intent.exportJson();
@@ -2780,6 +2897,10 @@ export default function App() {
    * Runs the language service after a change set lands. Missing names that
    * resolve to exactly one workspace export are imported deterministically
    * (no model call); anything still broken is offered as a one-click fix.
+   *
+   * Reads like a verdict for the outcome ledger: `ran` says the language
+   * service actually answered, and `introduced` counts what is still broken
+   * after the auto-import pass healed what it could.
    */
   const healAfterApply = useCallback(
     async (
@@ -2787,8 +2908,8 @@ export default function App() {
       applied: string[],
       jobs: AtomicPlanJob[],
       before: Promise<DiagnosticsResult | null>
-    ) => {
-      if (!desktop || !nativeWorkspaceId || applied.length === 0) return;
+    ): Promise<{ ran: boolean; introduced: number }> => {
+      if (!desktop || !nativeWorkspaceId || applied.length === 0) return { ran: false, introduced: 0 };
       try {
         const beforeResult = await before;
         const merged = new Map(workspace.files.map((file) => [file.name, file.content] as const));
@@ -2819,14 +2940,19 @@ export default function App() {
           }
         }
 
-        const remaining = selectFixableDiagnostics(
-          filterIntroducedDiagnostics(beforeResult?.diagnostics ?? [], after.diagnostics, applied)
+        const introducedList = filterIntroducedDiagnostics(
+          beforeResult?.diagnostics ?? [],
+          after.diagnostics,
+          applied
         );
+        const remaining = selectFixableDiagnostics(introducedList);
         if (remaining.length > 0) {
           setTypeFixOffers((previous) => ({ ...previous, [messageId]: remaining }));
         }
+        return { ran: true, introduced: introducedList.length };
       } catch (error) {
         warnBridgeError('auto-fix', error);
+        return { ran: false, introduced: 0 };
       }
     },
     [desktop, nativeWorkspaceId, workspace, announce, saveFilesAtomicWithHooks]
@@ -2844,7 +2970,7 @@ export default function App() {
       messageId: string,
       patches: ReviewPatch[],
       options: { allowDestructive?: boolean; verify?: boolean; onlyIndex?: number } = {}
-    ): Promise<{ applied: string[]; failures: string[] }> => {
+    ): Promise<ReviewSetOutcome> => {
       const indexes = options.onlyIndex === undefined
         ? patches.map((_, index) => index)
         : [options.onlyIndex];
@@ -2887,6 +3013,8 @@ export default function App() {
         allowDestructive: options.allowDestructive
       });
       let changeSetVerdict: { ok: boolean; checked: number; issues: Array<{ code: string }>; skipped: string[] } | null = null;
+      let verification: VerificationCard | null = null;
+      let diagnostics: IntroducedDiagnostics | null = null;
 
       if (!('failures' in applyPlan)) {
         if (options.verify !== false && desktop && nativeWorkspaceId) {
@@ -2905,7 +3033,14 @@ export default function App() {
                   : 'Not applied — the change set failed verification.',
                 7000
               );
-              return { applied: [], failures: targets.map((patch) => `${patch.path}: blocked by pre-apply verification`) };
+              return {
+                applied: [],
+                failures: targets.map((patch) => `${patch.path}: blocked by pre-apply verification`),
+                verification: {
+                  passed: false,
+                  checks: [{ name: 'Static syntax validation', ok: false, details: first ? `${first.path}:${first.line + 1} ${first.message}` : 'the change set failed verification' }]
+                }
+              };
             }
           } catch (error) {
             warnBridgeError('verify-change-set', error);
@@ -2922,8 +3057,27 @@ export default function App() {
           `Not applied — ${applyPlan.failures.slice(0, 2).map((failure) => `${failure.path}: ${failure.reason}`).join(' · ')}`,
           7000
         );
-        return { applied: [], failures: applyPlan.failures.map((failure) => `${failure.path}: ${failure.reason}`) };
+        return {
+          applied: [],
+          failures: applyPlan.failures.map((failure) => `${failure.path}: ${failure.reason}`),
+          verification: {
+            passed: false,
+            checks: [{ name: 'Patch mapping', ok: false, details: applyPlan.failures[0]?.reason }]
+          }
+        };
       }
+
+      // Behavior acceptance, half 1 of 2: what the preview does with the files
+      // as they are now. Only a contract the user generated asks for this, and
+      // only when the preview is actually serving — and it is recorded once,
+      // because the receipt describes the pre-patch document.
+      const acceptanceContract = acceptance.contract;
+      const wantsAcceptance = acceptanceContract !== null && localRuntime.status === 'ready';
+      if (wantsAcceptance && acceptanceContract.baseline.evidence === null) {
+        await acceptance.run('baseline');
+      }
+      // Whatever the patched page must beat: the last paint before this write.
+      const paintBeforeWrite = acceptance.paintToken();
 
       const editCheckpoint = await workspace.markCheckpoint(messageId, 'Apply reviewed changes', true, true);
       try {
@@ -2997,6 +3151,24 @@ export default function App() {
             !changeSetVerdict.issues.some((issue) => issue.code === 'PATH_OUTSIDE_WORKSPACE');
           const uniqueApplied = new Set(applied.map((item) => item.toLowerCase())).size;
           const diskSavePassed = !outcome.failed && outcome.written === uniqueApplied;
+          // Behavior acceptance, half 2 of 2: re-run the recorded interaction's
+          // probe against the page the patched files produced. The row is added
+          // only when the harness returned a verdict — an unverified run is
+          // reported in the contract panel, not voted into this turn's result.
+          let acceptanceRow: { name: string; ok: boolean; details?: string } | null = null;
+          if (wantsAcceptance && outcome.written > 0) {
+            const post = await acceptance.run('postPatch', { repaintFrom: paintBeforeWrite });
+            if (post.evidence && post.contract) {
+              const outcomeState = acceptanceOutcome(post.contract);
+              if (post.evidence.result !== 'unverified') {
+                acceptanceRow = {
+                  name: 'Preview acceptance',
+                  ok: post.evidence.result === 'passed',
+                  details: `${outcomeState.summary} Baseline: ${describeEvidence(post.contract.baseline.evidence)}.`
+                };
+              }
+            }
+          }
           const checks = [
             {
               name: 'Static syntax validation',
@@ -3016,9 +3188,11 @@ export default function App() {
               details: diskSavePassed
                 ? `${outcome.written} file(s) confirmed saved`
                 : `${outcome.written} of ${uniqueApplied} file(s) saved${outcome.message ? `: ${outcome.message}` : ''}`
-            }
+            },
+            ...(acceptanceRow ? [acceptanceRow] : [])
           ];
           const passed = checks.every((check) => check.ok);
+          verification = { passed, checks };
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === messageId
@@ -3043,12 +3217,17 @@ export default function App() {
               void workspace.loadDirectory(directory);
             }
           }
-          await healAfterApply(messageId, applied, jobs, beforeDiagnostics);
+          diagnostics = await healAfterApply(messageId, applied, jobs, beforeDiagnostics);
         }
-        return { applied, failures: [] };
+        return {
+          applied,
+          failures: [],
+          ...(verification ? { verification } : {}),
+          ...(diagnostics ? { diagnostics } : {})
+        };
       } finally { await workspace.finishMachineCheckpoint(editCheckpoint); }
     },
-    [workspace, desktop, nativeWorkspaceId, announce, healAfterApply, saveFilesAtomicWithHooks]
+    [workspace, desktop, nativeWorkspaceId, announce, healAfterApply, saveFilesAtomicWithHooks, acceptance, localRuntime.status]
   );
 
   const acceptPatch = useCallback(
@@ -3265,15 +3444,17 @@ export default function App() {
       fullReply: string,
       mode: RefineModeMeta,
       options: { replace?: boolean; onFailures?: (failures: string[]) => void | Promise<void>; onUnmapped?: () => void | Promise<void> } = {}
-    ) => {
-      if (!options.replace && patchSets.some((set) => set.messageId === messageId)) return;
+    ): Promise<ApplyOutcome> => {
+      // Already staged by an earlier pass in this turn: report nothing, so the
+      // same edit is never counted twice in the outcome ledger.
+      if (!options.replace && patchSets.some((set) => set.messageId === messageId)) return NO_APPLY;
 
       if (!mode.writesFiles) {
         if (extractFilePatches(fullReply, workspace.files).patches.length > 0) {
           setToast('Plan mode active — file modifications were not applied.');
           window.setTimeout(() => setToast(null), 5000);
         }
-        return;
+        return NO_APPLY;
       }
 
       const extractedPatches = extractUnifiedPatches(fullReply, workspace.files);
@@ -3296,12 +3477,12 @@ export default function App() {
         if (looksLikeEdit) {
           if (options.onUnmapped) {
             await options.onUnmapped();
-            return;
+            return { ...NO_APPLY, editAttempted: true };
           }
           setToast('The reply contained edit blocks, but none could be applied — nothing was changed.');
           window.setTimeout(() => setToast(null), 6000);
         }
-        return;
+        return { ...NO_APPLY, editAttempted: looksLikeEdit };
       }
 
       const review: ReviewPatch[] = patches.map((patch) => ({
@@ -3316,11 +3497,27 @@ export default function App() {
         ? [...previous.filter((set) => set.messageId !== messageId), { messageId, patches: review }]
         : [...previous, { messageId, patches: review }]));
 
-      if (!autoApplyChanges) return;
-      if (planApprovalGateRef.current.has(messageId)) {
+      // Auto-apply is a user preference, not a permission mode override: Ask
+      // and Plan forbid a machine-sensitive write, so the set stays staged for
+      // the user to apply by hand.
+      const hold = holdReplyApply({
+        autoApplyChanges,
+        awaitingPlanApproval: planApprovalGateRef.current.has(messageId),
+        permissionMode
+      });
+      // A staged set is not an outcome: nothing was checked because nothing was
+      // written, and the user's own choice to review first must never be
+      // recorded as the model failing.
+      if (hold === 'auto-apply-off') return NO_APPLY;
+      if (hold === 'plan-approval') {
         setToast('Plan is waiting for approval — changes are staged, not applied.');
         window.setTimeout(() => setToast(null), 4000);
-        return;
+        return NO_APPLY;
+      }
+      if (hold === 'permission-mode') {
+        setToast(`${permissionMode === 'plan' ? 'Plan' : 'Ask'} mode active — changes are staged for review, not applied.`);
+        window.setTimeout(() => setToast(null), 5000);
+        return NO_APPLY;
       }
 
       setToast(`Verifying ${review.length} file(s)…`);
@@ -3328,8 +3525,15 @@ export default function App() {
       const outcome = await applyReviewSet(messageId, review);
       const failures = [...blockedPaths, ...outcome.failures];
       if (failures.length > 0) await options.onFailures?.(failures);
+      return {
+        editAttempted: true,
+        filesWritten: outcome.applied.length,
+        patchFailures: outcome.failures,
+        verification: outcome.verification ?? null,
+        diagnostics: outcome.diagnostics ?? null
+      };
     },
-    [patchSets, workspace, autoApplyChanges, applyReviewSet]
+    [patchSets, workspace, autoApplyChanges, permissionMode, applyReviewSet]
   );
 
   const handleSend = useCallback(async (
@@ -3457,13 +3661,17 @@ export default function App() {
     });
     // The system instruction is measured first and subtracted from the window,
     // so the history is trimmed against what is actually left for it.
+    routingNoteRef.current = '';
     const readerModel = autoReaderModel(text, mode.writesFiles ? 'edit' : 'chatter');
+    // Filled by the picker call itself, so the ledger can record what the cheap
+    // pass really returned instead of assuming a reader always helps.
+    const pickerReport: PickerReport = { model: readerModel ?? '', ran: false, shortlist: 0, answered: false, picked: 0, durationMs: 0 };
     let fit: ChatRequestFit;
     try {
       const systemContext = await buildSystemContext(
         text,
         mode,
-        readerModel ? runContextPicker(readerModel) : undefined,
+        readerModel ? runContextPicker(readerModel, pickerReport) : undefined,
         { attachedFiles: requestFiles, pinnedSymbols: requestSymbols }
       );
       if (systemContext.manifest) setContextManifest(systemContext.manifest);
@@ -3503,6 +3711,7 @@ export default function App() {
       [
         contextFitNotice(fit, answerModel) ?? '',
         autoNotes.length ? `Auto: ${autoNotes.join(', ')}.` : '',
+        routingNoteRef.current,
         folded.length ? `Compacted: ${folded.join(', ')}.` : '',
         rulesNoteRef.current
       ]
@@ -3540,13 +3749,40 @@ export default function App() {
     let runRepair: (failures: string[]) => Promise<void> = async () => {};
     let runUnmappedRepair: () => Promise<void> = async () => {};
 
+    // Everything the apply passes reported, across the first try and both
+    // bounded repairs. The outcome ledger is decided from this, never from the
+    // fact that the stream finished without throwing.
+    const applyReport: ApplyOutcome = {
+      editAttempted: false,
+      filesWritten: 0,
+      patchFailures: [],
+      verification: null,
+      diagnostics: null
+    };
+    const mergeApply = (next: ApplyOutcome) => {
+      applyReport.editAttempted = applyReport.editAttempted || next.editAttempted;
+      applyReport.filesWritten += next.filesWritten;
+      applyReport.patchFailures = [...applyReport.patchFailures, ...next.patchFailures];
+      if (next.verification) applyReport.verification = next.verification;
+      if (next.diagnostics) applyReport.diagnostics = next.diagnostics;
+    };
+
+    // The tool loop lives inside the try, so the facts the outcome ledger is
+    // built from are collected here rather than re-derived from React state.
+    const turnSignals = {
+      activity: [] as TurnToolCall[],
+      blocked: null as string | null,
+      streamError: null as string | null,
+      answerEmpty: true
+    };
+
     const applyReplyPatches = async () => {
       if (applied) return;
       applied = true;
-      await applyPatchesFromReply(modelMessage.id, reply, mode, {
+      mergeApply(await applyPatchesFromReply(modelMessage.id, reply, mode, {
         onFailures: runRepair,
         onUnmapped: runUnmappedRepair
-      });
+      }));
     };
 
     const markInterrupted = (error: string) => {
@@ -3738,7 +3974,7 @@ export default function App() {
         ], repairRoundSeq++);
         const corrected = stripToolBlocks(repair.text);
         if (!controller.signal.aborted && corrected.trim()) {
-          await applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true });
+          mergeApply(await applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true }));
         }
       } finally {
         setIsGenerating(false);
@@ -3773,7 +4009,7 @@ export default function App() {
         ], repairRoundSeq++);
         const corrected = stripToolBlocks(correction.text);
         if (!controller.signal.aborted && corrected.trim()) {
-          await applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true });
+          mergeApply(await applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true }));
         }
       } finally {
         setIsGenerating(false);
@@ -3843,10 +4079,14 @@ export default function App() {
       });
       if (loop.error && !controller.signal.aborted) {
         markInterrupted(loop.error);
+        turnSignals.streamError = loop.error;
       } else {
         // A turn that ends with the finish tool can hold no prose at all: the
         // summary in that call is the only answer the user ever sees.
         const answer = reply || loop.text;
+        turnSignals.activity = loop.activity;
+        turnSignals.blocked = loop.finish?.blocked ?? null;
+        turnSignals.answerEmpty = !answer.trim();
         // The model rarely closes its plan; a turn that ended without a blocked
         // reason is done, so no step may keep a spinner forever.
         const closedPlan = loop.plan.length > 0 && !loop.finish?.blocked
@@ -3901,7 +4141,9 @@ export default function App() {
       }
     } catch (error) {
       if (controller.signal.aborted) return;
-      markInterrupted(error instanceof Error ? error.message : 'Unknown error');
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      turnSignals.streamError = message;
+      markInterrupted(message);
     } finally {
       try { if (streamCompleted) await applyReplyPatches(); }
       finally {
@@ -3918,19 +4160,54 @@ export default function App() {
             machineDeltaRef: machineCheckpoint
           });
         }
-        if (streamCompleted) {
+        // A turn that ended — cleanly or with a provider error — is a data
+        // point. Only the user pressing Stop is excluded: abandoning a run
+        // says nothing about whether the model could do the task.
+        const turnEnded = (streamCompleted || turnSignals.streamError !== null) && !controller.signal.aborted;
+        if (turnEnded) {
+          const repairIterations = turnAttempts.length > 1 ? turnAttempts.length - 1 : 0;
           const outcome = recordOutcome({
-            taskType: mode.writesFiles ? 'feature' : 'chat',
+            ...outcomeOfTurn({
+              prompt: text,
+              writesFiles: mode.writesFiles,
+              editAttempted: applyReport.editAttempted,
+              filesWritten: applyReport.filesWritten,
+              patchFailures: applyReport.patchFailures,
+              verification: applyReport.verification,
+              diagnostics: applyReport.diagnostics,
+              testRuns: testRunsFrom(turnSignals.activity),
+              blocked: turnSignals.blocked,
+              streamError: turnSignals.streamError,
+              answerEmpty: turnSignals.answerEmpty,
+              repairIterations
+            }),
             route: 'writer',
             model: answerModel,
-            passed: true,
-            repairIterations: turnAttempts.length > 1 ? turnAttempts.length - 1 : 0,
+            repairIterations,
             inputTokens: turnUsage.inputTokens,
             outputTokens: turnUsage.outputTokens,
-            latencyMs: turnUsage.durationMs,
-            verified: true
+            latencyMs: turnUsage.durationMs
           });
           setCalibratedOutcomes((previous) => [outcome, ...previous].slice(0, 500));
+          // The cheap pass gets its own record, judged on its own result: the
+          // paths it named either existed or they did not. Without this the
+          // ranking would be asked to choose a reader on writer evidence.
+          if (pickerReport.ran) {
+            const readerOutcome = recordOutcome({
+              ...outcomeOfReader({
+                shortlist: pickerReport.shortlist,
+                answered: pickerReport.answered,
+                picked: pickerReport.picked
+              }),
+              route: 'reader',
+              model: pickerReport.model,
+              repairIterations: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              latencyMs: pickerReport.durationMs
+            });
+            setCalibratedOutcomes((previous) => [readerOutcome, ...previous].slice(0, 500));
+          }
         }
         setIsGenerating(false);
         setActiveStatusMessage(null);
@@ -4122,7 +4399,10 @@ export default function App() {
           stopped: outcome.stopped,
           filesRead: outcome.filesRead,
           touchedFiles: outcome.applied,
-          pendingReview: outcome.pendingReview
+          pendingReview: outcome.pendingReview,
+          // What the run's tool-call ceiling counts: calls that actually ran.
+          // A call the permission guard refused never reached a provider or a disk.
+          toolCalls: outcome.toolActivity.filter((entry) => !entry.refused).length
         };
       } finally { await workspace.finishMachineCheckpoint(machineCheckpoint); }
     },
@@ -4147,7 +4427,10 @@ export default function App() {
     () => ({
       runTurn: runAutonomousTurn,
       getDiagnostics: async () => {
-        if (!desktop || !nativeWorkspaceId) return [];
+        // `null` is the honest answer when no checker exists: returning [] here
+        // used to read as "checked, found nothing" and hand milestones a pass
+        // they had not earned.
+        if (!desktop || !nativeWorkspaceId) return null;
         const result = await desktop.diagnostics(nativeWorkspaceId);
         return result.diagnostics;
       },
@@ -4168,7 +4451,7 @@ export default function App() {
             declinedReason: 'No folder is open, so no terminal is available.'
           };
         }
-        const result = await desktop.runCommand(nativeWorkspaceId, argv);
+        const result = await desktop.runCommand(nativeWorkspaceId, argv, commandApprovalNotice(argv));
         if (result.deniedReason) {
           return {
             argv,
@@ -4184,7 +4467,9 @@ export default function App() {
           exitCode: result.exitCode,
           stdoutTail: result.stdout,
           stderrTail: result.stderr,
-          timedOut: false
+          // The main process says when it killed the command; a half-run test is
+          // not a passing one, and the verifier decides on this flag.
+          timedOut: result.timedOut === true
         };
       }
     }),
@@ -4297,7 +4582,11 @@ export default function App() {
 
     const state = active.kind === 'autonomy' ? autonomy.state : team.state;
     const matches = Boolean(
-      state && state.goal === active.goal && state.startedAt >= active.startedAt - 1_000
+      state &&
+        state.goal === active.goal &&
+        // A resumed run carries its original `startedAt`, so the recency check
+        // that catches a stale hook only applies to a run started just now.
+        (active.resumed || state.startedAt >= active.startedAt - 1_000)
     );
     // Before the first running render, the hook still holds the previous run.
     // Wait for the new goal instead of finalizing against stale state.
@@ -4313,36 +4602,45 @@ export default function App() {
     if (active.kind === 'autonomy') {
       const milestones = autonomy.state?.milestones ?? [];
       const passed = milestones.filter((milestone) => milestone.status === 'passed').length;
+      const unverified = milestones.filter((milestone) => milestone.status === 'unverified').length;
       const touched = milestones.filter((milestone) =>
         milestone.attempts.some((attempt) => attempt.patchesApplied > 0)
       ).length;
+      // Unverified is named in the same breath as passed, never folded into it.
+      const tally = (total: number) => `${passed}/${total} passed${unverified ? ` · ${unverified} unverified` : ''}`;
       detail = matches
-        ? `${passed}/${milestones.length} milestones passed · ${creditsSpent} of the spend budget${touched ? ` · ${touched} touched files` : ''}`
+        ? `${tally(milestones.length)} · ${creditsSpent} of the spend budget${touched ? ` · ${touched} touched files` : ''}`
         : 'The run did not start.';
       content = !matches
         ? 'The autonomous run could not start. Check the key and folder, then try again.'
         : status === 'done'
-          ? `Autonomous run finished: **${passed}/${milestones.length}** milestones passed, **${creditsSpent}** of the spend budget used.`
+          ? `Autonomous run finished: **${tally(milestones.length)}**, **${creditsSpent}** of the spend budget used.`
           : status === 'budget'
-            ? `Autonomous run stopped at its **${active.budgetCredits}** spend-budget ceiling after **${passed}/${milestones.length}** milestones.`
+            ? `Autonomous run stopped at a hard ceiling after **${tally(milestones.length)}**: ${autonomy.state?.error ?? `the spend cap of ${active.budgetCredits}.`}`
             : status === 'stopped'
-              ? `Autonomous run stopped. **${passed}/${milestones.length}** milestones had passed.`
-              : `Autonomous run failed${autonomy.state?.error ? `: ${autonomy.state.error.replace(/\.$/, '')}` : ''}.`;
+              ? `Autonomous run stopped. **${tally(milestones.length)}** had settled.`
+              : status === 'paused'
+                ? `Autonomous run paused after **${tally(milestones.length)}**. Resume continues from the milestone it left off at.`
+                : `Autonomous run failed${autonomy.state?.error ? `: ${autonomy.state.error.replace(/\.$/, '')}` : ''}.`;
     } else {
       const tasks = team.state?.tasks ?? [];
       const passed = tasks.filter((task) => task.status === 'passed').length;
+      const unverified = tasks.filter((task) => task.status === 'unverified').length;
+      const tally = (total: number) => `${passed}/${total} passed${unverified ? ` · ${unverified} unverified` : ''}`;
       detail = matches
-        ? `${passed}/${tasks.length} tasks passed · ${creditsSpent} of the spend budget`
+        ? `${tally(tasks.length)} · ${creditsSpent} of the spend budget`
         : 'The team did not start.';
       content = !matches
         ? 'The agent team could not start. Check the key and folder, then try again.'
         : status === 'done'
-          ? `Agent team finished: **${passed}/${tasks.length}** tasks passed, **${creditsSpent}** of the spend budget used.`
+          ? `Agent team finished: **${tally(tasks.length)}**, **${creditsSpent}** of the spend budget used.`
           : status === 'budget'
-            ? `Agent team stopped at its **${active.budgetCredits}** spend-budget ceiling after **${passed}/${tasks.length}** tasks.`
+            ? `Agent team stopped at a hard ceiling after **${tally(tasks.length)}**: ${team.state?.error ?? `the spend cap of ${active.budgetCredits}.`}`
             : status === 'stopped'
-              ? `Agent team stopped. **${passed}/${tasks.length}** tasks had passed.`
-              : `Agent team failed${team.state?.error ? `: ${team.state.error.replace(/\.$/, '')}` : ''}.`;
+              ? `Agent team stopped. **${tally(tasks.length)}** had settled.`
+              : status === 'paused'
+                ? `Agent team paused after **${tally(tasks.length)}**. A team plans once, so continuing means starting the goal again.`
+                : `Agent team failed${team.state?.error ? `: ${team.state.error.replace(/\.$/, '')}` : ''}.`;
     }
 
     setMessages((previous) =>
@@ -4494,7 +4792,26 @@ export default function App() {
       }
     };
 
-    setMessages((previous) => [...previous, userMessage, modelMessage]);
+    setMessages((previous) => [
+      // Only one run can be resumed at a time — the hook holds one state — so a
+      // card left `paused` by an earlier run stops being resumable the moment a
+      // new one takes its place. Saying so beats a Resume button that continues
+      // the wrong goal.
+      ...previous.map((message) =>
+        message.orchestration?.status === 'paused'
+          ? {
+              ...message,
+              orchestration: {
+                ...message.orchestration,
+                status: 'stopped' as const,
+                detail: 'Not resumable: a newer run replaced it.'
+              }
+            }
+          : message
+      ),
+      userMessage,
+      modelMessage
+    ]);
     setInput('');
     setPendingRefine(null);
     setAttachedFiles([]);
@@ -4603,7 +4920,7 @@ export default function App() {
         pendingPromptQueueRef.current.push(definition.action.prompt);
       } else {
         void desktop
-          .runCommand(nativeWorkspaceId, definition.action.argv)
+          .runCommand(nativeWorkspaceId, definition.action.argv, commandApprovalNotice(definition.action.argv))
           .catch((error) => warnBridgeError('automation-command', error));
       }
     },
@@ -4698,10 +5015,18 @@ export default function App() {
       startedAt: Date.now(),
       kind: 'autonomy',
       budgetCredits,
-      seenRunning: false
+      seenRunning: false,
+      resumed: true
     };
     trackedRunRef.current = { kind: 'autonomy', goal: snapshot.goal };
-    autonomy.start(snapshot.goal);
+    // Continuing means reusing the milestones that were already paid for. A run
+    // restarted from the goal would re-plan and re-run finished work, so resume
+    // only when the restored state actually is this goal.
+    if (autonomy.state && autonomy.state.goal === snapshot.goal && autonomy.state.milestones.length > 0) {
+      autonomy.resume();
+    } else {
+      autonomy.start(snapshot.goal);
+    }
   }, [
     resumeSnapshot,
     isGenerating,
@@ -5114,6 +5439,74 @@ export default function App() {
     handleStop();
   }, [autonomy, team, handleStop]);
 
+  /**
+   * Pause leaves a resumable run, so — unlike Stop — it writes nothing itself.
+   * The engine settles the milestone it was in, and the finalizer below records
+   * what actually happened.
+   */
+  const handlePauseOrchestration = useCallback(() => {
+    const active = orchestrationRef.current;
+    if (!active) return;
+    if (active.kind === 'autonomy') autonomy.pause();
+    else team.pause();
+  }, [autonomy, team]);
+
+  /** Continues the paused run in the same card, from its persisted milestones. */
+  const handleResumeOrchestration = useCallback((messageId: string) => {
+    const paused = autonomy.state;
+    if (!paused || paused.status !== 'paused' || paused.milestones.length === 0) return;
+    if (isGenerating || autonomy.isRunning || team.isRunning) return;
+    if (!desktop || !nativeWorkspaceId || !workspaceRootPath) {
+      setToast('A paused run continues in the folder it started in.');
+      window.setTimeout(() => setToast(null), 5000);
+      return;
+    }
+    if (!byok.activeKey) {
+      openSettings('CHAT');
+      return;
+    }
+
+    setMessages((previous) =>
+      previous.map((message) =>
+        message.id === messageId && message.orchestration
+          ? {
+              ...message,
+              streaming: true,
+              content: '',
+              orchestration: {
+                ...message.orchestration,
+                status: 'running',
+                detail: 'Resuming from the milestone it paused at.'
+              }
+            }
+          : message
+      )
+    );
+    setIsGenerating(true);
+    chatDispatchLockRef.current = true;
+    orchestrationRef.current = {
+      messageId,
+      goal: paused.goal,
+      startedAt: Date.now(),
+      kind: 'autonomy',
+      budgetCredits: runBudget.maxCredits,
+      seenRunning: false,
+      resumed: true
+    };
+    trackedRunRef.current = { kind: 'autonomy', goal: paused.goal };
+    autonomy.resume();
+  }, [
+    autonomy,
+    team,
+    isGenerating,
+    desktop,
+    nativeWorkspaceId,
+    workspaceRootPath,
+    byok.activeKey,
+    openSettings,
+    runBudget.maxCredits
+  ]);
+
   const handleRefinePrompt = useCallback(async () => {
     const raw = input.trim();
     if (!raw || isRefining || isGenerating) return;
@@ -5501,6 +5894,7 @@ export default function App() {
       lastReloadAt={previewSync.lastReloadAt}
       onRevealSource={(target) => void handleRevealSource(target)}
       onBehaviorEvent={handleBehaviorEvent}
+      onFramePaint={acceptance.onFramePaint}
       fullscreen={isPreviewFullscreen}
       onToggleFullscreen={() => setIsPreviewFullscreen((fullscreen) => !fullscreen)}
       onClose={() => {
@@ -5668,18 +6062,26 @@ export default function App() {
               intentGraph={intent.graph}
               intentDecisions={intent.decisions}
               intentLoading={intent.loading}
+              indexedFiles={intent.indexedFiles}
               onIntentRefresh={() => void intent.refresh()}
-              onAddDecision={(input) => void intent.addDecision(input)}
+              onAddDecision={(input) => void handleAddDecision(input)}
               onDeleteDecision={(id) => void intent.removeDecision(id)}
+              onAskDependencies={intent.answer}
               onIntentExport={handleIntentExport}
               onIntentImport={handleIntentImport}
               behaviorEvents={behaviorEvents}
               contract={behaviorContract}
               onClearBehavior={handleClearBehavior}
               onGenerateContract={handleGenerateContract}
-              onUpdateContract={handleContractUpdate}
+              onRunCheck={(phase) => void handleRunCheck(phase)}
+              checkPhase={acceptance.busy}
+              previewReady={localRuntime.status === 'ready'}
               outcomes={calibratedOutcomes}
               routeProfiles={calibratedProfiles}
+              calibratedTaskType={calibratedTaskType}
+              onCalibratedTaskType={setCalibratedTaskType}
+              modelRanking={calibratedRanking}
+              onPinModel={(taskType, model) => setModelPins(setPreferredModel(taskType, model))}
             />
           </div>
         </div>
@@ -5871,6 +6273,8 @@ export default function App() {
             queuedMessages={queuedChatItems}
             onCancelQueuedMessage={handleCancelQueuedChat}
             onStop={handleStopAll}
+            onPauseOrchestration={handlePauseOrchestration}
+            onResumeOrchestration={handleResumeOrchestration}
             onClearChat={handleClearChat}
             isGenerating={isGenerating}
             isRefining={isRefining}

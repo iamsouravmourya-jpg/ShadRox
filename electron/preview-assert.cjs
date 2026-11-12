@@ -181,6 +181,8 @@ function mergePreviewVerdict(input = {}) {
     .slice(0, MAX_SELECTORS);
   const warningSelectors = (Array.isArray(input.warningSelectors) ? input.warningSelectors : [])
     .slice(0, MAX_SELECTORS);
+  // Which checks actually ran, so an acceptance re-run can pin the same list.
+  const assertedSelectors = sanitizeSelectors(input.assertedSelectors);
 
   let status = 'observed';
   let detail = typeof input.detail === 'string' ? input.detail.slice(0, 160) : null;
@@ -203,7 +205,7 @@ function mergePreviewVerdict(input = {}) {
     status = 'ok';
   }
 
-  return { ok: status === 'ok', status, failedSelectors, warningSelectors, errorCount, consoleErrors, detail };
+  return { ok: status === 'ok', status, failedSelectors, warningSelectors, errorCount, consoleErrors, assertedSelectors, detail };
 }
 
 module.exports = {

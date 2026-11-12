@@ -1,0 +1,41 @@
+{
+  "id": "refactor-extract-display-name",
+  "kind": "refactor",
+  "title": "One displayName() helper, used by every greeting",
+  "notes": "Shape: the same name fallback copied into two modules. A refactor must not change what the app says, so the command pins the old output as well as the new helper, and the pattern checks prove the duplication is really gone.",
+  "checks": [
+    {
+      "name": "Helper exists on its own",
+      "file": "src/name.mjs",
+      "match": "export function displayName\\(user\\)"
+    },
+    {
+      "name": "greet delegates to the helper",
+      "file": "src/greet.mjs",
+      "match": "import \\{ displayName \\} from '\\./name\\.mjs';"
+    },
+    {
+      "name": "card delegates to the helper",
+      "file": "src/card.mjs",
+      "match": "import \\{ displayName \\} from '\\./name\\.mjs';"
+    },
+    {
+      "name": "No inlined fallback left in greet",
+      "file": "src/greet.mjs",
+      "match": "user && user\\.name",
+      "absent": true
+    },
+    {
+      "name": "No inlined fallback left in card",
+      "file": "src/card.mjs",
+      "match": "user && user\\.name",
+      "absent": true
+    }
+  ],
+  "commands": [
+    {
+      "name": "node src/check.mjs",
+      "argv": ["node", "src/check.mjs"]
+    }
+  ]
+}

@@ -65,3 +65,23 @@ test('createTeamPorts passes onEvent and cancellation through to the caller', ()
   assert.equal(events[0].type, 'team:log');
   assert.equal(ports.isCancellationRequested(), true);
 });
+
+test('createTeamPorts forwards Pause only when the caller has a Pause button', () => {
+  const without = createTeamPorts(host(), {
+    rootPath: 'C:/repo',
+    onEvent: () => undefined,
+    isCancellationRequested: () => false
+  });
+  assert.equal(without.isPauseRequested, undefined);
+
+  let paused = false;
+  const withPause = createTeamPorts(host(), {
+    rootPath: 'C:/repo',
+    onEvent: () => undefined,
+    isCancellationRequested: () => false,
+    isPauseRequested: () => paused
+  });
+  assert.equal(withPause.isPauseRequested?.(), false);
+  paused = true;
+  assert.equal(withPause.isPauseRequested?.(), true);
+});

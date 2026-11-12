@@ -1,0 +1,30 @@
+{
+  "id": "bugfix-average-off-by-one",
+  "kind": "bugfix",
+  "title": "average() divides by the number of values, not one more",
+  "notes": "Shape: a correct loop with an off-by-one divisor. The command is the proof; the two pattern checks only pin the line that moved, so a rewrite that fixes the number some other way still passes.",
+  "checks": [
+    {
+      "name": "Divides by the real count",
+      "file": "average.mjs",
+      "match": "return total / values\\.length;"
+    },
+    {
+      "name": "Off-by-one divisor removed",
+      "file": "average.mjs",
+      "match": "values\\.length \\+ 1",
+      "absent": true
+    },
+    {
+      "name": "The summation loop was not rewritten",
+      "file": "average.mjs",
+      "match": "for \\(const value of values\\) total \\+= value;"
+    }
+  ],
+  "commands": [
+    {
+      "name": "node check.mjs",
+      "argv": ["node", "check.mjs"]
+    }
+  ]
+}

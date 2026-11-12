@@ -19,7 +19,7 @@ import type { Milestone, MilestoneStatus, RunState, RunStatus } from '../autonom
 import { findAgent } from './roles';
 import type { TaskStatus, TeamState, TeamTask } from './types';
 
-export type RunViewStatus = 'planning' | 'running' | 'done' | 'failed' | 'stopped' | 'budget';
+export type RunViewStatus = 'planning' | 'running' | 'done' | 'failed' | 'paused' | 'stopped' | 'budget';
 
 export interface RunViewRow {
   id: string;
@@ -191,6 +191,7 @@ function statusOfRun(status: RunStatus): RunViewStatus {
     case 'stopped-budget':
       return 'budget';
     case 'paused':
+      return 'paused';
     case 'cancelled':
       return 'stopped';
     default:
@@ -210,6 +211,8 @@ function statusOfTeam(status: TeamState['status']): RunViewStatus {
       return 'failed';
     case 'stopped-budget':
       return 'budget';
+    case 'paused':
+      return 'paused';
     case 'cancelled':
       return 'stopped';
     default:
@@ -218,7 +221,7 @@ function statusOfTeam(status: TeamState['status']): RunViewStatus {
 }
 
 function resumable(status: RunViewStatus, rows: readonly RunViewRow[]): boolean {
-  return (status === 'stopped' || status === 'budget' || status === 'failed') && rows.some((row) => row.status === 'pending' || row.status === 'stopped');
+  return (status === 'paused' || status === 'stopped' || status === 'budget' || status === 'failed') && rows.some((row) => row.status === 'pending' || row.status === 'stopped');
 }
 
 function assemble(
@@ -242,11 +245,13 @@ function assemble(
       ? `${done} of ${total} ${noun.units} passed`
       : status === 'budget'
         ? `stopped at the spend cap after ${done} of ${total} ${noun.units}`
-        : status === 'stopped'
-          ? `stopped after ${done} of ${total} ${noun.units}`
-          : status === 'failed'
-            ? `${done} of ${total} ${noun.units} passed`
-            : `${done} of ${total} ${noun.units} planned`;
+        : status === 'paused'
+          ? `paused after ${done} of ${total} ${noun.units}`
+          : status === 'stopped'
+            ? `stopped after ${done} of ${total} ${noun.units}`
+            : status === 'failed'
+              ? `${done} of ${total} ${noun.units} passed`
+              : `${done} of ${total} ${noun.units} planned`;
   const statusLine = error && status !== 'running' ? firstSentence(`${head} — ${error}`, 300) : head;
   return {
     kind,

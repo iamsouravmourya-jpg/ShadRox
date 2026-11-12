@@ -19,6 +19,7 @@
     "start": "tsx server.ts",
     "preview": "vite preview",
     "test": "node scripts/run-tests.mjs",
+    "benchmark": "node scripts/run-benchmark.mjs",
     "verify:proofs": "node scripts/verify-proofs.mjs",
     "lint": "node node_modules/typescript-legacy/bin/tsc --noEmit",
     "typecheck": "node node_modules/typescript-legacy/bin/tsc --noEmit"

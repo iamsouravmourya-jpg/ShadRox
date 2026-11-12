@@ -150,6 +150,9 @@ function TerminalSurface({
         const line = `\r\n\x1b[90m[process exited with code ${output.exitCode ?? 'unknown'}]\x1b[0m\r\n`;
         appendTerminalTranscript(transcriptKey, line);
         terminal.write(line);
+        // The shell is gone: keep its id and every later keystroke is written to
+        // a dead session, which prints an error line forever. Restart re-spawns.
+        ptySessionId = null;
         onStatus(session.key, 'exited');
       }
     };

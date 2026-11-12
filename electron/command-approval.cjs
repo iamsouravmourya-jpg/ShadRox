@@ -24,6 +24,7 @@ async function runWithCommandApproval({
   workspaceId,
   command,
   workspace,
+  riskNotice = '',
   showApproval,
   getWorkspace,
   runCommand,
@@ -37,6 +38,7 @@ async function runWithCommandApproval({
     !workspace ||
     workspace.mode !== 'folder' ||
     typeof workspace.root !== 'string' ||
+    typeof riskNotice !== 'string' ||
     typeof showApproval !== 'function' ||
     typeof getWorkspace !== 'function' ||
     typeof runCommand !== 'function'
@@ -52,7 +54,7 @@ async function runWithCommandApproval({
 
   let approved = isAllowlisted;
   if (!approved) {
-    approved = await showApproval({ workspaceId, command, cwd });
+    approved = await showApproval({ workspaceId, command, cwd, riskNotice });
   }
 
   if (approved !== true) return { approved: false, reason: 'Command was not approved.' };
