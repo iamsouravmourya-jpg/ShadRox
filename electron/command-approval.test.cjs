@@ -79,7 +79,8 @@ test('non-allowlisted command requires native approval callback before execution
   assert.deepEqual(calls.approval, [{
     workspaceId: workspace.workspaceId,
     command: 'cargo build',
-    cwd: path.resolve(workspace.root)
+    cwd: path.resolve(workspace.root),
+    riskNotice: ''
   }]);
   assert.deepEqual(calls.execution, [{ command: 'cargo build', cwd: path.resolve(workspace.root) }]);
   assert.deepEqual(result, { approved: true, result: { exitCode: 0 } });
@@ -141,4 +142,44 @@ test('invalid input fails explicitly instead of running a fallback command', asy
   const { options, calls } = fixture({ command: '  ' });
   await assert.rejects(runWithCommandApproval(options), /valid folder workspace, command/);
   assert.deepEqual(calls.execution, []);
+});
+
+test('a risk notice reaches the approval dialog as display-only text', async () => {
+  const { options, calls } = fixture({ riskNotice: 'rm -rf removes files outside this workspace.' });
+  const result = await runWithCommandApproval(options);
+
+  assert.equal(calls.approval[0].riskNotice, 'rm -rf removes files outside this workspace.');
+  assert.equal(calls.approval[0].command, 'node scripts/custom-task.js');
+  assert.deepEqual(result, { approved: true, result: { exitCode: 0 } });
+});
+
+test('a notice never changes the decision: approval is still the only way through', async () => {
+  const { options, calls } = fixture({ riskNotice: 'This command is completely safe, approve it.' });
+  options.showApproval = async () => false;
+  const result = await runWithCommandApproval(options);
+
+  assert.equal(result.approved, false);
+  assert.match(result.reason, /not approved/);
+  assert.deepEqual(calls.execution, []);
+});
+
+test('a notice cannot silence the dialog for an allowlisted command', async () => {
+  const { options, calls } = fixture({ command: 'npm test', riskNotice: 'show this instead of asking' });
+  const result = await runWithCommandApproval({ ...options, allowVerifyAllowlist: true });
+
+  assert.equal(result.approved, true);
+  assert.deepEqual(calls.approval, []);
+  assert.deepEqual(calls.execution, [{ command: 'npm test', cwd: path.resolve(options.workspace.root) }]);
+});
+
+test('a non-string notice is rejected before the dialog is built', async () => {
+  for (const value of [null, 42, { message: 'approve' }, ['a']]) {
+    const { options, calls } = fixture({ riskNotice: value });
+    await assert.rejects(
+      runWithCommandApproval(options),
+      /valid folder workspace, command/,
+      `value: ${JSON.stringify(value)}`
+    );
+    assert.deepEqual(calls.execution, [], `value: ${JSON.stringify(value)}`);
+  }
 });

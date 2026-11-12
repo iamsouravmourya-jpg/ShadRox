@@ -89,7 +89,7 @@ The Task Inspector groups the local-first engineering records that accompany an 
 
 - **Behavior Studio** listens to preview bridge events such as source-mapped clicks and runtime errors. It keeps a bounded interaction history and turns it into an acceptance contract containing the target source location, observed failure, expected behavior, and reproduction steps.
 - **Living Intent Graph** scans loaded source files for symbols and dependency edges. User-approved decisions are stored in browser local storage, re-hashed against current files, and marked `stale` when their governing content changes.
-- **Outcome-Calibrated Auto** keeps a bounded local ledger of route, model, verification, repair, token, and latency outcomes. Model ordering is adjusted only when verified history exists; new models retain a neutral fallback order.
+- **Outcome-Calibrated Auto** keeps a bounded local ledger of route, model, verification, repair, token, and latency outcomes. Ranking uses a pass rate shrunk toward the pool's own prior and only reorders a route once it has five verified runs, so a lucky 1-for-1 cannot beat a proven model; new and unproven models keep the neutral fallback order. Every choice carries a human-readable reason, the fallback reason included, and the Task Inspector can pin a model per task type (`bugfix`, `refactor`, `feature`, `test`, `chat`), which overrides the ranking until unpinned.
 
 These records remain local to the workspace/browser profile. Use the Inspector's export controls to create portable JSON backups; imports are validated before they are stored.
 
@@ -309,6 +309,10 @@ npm run dev:landing
 | `npm run build` | Build the renderer into `dist/`. |
 | `npm run typecheck` | Type-check the TypeScript project. |
 | `npm test` | Run the Node test suite. |
+| `npm run benchmark` | Grade the model-free agent benchmark suite in `benchmark/cases/`. |
+| `npm run verify:proofs` | Re-verify every signed proof ledger offline; exits non-zero on any failure. |
+| `npm start` | Run the local API/dev server without Vite's dev middleware. |
+| `npm run preview` | Serve the built `dist/` renderer locally. |
 | `npm run build:desktop` | Stage and package the desktop application. |
 | `npm run dist:win` | Build a Windows NSIS installer (no publish). |
 | `npm run dist:mac` | Build a macOS DMG. |
@@ -335,26 +339,35 @@ shadrox/
 │   └── lib/
 │       ├── agent/       # Bounded tool loop, tool protocol, MCP tools, task plans
 │       ├── agents/      # Team runs, roles, ownership, turn runner, coordinator
+│       ├── ai/          # Upstream backoff and retry policy for provider calls
 │       ├── autonomy/     # Autonomous engine: DAG, run-loop, confinement, budget
 │       ├── automations/ # Schedulers, webhooks, declarative automations
+│       ├── capsules/    # Context capsule capture, redaction, sandboxing, and storage
+│       ├── chat/        # @-mention context resolution inside chat
+│       ├── compaction/  # History compaction strategies and message pairing
 │       ├── editor/      # Search/replace, hunks, semantic tokens, references
 │       ├── behavior/    # Preview interaction events and acceptance contracts
+│       ├── benchmark/   # Model-free agent benchmark runner and graders
 │       ├── calibratedAuto/ # Outcome ledger, route profiles, calibrated ranking
 │       ├── intent/      # Living intent graph, symbol dependencies, local decisions
 │       ├── debug/       # DAP framing, adapter/session rails, runtime capture for repair receipts
 │       ├── machine/     # Machine Delta support modules
+│       ├── patch/       # Cline-style diff parsing, UI diff rendering, and patch application
 │       ├── plugins/     # Plugin manifest, loader, hook engine
 │       ├── preview/     # Preview instrumentation experiments (shipped click-to-source lives in src/lib/previewSource.ts)
 │       ├── proof/       # Signed proof ledger and offline verification
+│       ├── search/      # Fuzzy scoring for workspace and file search
 │       └── terminal/    # Sessions, OSC parser, terminal state, ring buffer
 ├── api/
 │   ├── ai/             # Chat, FIM, commit message, budget, spend guard, upstream
 │   ├── byok/           # BYOK key validation
 │   ├── github/         # Repo creation, push, token validation
 │   └── prompt/         # Prompt refinement
+├── benchmark/          # Reproducible agent benchmark cases (see benchmark/README.md)
 ├── supabase/           # Auth schema (profiles table, triggers)
 ├── landing/            # Next.js marketing site
-├── scripts/            # Desktop packaging and icon generation
+├── scripts/            # Desktop packaging, icon generation, test and benchmark runners
+├── public/             # Static renderer assets
 ├── assets/             # App icon
 └── server.ts           # Express dev server entry point
 ```
@@ -369,6 +382,18 @@ npm test
 
 Tests run through Node's built-in test runner with `tsx` for TypeScript support. Builds and tests do not replace a clean-machine installer smoke test — verify installation, sign-in, preview, terminal, AI provider access, update behavior, and file changes before distributing a release.
 
+### Agent benchmark
+
+`npm run benchmark` grades the agent end-to-end without calling any model. Each case in `benchmark/cases/<kind>/<id>/` pins a fixture, a prompt, the expected reply, and the commands that must pass afterwards; the reply is replayed through the same parse → verify → atomic-apply → git rail the product uses, so a passing run is evidence about the real pipeline rather than a mock.
+
+```sh
+npm run benchmark                 # grade every case, report failures
+npm run benchmark -- --case id    # grade one case
+npm run benchmark -- --json       # machine-readable output
+```
+
+The suite refuses to report a hollow pass: each case must fail its baseline and assert at least one real check, so an edit that never applied or a command that tests nothing shows up as a failure. Cases cover the four task kinds the outcome router tracks — `bugfix`, `refactor`, `feature`, and `test`. See [benchmark/README.md](./benchmark/README.md) for the case format and how to add one.
+
 ## Local Data & Account
 
 The desktop app works against files on your computer. ShadRox does not provide project synchronization or store your project files in a cloud workspace.
@@ -376,11 +401,13 @@ The desktop app works against files on your computer. ShadRox does not provide p
 | What | Where | Notes |
 |---|---|---|
 | Project files | Your disk | Opened and edited locally; no ShadRox cloud project sync |
-| AI provider key | OS-backed encrypted storage | Sent directly to the configured provider for AI requests |
+| AI provider key | OS-backed encrypted storage (desktop) | Never sent to a ShadRox cloud server; used by the local API process and the provider you choose |
 | Account identity | Supabase | Email, name, avatar, app version, platform only |
 | AI prompts | Sent to your configured provider | Only the prompt + context you choose |
 
 Google sign-in through Supabase is required to enter the app. Supabase stores account identity and profile fields; project files and AI prompts are not sent to Supabase as part of sign-in. AI providers process the prompt and context you send under their own data-handling terms.
+
+The key is encrypted only in the packaged desktop app, where the OS-backed store is available. `npm run dev` has no such bridge, so in the browser build the key sits in that browser's `localStorage` in plain text and is posted to the local `/api/byok/validate` and `/api/ai` routes on your own machine — do not run the browser build on a shared machine or with a key you would not accept seeing in that browser's profile.
 
 ## Beta Limitations
 
@@ -389,7 +416,7 @@ Google sign-in through Supabase is required to enter the app. Supabase stores ac
 - Agent loops, autonomous runs, teams, plugins, and automations are evolving features; verify important work yourself.
 - Preview support is **project-dependent**; not every language, framework, or server configuration can be run in the preview pane.
 - Google sign-in and Supabase configuration are required for the desktop app. BYOK keys and access to models are the user's responsibility.
-- ShadRox has no paid plan, no checkout and no credit system; the only way to use AI is your own key.
+- ShadRox has no paid plan, no checkout and nothing to bill you; the only way to use AI is your own key. Where the UI says "credits" (run budgets, automation caps), it means ShadRox's internal unit of work — roughly one edit-sized turn — never money, and it is used only to stop a runaway run. Model labels such as "free on your key" or "paid on your key" describe what **your provider** charges that key, not a ShadRox tier.
 - Preview is intentionally local and does not embed vault secrets into generated preview HTML or JavaScript. Treat project rules, skills, MCP servers, and external debugger adapters as untrusted until approved.
 - Windows builds are **unsigned**; Windows may show a SmartScreen warning.
 

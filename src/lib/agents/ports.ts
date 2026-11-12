@@ -16,6 +16,8 @@ export interface TeamPortsOptions {
   rootPath: string;
   onEvent: (event: TeamEvent) => void;
   isCancellationRequested: () => boolean;
+  /** The panel's Pause button, when the caller has one. */
+  isPauseRequested?: () => boolean;
 }
 
 /** Wrap the app's capabilities into the team's ports contract. */
@@ -25,6 +27,7 @@ export function createTeamPorts(host: AutonomyHost, options: TeamPortsOptions): 
     verify: (unit) => verifyMilestone(unit, host, options.rootPath),
     listFiles: () => host.listFiles(),
     onEvent: options.onEvent,
-    isCancellationRequested: options.isCancellationRequested
+    isCancellationRequested: options.isCancellationRequested,
+    ...(options.isPauseRequested ? { isPauseRequested: options.isPauseRequested } : {})
   };
 }

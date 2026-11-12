@@ -21,7 +21,7 @@ import { parseRevealMessage, type RevealSourceTarget } from '../lib/previewSourc
 import { getDesktopBridge, type DesktopPreviewOutput, type DesktopPreviewState, type PreviewProjectCandidate } from '../lib/desktop';
 import { globalRepairSession } from '../lib/repairSession';
 import { BackendPreview } from './BackendPreview';
-import type { BehaviorEvent } from '../lib/behavior/types';
+import type { BehaviorEvent, PreviewRect } from '../lib/behavior/types';
 import { createBehaviorEvent } from '../lib/behavior/recorder';
 
 interface PreviewPaneProps {
@@ -54,6 +54,12 @@ interface PreviewPaneProps {
    */
   onRevealSource?: (target: RevealSourceTarget) => void;
   onBehaviorEvent?: (event: BehaviorEvent) => void;
+  /**
+   * Fires when the preview frame finishes loading a document, with the frame's
+   * box. An acceptance check waits on this so it never grades the page from
+   * before a patch, and grabs only the preview instead of the whole window.
+   */
+  onFramePaint?: (rect?: PreviewRect | null) => void;
   /**
    * Enables the backend preview companion. Omit it to keep the original
    * single-preview layout untouched.
@@ -138,6 +144,7 @@ export function PreviewPane({
   lastReloadAt = null,
   onRevealSource,
   onBehaviorEvent,
+  onFramePaint,
   workspaceId = null,
   backendEnabled = true,
   fullscreen = false,
@@ -234,8 +241,13 @@ export function PreviewPane({
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       const data = event.data;
+      // Only the srcDoc preview registers through setDocumentFrameRef; the
+      // local-server frame fills previewFrameRef alone, so checking one ref
+      // dropped every console/reveal message from live previews.
+      const frame = iframeRef.current ?? previewFrameRef.current;
       if (
-        event.source !== iframeRef.current?.contentWindow ||
+        !frame ||
+        event.source !== frame.contentWindow ||
         !data ||
         data.source !== 'shadrox-preview' ||
         typeof data.type !== 'string'
@@ -502,6 +514,17 @@ export function PreviewPane({
             sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
             className="block shrink-0 border-0 bg-ink-950 shadow-2xl"
             style={{ width: '100%', height: '100%' }}
+            onLoad={() => {
+              // The box is reported with the paint so an acceptance grab crops
+              // the preview instead of the whole window. Viewport coordinates
+              // are the window's content coordinates in this layout.
+              const box = previewFrameRef.current?.getBoundingClientRect();
+              onFramePaint?.(
+                box && box.width > 0 && box.height > 0
+                  ? { x: box.x, y: box.y, width: box.width, height: box.height }
+                  : null
+              );
+            }}
           />
         ) : localPreviewAvailable && previewProjects.length > 0 ? (
           <div className="w-full max-w-xl self-center px-6 py-8">

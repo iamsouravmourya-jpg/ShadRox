@@ -78,12 +78,19 @@ function servesRole(role: RouteRole, model: string): boolean {
 }
 
 /**
- * Cheapest priced model that fits the role's budget. When nothing fits, the
- * cheapest overall is returned with `withinBudget: false` — the caller decides
- * whether to degrade the context or bill more credits, this file does not
- * silently pick an unaffordable model.
+ * Cheapest priced model that fits the role's budget, or the best-proven one
+ * when the caller supplies an outcome ranking — always among the candidates
+ * that already fit, so a recommendation can never raise the bill above the
+ * budget. When nothing fits, the cheapest overall is returned with
+ * `withinBudget: false`; the caller decides whether to degrade the context or
+ * bill more credits, this file does not silently pick an unaffordable model.
  */
-export function routeRequest(role: RouteRole, tokens: TokenSplit, availableModels: string[]): RouteChoice {
+export function routeRequest(
+  role: RouteRole,
+  tokens: TokenSplit,
+  availableModels: string[],
+  preference?: readonly string[]
+): RouteChoice {
   const budget = roleBudgetRupees(role);
   const models = (availableModels || []).filter((model) => model && isPriced(model));
   if (models.length === 0) {
@@ -111,21 +118,38 @@ export function routeRequest(role: RouteRole, tokens: TokenSplit, availableModel
   }
 
   const costs = byCost(inRole);
-  const fitted = costs.find((entry) => entry.exact <= budget);
-  const winner = fitted ?? costs[0];
+  const fitting = costs.filter((entry) => entry.exact <= budget);
+  const pool = fitting.length > 0 ? fitting : costs;
+  const cheapest = pool[0];
+  const winner = preferredWithin(pool, preference);
   const rupees = round2(winner.exact);
-  const reason = fitted
-    ? `cheapest ${role} model inside ₹${round2(budget)}`
-    : `no ${role} model fits ₹${round2(budget)}; cheapest in class is ₹${rupees}`;
+  const reason = fitting.length === 0
+    ? `no ${role} model fits ₹${round2(budget)}; cheapest in class is ₹${rupees}`
+    : winner.model === cheapest.model
+      ? `cheapest ${role} model inside ₹${round2(budget)}`
+      : `best-proven ${role} model inside ₹${round2(budget)} — ₹${rupees}, ₹${round2(winner.exact - cheapest.exact)} above the cheapest`;
 
   return {
     role,
     model: winner.model,
     rupees,
     credits: round2(winner.exact / RUPEES_PER_CREDIT),
-    withinBudget: Boolean(fitted),
+    withinBudget: fitting.length > 0,
     reason
   };
+}
+
+/**
+ * The top-ranked candidate the caller has evidence for, otherwise the cheapest.
+ *
+ * A model absent from the preference list is not disqualified — it simply
+ * carries no record, so it keeps only its price position.
+ */
+function preferredWithin(candidates: Array<{ model: string; exact: number }>, preference?: readonly string[]) {
+  if (!preference || preference.length === 0) return candidates[0];
+  const rank = new Map(preference.map((model, index) => [model, index] as const));
+  const position = (model: string) => rank.get(model) ?? Number.MAX_SAFE_INTEGER;
+  return [...candidates].sort((a, b) => position(a.model) - position(b.model) || a.exact - b.exact)[0];
 }
 
 /** What routing saves against running the same role on the user's picked model. */

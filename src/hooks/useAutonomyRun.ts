@@ -4,13 +4,15 @@
  * It owns nothing the engine needs to know about — the controller, the ports
  * and the store are all pure modules underneath. This hook only connects them to
  * component state and keeps the log, so a re-render can never reach into a run
- * that is already in flight.
+ * that is already in flight. The log itself comes from the journal, so what a
+ * run said survives the reload that erased it from the panel.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRunController, type RunController } from '../lib/autonomy/controller';
 import { runGoal } from '../lib/autonomy/engine';
 import { MAX_LOG_LINES, describeEvent } from '../lib/autonomy/events';
+import { browserRunJournal, type RunJournal } from '../lib/autonomy/journal';
 import { createAutonomyPorts, type AutonomyHost } from '../lib/autonomy/ports';
 import type { RunStore } from '../lib/autonomy/runStore';
 import {
@@ -33,6 +35,11 @@ export interface UseAutonomyRunOptions {
   budget?: RunBudget;
   /** Every event, for callers that want to toast or track beyond the log. */
   onEvent?: (event: AutonomyEvent) => void;
+  /**
+   * Where the run's lines are kept after a reload. Defaults to the workspace's
+   * browser journal; a caller with no durable storage passes a forgetful one.
+   */
+  journal?: RunJournal;
 }
 
 export interface AutonomyRun {
@@ -43,6 +50,11 @@ export interface AutonomyRun {
   /** Continue the restored run from its persisted milestones. */
   resume: () => void;
   stop: () => void;
+  /**
+   * Halts the in-flight run at the next boundary and ends the turn it is paying
+   * for. Unlike `stop`, the state it leaves is resumable.
+   */
+  pause: () => void;
   /** Forgets the last run (restored or finished) and its persisted copy. */
   dismiss: () => void;
 }
@@ -69,6 +81,14 @@ export function useAutonomyRun(options: UseAutonomyRunOptions): AutonomyRun {
   eventRef.current = options.onEvent;
   budgetRef.current = options.budget ?? DEFAULT_RUN_BUDGET;
 
+  // One journal per workspace: two folders do not share one history.
+  const journal = useMemo(
+    () => options.journal ?? browserRunJournal(options.rootPath),
+    [options.journal, options.rootPath]
+  );
+  /** The id the engine gave the run, so its lines stay its own across a resume. */
+  const runIdRef = useRef<string | null>(null);
+
   const controller: RunController = useMemo(
     () =>
       createRunController({
@@ -79,9 +99,13 @@ export function useAutonomyRun(options: UseAutonomyRunOptions): AutonomyRun {
               helpers.onEvent(event);
               eventRef.current?.(event);
               const line = describeEvent(event);
-              if (line) setLog((previous) => [...previous, line].slice(-MAX_LOG_LINES));
+              if (line) {
+                journal.append(line, runIdRef.current ?? undefined);
+                setLog((previous) => [...previous, line].slice(-MAX_LOG_LINES));
+              }
             },
-            isCancellationRequested: helpers.isCancellationRequested
+            isCancellationRequested: helpers.isCancellationRequested,
+            isPauseRequested: helpers.isPauseRequested
           });
 
           return runGoal(goal, {
@@ -94,13 +118,15 @@ export function useAutonomyRun(options: UseAutonomyRunOptions): AutonomyRun {
             // Persist after every verdict, not just at the end, so a crash or a
             // reload loses at most the milestone in flight.
             persist: (live) => {
+              runIdRef.current = live.id;
               setState(structuredClone(live));
               const root = rootRef.current;
               if (root) storeRef.current.save(root, live);
             },
             budget: budgetRef.current,
             resumeFrom: startOptions?.resumeFrom,
-            dryRun: startOptions?.dryRun
+            dryRun: startOptions?.dryRun,
+            turnSignal: helpers.turnSignal
           });
         },
         persist: (final) => {
@@ -113,19 +139,25 @@ export function useAutonomyRun(options: UseAutonomyRunOptions): AutonomyRun {
         }
       }),
     // A new workspace means a new run; rebuilding is what makes restore correct.
-    [options.rootPath]
+    [options.rootPath, journal]
   );
 
   useEffect(() => {
-    setState(controller.getState());
-    setLog([]);
+    const restored = controller.getState();
+    // A run restored after a reload brings its own journal with it: the lines
+    // the panel lost are the ones the disk kept.
+    runIdRef.current = restored?.id ?? null;
+    setState(restored);
+    setLog(restored ? journal.lines(restored.id).slice(-MAX_LOG_LINES) : []);
     setRunning(false);
-  }, [controller]);
+  }, [controller, journal]);
 
   const start = useCallback(
     (goal: string, startOptions?: { dryRun?: boolean }) => {
       const trimmed = goal.trim();
       if (!trimmed || !rootRef.current || controller.isRunning()) return;
+      // The engine's first persist sets this before any event is announced.
+      runIdRef.current = null;
       setLog([]);
       setRunning(true);
       void controller.start(trimmed, startOptions).finally(() => setRunning(false));
@@ -136,15 +168,21 @@ export function useAutonomyRun(options: UseAutonomyRunOptions): AutonomyRun {
   const resume = useCallback(() => {
     const current = controller.getState();
     if (!current || !rootRef.current || controller.isRunning()) return;
-    setLog([]);
+    // Continuing shows the run's own history rather than an empty log: the
+    // lines the paused panel lost are the ones the journal kept.
+    setLog(journal.lines(current.id).slice(-MAX_LOG_LINES));
     setRunning(true);
     void controller
       .start(current.goal, { resumeFrom: current })
       .finally(() => setRunning(false));
-  }, [controller]);
+  }, [controller, journal]);
 
   const stop = useCallback(() => {
     controller.stop();
+  }, [controller]);
+
+  const pause = useCallback(() => {
+    controller.pause();
   }, [controller]);
 
   const dismiss = useCallback(() => {
@@ -154,5 +192,5 @@ export function useAutonomyRun(options: UseAutonomyRunOptions): AutonomyRun {
     setLog([]);
   }, []);
 
-  return { state, log, isRunning: running, start, resume, stop, dismiss };
+  return { state, log, isRunning: running, start, resume, stop, pause, dismiss };
 }

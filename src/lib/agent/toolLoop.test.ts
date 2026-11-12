@@ -376,6 +376,11 @@ function mcpFixture(options: {
   tools?: Record<string, unknown[]>;
   replies?: Record<string, { isError?: boolean; text?: string }>;
   unreachable?: string[];
+  /**
+   * These tests are about the loop, so the user's answer to the external-tool
+   * prompt is taken as given unless a test says otherwise.
+   */
+  approved?: boolean;
 } = {}) {
   const calls: string[] = [];
   const bridge: McpBridge = {
@@ -389,7 +394,7 @@ function mcpFixture(options: {
       return options.replies?.[`${serverId}:${name}`] ?? { isError: false, text: 'external answer' };
     }
   };
-  return { handle: createMcpToolHandle(bridge), calls };
+  return { handle: createMcpToolHandle(bridge, { approve: async () => options.approved !== false }), calls };
 }
 
 test('an MCP call runs with no folder open and comes back as an observation', async () => {
@@ -493,6 +498,23 @@ test('an MCP error is a failed activity, and the turn keeps going', async () => 
   assert.equal(result.activity[0].ok, false);
   assert.match(result.activity[0].error as string, /quota exceeded/);
   assert.equal(result.text, 'The server is out of quota.');
+});
+
+test('the user saying no to an MCP tool is a refusal the loop reports, not a server call', async () => {
+  const external = mcpFixture({ approved: false });
+  const model = scripted([toolBlock([externalRead]), 'I answered from what I already knew.']);
+  const result = await runToolRounds({
+    messages: baseMessages,
+    workspaceId: null,
+    aborted: () => false,
+    stream: model.stream,
+    external: external.handle
+  });
+  assert.deepEqual(external.calls, [], 'nothing was sent to the server');
+  assert.equal(result.activity[0].ok, false);
+  assert.match(result.activity[0].error as string, /did not allow/);
+  assert.match(result.activity[0].error as string, /Do not retry/);
+  assert.equal(result.text, 'I answered from what I already knew.', 'the turn still finishes');
 });
 
 test('a guard refusal is marked as held, not as a failed operation', async () => {

@@ -116,6 +116,8 @@ export interface Attempt {
   creditsSpent: number;
   /** Wall clock, for the panel's elapsed column and for resume. */
   startedAt: number;
+  /** The turn's real tool-call count, when the host reported one. */
+  toolCalls?: number;
 }
 
 export interface PlanError {
@@ -144,17 +146,42 @@ export interface RunBudget {
   maxCredits: number;
   maxAttemptsPerMilestone: number;
   maxMilestones: number;
+  /**
+   * Turns the whole run may take, however they are spread across milestones.
+   * The per-milestone attempt cap cannot cover a plan of eight units that each
+   * fail twice, so the run needs its own iteration ceiling.
+   */
+  maxTurns: number;
+  /**
+   * Tool calls the whole run may make. Enforced only when the host reports real
+   * counts (`TurnResult.toolCalls`); a run whose host does not report them is
+   * still bounded by `maxTurns`, and no fake number is charged against it.
+   */
+  maxToolCalls: number;
+  /**
+   * Wall-clock ceiling for one stretch of running, in ms. A paused or stopped
+   * run is not consuming anything, so this measures continuous driving from the
+   * moment the loop starts, not the age of the plan.
+   */
+  maxWallClockMs: number;
 }
 
 /**
  * 20 is roughly 20 applied edits, which is what a run is worth before a human
  * should look at it; 3 attempts is what the salvageable repair loop used, and
- * it is the reason that loop could not burn a key forever.
+ * it is the reason that loop could not burn a key forever. 24 turns is that
+ * ceiling applied to the run (8 milestones is the plan cap, and one clean
+ * attempt each is the shape of a good plan), and 20 minutes is what a run of
+ * that size takes on a slow local model — long enough to finish, short enough
+ * that a stall is noticed.
  */
 export const DEFAULT_RUN_BUDGET: RunBudget = {
   maxCredits: 20,
   maxAttemptsPerMilestone: 3,
-  maxMilestones: 8
+  maxMilestones: 8,
+  maxTurns: 24,
+  maxToolCalls: 120,
+  maxWallClockMs: 20 * 60 * 1000
 };
 
 export interface RunState {
@@ -232,6 +259,12 @@ export interface TurnResult {
   pendingReview?: string[];
   /** Set when a stop landed before any change was extracted: nothing was written. */
   wroteNothing?: boolean;
+  /**
+   * Tool calls this turn actually made, counted by the host from its own tool
+   * loop. Left undefined when the host cannot say: the run's tool-call ceiling
+   * then has nothing to count, rather than counting a guess.
+   */
+  toolCalls?: number;
 }
 
 /**
@@ -247,11 +280,18 @@ export interface AutonomyPorts {
   askPlan: (prompt: string) => Promise<string>;
   onEvent: (event: AutonomyEvent) => void;
   /**
-   * Set by the panel's Stop button. Checked between units, and also mirrored
-   * into `TurnRequest.signal` so Stop ends the request that is in flight rather
-   * than paying for the rest of it.
+   * Set by the panel's Stop button. Checked between units, and mirrored into
+   * `TurnRequest.signal` so Stop ends the request in flight rather than paying
+   * for the rest of it.
    */
   isCancellationRequested: () => boolean;
+  /**
+   * Set by the panel's Pause button. A paused run keeps its plan and its spend
+   * and is expected to continue; a stopped one is finished — the two are not the
+   * same flag. Optional because a caller with no pause control leaves the run
+   * with nothing to honour.
+   */
+  isPauseRequested?: () => boolean;
 }
 
 export type AutonomyEvent =

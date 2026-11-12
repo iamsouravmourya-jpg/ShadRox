@@ -113,6 +113,45 @@ test('runGoal plans, runs every milestone through the ports, and finishes', asyn
   assert.ok(h.events.some((event) => event.type === 'run:done'));
 });
 
+test('the engine hands each turn the caller abort signal, and Pause halts the run', async () => {
+  const plan = JSON.stringify([
+    { id: 'm1', title: 'first', instruction: 'do first', expectedFiles: ['src/a.ts'] },
+    { id: 'm2', title: 'second', instruction: 'do second', expectedFiles: ['src/b.ts'], dependsOn: ['m1'] }
+  ]);
+  const signals: (AbortSignal | undefined)[] = [];
+  const turns: string[] = [];
+  let paused = false;
+  const ports: AutonomyPorts = {
+    runTurn: async (request) => {
+      turns.push(request.milestone.id);
+      signals.push(request.signal);
+      if (turns.length === 1) paused = true;
+      return OK_TURN();
+    },
+    verify: async () => PASSED,
+    listFiles: () => ['src/a.ts', 'src/b.ts'],
+    askPlan: async () => plan,
+    onEvent: () => undefined,
+    isCancellationRequested: () => false,
+    isPauseRequested: () => paused
+  };
+  const controller = new AbortController();
+  const states: RunState[] = [];
+  const state = await runGoal('build it', {
+    ports,
+    askPlan: async () => plan,
+    checkpoint: () => undefined,
+    persist: (live) => states.push(live),
+    turnSignal: () => controller.signal
+  });
+
+  assert.deepEqual(turns, ['m1'], 'a pause takes no further turn');
+  assert.equal(state.status, 'paused');
+  assert.equal(state.milestones[1].status, 'pending');
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0], controller.signal, 'the engine passes the caller signal to the turn');
+});
+
 test('runGoal refuses a plan with a path outside the workspace without running a turn', async () => {
   const plan = JSON.stringify([{ id: 'm1', title: 'escape', instruction: 'write it', expectedFiles: ['/etc/passwd'] }]);
   const h = harness(plan, OK_TURN, () => PASSED);

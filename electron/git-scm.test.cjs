@@ -31,10 +31,41 @@ test('parses local branch metadata without losing commit subjects', () => {
   );
 });
 
+test('reports how far the branch sits from its upstream instead of looking clean', () => {
+  const ahead = parseGitStatus('## mission/big-leap...origin/mission/big-leap [ahead 3]\0M  a.ts\0');
+  assert.equal(ahead.branch, 'mission/big-leap');
+  assert.equal(ahead.upstream, 'origin/mission/big-leap');
+  assert.equal(ahead.ahead, 3);
+  assert.equal(ahead.behind, 0);
+  assert.equal(ahead.detached, false);
+
+  const both = parseGitStatus('## main...origin/main [behind 2, ahead 7]\0');
+  assert.equal(both.ahead, 7);
+  assert.equal(both.behind, 2);
+
+  const clean = parseGitStatus('## main...origin/main\0');
+  assert.equal(clean.ahead, 0);
+  assert.equal(clean.behind, 0);
+  assert.equal(clean.upstream, 'origin/main');
+});
+
+test('names no branch and no upstream while HEAD is detached', () => {
+  const detached = parseGitStatus('## HEAD (no branch)\0M  a.ts\0');
+  assert.equal(detached.detached, true);
+  assert.equal(detached.branch, '');
+  assert.equal(detached.upstream, null);
+
+  const unborn = parseGitStatus('## No commits yet on main\0?? a.ts\0');
+  assert.equal(unborn.branch, 'main');
+  assert.equal(unborn.upstream, null);
+});
+
 test('rejects absolute and traversing Git paths and deduplicates safe paths', () => {
   assert.deepEqual(validateGitPaths(['src/a.ts', 'src/a.ts', 'folder\\b.ts']), ['src/a.ts', 'folder/b.ts']);
   assert.throws(() => validateGitPaths(['../outside']));
   assert.throws(() => validateGitPaths(['C:\\outside']));
+  assert.throws(() => validateGitPaths([':(exclude)src/a.ts']));
+  assert.throws(() => validateGitPaths([':/secrets']));
 });
 
 test('sanitizes and bounds commit messages and rejects invalid branch names', () => {

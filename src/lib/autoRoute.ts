@@ -120,6 +120,12 @@ export interface AutoInput {
   availableModels: string[];
   userModel: string;
   isSharedKey: boolean;
+  /**
+   * Models ordered by measured outcome. Optional: with no ranking the router
+   * buys the cheapest model in the class exactly as it always has, and the
+   * `reason` says so.
+   */
+  outcomePreference?: readonly string[];
 }
 export interface AutoDecision {
   enabled: boolean;
@@ -181,13 +187,14 @@ export function decideAutoRoute(input: AutoInput): AutoDecision {
   const digest = digestTokensFor(rawTokens);
   const condenseSplit: TokenSplit = { inputTokens: rawTokens, outputTokens: digest };
   const wantsCondense = CONDENSABLE_ROLES.includes(input.role) && rawTokens >= CONDENSE_MIN_INPUT_TOKENS;
-  const condenseRoute = wantsCondense ? routeRequest('select', condenseSplit, models) : null;
+  const preference = Array.isArray(input.outcomePreference) ? input.outcomePreference : undefined;
+  const condenseRoute = wantsCondense ? routeRequest('select', condenseSplit, models, preference) : null;
   const condenseModel = condenseRoute?.model ?? null;
 
   const answerInput = condenseModel ? digest + CONVERSATION_TOKENS : rawTokens;
   const answerSplit: TokenSplit = { inputTokens: answerInput, outputTokens: ANSWER_OUTPUT_TOKENS };
   const routeAnswer = operatorOwned;
-  const answerRoute = routeAnswer ? routeRequest(input.role, answerSplit, models) : null;
+  const answerRoute = routeAnswer ? routeRequest(input.role, answerSplit, models, preference) : null;
   const answerModel = (routeAnswer ? answerRoute?.model : null) || userModel;
 
   const costed = answerModel ? costRupees(answerModel, answerSplit) : 0;

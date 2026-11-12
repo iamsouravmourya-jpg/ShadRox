@@ -11,6 +11,7 @@ let pty = null;
 try { pty = require('node-pty'); } catch { /* PTY support may be unavailable in an unbuilt development install. */ }
 const { createWorkspaceAccess } = require('./workspace.cjs');
 const { runWithCommandApproval } = require('./command-approval.cjs');
+const { sanitizeRiskNotice } = require('./command-risk-notice.cjs');
 const { findPlantedShim, WINDOWS_CMD_SHIMS } = require('./verify-allowlist.cjs');
 const {
   createWorkspaceConsent,
@@ -379,7 +380,15 @@ function clipProofText(value) {
   return text.length > 4096 ? `${text.slice(0, 4096)}…` : text;
 }
 
-async function runPreviewAssertion(workspaceId) {
+/**
+ * `requestedSelectors` is how an acceptance re-run stays the same check: the
+ * baseline derived its mount selectors from the served source, and the
+ * post-patch run pins that list instead of re-deriving from the patched HTML.
+ * A pinned selector that has disappeared is a real regression, so the whitelist
+ * is applied but nothing is dropped in silently — an empty result after
+ * sanitising falls back to fresh derivation.
+ */
+async function runPreviewAssertion(workspaceId, requestedSelectors) {
   const contents = mainWindow?.webContents;
   if (!contents) return mergePreviewVerdict({ frameFound: false, detail: 'no-window' });
   let frame = null;
@@ -397,7 +406,9 @@ async function runPreviewAssertion(workspaceId) {
   } catch {
     html = '';
   }
-  const selectors = deriveContainerSelectors(typeof html === 'string' ? html : '');
+  const derived = deriveContainerSelectors(typeof html === 'string' ? html : '');
+  const pinned = sanitizeSelectors(requestedSelectors);
+  const selectors = pinned.length > 0 ? pinned : derived;
   const containerDerived = selectors.length > 0;
   try {
     const scriptResult = await frame.executeJavaScript(
@@ -411,7 +422,8 @@ async function runPreviewAssertion(workspaceId) {
       containerDerived,
       failedSelectors: summary.failedSelectors,
       warningSelectors: summary.warningSelectors,
-      consoleErrors
+      consoleErrors,
+      assertedSelectors: selectors
     });
   } catch {
     return mergePreviewVerdict({
@@ -419,6 +431,7 @@ async function runPreviewAssertion(workspaceId) {
       evaluated: false,
       containerDerived,
       consoleErrors,
+      assertedSelectors: selectors,
       detail: 'assertion-script-did-not-evaluate'
     });
   }
@@ -855,6 +868,9 @@ function tokenizeCommand(command) {
 // below runs through cmd.exe, so all of them are rejected up front.
 const COMMAND_METACHARACTERS = /[;&|<>`$()\\%^!\r\n]/;
 
+/** How long one command may run before the main process kills it. */
+const COMMAND_TIMEOUT_MS = 120_000;
+
 // Only spaces survive the metacharacter gate, so a token never carries a quote
 // or backslash that would need escaping inside the cmd.exe line.
 function quoteCmdToken(token) {
@@ -886,27 +902,34 @@ function resolveWindowsExecutable(name, cwd, env) {
 function executeCommand(command, cwd) {
   return new Promise((resolve) => {
     if (COMMAND_METACHARACTERS.test(command)) {
-      resolve({ stdout: '', stderr: 'Shell metacharacters are not allowed.', exitCode: 1 });
+      resolve({ stdout: '', stderr: 'Shell metacharacters are not allowed.', exitCode: 1, timedOut: false });
       return;
     }
     const argv = tokenizeCommand(command);
     if (argv.length === 0) {
-      resolve({ stdout: '', stderr: 'Command is empty.', exitCode: 1 });
+      resolve({ stdout: '', stderr: 'Command is empty.', exitCode: 1, timedOut: false });
       return;
     }
     const env = resolveTerminalPlan({ mode: 'agent' }).env;
     const options = {
       cwd,
-      timeout: 120_000,
+      timeout: COMMAND_TIMEOUT_MS,
       maxBuffer: 2 * 1024 * 1024,
       windowsHide: true,
       env
     };
-    const finish = (error, stdout, stderr) => resolve({
-      stdout: String(stdout || ''),
-      stderr: String(stderr || ''),
-      exitCode: error ? (typeof error.code === 'number' ? error.code : 1) : 0
-    });
+    // Nothing else signals a command started here, so a killed child is the time
+    // limit firing. Reporting it as exit 1 instead made a half-run test look like
+    // a failing one, and let a proof command that never finished carry a verdict.
+    const finish = (error, stdout, stderr) => {
+      const timedOut = Boolean(error && (error.killed === true || error.code === 'ETIMEDOUT'));
+      resolve({
+        stdout: String(stdout || ''),
+        stderr: String(stderr || ''),
+        exitCode: error ? (typeof error.code === 'number' ? error.code : 1) : 0,
+        timedOut
+      });
+    };
 
     if (process.platform !== 'win32') {
       execFile(argv[0], argv.slice(1), { ...options, shell: false }, finish);
@@ -919,7 +942,7 @@ function executeCommand(command, cwd) {
       try { return fs.existsSync(candidate); } catch { return false; }
     }, process.platform);
     if (planted) {
-      resolve({ stdout: '', stderr: `Refusing to run "${argv[0]}": a file with that name exists in the project folder.`, exitCode: 1 });
+      resolve({ stdout: '', stderr: `Refusing to run "${argv[0]}": a file with that name exists in the project folder.`, exitCode: 1, timedOut: false });
       return;
     }
 
@@ -928,7 +951,7 @@ function executeCommand(command, cwd) {
     if (isShim) {
       const resolved = resolveWindowsExecutable(base.replace(/\.(cmd|bat)$/i, ''), cwd, env);
       if (!resolved) {
-        resolve({ stdout: '', stderr: `Command not found on PATH: ${base}`, exitCode: 1 });
+        resolve({ stdout: '', stderr: `Command not found on PATH: ${base}`, exitCode: 1, timedOut: false });
         return;
       }
       // execFile cannot spawn .cmd/.bat without a shell (CVE-2024-27980), and
@@ -2315,12 +2338,13 @@ function registerIpcHandlers() {
     return previewRuntime.stop(workspaceId);
   });
 
-  handleMachineSensitive('preview:assert', async (event, workspaceId) => {
+  handleMachineSensitive('preview:assert', async (event, workspaceId, options) => {
     assertTrustedRenderer(event);
     if (typeof workspaceId !== 'string' || !workspaceId) {
       return mergePreviewVerdict({ frameFound: false, detail: 'missing-workspace' });
     }
-    return runPreviewAssertion(workspaceId);
+    const selectors = options && typeof options === 'object' ? options.selectors : undefined;
+    return runPreviewAssertion(workspaceId, Array.isArray(selectors) ? selectors : undefined);
   });
 
   // The preview is an iframe in this window, so a screenshot is a pixel grab of
@@ -2367,7 +2391,7 @@ function registerIpcHandlers() {
     return { ok: true, path: choice.filePath };
   });
 
-  handleMachineSensitive('terminal:run-command', async (event, workspaceId, command) => {
+  handleMachineSensitive('terminal:run-command', async (event, workspaceId, command, riskNotice) => {
     assertTrustedRenderer(event);
     const workspace = workspaceAccess.getWorkspace(workspaceId);
     if (!workspace || workspace.mode !== 'folder') {
@@ -2382,7 +2406,10 @@ function registerIpcHandlers() {
       workspaceId,
       command,
       workspace,
-      showApproval: async ({ command: approvedCommand, cwd }) => {
+      // Renderer-supplied, so treated as untrusted text: it may explain the
+      // command to the user, never reformat the dialog or hide the command.
+      riskNotice: sanitizeRiskNotice(riskNotice),
+      showApproval: async ({ command: approvedCommand, cwd, riskNotice: notice }) => {
         const choice = await dialog.showMessageBox(mainWindow, {
           type: 'warning',
           buttons: ['Block command', 'Run once'],
@@ -2391,7 +2418,9 @@ function registerIpcHandlers() {
           noLink: true,
           title: 'Approve command execution',
           message: 'An agent or workspace action is requesting a shell command.',
-          detail: `Review the exact command and working directory. Commands can read, modify, or execute files in this workspace.\n\n${approvedCommand}\n\nWorking directory:\n${cwd}`
+          detail:
+            `${notice ? `${notice}\n\n` : ''}` +
+            `Review the exact command and working directory. Commands can read, modify, or execute files in this workspace.\n\n${approvedCommand}\n\nWorking directory:\n${cwd}`
         });
         return choice.response === 1;
       },
@@ -2401,7 +2430,7 @@ function registerIpcHandlers() {
     });
     const run = approval.approved
       ? approval.result
-      : { stdout: '', stderr: approval.reason, exitCode: 1, deniedReason: approval.reason };
+      : { stdout: '', stderr: approval.reason, exitCode: 1, timedOut: false, deniedReason: approval.reason };
     mainWindow?.webContents.send('terminal:run', {
       workspaceId,
       command,

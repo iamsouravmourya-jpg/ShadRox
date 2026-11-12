@@ -41,7 +41,7 @@ export function confinePatches<T extends ConfinablePatch>(
     refused.push(
       allowedPaths.size === 0
         ? `${patch.path}: refused — this milestone declared no files to edit`
-        : `${patch.path}: refused — outside this milestone's expectedFiles (${expectedFiles.join(', ')})`
+        : `${patch.path}: refused — outside the files this turn may write (${expectedFiles.join(', ')})`
     );
   }
 

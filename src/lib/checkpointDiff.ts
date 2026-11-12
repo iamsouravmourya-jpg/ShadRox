@@ -58,6 +58,29 @@ function tally(
 }
 
 /**
+ * The state a restore really lands on.
+ *
+ * A machine rewind overwrites bytes on disk, so the buffers alone can lie: a
+ * file edited, created or deleted outside ShadRox since the checkpoint looks
+ * untouched in an editor tab. Everything the disk read returned is taken from
+ * disk; a name the read could not supply (never on disk, too large to read)
+ * keeps its buffer copy, which is the most the app can honestly claim.
+ */
+export function diskCurrentView(
+  buffers: ReadonlyArray<Pick<WorkspaceFile, 'name' | 'content'>>,
+  disk: {
+    files: ReadonlyArray<{ name: string; content: string }>;
+    /** Names the read refused, with the reason the desktop gave for it. */
+    missing?: ReadonlyArray<{ path: string; reason?: string }>;
+  }
+): Array<{ name: string; content: string }> {
+  const view = new Map<string, { name: string; content: string }>();
+  for (const file of buffers) view.set(file.name, { name: file.name, content: file.content });
+  for (const file of disk.files) view.set(file.name, { name: file.name, content: file.content });
+  return [...view.values()];
+}
+
+/**
  * Diff the live buffers against a checkpoint's stored files. Order is by path so
  * the same two states always render the same list.
  */

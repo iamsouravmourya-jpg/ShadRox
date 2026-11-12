@@ -36,6 +36,12 @@ export interface TeamRun {
   isRunning: boolean;
   start: (goal: string) => void;
   stop: () => void;
+  /**
+   * Halts the in-flight team at the next task boundary and ends the turn it is
+   * paying for. The run is not resumed — a team plans once — but it leaves an
+   * honest `paused` state instead of a `running` one nobody is driving.
+   */
+  pause: () => void;
   /** Forgets the last run. */
   dismiss: () => void;
 }
@@ -60,6 +66,9 @@ export function useTeamRun(options: UseTeamRunOptions): TeamRun {
 
   const busy = useRef(false);
   const cancelled = useRef(false);
+  const paused = useRef(false);
+  /** The turn in flight, so Stop/Pause can end it rather than only the next one. */
+  const turnAbort = useRef<AbortController | null>(null);
 
   const start = useCallback((goal: string) => {
     const trimmed = goal.trim();
@@ -68,6 +77,9 @@ export function useTeamRun(options: UseTeamRunOptions): TeamRun {
 
     busy.current = true;
     cancelled.current = false;
+    paused.current = false;
+    const abort = new AbortController();
+    turnAbort.current = abort;
     setLog([]);
     setRunning(true);
 
@@ -79,7 +91,8 @@ export function useTeamRun(options: UseTeamRunOptions): TeamRun {
         const line = describeTeamEvent(event);
         if (line) setLog((previous) => [...previous, line].slice(-MAX_LOG_LINES));
       },
-      isCancellationRequested: () => cancelled.current
+      isCancellationRequested: () => cancelled.current,
+      isPauseRequested: () => paused.current
     });
 
     void runTeam(trimmed, {
@@ -91,15 +104,25 @@ export function useTeamRun(options: UseTeamRunOptions): TeamRun {
       checkpoint: (goalText) => checkpointRef.current(goalText),
       // Snapshotted after every verdict so the panel always shows the live plan.
       persist: (live) => setState(structuredClone(live)),
+      turnSignal: () => turnAbort.current?.signal,
       now: () => Date.now()
     }).finally(() => {
       busy.current = false;
+      turnAbort.current = null;
       setRunning(false);
     });
   }, []);
 
   const stop = useCallback(() => {
     cancelled.current = true;
+    // Stop means the same thing to the driver and to the request in flight, but
+    // only the second one is still costing the user.
+    turnAbort.current?.abort();
+  }, []);
+
+  const pause = useCallback(() => {
+    paused.current = true;
+    turnAbort.current?.abort();
   }, []);
 
   const dismiss = useCallback(() => {
@@ -107,5 +130,5 @@ export function useTeamRun(options: UseTeamRunOptions): TeamRun {
     setLog([]);
   }, []);
 
-  return { state, log, isRunning: running, start, stop, dismiss };
+  return { state, log, isRunning: running, start, stop, pause, dismiss };
 }

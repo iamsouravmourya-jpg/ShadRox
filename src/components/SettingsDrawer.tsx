@@ -18,6 +18,7 @@ import {
   X
 } from 'lucide-react';
 import { PROVIDERS, ENDPOINT_PRESETS, findEndpointPreset, getProviderMeta, normalizeBaseUrl, type ProviderId } from '../lib/providers';
+import { usesEncryptedSecrets } from '../lib/secureStore';
 import { confirmAction } from '../lib/confirm';
 import { McpToolsSection } from './settings/McpToolsSection';
 import { PluginsSection } from './settings/PluginsSection';
@@ -141,6 +142,10 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
       ? findEndpointPreset(baseUrlDraft)?.docsUrl ?? currentMeta.docsUrl
       : currentMeta.docsUrl;
   const keyDestination = activeProvider === 'custom' ? 'your endpoint' : currentMeta.label;
+  // Desktop has an OS-encrypted secret store; a browser build has only plaintext localStorage.
+  const keyStorageLine = usesEncryptedSecrets()
+    ? `Saved on this device in the OS-encrypted store (Windows DPAPI); this app's local server and ${keyDestination} are the only things that ever see it.`
+    : `Saved in this browser's local storage as plain text; this app's local server and ${keyDestination} are the only things that ever see it.`;
   const currentStatus = keyStatus[activeProvider];
   const currentSavedKey = currentStatus && currentStatus.state === 'ok';
   const hasStoredKey = currentDraft.trim().length > 0 || currentSavedKey;
@@ -328,7 +333,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   />
                   <p className="mt-1 text-[11px] text-neutral-500">
                     Local servers (Ollama, LM Studio) work over http on your own machine. The URL is saved in
-                    plain settings — it is not a secret. Your key still goes to the encrypted store.
+                    plain settings — it is not a secret. The key is still stored as a secret ({usesEncryptedSecrets() ? 'OS-encrypted store' : "this browser's local storage"}).
                   </p>
                   <label className="mt-3 block text-[11px] uppercase tracking-wider text-neutral-500">
                     Model ids (optional)
@@ -363,7 +368,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   {currentMeta.label} API Key (BYOK)
                 </h3>
                 <p className="mt-1 text-[11px] text-neutral-400">
-                  {currentMeta.keyHint}. Keys are encrypted on this device (Windows DPAPI) and only sent to {keyDestination}.
+                  {currentMeta.keyHint}. {keyStorageLine}
                 </p>
                 <div className="mt-2 flex gap-2">
                   <input
@@ -604,7 +609,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                   ShadRox Secure Secrets Vault (Zero Disk Footprint)
                 </div>
                 <p className="text-[11px] text-neutral-300 leading-relaxed">
-                  No <code className="text-violet-200 font-mono">.env</code> file is written to your disk or workspace. All secrets are linked directly into your active runtime and bundler (<code className="text-violet-200 font-mono">process.env</code> and <code className="text-violet-200 font-mono">import.meta.env</code>) and encrypted inside your browser session.
+                  No <code className="text-violet-200 font-mono">.env</code> file is written to your disk or workspace. All secrets are kept only in this app session's memory — never encrypted to disk, never persisted — and injected directly into your active runtime and bundler (<code className="text-violet-200 font-mono">process.env</code> and <code className="text-violet-200 font-mono">import.meta.env</code>).
                 </p>
               </section>
 
