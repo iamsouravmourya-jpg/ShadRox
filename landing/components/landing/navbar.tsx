@@ -21,7 +21,7 @@ export function Logo() {
   return (
     <Link href="/" className="group flex items-center gap-2.5" aria-label="ShadRox home">
       <img
-        src="/icon-192.png"
+        src="/brand-logo.png"
         alt=""
         aria-hidden="true"
         className="size-8 flex-shrink-0 transition-transform duration-300 group-hover:scale-105"
