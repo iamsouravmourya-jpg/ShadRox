@@ -82,7 +82,7 @@ export interface RunViewOptions {
   log?: readonly string[];
   /** Why the request escalated, from `decideOrchestration`. */
   reason?: string;
-  /** The credit ceiling; falls back to the state's own budget when known. */
+  /** The spend ceiling; falls back to the state's own budget when known. */
   budgetCredits?: number;
   /** The run/team is still executing in this process. */
   isRunning?: boolean;
@@ -241,7 +241,7 @@ function assemble(
       : status === 'done'
       ? `${done} of ${total} ${noun.units} passed`
       : status === 'budget'
-        ? `stopped at the credit cap after ${done} of ${total} ${noun.units}`
+        ? `stopped at the spend cap after ${done} of ${total} ${noun.units}`
         : status === 'stopped'
           ? `stopped after ${done} of ${total} ${noun.units}`
           : status === 'failed'

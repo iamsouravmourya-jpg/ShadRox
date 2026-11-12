@@ -24,7 +24,6 @@ const frozenEnvelope = (overrides: Partial<RequestEnvelope> = {}): RequestEnvelo
     targets: ['src/parser.ts'],
     permissionMode: 'ask',
     refineMode: 'code',
-    plan: 'starter',
     payer: 'byok',
     provider: 'gemini',
     model: 'glm-4.7-flash',

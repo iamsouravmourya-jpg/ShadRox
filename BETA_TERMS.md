@@ -10,5 +10,6 @@ commands you approve. Do not use the beta for safety-critical or regulated
 work.
 
 You may stop using the beta at any time. Report defects and data-deletion
-requests in the private beta WhatsApp group. Paid plans are not purchasable during this beta;
-the displayed INR 699 Starter and INR 1,299 Heavy prices may change before launch.
+requests in the private beta WhatsApp group. ShadRox is free and runs on bring-your-own-key:
+there is no plan to buy and no charge from ShadRox — your own provider key carries every request
+and your provider bills you directly.

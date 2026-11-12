@@ -383,7 +383,8 @@ export function Stage2Hub({
 
           {/* Bottom tagline */}
           <p className="mt-10 text-[11px]" style={{ color: '#3f3f46' }}>
-            Free &amp; BYOK — no cap, ₹0 · Starter ₹699 and Heavy ₹1,299 (GST included) locked during beta
+            Free &amp; BYOK — no plan, no cap, nothing billed by ShadRox. Your files stay on this machine;
+            only the prompt and the context you attach go to the provider key you choose.
           </p>
         </div>
       </main>

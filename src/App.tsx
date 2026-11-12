@@ -128,9 +128,6 @@ import { buildContextManifest, type ContextManifest, type ContextSource } from '
 import { restoreDraft } from './lib/promptTemplates';
 import { estimateTokens } from './lib/toolUtils';
 import { detectLanguage } from './lib/languages';
-import { getPlan, setPlan as persistPlan } from './lib/storage';
-import { getPlanMeta, isPlanSelectable } from './lib/plans';
-import { getMonthlyUsage, recordCreditSpend, settleTurnCredits } from './lib/quota';
 import { creditsForTurn } from './lib/usageCredits';
 import { normalizePermissionMode, type PermissionMode } from './lib/agent/runPolicy';
 import type { AttemptRecord } from './lib/taskUsage';
@@ -181,7 +178,6 @@ import type {
   ChatMessage,
   PatchSet,
   PersistedWriteOutcome,
-  PlanTier,
   RecentEntry,
   RefineMode,
   RefinedPromptMeta,
@@ -524,7 +520,6 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('CHAT');
   const [secrets, setSecrets] = useState<SecretItem[]>([]);
-  const [plan, setPlan] = useState<PlanTier>(() => getPlan());
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -958,7 +953,7 @@ export default function App() {
       let commands = 0;
       for (const run of runs) {
         if (run.action.type === 'prompt') {
-          if (!(byok.useShadRoxKey || byok.activeKey)) continue;
+          if (!(byok.activeKey)) continue;
           if (prompts >= MAX_PLUGIN_PROMPTS_PER_BATCH) continue;
           if (pendingPromptQueueRef.current.length >= MAX_PLUGIN_PROMPT_QUEUE) continue;
           if (seenPrompts.has(run.action.prompt)) continue;
@@ -974,7 +969,7 @@ export default function App() {
           .catch((error) => warnBridgeError('plugin-command', error));
       }
     },
-    [byok.useShadRoxKey, byok.activeKey, desktop, nativeWorkspaceId]
+    [byok.activeKey, desktop, nativeWorkspaceId]
   );
 
   /** Save hooks and save automations both run once per saved path, guarded against re-entry. */
@@ -1357,23 +1352,6 @@ export default function App() {
     setIsSettingsOpen(true);
   }, []);
 
-  const changePlan = useCallback(
-    (next: PlanTier) => {
-      if (!isPlanSelectable(next)) {
-        setToast('Yeh plan abhi beta me locked hai. Free BYOK unlimited rahega.');
-        window.setTimeout(() => setToast(null), 3500);
-        return;
-      }
-      if (next !== plan) {
-        setToast(`Switched to the ${getPlanMeta(next).label} plan. Beta upgrade — no payment was taken.`);
-        window.setTimeout(() => setToast(null), 4000);
-      }
-      setPlan(next);
-      persistPlan(next);
-    },
-    [plan]
-  );
-
   // Move into the workspace automatically once a folder/files are mounted.
   useEffect(() => {
     if (workspace.workspace && activeStage === 'STAGE_2') setActiveStage('STAGE_3');
@@ -1755,7 +1733,7 @@ export default function App() {
       if (!tree.length) return null;
       // No key to spend means the reader pass can only fail, and the user then
       // waits for a call that was never going to answer.
-      if (!byok.useShadRoxKey && !byok.activeKey) return null;
+      if (!byok.activeKey) return null;
 
       const loadedPaths = folder?.files.map((file) => file.name) ?? [];
       const shortlist = buildPathShortlist(tree, query, {
@@ -1768,19 +1746,19 @@ export default function App() {
 
       // The picker answers with a path list, which costs a fraction of the
       // context it is protecting, so it always earns its own call. Nothing is
-      // forced here: a free plan gets the pass too because its own key pays for
-      // every context token, and only the answer-side swap needs ShadRox's key.
+      // forced here: the user's own key pays for every context token, and the
+      // reader pass is taken because it makes that call cheaper, not because
+      // anyone else is billed.
       const decision = decideAutoRoute({
         role,
         estimatedInputTokens: DISK_CONTEXT_TOKEN_ESTIMATE,
         availableModels: rankModelsByOutcome('chat', byok.models.map((model) => model.id)),
         userModel: byok.selectedModel,
-        isSharedKey: byok.useShadRoxKey,
-        plan
+        isSharedKey: false
       });
       return decision.condenseModel;
     },
-    [autoContext, byok.activeKey, byok.models, byok.selectedModel, byok.useShadRoxKey, plan, workspace.workspace]
+    [autoContext, byok.activeKey, byok.models, byok.selectedModel, workspace.workspace]
   );
 
   /**
@@ -1801,7 +1779,7 @@ export default function App() {
             provider: byok.activeProvider,
             baseUrl: byok.baseUrl,
             model: readerModel,
-            apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
+            apiKey: byok.activeKey,
             messages: [
               { role: 'user', content: buildSelectionInstruction(shortlist, query, MAX_PICKER_PICKS) }
             ],
@@ -1822,7 +1800,7 @@ export default function App() {
       }
       return parseSelectedPaths(answer, shortlist, MAX_PICKER_PICKS);
     },
-    [byok.activeProvider, byok.baseUrl, byok.activeKey, byok.useShadRoxKey]
+    [byok.activeProvider, byok.baseUrl, byok.activeKey]
   );
 
   const buildSystemContext = useCallback(
@@ -2266,39 +2244,30 @@ export default function App() {
     });
   }, []);
 
-  /** Every accepted ghost-text costs a tenth of a credit — nothing on BYOK. */
-  const handleCompletionAccepted = useCallback(
-    () => recordCreditSpend(plan, 'tabCompletion'),
-    [plan]
-  );
-
   /** Everything the editor needs to spend the active key on inline AI work. */
   const editorAi = useMemo(
     () => ({
       provider: byok.activeProvider,
-      // Only the custom provider forwards it; a URL is not a secret, so unlike
-      // the key it travels even when the shared-key toggle is off.
+      // Only the custom provider forwards it; a URL is not a secret, so it
+      // travels with the request the same way the model id does.
       baseUrl: byok.baseUrl,
       model: byok.selectedModel,
-      apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
-      completionEnabled: inlineCompletion && (byok.useShadRoxKey || Boolean(byok.activeKey)),
+      apiKey: byok.activeKey,
+      completionEnabled: inlineCompletion && Boolean(byok.activeKey),
       onToggleCompletion: toggleInlineCompletion,
-      onCompletionAccepted: handleCompletionAccepted,
       // Consumed by Ctrl+K (clamped inside runQuickEdit). Tab completion does
       // not take it — completions must stay near-deterministic.
       temperature: byok.temperature,
-      hasCredential: byok.useShadRoxKey || Boolean(byok.activeKey)
+      hasCredential: Boolean(byok.activeKey)
     }),
     [
       byok.activeProvider,
       byok.baseUrl,
       byok.selectedModel,
       byok.activeKey,
-      byok.useShadRoxKey,
       byok.temperature,
       inlineCompletion,
-      toggleInlineCompletion,
-      handleCompletionAccepted
+      toggleInlineCompletion
     ]
   );
 
@@ -2313,9 +2282,9 @@ export default function App() {
         provider: byok.activeProvider,
         baseUrl: byok.baseUrl,
         model: byok.selectedModel,
-        apiKey: byok.useShadRoxKey ? undefined : byok.activeKey
+        apiKey: byok.activeKey
       }),
-    [byok.activeProvider, byok.baseUrl, byok.selectedModel, byok.activeKey, byok.useShadRoxKey]
+    [byok.activeProvider, byok.baseUrl, byok.selectedModel, byok.activeKey]
   );
 
   useEffect(() => {
@@ -2331,7 +2300,7 @@ export default function App() {
         provider: byok.activeProvider,
         baseUrl: byok.baseUrl,
         model: byok.selectedModel,
-        apiKey: byok.useShadRoxKey ? undefined : byok.activeKey
+        apiKey: byok.activeKey
       });
       return message;
     } catch (error) {
@@ -2348,8 +2317,7 @@ export default function App() {
     workspace.files,
     byok.activeProvider,
     byok.selectedModel,
-    byok.activeKey,
-    byok.useShadRoxKey
+    byok.activeKey
   ]);
 
   const announce = useCallback((message: string, ms = 4500) => {
@@ -3080,7 +3048,7 @@ export default function App() {
         return { applied, failures: [] };
       } finally { await workspace.finishMachineCheckpoint(editCheckpoint); }
     },
-    [workspace, desktop, nativeWorkspaceId, announce, healAfterApply, plan, saveFilesAtomicWithHooks]
+    [workspace, desktop, nativeWorkspaceId, announce, healAfterApply, saveFilesAtomicWithHooks]
   );
 
   const acceptPatch = useCallback(
@@ -3397,13 +3365,6 @@ export default function App() {
       : typed;
     if (invocation) announce(`Expanded the ${invocation.skill.name} skill this folder keeps.`, 4000);
 
-    const quota = getMonthlyUsage(plan);
-    if (quota.isCapReached) {
-      setToast(`Monthly credit cap reached (${quota.limit}/${quota.limit} credits). Upgrade in Settings.`);
-      openSettings('PLAN');
-      return;
-    }
-
     const ownsDispatchLock = !chatDispatchLockRef.current;
     if (ownsDispatchLock) chatDispatchLockRef.current = true;
     const controller = new AbortController();
@@ -3429,8 +3390,7 @@ export default function App() {
       ],
       permissionMode,
       refineMode: requestRefineMode,
-      plan,
-      payer: byok.useShadRoxKey ? 'shared' : 'byok',
+      payer: 'byok',
       provider: byok.activeProvider,
       model: byok.selectedModel,
       budgetCredits: runBudget.maxCredits
@@ -3528,30 +3488,17 @@ export default function App() {
       return;
     }
 
-    // The answer-side route only applies when ShadRox's own key is paying; on a
-    // BYOK call the user picked a model and Auto must not quietly downgrade it.
-    // It does not need a reader pass to be worth taking, so the two are gated
-    // separately and a small workspace still gets the cheaper answer model.
+    // The answer-side route only applies when ShadRox's own key is paying, and
+    // there is no such key: on BYOK the user picked a model and Auto must not
+    // quietly downgrade it. Auto still gets to choose the cheap reader pass.
     const sentChars =
       fit.systemInstruction.length + fit.messages.reduce((total, turn) => total + turn.content.length, 0);
-    const answerRoute =
-      autoContext && byok.useShadRoxKey
-        ? decideAutoRoute({
-            role: mode.writesFiles ? 'edit' : 'chatter',
-            estimatedInputTokens: Math.round(sentChars / 4),
-            availableModels: rankModelsByOutcome(mode.writesFiles ? 'feature' : 'chat', byok.models.map((model) => model.id)),
-            userModel: byok.selectedModel,
-            isSharedKey: true,
-            plan
-          })
-        : null;
-    const answerModel = answerRoute?.enabled ? answerRoute.answerModel : byok.selectedModel;
+    const answerModel = byok.selectedModel;
 
-    // Say only what this turn actually did: a picker pass, a swapped answer
-    // model, both, or nothing — never a promise about routing that was skipped.
+    // Say only what this turn actually did: a picker pass, or nothing — never a
+    // promise about routing that was skipped.
     const autoNotes: string[] = [];
     if (readerModel) autoNotes.push(`${readerModel} picked the files`);
-    if (answerRoute?.enabled && answerModel !== byok.selectedModel) autoNotes.push(`${answerModel} writes the answer`);
     setContextNotice(
       [
         contextFitNotice(fit, answerModel) ?? '',
@@ -3566,7 +3513,7 @@ export default function App() {
     setMessages((previous) => [...previous, userMessage, modelMessage]);
     setIsGenerating(true);
 
-    if (!byok.useShadRoxKey && !byok.activeKey) {
+    if (!byok.activeKey) {
       setIsGenerating(false);
       if (abortRef.current === controller) abortRef.current = null;
       chatDispatchLockRef.current = false;
@@ -3640,7 +3587,6 @@ export default function App() {
       inputTokens: 0,
       outputTokens: 0,
       cachedTokens: 0,
-      credits: 0,
       durationMs: 0,
       firstTokenMs: null as number | null
     };
@@ -3654,7 +3600,7 @@ export default function App() {
     // metered. A queued request keeps the payer it was frozen with (S01), so a
     // key switch while it waited cannot silently move the bill.
     const resolvedPayer: ResolvedPayer = submission?.envelope?.payer
-      ?? (byok.useShadRoxKey ? 'shared' : 'byok');
+      ?? 'byok';
     // Repair/correction streams run after the loop, so their round numbers are
     // offset well past the loop's own rounds to keep attempt ids unique.
     let repairRoundSeq = DEFAULT_MAX_TOOL_ROUNDS + 100;
@@ -3681,7 +3627,7 @@ export default function App() {
             provider: byok.activeProvider,
             baseUrl: byok.baseUrl,
             model: answerModel,
-            apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
+            apiKey: byok.activeKey,
             messages: loopMessages,
             systemInstruction: fit.systemInstruction,
             temperature: byok.temperature,
@@ -3723,11 +3669,8 @@ export default function App() {
               turnUsage.cachedTokens += info.cachedInputTokens ?? 0;
               turnUsage.durationMs += info.durationMs ?? 0;
               if (turnUsage.firstTokenMs === null) turnUsage.firstTokenMs = info.firstTokenMs ?? null;
-              const credits = creditsForTurn(info.model, { inputTokens: info.inputTokens, outputTokens: info.outputTokens });
-              turnUsage.credits += credits;
-              // One terminal record per dispatched round, charged once for the
-              // request's resolved payer and de-duplicated by the attempt id, so
-              // a repeated done/retry event cannot double-bill.
+              // One terminal record per dispatched round, keyed by the attempt id,
+              // so a repeated done/retry event cannot record the same round twice.
               const attemptId = `${modelMessage.id}:answer:${round}`;
               recordAttempt({
                 taskId: modelMessage.id,
@@ -3745,7 +3688,6 @@ export default function App() {
                 startedAt: roundStartedAt,
                 reason: 'answer route'
               });
-              settleTurnCredits(plan, credits, 'chatter', { payer: resolvedPayer, idempotencyKey: attemptId });
             },
             onError: (error) => { roundError = error; }
           }
@@ -3945,7 +3887,6 @@ export default function App() {
                   inputTokens: turnUsage.inputTokens,
                   outputTokens: turnUsage.outputTokens,
                   cachedTokens: turnUsage.cachedTokens || undefined,
-                  credits: turnUsage.credits,
                   model: answerModel,
                   servedModel: lastAnswerAttempt?.servedModel ?? null,
                   usageState,
@@ -3971,21 +3912,16 @@ export default function App() {
             taskId: modelMessage.id,
             checkpointId: machineCheckpoint,
             promptIntent: text,
-            spend: resolvedPayer === 'byok' ? null : {
-              provider: byok.activeProvider,
-              model: answerModel,
-              inputTokens: turnUsage.inputTokens,
-              outputTokens: turnUsage.outputTokens,
-              cachedTokens: turnUsage.cachedTokens,
-              estimatedCostUsd: null
-            },
+            // Nothing to record as ShadRox-side spend: the user's own key paid
+            // the provider directly for this turn.
+            spend: null,
             machineDeltaRef: machineCheckpoint
           });
         }
         if (streamCompleted) {
           const outcome = recordOutcome({
             taskType: mode.writesFiles ? 'feature' : 'chat',
-            route: answerRoute?.answerModel === byok.selectedModel ? 'writer' : (mode.writesFiles ? 'frontier' : 'reader'),
+            route: 'writer',
             model: answerModel,
             passed: true,
             repairIterations: turnAttempts.length > 1 ? turnAttempts.length - 1 : 0,
@@ -4005,7 +3941,6 @@ export default function App() {
   }, [
     input,
     isGenerating,
-    plan,
     autoContext,
     openSettings,
     refineMode,
@@ -4016,7 +3951,6 @@ export default function App() {
     messages,
     autoReaderModel,
     runContextPicker,
-    byok.useShadRoxKey,
     byok.activeKey,
     byok.activeProvider,
     byok.baseUrl,
@@ -4053,7 +3987,7 @@ export default function App() {
   /** One model call that returns raw text, used for planning. */
   const askPlanText = useCallback(
     async (prompt: string): Promise<string> => {
-      if (!byok.useShadRoxKey && !byok.activeKey) {
+      if (!byok.activeKey) {
         throw new Error('No API key found. Add one in Settings → Models & Keys.');
       }
       let text = '';
@@ -4064,7 +3998,7 @@ export default function App() {
           provider: byok.activeProvider,
           baseUrl: byok.baseUrl,
           model: byok.selectedModel,
-          apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
+          apiKey: byok.activeKey,
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.2,
           signal: controller.signal
@@ -4083,13 +4017,13 @@ export default function App() {
       if (failed || !text.trim()) throw new Error('The planner did not return a plan.');
       return text;
     },
-    [byok.useShadRoxKey, byok.activeKey, byok.activeProvider, byok.baseUrl, byok.selectedModel]
+    [byok.activeKey, byok.activeProvider, byok.baseUrl, byok.selectedModel]
   );
 
   /** Headless run and team turns use the bounded tools and guarded patch policy. */
   const runAutonomousTurn = useCallback(
     async (request: TurnRequest): Promise<TurnResult> => {
-      if (!byok.useShadRoxKey && !byok.activeKey) {
+      if (!byok.activeKey) {
         throw new Error('No API key found. Add one in Settings → Models & Keys.');
       }
       const mode = getRefineMode('code');
@@ -4109,7 +4043,7 @@ export default function App() {
       let runAttemptSeq = 0;
       // Headless workers obey the same permission mode as an interactive turn.
       const runPolicy = { mode: permissionMode };
-      const runPayer: ResolvedPayer = byok.useShadRoxKey ? 'shared' : 'byok';
+      const runPayer: ResolvedPayer = 'byok';
       const runId = makeId('run');
       const machineCheckpoint = await workspace.markCheckpoint(runId, instruction);
       try {
@@ -4155,7 +4089,7 @@ export default function App() {
                   provider: byok.activeProvider,
                   baseUrl: byok.baseUrl,
                   model: byok.selectedModel,
-                  apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
+                  apiKey: byok.activeKey,
                   messages,
                   systemInstruction: fit.systemInstruction,
                   temperature: byok.temperature,
@@ -4164,15 +4098,9 @@ export default function App() {
                 }, {
                   onDelta: (chunk) => { text += chunk; },
                   onDone: (info) => {
-                    const spent = creditsForTurn(info.model, {
+                    credits += creditsForTurn(info.model, {
                       inputTokens: info.inputTokens,
                       outputTokens: info.outputTokens
-                    });
-                    credits += spent;
-                    runAttemptSeq += 1;
-                    settleTurnCredits(plan, spent, 'chatter', {
-                      payer: runPayer,
-                      idempotencyKey: `${runId}:${runAttemptSeq}`
                     });
                   },
                   onError: (message) => { error = message; }
@@ -4198,14 +4126,12 @@ export default function App() {
         };
       } finally { await workspace.finishMachineCheckpoint(machineCheckpoint); }
     },
-    [
-      byok.useShadRoxKey,
+    [,
       byok.activeKey,
       byok.activeProvider,
       byok.baseUrl,
       byok.selectedModel,
       byok.temperature,
-      plan,
       permissionMode,
       activeModel,
       buildSystemContext,
@@ -4391,14 +4317,14 @@ export default function App() {
         milestone.attempts.some((attempt) => attempt.patchesApplied > 0)
       ).length;
       detail = matches
-        ? `${passed}/${milestones.length} milestones passed · ${creditsSpent} credits${touched ? ` · ${touched} touched files` : ''}`
+        ? `${passed}/${milestones.length} milestones passed · ${creditsSpent} of the spend budget${touched ? ` · ${touched} touched files` : ''}`
         : 'The run did not start.';
       content = !matches
         ? 'The autonomous run could not start. Check the key and folder, then try again.'
         : status === 'done'
-          ? `Autonomous run finished: **${passed}/${milestones.length}** milestones passed, **${creditsSpent}** credits spent.`
+          ? `Autonomous run finished: **${passed}/${milestones.length}** milestones passed, **${creditsSpent}** of the spend budget used.`
           : status === 'budget'
-            ? `Autonomous run stopped at its **${active.budgetCredits}-credit** budget after **${passed}/${milestones.length}** milestones.`
+            ? `Autonomous run stopped at its **${active.budgetCredits}** spend-budget ceiling after **${passed}/${milestones.length}** milestones.`
             : status === 'stopped'
               ? `Autonomous run stopped. **${passed}/${milestones.length}** milestones had passed.`
               : `Autonomous run failed${autonomy.state?.error ? `: ${autonomy.state.error.replace(/\.$/, '')}` : ''}.`;
@@ -4406,14 +4332,14 @@ export default function App() {
       const tasks = team.state?.tasks ?? [];
       const passed = tasks.filter((task) => task.status === 'passed').length;
       detail = matches
-        ? `${passed}/${tasks.length} tasks passed · ${creditsSpent} credits`
+        ? `${passed}/${tasks.length} tasks passed · ${creditsSpent} of the spend budget`
         : 'The team did not start.';
       content = !matches
         ? 'The agent team could not start. Check the key and folder, then try again.'
         : status === 'done'
-          ? `Agent team finished: **${passed}/${tasks.length}** tasks passed, **${creditsSpent}** credits spent.`
+          ? `Agent team finished: **${passed}/${tasks.length}** tasks passed, **${creditsSpent}** of the spend budget used.`
           : status === 'budget'
-            ? `Agent team stopped at its **${active.budgetCredits}-credit** budget after **${passed}/${tasks.length}** tasks.`
+            ? `Agent team stopped at its **${active.budgetCredits}** spend-budget ceiling after **${passed}/${tasks.length}** tasks.`
             : status === 'stopped'
               ? `Agent team stopped. **${passed}/${tasks.length}** tasks had passed.`
               : `Agent team failed${team.state?.error ? `: ${team.state.error.replace(/\.$/, '')}` : ''}.`;
@@ -4469,7 +4395,7 @@ export default function App() {
       refineMode: draftRefineMode,
       // Freeze the execution identity (S01): a request that waits in the queue
       // must bill and run as the request the user actually made, even if they
-      // later switch workspace, plan, key or model. A request dispatched *from*
+      // later switch workspace, key or model. A request dispatched *from*
       // the queue already carries its frozen envelope — keep it verbatim.
       envelope: queuedSubmission?.envelope ?? createRequestEnvelope({
         id: submissionId,
@@ -4481,8 +4407,7 @@ export default function App() {
         ],
         permissionMode,
         refineMode: draftRefineMode,
-        plan,
-        payer: byok.useShadRoxKey ? 'shared' : 'byok',
+        payer: 'byok',
         provider: byok.activeProvider,
         model: byok.selectedModel,
         budgetCredits: runBudget.maxCredits
@@ -4512,24 +4437,17 @@ export default function App() {
       return;
     }
 
-    const quota = getMonthlyUsage(plan);
-    if (quota.isCapReached) {
-      setToast(`Monthly credit cap reached (${quota.limit}/${quota.limit} credits). Upgrade in Settings.`);
-      openSettings('PLAN');
-      return;
-    }
-
     const decision = decideOrchestration({
       prompt: text,
       mode: submission.refineMode,
       workspaceFileCount: workspace.workspace?.diskFileTree?.length ?? workspace.files.length,
-      hasKey: Boolean(byok.activeKey) || byok.useShadRoxKey,
+      hasKey: Boolean(byok.activeKey),
       canRun: Boolean(desktop && nativeWorkspaceId && workspaceRootPath),
       busy: autonomy.isRunning || team.isRunning
     });
 
     chatDispatchLockRef.current = true;
-    if (!chatHookGuardRef.current && desktop && nativeWorkspaceId && (byok.useShadRoxKey || byok.activeKey)) {
+    if (!chatHookGuardRef.current && desktop && nativeWorkspaceId && (byok.activeKey)) {
       dispatchPluginActionRuns(selectHooks(pluginsRef.current, 'onChatSend'));
     }
 
@@ -4601,14 +4519,12 @@ export default function App() {
     workspace.workspace?.diskFileTree?.length,
     workspace.files.length,
     byok.activeKey,
-    byok.useShadRoxKey,
     desktop,
     nativeWorkspaceId,
     workspaceRootPath,
     autonomy.isRunning,
     team.isRunning,
     handleSend,
-    plan,
     pendingRefine,
     attachedFiles,
     pinnedSymbols,
@@ -4629,7 +4545,6 @@ export default function App() {
       || team.isRunning
       || chatDispatchLockRef.current
       || orchestrationRef.current
-      || getMonthlyUsage(plan).isCapReached
     ) return;
     const result = dequeueChatItem(queuedChatItemsRef.current);
     if (!result.item) return;
@@ -4645,8 +4560,7 @@ export default function App() {
       targets: frozen.targets,
       permissionMode,
       refineMode: result.item.refineMode,
-      plan,
-      payer: byok.useShadRoxKey ? 'shared' : 'byok',
+      payer: 'byok',
       provider: byok.activeProvider,
       model: byok.selectedModel,
       budgetCredits: runBudget.maxCredits
@@ -4665,14 +4579,14 @@ export default function App() {
       window.setTimeout(() => setToast(null), 6000);
     }
     handleChatSend(result.item);
-  }, [isGenerating, autonomy.isRunning, team.isRunning, queuedChatItems, handleChatSend, plan, nativeWorkspaceId, permissionMode, byok.activeProvider, byok.selectedModel, byok.useShadRoxKey]);
+  }, [isGenerating, autonomy.isRunning, team.isRunning, queuedChatItems, handleChatSend, nativeWorkspaceId, permissionMode, byok.activeProvider, byok.selectedModel]);
 
   /** Budget-gated dispatch shared by interval, save and webhook triggers. */
   const runAutomationRequest = useCallback(
     (request: AutomationRunRequest) => {
       if (!workspaceRootPath || !desktop || !nativeWorkspaceId) return;
       if (busyRef.current || isGenerating || autonomy.isRunning || team.isRunning) return;
-      if (!byok.useShadRoxKey && !byok.activeKey) return;
+      if (!byok.activeKey) return;
       const definition = automationsRef.current.find((entry) => entry.id === request.automationId);
       if (!definition || !definition.enabled) return;
       const state = automationStatesRef.current[definition.id] ?? {
@@ -4700,7 +4614,6 @@ export default function App() {
       isGenerating,
       autonomy.isRunning,
       team.isRunning,
-      byok.useShadRoxKey,
       byok.activeKey,
       persistAutomationStates
     ]
@@ -4750,7 +4663,7 @@ export default function App() {
     if (!snapshot) return;
     if (isGenerating || autonomy.isRunning || team.isRunning) return;
     if (!desktop || !nativeWorkspaceId || !workspaceRootPath) return;
-    if (!byok.useShadRoxKey && !byok.activeKey) {
+    if (!byok.activeKey) {
       openSettings('CHAT');
       return;
     }
@@ -4797,7 +4710,6 @@ export default function App() {
     desktop,
     nativeWorkspaceId,
     workspaceRootPath,
-    byok.useShadRoxKey,
     byok.activeKey,
     openSettings,
     snapshotStore,
@@ -4814,7 +4726,7 @@ export default function App() {
   useEffect(() => {
     if (isGenerating || autonomy.isRunning || team.isRunning) return;
     if (pendingPromptQueueRef.current.length === 0) return;
-    if (!byok.useShadRoxKey && !byok.activeKey) {
+    if (!byok.activeKey) {
       pendingPromptQueueRef.current = [];
       return;
     }
@@ -4824,7 +4736,7 @@ export default function App() {
     void handleSend(next).finally(() => {
       chatHookGuardRef.current = false;
     });
-  }, [isGenerating, autonomy.isRunning, team.isRunning, byok.useShadRoxKey, byok.activeKey, handleSend]);
+  }, [isGenerating, autonomy.isRunning, team.isRunning, byok.activeKey, handleSend]);
 
   /** One-click, model-assisted fix for the type errors the last apply introduced. */
   const fixTypeErrors = useCallback(
@@ -4957,8 +4869,7 @@ export default function App() {
         targets: frozen.targets,
         permissionMode,
         refineMode: frozen.refineMode,
-        plan,
-        payer: byok.useShadRoxKey ? 'shared' : 'byok',
+        payer: 'byok',
         provider: byok.activeProvider,
         model: byok.selectedModel,
         budgetCredits: runBudget.maxCredits
@@ -4986,7 +4897,7 @@ export default function App() {
     setMessages(baseMessages);
     setPendingRefine(null);
     void handleSend(lastUser.content, history);
-  }, [handleSend, isGenerating, messages, nativeWorkspaceId, permissionMode, plan, byok.useShadRoxKey, byok.activeProvider, byok.selectedModel, runBudget]);
+  }, [handleSend, isGenerating, messages, nativeWorkspaceId, permissionMode, byok.activeProvider, byok.selectedModel, runBudget]);
 
   /**
    * Stream recovery: re-request an interrupted reply, continuing from the
@@ -5015,8 +4926,7 @@ export default function App() {
           targets: frozenResume.targets,
           permissionMode,
           refineMode,
-          plan,
-          payer: byok.useShadRoxKey ? 'shared' : 'byok',
+          payer: 'byok',
           provider: byok.activeProvider,
           model: byok.selectedModel,
           budgetCredits: runBudget.maxCredits
@@ -5072,7 +4982,7 @@ export default function App() {
             provider: byok.activeProvider,
             baseUrl: byok.baseUrl,
             model: byok.selectedModel,
-            apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
+            apiKey: byok.activeKey,
             messages: fit.messages,
             systemInstruction: fit.systemInstruction,
             temperature: byok.temperature,
@@ -5092,17 +5002,6 @@ export default function App() {
             },
             onDone: (info) => {
               streamCompleted = true;
-              // The turn that was interrupted charged nothing, so finishing it
-              // here is what pays for it — never both. Bound to the request's
-              // payer and de-duplicated so a repeated resume cannot double-bill.
-              const credits = creditsForTurn(info.model, {
-                inputTokens: info.inputTokens,
-                outputTokens: info.outputTokens
-              });
-              settleTurnCredits(plan, credits, 'chatter', {
-                payer: byok.useShadRoxKey ? 'shared' : 'byok',
-                idempotencyKey: `${messageId}:resume`
-              });
               setResumePrefixes((previous) => {
                 const next = { ...previous };
                 delete next[messageId];
@@ -5119,7 +5018,6 @@ export default function App() {
                           tokens: info.tokens,
                           inputTokens: info.inputTokens,
                           outputTokens: info.outputTokens,
-                          credits,
                           model: info.model,
                           servedModel: info.servedModel ?? null,
                           usageState: Number.isFinite(info.inputTokens) && Number.isFinite(info.outputTokens) ? 'measured' : 'pending',
@@ -5159,10 +5057,8 @@ export default function App() {
     [
       isGenerating,
       messages,
-      plan,
       resumePrefixes,
       refineMode,
-      byok.useShadRoxKey,
       byok.activeKey,
       byok.activeProvider,
       byok.baseUrl,
@@ -5509,7 +5405,7 @@ export default function App() {
     stopLocalPreview
   ]);
 
-  const hasKey = Boolean(byok.activeKey) || byok.useShadRoxKey;
+  const hasKey = Boolean(byok.activeKey);
 
   if (auth.status !== 'signed-in') {
     return (
@@ -5541,10 +5437,6 @@ export default function App() {
       keyStatus={byok.keyStatus}
       onValidateKey={byok.validateKey}
       onForgetKey={byok.forgetKey}
-      useShadRoxKey={byok.useShadRoxKey}
-      onUseShadRoxKeyChange={byok.setUseShadRoxKey}
-      plan={plan}
-      onPlanChange={changePlan}
       secrets={secrets}
       onSecretsChange={setSecrets}
       workspaceFiles={workspace.files}
@@ -5947,7 +5839,7 @@ export default function App() {
                         {auth.user?.email ?? 'Not signed in'}
                       </p>
                       <p className="mt-0.5 text-[10px] uppercase tracking-wider text-neutral-500">
-                        {plan === 'free' ? 'Free plan' : plan === 'starter' ? 'Starter plan' : 'Pro plan'}
+                        Free · bring your own key
                       </p>
                     </div>
                   </div>
@@ -5994,7 +5886,6 @@ export default function App() {
             selectedModel={byok.selectedModel}
             onSelectModel={byok.selectModel}
             hasKey={hasKey}
-            plan={plan}
             onOpenSettings={openSettings}
             attachedFiles={attachedFiles}
             onAttachedFilesChange={setAttachedFiles}
@@ -6050,7 +5941,7 @@ export default function App() {
                       desktop &&
                         nativeWorkspaceId &&
                         workspaceRootPath &&
-                        (byok.activeKey || byok.useShadRoxKey) &&
+                        (byok.activeKey) &&
                         !isGenerating &&
                         !autonomy.isRunning &&
                         !team.isRunning

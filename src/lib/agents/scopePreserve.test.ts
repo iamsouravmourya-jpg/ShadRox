@@ -19,7 +19,6 @@ function envelope(overrides: Partial<Parameters<typeof createRequestEnvelope>[0]
     targets: ['src/parser.ts'],
     permissionMode: 'ask',
     refineMode: 'code',
-    plan: 'starter',
     payer: 'shared',
     provider: 'gateway',
     model: 'glm-4.7-flash',

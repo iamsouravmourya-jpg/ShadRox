@@ -38,7 +38,7 @@ The download button points at the **last published** GitHub release. This source
 - **Failure receipts.** A failed `run_command` is shown on the assistant message with that turn's undo checkpoint id. The model receives the error and a repair brief. ShadRox does not apply a repair patch by itself.
 - **Preview.** Stale preview servers and Next.js dev locks are cleaned up the next time that project starts. After a preview is ready, a bounded check reports `ok`, `warn`, `fatal`, or `observed`. `observed` means the check could not prove the page.
 - **Debugger.** Add a `shadrox.debug.json` at the workspace root with one or more `node` launch configurations, then start it from the Debug panel: breakpoints go in the editor gutter, the paused frame and its locals open beside the code, and hovering an identifier while paused evaluates it in that frame. Programs and working directories outside the workspace are refused.
-- **Proof and spend.** Assistant commands append a local signed ledger line with the redacted command, hashes of the command and its output, and the exit code — never the output text. Settings tracks provider-reported token use, including cache hits when the provider sends them.
+- **Proof and usage.** Assistant commands append a local signed ledger line with the redacted command, hashes of the command and its output, and the exit code — never the output text. Settings reports the token usage the provider returns for each turn; ShadRox bills nothing and keeps no meter.
 - **Workspace consent.** Reopening a folder or file requires a path the main process already accepted. An unknown path asks again before it is mounted.
 - **Credential scrubbing.** API error text is redacted for GitHub and AWS-shaped tokens. Terminal environments drop credential-shaped variables.
 - **Context budgets.** Prompt fitting uses per-model window and output limits. Stable prompt prefixes are shaped for providers that can cache them.
@@ -57,7 +57,7 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 | 🛡️ | **Command approval** | Shell commands, verification commands, and Git status/diff require a native approval dialog. `delete_file` also requires `confirm: true` and a follow-up read that proves the path is gone. |
 | 📟 | **Terminal state** | PowerShell and bash report cwd, the command line, and the exit code. The panel shows them, and `terminal_state` lets the agent read the same summary, including how long a command has been silent. |
 | 🩹 | **Failure receipts** | A failed assistant command becomes a receipt on the chat message, with the turn's undo checkpoint id. The model sees the error. A patch is still a normal reviewed edit, not an automatic rewrite. |
-| 📊 | **Proof and spend** | Command ledger lines store the redacted command, hashes and exit code — not output text — in a signed Ed25519 chain. Spend tracking uses the token counts the provider reports, including cache hits when that field exists. |
+| 📊 | **Proof and usage** | Command ledger lines store the redacted command, hashes and exit code — not output text — in a signed Ed25519 chain. The usage shown in Settings is the token count the provider reports for each turn, including cache hits when that field exists; ShadRox bills nothing and keeps no meter. |
 | 📁 | **Project Explorer** | Open a local folder or selected files, browse the workspace tree, and create, rename, or delete files and folders. Files are loaded as you open them. |
 | ✏️ | **Editor & Markdown preview** | CodeMirror 6 editing, split editor groups, pinned/reorderable tabs, quick open, outline, inline completions, and a one-click source/preview toggle for Markdown files. |
 | 🔍 | **Code navigation** | TypeScript diagnostics, go-to-definition, find references, rename, quick fixes, semantic highlighting, and workspace symbol search where supported. |
@@ -204,14 +204,7 @@ Teams share the same bounded tool loop and guarded patch path. Each agent's brie
 - Groq
 - Custom OpenAI-compatible endpoints (including Ollama, LM Studio, and compatible gateways)
 
-The beta runs on **Bring Your Own Key (BYOK)**. Add a provider key in Settings; model availability and charges depend on that provider. While your own key carries the request, nothing is metered and nothing is capped — ShadRox bills no credits for it.
-
-Two packs are the paid options, both GST-inclusive and both spent on the optional ShadRox shared key (Nova Micro reads context, Qwen3 Coder Flash writes patches, DeepSeek V4.1 Flash takes hard refactors):
-
-- **Starter — ₹699 / month, 800 credits.** Small-to-medium edits and chat; worst-case upstream cost ₹280, so the month still leaves ~₹296 after GST and payment fees.
-- **Heavy — ₹1,299 / month, 1,600 credits.** All-day agent runs plus continuous repo indexing; worst-case upstream cost ₹560, leaving ~₹510.
-
-One credit is capped at ₹0.35 of upstream spend. No checkout is wired in this beta: selecting a pack unlocks it on that device and no payment is taken.
+The beta and the product run on **Bring Your Own Key (BYOK)**. Add a provider key in Settings; model availability and charges depend on that provider. Your own key carries every request and the provider bills you directly — ShadRox bills nothing, meters nothing and caps nothing.
 
 **Project context** is assembled locally for each request and can include:
 - Selected files
@@ -396,7 +389,7 @@ Google sign-in through Supabase is required to enter the app. Supabase stores ac
 - Agent loops, autonomous runs, teams, plugins, and automations are evolving features; verify important work yourself.
 - Preview support is **project-dependent**; not every language, framework, or server configuration can be run in the preview pane.
 - Google sign-in and Supabase configuration are required for the desktop app. BYOK keys and access to models are the user's responsibility.
-- Shared ShadRox provider keys are **off by default**, and payment processing is **not enabled** as a public service in this beta. The catalogue currently shows only the planned Starter plan at **₹699** and Heavy plan at **₹1,299** (GST included); both are beta-locked, checkout is unavailable, and prices may change before launch.
+- ShadRox has no paid plan, no checkout and no credit system; the only way to use AI is your own key.
 - Preview is intentionally local and does not embed vault secrets into generated preview HTML or JavaScript. Treat project rules, skills, MCP servers, and external debugger adapters as untrusted until approved.
 - Windows builds are **unsigned**; Windows may show a SmartScreen warning.
 
@@ -423,7 +416,7 @@ The app checks for a newer release when it starts and downloads it in the backgr
 <details>
 <summary><b>Does ShadRox store my project in the cloud?</b></summary>
 
-No. The desktop workspace opens and edits project files on your computer. There is no ShadRox cloud project sync. When you ask the AI for help, the prompt and the project context you include are sent to the Gemini or Groq provider you selected.
+No. The desktop workspace opens and edits project files on your computer. There is no ShadRox cloud project sync. When you ask the AI for help, the prompt and the project context you include are sent to the AI provider you selected.
 </details>
 
 <details>

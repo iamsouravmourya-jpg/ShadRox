@@ -15,32 +15,17 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
-  X,
-  Zap
+  X
 } from 'lucide-react';
 import { PROVIDERS, ENDPOINT_PRESETS, findEndpointPreset, getProviderMeta, normalizeBaseUrl, type ProviderId } from '../lib/providers';
-import {
-  CREDIT_RATES,
-  PLANS,
-  BETA_UPGRADE_NOTE,
-  getLockedPlanIds,
-  getPlanEntitlementNote,
-  getPlanMeta,
-  getPlanPriceDisplay,
-  getPlanStateLabel,
-  isPlanSelectable
-} from '../lib/plans';
-import { isSharedKeyEligible } from '../lib/sharedKeyPolicy';
 import { confirmAction } from '../lib/confirm';
 import { McpToolsSection } from './settings/McpToolsSection';
 import { PluginsSection } from './settings/PluginsSection';
 import { AutomationsSection } from './settings/AutomationsSection';
-import { getMonthlyUsage, onQuotaChange, type UsageState } from '../lib/quota';
 import type {
   GitHubRepo,
   GitHubUser,
   KeyStatus,
-  PlanTier,
   SecretItem,
   SettingsTab,
   WorkspaceFile
@@ -66,12 +51,6 @@ interface SettingsDrawerProps {
   extraModels: string[];
   onExtraModelsChange: (modelIds: string[]) => void;
 
-  useShadRoxKey: boolean;
-  onUseShadRoxKeyChange: (value: boolean) => void;
-
-  plan: PlanTier;
-  onPlanChange: (plan: PlanTier) => void;
-
   secrets: SecretItem[];
   onSecretsChange: (secrets: SecretItem[]) => void;
 
@@ -86,7 +65,6 @@ interface SettingsDrawerProps {
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: 'CHAT', label: 'Models & Keys' },
-  { id: 'PLAN', label: 'Subscription Plan' },
   { id: 'GITHUB', label: 'GitHub Sync' },
   { id: 'SECRETS', label: 'Secrets Vault' },
   { id: 'TOOLS', label: 'MCP Tools' },
@@ -121,10 +99,6 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     onBaseUrlChange,
     extraModels,
     onExtraModelsChange,
-    useShadRoxKey,
-    onUseShadRoxKeyChange,
-    plan,
-    onPlanChange,
     secrets,
     onSecretsChange,
     workspaceFiles,
@@ -146,16 +120,8 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
   const [newSecretKey, setNewSecretKey] = useState('');
   const [newSecretValue, setNewSecretValue] = useState('');
 
-  const [usage, setUsage] = useState<UsageState>(() => getMonthlyUsage(plan));
   const [baseUrlDraft, setBaseUrlDraft] = useState(baseUrl);
   const [extraModelsDraft, setExtraModelsDraft] = useState(extraModels.join(', '));
-
-  useEffect(() => {
-    setUsage(getMonthlyUsage(plan));
-    return onQuotaChange(() => {
-      setUsage(getMonthlyUsage(plan));
-    });
-  }, [plan]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -178,9 +144,6 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
   const currentStatus = keyStatus[activeProvider];
   const currentSavedKey = currentStatus && currentStatus.state === 'ok';
   const hasStoredKey = currentDraft.trim().length > 0 || currentSavedKey;
-  const currentPlan = getPlanMeta(plan);
-  const sharedKeyOpen = isSharedKeyEligible(plan);
-  const lockedPlanIds = getLockedPlanIds();
 
   const handleGithubConnect = async () => {
     if (!githubToken.trim()) return;
@@ -482,232 +445,18 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 </div>
               </section>
 
-              {/* Shared Key / plans CTA */}
-              {sharedKeyOpen ? (
-                <section className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3">
-                  <label className="flex cursor-pointer items-start gap-2">
-                    <input
-                      type="checkbox"
-                      checked={useShadRoxKey}
-                      onChange={(event) => onUseShadRoxKeyChange(event.target.checked)}
-                      className="mt-0.5 accent-violet-400"
-                    />
-                    <span className="min-w-0">
-                      <span className="flex items-center gap-2">
-                        <span className="text-xs font-medium text-neutral-200">Use ShadRox Shared Key</span>
-                        <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/[.08] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300">
-                          Unlocked with {currentPlan.label}
-                        </span>
-                      </span>
-                      <span className="mt-1 block text-[11px] text-neutral-400">
-                        Run AI without your own API key — the request goes through the ShadRox proxy and draws plan credits. That proxy only answers while the operator has a key live on the server; otherwise it fails with a clear message and spends nothing.
-                      </span>
-                    </span>
-                  </label>
-                </section>
-              ) : (
-                <section className="relative overflow-hidden rounded-2xl border border-violet-300/25 bg-gradient-to-br from-violet-500/[0.14] via-violet-500/[0.05] to-transparent p-4">
-                  <div className="flex items-center gap-2 text-violet-200">
-                    <Sparkles className="h-4 w-4" />
-                    <span className="text-xs font-semibold">No API key? Let ShadRox handle it.</span>
-                  </div>
-                  <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-400">
-                    Paid plans are locked during the beta. Use your own API key for now; the catalogue prices are ₹699 Starter and ₹1,299 Heavy, and may change before launch.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => onTabChange('PLAN')}
-                    className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl bg-violet-300 py-2 text-[11px] font-semibold uppercase tracking-wider text-[#16121f] transition-colors hover:bg-violet-200 cursor-pointer"
-                  >
-                    <Zap className="h-3 w-3" />
-                    View plans
-                  </button>
-                </section>
-              )}
-            </>
-          )}
-
-          {activeTab === 'PLAN' && (
-            <>
-              {/* Monthly Quota Meter Card */}
-              <section className="space-y-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] p-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-[10px] uppercase font-bold tracking-wider text-neutral-500">
-                      Monthly Quota Status
-                    </div>
-                    <div className="text-sm font-semibold text-white mt-0.5 flex items-center gap-2">
-                      <span>{currentPlan.label}</span>
-                      <span className="rounded border border-violet-300/25 bg-violet-500/[.12] px-1.5 py-0.5 text-[10px] font-normal uppercase text-violet-300">
-                        Active
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-xs font-mono text-neutral-400">{usage.monthLabel}</span>
-                  </div>
+              {/* BYOK: what ShadRox does and does not send anywhere. */}
+              <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-3">
+                <div className="flex items-center gap-2 text-neutral-200">
+                  <ShieldCheck className="h-4 w-4 text-violet-300" />
+                  <span className="text-xs font-semibold">Your key runs every request</span>
                 </div>
-
-                <div className="space-y-1.5 pt-1">
-                  <div className="flex items-center justify-between text-xs font-mono">
-                    <span className="text-neutral-400">
-                      Credits used: <strong className="text-white">{Math.round(usage.used)}</strong> / {usage.isUnlimited ? 'Unlimited' : Math.round(usage.limit)}
-                    </span>
-                    <span className={usage.isCapReached ? 'text-rose-400 font-bold' : 'text-violet-300'}>
-                      {usage.isUnlimited ? 'Unlimited' : Math.floor(usage.remaining)} remaining
-                    </span>
-                  </div>
-
-                  <div className="h-2 w-full overflow-hidden rounded-full border border-white/[0.09] bg-white/[0.04]">
-                    <div
-                      className={`h-full rounded-full transition-all duration-300 ${
-                        usage.isUnlimited
-                          ? 'bg-violet-500'
-                          : usage.isCapReached
-                            ? 'bg-rose-500'
-                            : usage.percentage >= 70
-                              ? 'bg-amber-400'
-                              : 'bg-violet-400'
-                      }`}
-                      style={{ width: usage.isUnlimited ? '100%' : `${usage.percentage}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div className="pt-2 flex items-center justify-between text-[11px] text-neutral-500 border-t border-white/[0.05]">
-                  <span className="flex items-center gap-1">
-                    <ShieldCheck className="w-3.5 h-3.5 text-violet-300" />
-                    Quota tracked per calendar month
-                  </span>
-                  <span className="font-mono text-[10px] text-neutral-600">resets on the 1st</span>
-                </div>
-              </section>
-
-              <section className="rounded-xl border border-white/[0.07] bg-white/[.02] p-3">
-                <h3 className="text-[10px] uppercase tracking-wider text-neutral-500">What one credit buys</h3>
-                <ul className="mt-2 space-y-1 text-[11px] text-neutral-400">
-                  <li className="flex justify-between gap-2"><span>Chat, explain, plan</span><span className="font-mono text-neutral-300">{CREDIT_RATES.chatter} credit</span></li>
-                  <li className="flex justify-between gap-2"><span>A change applied to a file</span><span className="font-mono text-neutral-300">{CREDIT_RATES.codeEdit} credit</span></li>
-                  <li className="flex justify-between gap-2"><span>Premium-model refactor</span><span className="font-mono text-neutral-300">{CREDIT_RATES.premiumRefactor} credits</span></li>
-                  <li className="flex justify-between gap-2"><span>Accepted Tab completion</span><span className="font-mono text-neutral-300">{CREDIT_RATES.tabCompletion} credit</span></li>
-                </ul>
-                <p className="mt-2 text-[11px] text-neutral-500">
-                  Failed requests are never billed — a change only costs credit once it actually lands.
+                <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-400">
+                  ShadRox has no paid plan and no shared key of its own, so there is nothing to switch on here.
+                  Your project files stay on this device — nothing is synced to a ShadRox server. What does leave
+                  is the prompt you send plus the code context attached to it, which goes straight to the provider
+                  whose key is saved above.
                 </p>
-              </section>
-
-              <p className="text-[11px] text-neutral-400 leading-relaxed">
-                Free plan is BYOK and unmetered — Gemini, Groq and your own local or remote endpoints have no
-                cap and cost ₹0 from ShadRox. The Starter Pack bills credits for the ShadRox shared key only.
-              </p>
-
-              {lockedPlanIds.length > 0 && (
-                <div className="flex items-start gap-2 rounded-xl border border-violet-300/20 bg-violet-500/[.06] px-3 py-2.5 text-[11px] text-violet-200">
-                  <Lock className="mt-0.5 w-3.5 h-3.5 shrink-0" />
-                  <span>
-                    Locked for the beta: {lockedPlanIds.map((id) => getPlanMeta(id).label).join(', ')}. Free BYOK
-                    stays unlimited with your own key — switching plans never takes that away.
-                  </span>
-                </div>
-              )}
-
-              {/* Plans Tier Cards — beta state, not a shop. */}
-              <section className="space-y-3">
-                <p className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-[11px] leading-relaxed text-neutral-400">
-                  Beta — both packs show their real price (GST included), but no checkout is wired yet:
-                  choosing one only flips the plan recorded on this device and nothing is charged.
-                </p>
-                {PLANS.map((entry) => {
-                  const isCurrent = entry.id === plan;
-                  const selectable = isPlanSelectable(entry.id);
-                  const price = getPlanPriceDisplay(entry.id);
-                  return (
-                    <div
-                      key={entry.id}
-                      className={`rounded-2xl border p-4 transition-colors ${
-                        isCurrent
-                          ? 'border-violet-300/30 bg-violet-500/[.06]'
-                          : selectable
-                            ? 'border-amber-500/25 bg-amber-500/[.04]'
-                            : 'border-white/[0.07] bg-white/[0.02]'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-semibold text-white">{entry.label}</span>
-                            {isCurrent && (
-                              <span className="rounded border border-violet-300/25 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-violet-300">
-                                Current
-                              </span>
-                            )}
-                            <span
-                              className={`rounded border px-1.5 py-0.5 text-[9px] uppercase tracking-wide ${
-                                selectable
-                                  ? 'border-amber-500/30 bg-amber-500/[.08] text-amber-300'
-                                  : 'border-white/10 text-neutral-500'
-                              }`}
-                            >
-                              {getPlanStateLabel(entry.id)}
-                            </span>
-                          </div>
-                          <div className="text-[11px] text-violet-300 font-mono mt-0.5">
-                            {Number.isFinite(entry.creditsPerMonth)
-                              ? `${entry.creditsPerMonth.toLocaleString('en-IN')} credits / month`
-                              : 'Unlimited — BYOK, unmetered'}
-                          </div>
-                        </div>
-
-                        <div className="text-right shrink-0">
-                          <div className="text-sm font-mono font-bold text-white">{price.headline}</div>
-                          <div className="text-[9px] text-neutral-400">{price.note}</div>
-                        </div>
-                      </div>
-
-                      <p className="mt-2 text-xs text-neutral-400 leading-relaxed">{entry.blurb}</p>
-
-                      <ul className="mt-3 space-y-1.5">
-                        {entry.perks.map((perk) => (
-                          <li key={perk} className="flex items-start gap-1.5 text-xs text-neutral-300">
-                            <Check className="mt-0.5 w-3.5 h-3.5 shrink-0 text-violet-400" />
-                            <span>{perk}</span>
-                          </li>
-                        ))}
-                      </ul>
-
-                      <p className="mt-3 text-[11px] leading-relaxed text-neutral-500">
-                        {getPlanEntitlementNote(entry.id, isSharedKeyEligible(entry.id))}
-                      </p>
-
-                      <button
-                        type="button"
-                        onClick={() => onPlanChange(entry.id)}
-                        disabled={isCurrent || !selectable}
-                        className={`mt-4 flex w-full items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                          isCurrent
-                            ? 'border border-white/10 text-neutral-600 bg-white/[.02] cursor-default'
-                            : !selectable
-                              ? 'border border-white/10 text-neutral-500 bg-white/[.02] cursor-not-allowed'
-                              : entry.id === 'free'
-                                ? 'border border-white/10 text-neutral-300 hover:bg-white/[.06] cursor-pointer'
-                                : 'border border-amber-400/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20 cursor-pointer'
-                        }`}
-                      >
-                        {!selectable && !isCurrent && <Lock className="w-3 h-3" />}
-                        {isCurrent
-                          ? 'Plan active on this device'
-                          : !selectable
-                            ? 'Locked during beta'
-                            : entry.id === 'free'
-                              ? 'Switch to Free (BYOK)'
-                              : `Select ${entry.label} (beta, no charge)`}
-                      </button>
-                      {selectable && !isCurrent && Number.isFinite(entry.creditsPerMonth) && (
-                        <p className="mt-1.5 text-[10px] leading-relaxed text-neutral-500">{BETA_UPGRADE_NOTE}</p>
-                      )}
-                    </div>
-                  );
-                })}
               </section>
             </>
           )}

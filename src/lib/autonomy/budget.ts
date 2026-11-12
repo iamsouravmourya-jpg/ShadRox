@@ -3,9 +3,9 @@
  *
  * `estimateTurn` answers "what is the next turn likely to cost" so the loop can
  * refuse it while the cap is still intact, and `createCreditTracker` is the only
- * thing that actually holds the running total. Both are pure/in-memory — the
- * persisted month meter lives in `src/lib/quota.ts` and is settled from real
- * token usage after each turn, never from these estimates.
+ * thing that actually holds the running total. Both are pure/in-memory: nothing
+ * here is a bill. ShadRox meters no account — the running total only exists so a
+ * runaway autonomous loop stops before it spends the user's own provider credit.
  */
 
 import type { CreditTracker } from './run-loop';

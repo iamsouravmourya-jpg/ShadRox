@@ -208,7 +208,7 @@ test('the budget stops the run rather than overrunning it', async () => {
   h.spendAfter(1);
   const state = await runAutonomous('goal', h.deps);
   assert.equal(state.status, 'stopped-budget');
-  assert.match(state.error ?? '', /credit cap/);
+  assert.match(state.error ?? '', /spend cap of 2/);
   assert.equal(h.turns.length, 1, 'no turn is started once the cap is gone');
 });
 
@@ -218,7 +218,7 @@ test('an expensive next turn is refused before it is spent', async () => {
   h.deps.estimateTurn = () => 5;
   const state = await runAutonomous('goal', h.deps);
   assert.equal(state.status, 'stopped-budget');
-  assert.match(state.error ?? '', /estimated at 5 credits/);
+  assert.match(state.error ?? '', /estimated at 5 spend/);
   assert.equal(h.turns.length, 0);
   assert.equal(state.milestones[0].status, 'pending');
   h.deps.estimateTurn = estimate;

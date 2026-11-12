@@ -31,7 +31,6 @@ function input(overrides: Partial<AutoInput> = {}): AutoInput {
     availableModels: KEY,
     userModel: SONNET,
     isSharedKey: true,
-    plan: 'starter',
     ...overrides
   };
 }
@@ -71,7 +70,7 @@ describe('decideAutoRoute on a shared key', () => {
   });
 
   it('affords a premium answer only because the digest shrank the input', () => {
-    const premium = decideAutoRoute(input({ role: 'premium', plan: 'starter' }));
+    const premium = decideAutoRoute(input({ role: 'premium' }));
     assert.equal(premium.answerModel, KIMI);
     assert.equal(premium.withinBudget, true);
     // ₹0.06 condense + ₹0.93 answer = ₹0.99, which is 2.83 of the ₹0.35 credit
@@ -179,35 +178,29 @@ describe('decideAutoRoute on the user’s own key', () => {
   });
 });
 
-describe('decideAutoRoute on the free plan', () => {
-  /** The plan has no credit meter, but the user's own key pays for every context
-   *  token — so the cheap first pass is a saving they receive, and only the
-   *  answer-side swap (which ShadRox is not paying for) is withheld. */
-  it('keeps the cheap first pass and bills no credit on a BYOK-only free plan', () => {
-    const free = decideAutoRoute(input({ plan: 'free', isSharedKey: false, userModel: 'google/gemini-3-flash' }));
-    assert.equal(free.enabled, true);
-    assert.equal(free.condenseModel, LING);
-    assert.equal(free.answerModel, 'google/gemini-3-flash');
-    assert.equal(free.credits, 0);
-    assert.equal(free.savingsFactor, null);
-    assert.equal(free.estInputTokens, 4_800);
-    assert.match(free.reason, /no credit meter/);
-    assert.match(free.reason, /digests/);
+/**
+ * ShadRox has one product state — the user's own key — so a BYOK request is
+ * never answer-routed. What it does keep is the cost estimate: with no plan to
+ * meter, `credits` is the figure that lets a run say "this turn is expensive"
+ * before spending it, so zeroing it would blind the budget guard.
+ */
+describe('decideAutoRoute on the only product path (BYOK)', () => {
+  it('keeps the cheap first pass and still prices the turn it is predicting', () => {
+    const byok = decideAutoRoute(input({ isSharedKey: false, userModel: 'google/gemini-3-flash' }));
+    assert.equal(byok.enabled, true);
+    assert.equal(byok.condenseModel, LING);
+    assert.equal(byok.answerModel, 'google/gemini-3-flash');
+    assert.ok(byok.credits > 0, 'the estimate must survive with no plan metering it');
+    assert.equal(byok.savingsFactor, null);
+    assert.equal(byok.estInputTokens, 4_800);
+    assert.match(byok.reason, /digests/);
   });
 
-  it('never substitutes the answer model for a free plan even on a shared key', () => {
-    const free = decideAutoRoute(input({ plan: 'free', isSharedKey: true, userModel: SONNET }));
-    assert.equal(free.answerModel, SONNET);
-    assert.equal(free.credits, 0);
-    assert.match(free.reason, /no credit meter/);
-  });
-
-  it('still warns that an unpriced free-plan model is billed at the premium assumption', () => {
-    const free = decideAutoRoute(input({ plan: 'free', isSharedKey: false, userModel: 'vendor/unknown-1' }));
-    assert.equal(free.withinBudget, false);
-    assert.equal(free.credits, 0);
-    assert.match(free.reason, /no credit meter/);
-    assert.match(free.reason, /not in the price registry/);
+  it('still warns that an unpriced model is estimated at the premium assumption', () => {
+    const byok = decideAutoRoute(input({ isSharedKey: false, userModel: 'vendor/unknown-1' }));
+    assert.equal(byok.withinBudget, false);
+    assert.ok(byok.credits > 0);
+    assert.match(byok.reason, /not in the price registry/);
   });
 });
 

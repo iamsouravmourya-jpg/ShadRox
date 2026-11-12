@@ -152,7 +152,7 @@ export async function runAutonomous(
 
     if (deps.tracker.exhausted()) {
       state.status = 'stopped-budget';
-      state.error = `Stopped at the ${deps.budget.maxCredits}-credit cap. ${remaining(state.milestones)} milestone(s) did not run.`;
+      state.error = `Stopped at the spend cap of ${deps.budget.maxCredits}. ${remaining(state.milestones)} milestone(s) did not run.`;
       break;
     }
 
@@ -175,7 +175,7 @@ export async function runAutonomous(
         // rather than staying flagged as running in a persisted state.
         next.status = 'pending';
         state.status = 'stopped-budget';
-        state.error = `Stopped before "${next.title}": the next turn is estimated at ${estimate} credits and the cap is ${deps.budget.maxCredits}.`;
+        state.error = `Stopped before "${next.title}": the next turn is estimated at ${estimate} spend and the cap is ${deps.budget.maxCredits}.`;
         outcome = 'stopped';
         break;
       }

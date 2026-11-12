@@ -4,7 +4,7 @@
  * A team or autonomous run is not a second engine and must not be a second
  * bookkeeping system either. The request the user submitted is frozen once
  * (S01); the planner and every worker inherit that same frozen identity — the
- * same workspace, payer, plan, permission mode and budget — instead of being
+ * same workspace, payer, permission mode and budget — instead of being
  * handed free text while the attachments stay on screen for display only.
  *
  * This module is the parity layer:
@@ -24,7 +24,6 @@
 import type { PermissionMode } from '../agent/runPolicy';
 import type { RequestEnvelope } from '../requestEnvelope';
 import type { ResolvedPayer } from '../sharedKeyPolicy';
-import type { PlanTier } from '../types';
 
 export type AttemptRole = 'planner' | 'worker' | 'repair';
 
@@ -75,7 +74,6 @@ export interface WorkerScope {
   targets: readonly TargetVersion[];
   permissionMode: PermissionMode;
   payer: ResolvedPayer;
-  plan: PlanTier;
   provider: string;
   model: string;
   budgetCredits: number;
@@ -92,7 +90,6 @@ export function plannerScope(
     targets: mergeTargetManifest(targets, []),
     permissionMode: envelope.permissionMode,
     payer: envelope.payer,
-    plan: envelope.plan,
     provider: envelope.provider,
     model: envelope.model,
     budgetCredits: envelope.budgetCredits
@@ -101,7 +98,7 @@ export function plannerScope(
 
 /**
  * The scope a worker runs under: the frozen envelope plus this task's files.
- * Permission mode, payer, plan and budget are copied verbatim — a worker cannot
+ * Permission mode, payer and budget are copied verbatim — a worker cannot
  * widen them, only add the files it was assigned.
  */
 export function workerScope(
@@ -115,7 +112,6 @@ export function workerScope(
     targets: mergeTargetManifest(base, task.files ?? []),
     permissionMode: envelope.permissionMode,
     payer: envelope.payer,
-    plan: envelope.plan,
     provider: envelope.provider,
     model: envelope.model,
     budgetCredits: envelope.budgetCredits

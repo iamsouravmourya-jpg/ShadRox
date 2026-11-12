@@ -50,10 +50,10 @@ test('routing a shared task never substitutes a model the plan did not approve',
   assert.equal(none.withinBudget, false);
   assert.match(none.reason, /no approved premium model/);
 
-  // The free plan is BYOK, so it has no shared route at all.
-  const free = routeSharedTask({ plan: 'free', taskClass: 'chat', tokens: split });
-  assert.equal(free.model, null);
-  assert.match(free.reason, /BYOK/);
+  // Nothing in the product can produce a plan key: the matrix is only ever
+  // reachable from an operator-run shared key, and a class with no approved
+  // model returns null instead of a substitute.
+  assert.equal(approvedSharedModel('heavy', 'file-selection'), 'amazon/nova-micro-v1');
 });
 
 test('a shared route reports the approved model and its budget fit', () => {
