@@ -31,11 +31,11 @@ export const metadata: Metadata = {
   icons: {
     icon: [
       { url: '/favicon.ico' },
-      { url: '/favicon.png', type: 'image/png', sizes: '48x48' },
-      { url: '/icon-192.png', type: 'image/png', sizes: '192x192' },
-      { url: '/icon-512.png', type: 'image/png', sizes: '512x512' },
+      { url: '/brand-logo.png', type: 'image/png', sizes: '48x48' },
+      { url: '/brand-logo.png', type: 'image/png', sizes: '192x192' },
+      { url: '/brand-logo.png', type: 'image/png', sizes: '512x512' },
     ],
-    apple: '/apple-touch-icon.png',
+    apple: '/brand-logo.png',
   },
 }
 
@@ -52,7 +52,7 @@ const jsonLd = {
       '@id': `${SITE_URL}/#organization`,
       name: 'ShadRox',
       url: SITE_URL,
-      logo: { '@type': 'ImageObject', url: `${SITE_URL}/icon-512.png` },
+      logo: { '@type': 'ImageObject', url: `${SITE_URL}/brand-logo.png` },
       foundingDate: '2026',
       founder: { '@id': `${SITE_URL}/#sourav-maurya` },
       description: 'ShadRox is a solo-developed, local-first desktop AI coding workspace for Windows.',
@@ -84,7 +84,7 @@ const jsonLd = {
       url: SITE_URL,
       downloadUrl: WINDOWS_DOWNLOAD_URL,
       offers: { '@type': 'Offer', price: '0', priceCurrency: 'INR', availability: 'https://schema.org/InStock' },
-      image: `${SITE_URL}/icon-512.png`,
+      image: `${SITE_URL}/brand-logo.png`,
       author: { '@id': `${SITE_URL}/#sourav-maurya` },
       description: 'A native desktop workspace for local projects with a code editor, Markdown preview, BYOK AI chat, project preview, Git tools, and an integrated terminal.',
     },
