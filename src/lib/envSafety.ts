@@ -4,7 +4,7 @@
  *
  * Pattern sources (adapted, not copied verbatim):
  *  - OpenHands secret-detection heuristics (Apache-2.0)
- *  - ShadRox api/_http.ts REDACT_PATTERNS (proprietary, same codebase)
+ *  - ShadRox api/_http.ts REDACT_PATTERNS (same codebase)
  *
  * Rules applied in order:
  *  1. Exact ShadRox-internal prefixes (SHADROX_).

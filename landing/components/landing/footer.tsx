@@ -98,7 +98,7 @@ export function Footer() {
 
         {/* Bottom bar */}
         <div className="mt-14 flex flex-col gap-3 border-t border-[var(--line)] pt-7 text-xs text-[var(--mut)] sm:flex-row sm:items-center sm:justify-between">
-          <span>© 2026 Sourav Maurya. All rights reserved. Proprietary software, source published for viewing only.</span>
+          <span>© 2026 Sourav Maurya. Open source under the AGPL-3.0 license.</span>
           <span className="shrink-0">Built with Electron, React, CodeMirror &amp; Supabase · Made in India 🇮🇳</span>
         </div>
       </div>
