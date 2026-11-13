@@ -27,7 +27,7 @@ const eyebrow = 'text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--a
 const chip =
   'rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--ink2)]'
 
-const allowlist = [
+const askFirstExamples = [
   'npm test',
   'pytest',
   'python -m pytest',
@@ -115,7 +115,7 @@ const guards: { icon: typeof ShieldCheck; title: string; text: string }[] = [
   {
     icon: ShieldCheck,
     title: 'Shell approval is default-deny',
-    text: 'Agent shell commands open a native approval dialog first. Only the exact verify forms below run without a prompt — one extra argument or a shell operator breaks the match, and the workspace is re-checked between approval and execution.',
+    text: 'Every agent shell command — including npm test, pytest, tsc --noEmit and Git status/diff — opens a native approval dialog with a plain-language risk notice. The workspace is re-checked between approval and execution.',
   },
   {
     icon: FileDiff,
@@ -259,7 +259,7 @@ export default function PrivacyPage() {
             </div>
           </div>
 
-          {/* Allowlist band */}
+          {/* Ask-first band */}
           <Reveal delay={120} variant="scale">
             <div className="mt-10 rounded-3xl border border-[var(--line)] bg-[var(--bg2)] p-6 sm:p-8">
               <div className="flex items-center gap-3">
@@ -267,14 +267,14 @@ export default function PrivacyPage() {
                   <Terminal className="size-4 text-[var(--ac)]" strokeWidth={1.75} />
                 </span>
                 <div>
-                  <h3 className="text-sm font-bold text-[var(--ink)]">Runs without a prompt</h3>
+                  <h3 className="text-sm font-bold text-[var(--ink)]">Every command asks first</h3>
                   <p className="mt-0.5 text-xs leading-5 text-[var(--mut)]">
-                    Exact verify forms only — everything else asks first.
+                    Even routine verification — nothing runs without your OK.
                   </p>
                 </div>
               </div>
               <div className="mt-5 flex flex-wrap gap-1.5 border-t border-[var(--line)] pt-5">
-                {allowlist.map((c) => (
+                {askFirstExamples.map((c) => (
                   <code key={c} className={chip}>
                     {c}
                   </code>

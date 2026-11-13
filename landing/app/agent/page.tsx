@@ -32,8 +32,8 @@ export const metadata: Metadata = {
   alternates: { canonical: '/agent' },
 }
 
-/** The exact verify forms that run without an approval prompt (matched verbatim). */
-const ALLOWED_VERIFY_COMMANDS = [
+/** Routine verification commands — every one of them still opens the approval dialog. */
+const VERIFY_EXAMPLES = [
   'npm test',
   'pytest',
   'python -m pytest',
@@ -86,7 +86,7 @@ const loopFacts: LoopFact[] = [
 const approvalRules = [
   {
     icon: TriangleAlert,
-    text: 'One extra argument or a shell operator breaks the match.',
+    text: 'A plain-language risk notice explains what the command can do.',
   },
   {
     icon: ShieldCheck,
@@ -195,8 +195,8 @@ export default function AgentPage() {
           </Reveal>
           <Reveal delay={160}>
             <p className="mb-10 mt-4 max-w-[620px] text-sm leading-7 text-[var(--mut)]">
-              The agent cannot run whatever it likes. A short, exact allowlist covers routine
-              verification — everything else stops and asks you first.
+              The agent cannot run whatever it likes. Every shell command — even routine
+              verification — stops and asks you first, with a plain-language risk notice.
             </p>
           </Reveal>
 
@@ -204,13 +204,13 @@ export default function AgentPage() {
             <Reveal>
               <div className="feature-card h-full rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-8">
                 <h3 className="mb-1 font-bold text-[var(--ink)]">
-                  Runs without a prompt — only these exact forms
+                  Even these ask first
                 </h3>
                 <p className="mb-4 text-xs leading-5 text-[var(--mut)]">
-                  Matched verbatim, nothing more:
+                  Routine verification is no exception:
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {ALLOWED_VERIFY_COMMANDS.map((cmd) => (
+                  {VERIFY_EXAMPLES.map((cmd) => (
                     <span
                       key={cmd}
                       className="rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--ink2)]"
@@ -234,7 +234,7 @@ export default function AgentPage() {
             </Reveal>
 
             <Reveal delay={120}>
-              <CommandApprovalDemo allowed={ALLOWED_VERIFY_COMMANDS} />
+              <CommandApprovalDemo />
             </Reveal>
           </div>
         </div>

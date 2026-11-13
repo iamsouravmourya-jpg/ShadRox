@@ -33,11 +33,11 @@ const faqs = [
   },
   {
     q: 'Can the agent make changes on its own?',
-    a: 'Not silently. Inspection tools are read-only. The agent can run one shell command at a time in your opened folder and gets its real exit code back, but approval is default-deny: only a short allowlist of exact verify forms (npm test, pytest, python -m pytest, tsc --noEmit, npx tsc --noEmit, git diff, git status) runs without a prompt, and every other command opens a native approval dialog first. File edits go through a guarded patch and review flow; unsafe changes are held for review. Deleting a path needs an explicit confirm plus a follow-up read that proves it is gone. Agent and autonomous workflows are beta, so inspect results and keep backups.',
+    a: 'Not silently. Inspection tools are read-only. The agent can run one shell command at a time in your opened folder and gets its real exit code back, but every command — including npm test, pytest, tsc --noEmit and Git status/diff — opens a native approval dialog with a plain-language risk notice first. File edits go through a guarded patch and review flow; unsafe changes are held for review. Deleting a path needs an explicit confirm plus a follow-up read that proves it is gone. Agent and autonomous workflows are beta, so inspect results and keep backups.',
   },
   {
     q: 'How do updates work?',
-    a: 'The app checks for a newer release on start and tells you when an update is ready. Restart only after reviewing the release. If a rebuilt installer keeps the same version number — like the second v0.0.8 build — auto-update cannot detect it, so install that one manually from the release page.',
+    a: 'The app checks for a newer release about 15 seconds after start and every 6 hours after that, and shows a badge when an update is ready. Nothing is downloaded or installed automatically — you download the installer from the release page and run it when you choose.',
   },
   {
     q: 'Does ShadRox cost anything?',

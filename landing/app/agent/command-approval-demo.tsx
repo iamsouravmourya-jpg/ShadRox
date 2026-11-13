@@ -1,7 +1,7 @@
 'use client'
 
 import { useId, useState } from 'react'
-import { CircleCheck, ShieldCheck, Terminal, X } from 'lucide-react'
+import { ShieldCheck, Terminal, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const EXAMPLES = [
@@ -12,39 +12,17 @@ const EXAMPLES = [
   'npm install',
 ]
 
-type Verdict = { state: 'idle' | 'allow' | 'ask'; reason: string }
-
-function classify(raw: string, allowed: readonly string[]): Verdict {
-  const cmd = raw.trim()
-  if (!cmd) return { state: 'idle', reason: '' }
-  if (allowed.includes(cmd)) {
-    return { state: 'allow', reason: 'Exact match with an allowed verify form.' }
-  }
-  if (/[|&;<>`]|\$\(/.test(cmd)) {
-    return { state: 'ask', reason: 'A shell operator breaks the match — approval required.' }
-  }
-  if (allowed.some((a) => cmd.startsWith(`${a} `))) {
-    return { state: 'ask', reason: 'One extra argument breaks the exact match — approval required.' }
-  }
-  return { state: 'ask', reason: 'Not an allowed verify form — approval required.' }
-}
-
-/**
- * A faithful, interactive demo of the default-deny matcher:
- * type a command and see whether it would run freely or open the
- * native approval dialog in the app. The exact allowlist is passed
- * in from the server page so both renderings share one source.
- */
-export function CommandApprovalDemo({ allowed }: { allowed: readonly string[] }) {
+// Faithful demo of the app's rule: every shell command opens the native approval dialog.
+export function CommandApprovalDemo() {
   const inputId = useId()
   const [value, setValue] = useState('')
-  const verdict = classify(value, allowed)
+  const hasCommand = value.trim().length > 0
 
   return (
     <div className="flex h-full flex-col rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-8">
       <div className="mb-4 flex items-center gap-2">
         <Terminal className="size-4 text-[var(--ac)]" strokeWidth={1.75} />
-        <h3 className="text-sm font-bold text-[var(--ink)]">Try the matcher</h3>
+        <h3 className="text-sm font-bold text-[var(--ink)]">Try it — every command asks</h3>
         <span className="ml-auto rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--mut)]">
           live demo
         </span>
@@ -58,7 +36,7 @@ export function CommandApprovalDemo({ allowed }: { allowed: readonly string[] })
           <span className="size-2.5 rounded-full bg-[var(--line)]" />
         </div>
         <label htmlFor={inputId} className="sr-only">
-          Type a shell command to test the approval matcher
+          Type a shell command to see the approval rule
         </label>
         <div className="flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--card)] px-3 py-2.5 transition focus-within:border-[var(--ac)] focus-within:shadow-[0_0_0_3px_var(--glow)]">
           <span className="font-mono text-sm font-bold text-[var(--ac)]" aria-hidden>
@@ -90,29 +68,21 @@ export function CommandApprovalDemo({ allowed }: { allowed: readonly string[] })
 
         {/* Verdict */}
         <div aria-live="polite" className="mt-3 min-h-[76px]">
-          {verdict.state === 'idle' && (
+          {!hasCommand && (
             <p className="px-1 pt-1 text-xs leading-5 text-[var(--mut)]">
-              Type a command — or pick an example below — to see whether it would run
-              without a prompt or open the approval dialog.
+              Type a command — or pick an example below — to see what the app would do.
             </p>
           )}
-          {verdict.state === 'allow' && (
-            <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.08] px-4 py-3">
-              <p className="flex items-center gap-2 text-sm font-bold text-emerald-700 dark:text-emerald-400">
-                <CircleCheck className="size-4 shrink-0" strokeWidth={2} />
-                Runs without a prompt
-              </p>
-              <p className="mt-1 text-xs leading-5 text-[var(--ink2)]">{verdict.reason}</p>
-            </div>
-          )}
-          {verdict.state === 'ask' && (
+          {hasCommand && (
             <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.08] px-4 py-3">
               <p className="flex items-center gap-2 text-sm font-bold text-amber-700 dark:text-amber-400">
                 <ShieldCheck className="size-4 shrink-0" strokeWidth={2} />
                 Opens the approval dialog
               </p>
               <p className="mt-1 text-xs leading-5 text-[var(--ink2)]">
-                {verdict.reason} The workspace is re-checked between approval and execution.
+                The native dialog shows this exact command, its working directory, and a
+                plain-language risk notice. The workspace is re-checked between approval and
+                execution.
               </p>
             </div>
           )}
@@ -142,8 +112,8 @@ export function CommandApprovalDemo({ allowed }: { allowed: readonly string[] })
       </div>
 
       <p className="mt-auto pt-4 text-[11px] leading-4 text-[var(--mut)]">
-        A faithful demo of the exact-match rule. In the app, the approval dialog is native —
-        and deleting a path always needs an explicit confirm plus a follow-up read.
+        In the app, the approval dialog is native — and deleting a path always needs an explicit
+        confirm plus a follow-up read.
       </p>
     </div>
   )

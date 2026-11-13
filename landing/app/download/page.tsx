@@ -10,7 +10,6 @@ import {
   Fingerprint,
   SquareTerminal,
   RefreshCw,
-  RotateCw,
   HardDrive,
 } from 'lucide-react'
 import { PageShell } from '@/components/landing/page-shell'
@@ -26,9 +25,9 @@ export const metadata: Metadata = {
 }
 
 const INSTALLER_NAME = `ShadRox-v${APP_VERSION}-Setup.exe`
-const FILE_BYTES = '143,707,240'
+const FILE_BYTES = '144,847,123'
 const SHA512 =
-  'cSdlFFUliP0eRAXJfAj+Ry2d157o2N+FozA8+8hSilzdXxW4Fv/r+9NqsUjlSmb4oD7NHczCQk2NCsbTDypGkg=='
+  'AizaIYv7E0dd/cw6vbxNT6bxyXJvL5uknlex462z0xxOphKd1rJzhQJ9msWVCOnF5K7vWWFjPPS/wBG8ukdxKw=='
 const PS_CMD = `Get-FileHash .\\${INSTALLER_NAME} -Algorithm SHA512`
 
 const steps = [
@@ -298,9 +297,9 @@ export default function DownloadPage() {
         <div className="mx-auto max-w-[1180px]">
           <SectionHead
             eyebrow="After install"
-            title="Updates, and one"
-            accent="honest caveat."
-            sub="ShadRox checks for newer releases on start. Here is what to expect once it is installed."
+            title="Updates, on"
+            accent="your terms."
+            sub="ShadRox checks for newer releases and tells you when one is ready. Installing is always your call."
           />
 
           <Reveal variant="scale">
@@ -315,23 +314,22 @@ export default function DownloadPage() {
                       Updates check on start
                     </h3>
                     <p className="text-sm leading-6 text-[var(--mut)]">
-                      ShadRox looks for a newer release when it starts and tells you when an update is
-                      ready. Review the release, then restart to install it.
+                      About 15 seconds after start, and every 6 hours after that, ShadRox looks for
+                      a newer release and shows a badge when one is ready.
                     </p>
                   </div>
                 </div>
                 <div className="flex gap-4">
                   <span className="grid size-11 shrink-0 place-items-center rounded-[14px] bg-[var(--bg2)]">
-                    <RotateCw className="size-5 text-[var(--ac)]" strokeWidth={1.75} />
+                    <Download className="size-5 text-[var(--ac)]" strokeWidth={1.75} />
                   </span>
                   <div>
                     <h3 className="mb-1.5 text-[15px] font-bold text-[var(--ink)]">
-                      Same-version rebuilds are manual
+                      You install updates
                     </h3>
                     <p className="text-sm leading-6 text-[var(--mut)]">
-                      Auto-update cannot detect a rebuild published under the same version number. If
-                      you installed the first v{APP_VERSION} build, download and reinstall this one
-                      manually.
+                      Nothing downloads or installs automatically. When the badge appears, download
+                      the installer from the release page and run it when you choose.
                     </p>
                   </div>
                 </div>

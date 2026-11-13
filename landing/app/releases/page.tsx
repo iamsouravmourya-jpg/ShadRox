@@ -6,13 +6,11 @@ import {
   ArrowUpRight,
   Sparkles,
   CalendarDays,
-  ShieldCheck,
-  ClipboardCheck,
-  MessagesSquare,
-  TriangleAlert,
+  History,
+  Camera,
+  KeyRound,
   RefreshCw,
-  RotateCw,
-  PackageX,
+  BellRing,
   Archive,
 } from 'lucide-react'
 import { PageShell } from '@/components/landing/page-shell'
@@ -22,7 +20,7 @@ import { APP_VERSION, WINDOWS_DOWNLOAD_URL, GITHUB_REPO, RELEASES_URL } from '@/
 export const metadata: Metadata = {
   title: 'Releases — ShadRox',
   description:
-    'What is new in ShadRox v0.0.8: honest edit reports, file-note outcomes you can trust, and a calmer chat. See how updates work, why same-version rebuilds need a manual reinstall, and where older installers went.',
+    'What is new in ShadRox v0.0.9: durable autonomous runs that survive restarts, evidence-backed acceptance checks, and a free + BYOK-only product. See how updates work and where older installers went.',
   alternates: { canonical: '/releases' },
 }
 
@@ -30,19 +28,19 @@ const RELEASE_TAG_URL = `${GITHUB_REPO}/releases/tag/v${APP_VERSION}`
 
 const highlights = [
   {
-    icon: ShieldCheck,
-    title: 'Edits land — or say why',
-    text: 'A reply cut off mid-code-block is no longer dropped silently. Truncated or malformed edit blocks become explicit failures, and the agent retries once with the exact current file contents.',
+    icon: History,
+    title: 'Runs that survive a restart',
+    text: 'Autonomous runs keep a durable journal. Pause, cancel or resume them — with token and time budgets that stop a run before it runs away.',
   },
   {
-    icon: ClipboardCheck,
-    title: 'Outcomes you can trust',
-    text: 'Every file note reports the real result — applied, awaiting review or not applied — instead of guessing from the reply text. Outcomes are remembered when you reopen the project.',
+    icon: Camera,
+    title: 'Proof, not promises',
+    text: 'Acceptance checks capture screenshot, DOM and console evidence: a baseline before the change and a verified state after, so "it works" has receipts.',
   },
   {
-    icon: MessagesSquare,
-    title: 'A calmer chat',
-    text: 'Long code blocks collapse to a one-line summary, reasoning traces fold once the answer lands, and model and token stats live under a single Usage toggle.',
+    icon: KeyRound,
+    title: 'Free + BYOK, nothing hidden',
+    text: 'No plans, no checkout, no meter. Bring your own provider key — and every shell command still asks you first, with a plain-language risk notice.',
   },
 ]
 
@@ -50,17 +48,17 @@ const updateFlow = [
   {
     icon: RefreshCw,
     title: 'Checks on start',
-    text: 'ShadRox looks for a newer release when it starts and tells you when an update is ready.',
+    text: 'About 15 seconds after launch, and every 6 hours after that, ShadRox looks for a newer release.',
   },
   {
-    icon: RotateCw,
-    title: 'Restart to install',
-    text: 'Review the release notes, then restart the app to install the update.',
+    icon: BellRing,
+    title: 'A badge, nothing more',
+    text: 'When an update exists you get a badge and the release notes. Nothing is downloaded or installed behind your back.',
   },
   {
-    icon: PackageX,
-    title: 'Same-version rebuilds are manual',
-    text: 'If a build is replaced under the same version number, auto-update will not detect it. Download and reinstall that one manually.',
+    icon: Download,
+    title: 'Install when you are ready',
+    text: 'Download the installer from the release page and run it. Your settings and projects stay put.',
   },
 ]
 
@@ -138,7 +136,7 @@ export default function ReleasesPage() {
                     }}
                   >
                     <Sparkles className="size-3.5" />
-                    Latest · rebuilt
+                    Latest
                   </span>
                   <span className="ml-auto inline-flex items-center gap-1.5 text-xs font-medium text-[var(--mut)]">
                     <CalendarDays className="size-3.5" />
@@ -147,12 +145,13 @@ export default function ReleasesPage() {
                 </div>
 
                 <h2 className="mt-6 max-w-[700px] text-balance text-[clamp(26px,3.6vw,42px)] font-bold tracking-[-0.04em] leading-[1.1] text-[var(--ink)]">
-                  Edits you can trust,{' '}
-                  <em className="font-normal italic text-[var(--ac)]">and a calmer chat.</em>
+                  Durable runs,{' '}
+                  <em className="font-normal italic text-[var(--ac)]">proof you can see.</em>
                 </h2>
                 <p className="mt-4 max-w-[660px] text-sm leading-7 text-[var(--mut)]">
-                  The first v{APP_VERSION} build was replaced by a rebuilt installer with the same
-                  version number. These are the fixes it ships.
+                  v{APP_VERSION} makes long agent runs trustworthy: they survive restarts, carry
+                  evidence, and stay inside budgets you set. And ShadRox is now free + BYOK only —
+                  no plans, no checkout.
                 </p>
 
                 {/* Highlights */}
@@ -171,31 +170,6 @@ export default function ReleasesPage() {
                       <p className="text-[13px] leading-6 text-[var(--mut)]">{text}</p>
                     </div>
                   ))}
-                </div>
-
-                {/* Same-version reinstall callout */}
-                <div
-                  className="mt-6 flex gap-4 rounded-2xl border p-5"
-                  style={{
-                    borderColor: 'color-mix(in srgb, var(--ac) 35%, transparent)',
-                    background: 'color-mix(in srgb, var(--ac) 8%, transparent)',
-                  }}
-                >
-                  <span
-                    className="grid size-9 shrink-0 place-items-center rounded-xl"
-                    style={{ background: 'color-mix(in srgb, var(--ac) 16%, transparent)' }}
-                  >
-                    <TriangleAlert className="size-[18px] text-[var(--ac)]" strokeWidth={1.75} />
-                  </span>
-                  <div>
-                    <h3 className="text-sm font-bold text-[var(--ink)]">
-                      On the first v{APP_VERSION} build? Reinstall manually.
-                    </h3>
-                    <p className="mt-1 text-[13px] leading-6 text-[var(--ink2)]">
-                      Auto-update cannot detect a rebuild published under the same version number.
-                      Download this installer and run it again — same version, fixed build.
-                    </p>
-                  </div>
                 </div>
 
                 {/* Actions */}
@@ -234,7 +208,7 @@ export default function ReleasesPage() {
             eyebrow="Updates"
             title="How updates"
             accent="reach you."
-            sub="A simple, predictable flow — ShadRox never silently swaps a build under the same version number."
+            sub="A simple, predictable flow — ShadRox never downloads or installs anything without you."
           />
 
           <div className="grid gap-[18px] md:grid-cols-3">

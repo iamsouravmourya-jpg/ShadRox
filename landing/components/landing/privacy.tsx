@@ -3,13 +3,10 @@
 import { Check, Cloud, FolderTree, KeyRound, Monitor, ShieldCheck, Sparkles } from 'lucide-react'
 import { Reveal } from './reveal'
 
-const allowlist = ['npm test', 'pytest', 'python -m pytest', 'tsc --noEmit', 'npx tsc --noEmit', 'git diff', 'git status']
-
 const guarantees: {
   icon: typeof FolderTree
   title: string
   text: string
-  chips?: string[]
 }[] = [
   {
     icon: FolderTree,
@@ -29,8 +26,7 @@ const guarantees: {
   {
     icon: ShieldCheck,
     title: 'Guarded commands, default-deny',
-    text: 'Only these exact verify forms run without a prompt. One extra argument or a shell operator breaks the match, so everything else waits for a native approval dialog — and the workspace is re-checked between approval and execution.',
-    chips: allowlist,
+    text: 'Every shell command — even npm test or git status — opens a native approval dialog with a plain-language risk notice, and the workspace is re-checked between approval and execution.',
   },
   {
     icon: Sparkles,
@@ -94,7 +90,7 @@ export function Privacy() {
           {/* Right — guarantee cards */}
           <Reveal variant="scale" delay={120}>
             <div className="grid gap-4">
-              {guarantees.map(({ icon: Icon, title, text, chips }, i) => (
+              {guarantees.map(({ icon: Icon, title, text }, i) => (
                 <div
                   key={title}
                   className="flex gap-4 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-5 transition-all duration-300 hover:translate-x-1.5 hover:border-[var(--ac)] hover:shadow-[4px_0_20px_var(--glow)]"
@@ -106,18 +102,6 @@ export function Privacy() {
                   <div>
                     <h4 className="mb-1 text-sm font-bold text-[var(--ink)]">{title}</h4>
                     <p className="text-[13px] leading-5 text-[var(--mut)]">{text}</p>
-                    {chips && (
-                      <div className="mt-2.5 flex flex-wrap gap-1.5">
-                        {chips.map((c) => (
-                          <code
-                            key={c}
-                            className="rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[10px] text-[var(--ink2)]"
-                          >
-                            {c}
-                          </code>
-                        ))}
-                      </div>
-                    )}
                   </div>
                 </div>
               ))}

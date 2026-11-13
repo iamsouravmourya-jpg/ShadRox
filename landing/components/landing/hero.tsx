@@ -76,7 +76,7 @@ export function Hero() {
             </a>
           </div>
           <p className="mt-4 text-[12px] text-[var(--mut)]">
-            Windows 10 / 11 · 64-bit · Bring your own key · Auto-updates
+            Windows 10 / 11 · 64-bit · Bring your own key · Update checks
           </p>
         </Reveal>
       </div>
