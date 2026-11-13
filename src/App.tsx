@@ -14,12 +14,19 @@ import { useDebug } from './hooks/useDebug';
 import { DebugPanel } from './components/DebugPanel';
 import { useCapsules } from './hooks/useCapsules';
 import { useIntentGraph } from './hooks/useIntentGraph';
+import type { DecisionInput } from './lib/intent/types';
 import type { BehaviorEvent, AcceptanceContract } from './lib/behavior/types';
 import { appendBehaviorEvent } from './lib/behavior/recorder';
 import { generateAcceptanceContract } from './lib/behavior/contract';
+import { acceptanceOutcome, describeEvidence } from './lib/behavior/verification';
+import { useAcceptance } from './hooks/useAcceptance';
 import { listOutcomes, recordOutcome, routeProfiles } from './lib/calibratedAuto/ledger';
-import { rankModelsByOutcome } from './lib/calibratedAuto/router';
-import type { OutcomeRecord } from './lib/calibratedAuto/types';
+import { rankModels } from './lib/calibratedAuto/router';
+import { listPreferences, setPreferredModel } from './lib/calibratedAuto/preferences';
+import type { ModelPreferences } from './lib/calibratedAuto/preferences';
+import { NO_APPLY, outcomeOfReader, outcomeOfTurn, testRunsFrom } from './lib/calibratedAuto/evidence';
+import type { ApplyOutcome, IntroducedDiagnostics, TurnToolCall, VerificationCard } from './lib/calibratedAuto/evidence';
+import type { CalibratedTaskType, OutcomeRecord } from './lib/calibratedAuto/types';
 import { TaskInspector } from './components/TaskInspector';
 import { loadCheckpointFiles } from './lib/history';
 import { getCapsule } from './lib/capsules/store';
@@ -128,11 +135,9 @@ import { buildContextManifest, type ContextManifest, type ContextSource } from '
 import { restoreDraft } from './lib/promptTemplates';
 import { estimateTokens } from './lib/toolUtils';
 import { detectLanguage } from './lib/languages';
-import { getPlan, setPlan as persistPlan } from './lib/storage';
-import { getPlanMeta, isPlanSelectable } from './lib/plans';
-import { getMonthlyUsage, recordCreditSpend, settleTurnCredits } from './lib/quota';
 import { creditsForTurn } from './lib/usageCredits';
-import { normalizePermissionMode, type PermissionMode } from './lib/agent/runPolicy';
+import { normalizePermissionMode, holdReplyApply, type PermissionMode } from './lib/agent/runPolicy';
+import { commandApprovalNotice } from './lib/agent/commandGuard';
 import type { AttemptRecord } from './lib/taskUsage';
 import type { ResolvedPayer } from './lib/sharedKeyPolicy';
 import { globalRepairSession } from './lib/repairSession';
@@ -181,7 +186,6 @@ import type {
   ChatMessage,
   PatchSet,
   PersistedWriteOutcome,
-  PlanTier,
   RecentEntry,
   RefineMode,
   RefinedPromptMeta,
@@ -243,6 +247,12 @@ interface ActiveOrchestration {
   kind: 'autonomy' | 'team';
   budgetCredits: number;
   seenRunning: boolean;
+  /**
+   * True when this card continues a run that already exists. A resumed run keeps
+   * its original `startedAt`, so the "is this the run I just started" check has to
+   * compare the goal alone — otherwise a resume looks like a run that never began.
+   */
+  resumed?: boolean;
 }
 
 type OrchestrationStatus = NonNullable<ChatMessage['orchestration']>['status'];
@@ -257,12 +267,44 @@ interface QueuedChatDraft extends QueuedChatItem {
   envelope: RequestEnvelope;
 }
 
+/**
+ * One apply pass, reported so the turn can log evidence rather than intent.
+ * `verification` and `diagnostics` stay absent when the pass never reached the
+ * checks — an unanswered check is no data, not a failure.
+ */
+interface ReviewSetOutcome {
+  applied: string[];
+  failures: string[];
+  verification?: VerificationCard | null;
+  diagnostics?: IntroducedDiagnostics | null;
+}
+
+/**
+ * What one Auto reader pass produced, written by the pass itself.
+ *
+ * `ran` distinguishes a picker call that happened from a turn that skipped it —
+ * a short request needs no second pass and must never be recorded against the
+ * model that would have run it.
+ */
+interface PickerReport {
+  model: string;
+  ran: boolean;
+  shortlist: number;
+  answered: boolean;
+  picked: number;
+  durationMs: number;
+}
+
 function orchestrationStatusOfRun(status: string): OrchestrationStatus {
   switch (status) {
     case 'done':
       return 'done';
     case 'failed':
       return 'failed';
+    case 'paused':
+      // Its own state, never folded into 'stopped': a paused run can continue,
+      // and the card offers Resume only when it can.
+      return 'paused';
     case 'cancelled':
       return 'stopped';
     case 'stopped-budget':
@@ -524,7 +566,6 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('CHAT');
   const [secrets, setSecrets] = useState<SecretItem[]>([]);
-  const [plan, setPlan] = useState<PlanTier>(() => getPlan());
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -667,6 +708,8 @@ export default function App() {
   const projectSkills = projectSkillsState[0];
   const setProjectSkills = projectSkillsState[1];
   const rulesNoteRef = useRef('');
+  /** Why the calibrated picker ran on the model it picked, for the context note. */
+  const routingNoteRef = useRef('');
   const mcpToolHandleRef = useRef<McpToolHandle | null>(null);
   const automationStatesRef = useRef<Record<string, AutomationState>>({});
   const automationRootRef = useRef<string | null>(null);
@@ -754,7 +797,15 @@ export default function App() {
     [workspace.files]
   );
   const intent = useIntentGraph(workspaceRootPath, intentFiles);
-  const calibratedProfiles = useMemo(() => routeProfiles(), [calibratedOutcomes]);
+  // The ledger is only useful read per task: a model that is good at refactors
+  // and hopeless at tests averages out to "fine", which is not a fact.
+  const [calibratedTaskType, setCalibratedTaskType] = useState<CalibratedTaskType>('chat');
+  const [modelPins, setModelPins] = useState<ModelPreferences>(() => listPreferences());
+  const calibratedProfiles = useMemo(() => routeProfiles(calibratedTaskType), [calibratedTaskType, calibratedOutcomes, modelPins]);
+  const calibratedRanking = useMemo(
+    () => rankModels({ taskType: calibratedTaskType, models: byok.models.map((model) => model.id) }),
+    [calibratedTaskType, byok.models, calibratedOutcomes, modelPins]
+  );
   /** True once shadrox.debug.json parsed into at least one configuration. */
   const debugBreakpointsEnabled = debug.config.configurations.length > 0;
   /** Where the debugger is paused, for the editor-header chip. */
@@ -958,7 +1009,7 @@ export default function App() {
       let commands = 0;
       for (const run of runs) {
         if (run.action.type === 'prompt') {
-          if (!(byok.useShadRoxKey || byok.activeKey)) continue;
+          if (!(byok.activeKey)) continue;
           if (prompts >= MAX_PLUGIN_PROMPTS_PER_BATCH) continue;
           if (pendingPromptQueueRef.current.length >= MAX_PLUGIN_PROMPT_QUEUE) continue;
           if (seenPrompts.has(run.action.prompt)) continue;
@@ -970,11 +1021,11 @@ export default function App() {
         if (!desktop || !nativeWorkspaceId || commands >= MAX_PLUGIN_COMMANDS_PER_BATCH) continue;
         commands += 1;
         void desktop
-          .runCommand(nativeWorkspaceId, run.action.argv)
+          .runCommand(nativeWorkspaceId, run.action.argv, commandApprovalNotice(run.action.argv))
           .catch((error) => warnBridgeError('plugin-command', error));
       }
     },
-    [byok.useShadRoxKey, byok.activeKey, desktop, nativeWorkspaceId]
+    [byok.activeKey, desktop, nativeWorkspaceId]
   );
 
   /** Save hooks and save automations both run once per saved path, guarded against re-entry. */
@@ -1335,6 +1386,11 @@ export default function App() {
     });
   }, []);
 
+  const announce = useCallback((message: string, ms = 4500) => {
+    setToast(message);
+    window.setTimeout(() => setToast(null), ms);
+  }, []);
+
   /** Every atomic save reports only successfully written paths to hooks and automations. */
   const saveFilesAtomicWithHooks = useCallback(
     async (names: string[]) => {
@@ -1348,31 +1404,21 @@ export default function App() {
   /** Saves, then re-runs diagnostics so the problem list reflects disk. */
   const saveAllFiles = useCallback(async () => {
     const names = [...dirtyFilesRef.current];
-    if (names.length > 0) await saveFilesAtomicWithHooks(names);
+    if (names.length > 0) {
+      const outcome = await saveFilesAtomicWithHooks(names);
+      // Every other save path says so when the disk refuses; Ctrl+S was silent,
+      // which left the user believing unsaved edits were already on disk.
+      if (outcome.failed) {
+        announce(`Save failed — ${outcome.message ?? 'the disk write did not complete.'} Press Ctrl+S to try again.`, 7000);
+      }
+    }
     diagnostics.refresh();
-  }, [saveFilesAtomicWithHooks, diagnostics.refresh]);
+  }, [announce, saveFilesAtomicWithHooks, diagnostics.refresh]);
 
   const openSettings = useCallback((tab: SettingsTab = 'CHAT') => {
     setSettingsTab(tab);
     setIsSettingsOpen(true);
   }, []);
-
-  const changePlan = useCallback(
-    (next: PlanTier) => {
-      if (!isPlanSelectable(next)) {
-        setToast('Yeh plan abhi beta me locked hai. Free BYOK unlimited rahega.');
-        window.setTimeout(() => setToast(null), 3500);
-        return;
-      }
-      if (next !== plan) {
-        setToast(`Switched to the ${getPlanMeta(next).label} plan. Beta upgrade — no payment was taken.`);
-        window.setTimeout(() => setToast(null), 4000);
-      }
-      setPlan(next);
-      persistPlan(next);
-    },
-    [plan]
-  );
 
   // Move into the workspace automatically once a folder/files are mounted.
   useEffect(() => {
@@ -1755,7 +1801,7 @@ export default function App() {
       if (!tree.length) return null;
       // No key to spend means the reader pass can only fail, and the user then
       // waits for a call that was never going to answer.
-      if (!byok.useShadRoxKey && !byok.activeKey) return null;
+      if (!byok.activeKey) return null;
 
       const loadedPaths = folder?.files.map((file) => file.name) ?? [];
       const shortlist = buildPathShortlist(tree, query, {
@@ -1768,19 +1814,28 @@ export default function App() {
 
       // The picker answers with a path list, which costs a fraction of the
       // context it is protecting, so it always earns its own call. Nothing is
-      // forced here: a free plan gets the pass too because its own key pays for
-      // every context token, and only the answer-side swap needs ShadRox's key.
+      // forced here: the user's own key pays for every context token, and the
+      // reader pass is taken because it makes that call cheaper, not because
+      // anyone else is billed. The calibrated order only reorders the models
+      // that already fit the route budget — price still sets the ceiling.
+      const modelIds = byok.models.map((model) => model.id);
+      const ranked = rankModels({ taskType: 'chat', models: modelIds, outcomes: calibratedOutcomes });
       const decision = decideAutoRoute({
         role,
         estimatedInputTokens: DISK_CONTEXT_TOKEN_ESTIMATE,
-        availableModels: rankModelsByOutcome('chat', byok.models.map((model) => model.id)),
+        availableModels: modelIds,
         userModel: byok.selectedModel,
-        isSharedKey: byok.useShadRoxKey,
-        plan
+        isSharedKey: false,
+        outcomePreference: ranked.map((entry) => entry.model)
       });
+      // Says out loud which model the first pass runs on and why — the record
+      // behind the pick, not just the pick.
+      routingNoteRef.current = decision.condenseModel
+        ? `Picker ${decision.condenseModel}: ${ranked.find((entry) => entry.model === decision.condenseModel)?.reason ?? 'no model has verified history, so price chose it'}.`
+        : '';
       return decision.condenseModel;
     },
-    [autoContext, byok.activeKey, byok.models, byok.selectedModel, byok.useShadRoxKey, plan, workspace.workspace]
+    [autoContext, byok.activeKey, byok.models, byok.selectedModel, calibratedOutcomes, workspace.workspace]
   );
 
   /**
@@ -1789,19 +1844,22 @@ export default function App() {
    * by parseSelectedPaths and the bytes come from disk regardless.
    */
   const runContextPicker = useCallback(
-    (readerModel: string) => async (shortlist: string[], query: string): Promise<string[]> => {
+    (readerModel: string, report?: PickerReport) => async (shortlist: string[], query: string): Promise<string[]> => {
       let answer = '';
+      let answered = true;
       const controller = new AbortController();
       // A stuck cheap model must not hold the user's request hostage; the
       // lexical shortlist is a perfectly good answer without it.
       const timer = window.setTimeout(() => controller.abort(), PICKER_TIMEOUT_MS);
+      let picked: string[] = [];
+      const startedAt = Date.now();
       try {
         await streamChat(
           {
             provider: byok.activeProvider,
             baseUrl: byok.baseUrl,
             model: readerModel,
-            apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
+            apiKey: byok.activeKey,
             messages: [
               { role: 'user', content: buildSelectionInstruction(shortlist, query, MAX_PICKER_PICKS) }
             ],
@@ -1814,15 +1872,28 @@ export default function App() {
             },
             onError: () => {
               answer = '';
+              answered = false;
             }
           }
         );
+        picked = parseSelectedPaths(answer, shortlist, MAX_PICKER_PICKS);
+      } catch {
+        // Aborted or refused: the pass is not a verdict on the model, so it is
+        // reported as never answered and the ledger writes no judgement.
+        answered = false;
       } finally {
         window.clearTimeout(timer);
       }
-      return parseSelectedPaths(answer, shortlist, MAX_PICKER_PICKS);
+      if (report) {
+        report.ran = true;
+        report.shortlist = shortlist.length;
+        report.answered = answered;
+        report.picked = picked.length;
+        report.durationMs = Date.now() - startedAt;
+      }
+      return picked;
     },
-    [byok.activeProvider, byok.baseUrl, byok.activeKey, byok.useShadRoxKey]
+    [byok.activeProvider, byok.baseUrl, byok.activeKey]
   );
 
   const buildSystemContext = useCallback(
@@ -1861,7 +1932,7 @@ export default function App() {
         maxDecisions: 8
       });
       if (intentContext.text) {
-        core.push('LIVING INTENT (user-approved provenance; stale items require verification):', intentContext.text);
+        core.push('LIVING INTENT (user-approved provenance; STALE items may no longer hold and UNVERIFIED items were never checked against code — re-read the file before relying on either):', intentContext.text);
       }
 
       if (mode.writesFiles) {
@@ -2266,39 +2337,30 @@ export default function App() {
     });
   }, []);
 
-  /** Every accepted ghost-text costs a tenth of a credit — nothing on BYOK. */
-  const handleCompletionAccepted = useCallback(
-    () => recordCreditSpend(plan, 'tabCompletion'),
-    [plan]
-  );
-
   /** Everything the editor needs to spend the active key on inline AI work. */
   const editorAi = useMemo(
     () => ({
       provider: byok.activeProvider,
-      // Only the custom provider forwards it; a URL is not a secret, so unlike
-      // the key it travels even when the shared-key toggle is off.
+      // Only the custom provider forwards it; a URL is not a secret, so it
+      // travels with the request the same way the model id does.
       baseUrl: byok.baseUrl,
       model: byok.selectedModel,
-      apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
-      completionEnabled: inlineCompletion && (byok.useShadRoxKey || Boolean(byok.activeKey)),
+      apiKey: byok.activeKey,
+      completionEnabled: inlineCompletion && Boolean(byok.activeKey),
       onToggleCompletion: toggleInlineCompletion,
-      onCompletionAccepted: handleCompletionAccepted,
       // Consumed by Ctrl+K (clamped inside runQuickEdit). Tab completion does
       // not take it — completions must stay near-deterministic.
       temperature: byok.temperature,
-      hasCredential: byok.useShadRoxKey || Boolean(byok.activeKey)
+      hasCredential: Boolean(byok.activeKey)
     }),
     [
       byok.activeProvider,
       byok.baseUrl,
       byok.selectedModel,
       byok.activeKey,
-      byok.useShadRoxKey,
       byok.temperature,
       inlineCompletion,
-      toggleInlineCompletion,
-      handleCompletionAccepted
+      toggleInlineCompletion
     ]
   );
 
@@ -2313,9 +2375,9 @@ export default function App() {
         provider: byok.activeProvider,
         baseUrl: byok.baseUrl,
         model: byok.selectedModel,
-        apiKey: byok.useShadRoxKey ? undefined : byok.activeKey
+        apiKey: byok.activeKey
       }),
-    [byok.activeProvider, byok.baseUrl, byok.selectedModel, byok.activeKey, byok.useShadRoxKey]
+    [byok.activeProvider, byok.baseUrl, byok.selectedModel, byok.activeKey]
   );
 
   useEffect(() => {
@@ -2331,7 +2393,7 @@ export default function App() {
         provider: byok.activeProvider,
         baseUrl: byok.baseUrl,
         model: byok.selectedModel,
-        apiKey: byok.useShadRoxKey ? undefined : byok.activeKey
+        apiKey: byok.activeKey
       });
       return message;
     } catch (error) {
@@ -2348,14 +2410,8 @@ export default function App() {
     workspace.files,
     byok.activeProvider,
     byok.selectedModel,
-    byok.activeKey,
-    byok.useShadRoxKey
+    byok.activeKey
   ]);
-
-  const announce = useCallback((message: string, ms = 4500) => {
-    setToast(message);
-    window.setTimeout(() => setToast(null), ms);
-  }, []);
 
   const handleBehaviorEvent = useCallback((event: BehaviorEvent) => {
     setBehaviorEvents((previous) => appendBehaviorEvent(previous, event));
@@ -2370,9 +2426,23 @@ export default function App() {
     setBehaviorContract(null);
   }, []);
 
-  const handleContractUpdate = useCallback((contract: AcceptanceContract) => {
-    setBehaviorContract(contract);
-  }, []);
+  /**
+   * Behavior-to-code acceptance. The panel's buttons and the apply path share
+   * this one runner, so a phase can only change through a verdict the preview
+   * harness produced — there is no code path that writes `passed` from a click.
+   */
+  const acceptance = useAcceptance({
+    bridge: desktop,
+    workspaceId: nativeWorkspaceId,
+    previewReady: localRuntime.status === 'ready',
+    contract: behaviorContract,
+    setContract: setBehaviorContract
+  });
+
+  const handleRunCheck = useCallback(async (phase: 'baseline' | 'postPatch') => {
+    const result = await acceptance.run(phase);
+    announce(result.message, 7000);
+  }, [acceptance, announce]);
 
   // --- change capsules -------------------------------------------------------
 
@@ -2470,6 +2540,21 @@ export default function App() {
       5000
     );
   }, [capsules, announce]);
+
+  const handleAddDecision = useCallback(async (input: DecisionInput) => {
+    const decision = await intent.addDecision(input);
+    if (!decision) {
+      announce('The decision was not saved — this workspace cannot write local storage.', 5000);
+      return;
+    }
+    const governed = Object.keys(input.baseHashes).length;
+    announce(
+      governed === 0
+        ? 'Saved. None of its files are indexed yet, so it will read as unverified until one is open.'
+        : `Saved. It now tracks ${governed} file${governed === 1 ? '' : 's'} for change.`,
+      4500
+    );
+  }, [intent, announce]);
 
   const handleIntentExport = useCallback(() => {
     const exported = intent.exportJson();
@@ -2812,6 +2897,10 @@ export default function App() {
    * Runs the language service after a change set lands. Missing names that
    * resolve to exactly one workspace export are imported deterministically
    * (no model call); anything still broken is offered as a one-click fix.
+   *
+   * Reads like a verdict for the outcome ledger: `ran` says the language
+   * service actually answered, and `introduced` counts what is still broken
+   * after the auto-import pass healed what it could.
    */
   const healAfterApply = useCallback(
     async (
@@ -2819,8 +2908,8 @@ export default function App() {
       applied: string[],
       jobs: AtomicPlanJob[],
       before: Promise<DiagnosticsResult | null>
-    ) => {
-      if (!desktop || !nativeWorkspaceId || applied.length === 0) return;
+    ): Promise<{ ran: boolean; introduced: number }> => {
+      if (!desktop || !nativeWorkspaceId || applied.length === 0) return { ran: false, introduced: 0 };
       try {
         const beforeResult = await before;
         const merged = new Map(workspace.files.map((file) => [file.name, file.content] as const));
@@ -2851,14 +2940,19 @@ export default function App() {
           }
         }
 
-        const remaining = selectFixableDiagnostics(
-          filterIntroducedDiagnostics(beforeResult?.diagnostics ?? [], after.diagnostics, applied)
+        const introducedList = filterIntroducedDiagnostics(
+          beforeResult?.diagnostics ?? [],
+          after.diagnostics,
+          applied
         );
+        const remaining = selectFixableDiagnostics(introducedList);
         if (remaining.length > 0) {
           setTypeFixOffers((previous) => ({ ...previous, [messageId]: remaining }));
         }
+        return { ran: true, introduced: introducedList.length };
       } catch (error) {
         warnBridgeError('auto-fix', error);
+        return { ran: false, introduced: 0 };
       }
     },
     [desktop, nativeWorkspaceId, workspace, announce, saveFilesAtomicWithHooks]
@@ -2876,7 +2970,7 @@ export default function App() {
       messageId: string,
       patches: ReviewPatch[],
       options: { allowDestructive?: boolean; verify?: boolean; onlyIndex?: number } = {}
-    ): Promise<{ applied: string[]; failures: string[] }> => {
+    ): Promise<ReviewSetOutcome> => {
       const indexes = options.onlyIndex === undefined
         ? patches.map((_, index) => index)
         : [options.onlyIndex];
@@ -2919,6 +3013,8 @@ export default function App() {
         allowDestructive: options.allowDestructive
       });
       let changeSetVerdict: { ok: boolean; checked: number; issues: Array<{ code: string }>; skipped: string[] } | null = null;
+      let verification: VerificationCard | null = null;
+      let diagnostics: IntroducedDiagnostics | null = null;
 
       if (!('failures' in applyPlan)) {
         if (options.verify !== false && desktop && nativeWorkspaceId) {
@@ -2937,7 +3033,14 @@ export default function App() {
                   : 'Not applied — the change set failed verification.',
                 7000
               );
-              return { applied: [], failures: targets.map((patch) => `${patch.path}: blocked by pre-apply verification`) };
+              return {
+                applied: [],
+                failures: targets.map((patch) => `${patch.path}: blocked by pre-apply verification`),
+                verification: {
+                  passed: false,
+                  checks: [{ name: 'Static syntax validation', ok: false, details: first ? `${first.path}:${first.line + 1} ${first.message}` : 'the change set failed verification' }]
+                }
+              };
             }
           } catch (error) {
             warnBridgeError('verify-change-set', error);
@@ -2954,8 +3057,27 @@ export default function App() {
           `Not applied — ${applyPlan.failures.slice(0, 2).map((failure) => `${failure.path}: ${failure.reason}`).join(' · ')}`,
           7000
         );
-        return { applied: [], failures: applyPlan.failures.map((failure) => `${failure.path}: ${failure.reason}`) };
+        return {
+          applied: [],
+          failures: applyPlan.failures.map((failure) => `${failure.path}: ${failure.reason}`),
+          verification: {
+            passed: false,
+            checks: [{ name: 'Patch mapping', ok: false, details: applyPlan.failures[0]?.reason }]
+          }
+        };
       }
+
+      // Behavior acceptance, half 1 of 2: what the preview does with the files
+      // as they are now. Only a contract the user generated asks for this, and
+      // only when the preview is actually serving — and it is recorded once,
+      // because the receipt describes the pre-patch document.
+      const acceptanceContract = acceptance.contract;
+      const wantsAcceptance = acceptanceContract !== null && localRuntime.status === 'ready';
+      if (wantsAcceptance && acceptanceContract.baseline.evidence === null) {
+        await acceptance.run('baseline');
+      }
+      // Whatever the patched page must beat: the last paint before this write.
+      const paintBeforeWrite = acceptance.paintToken();
 
       const editCheckpoint = await workspace.markCheckpoint(messageId, 'Apply reviewed changes', true, true);
       try {
@@ -3029,6 +3151,24 @@ export default function App() {
             !changeSetVerdict.issues.some((issue) => issue.code === 'PATH_OUTSIDE_WORKSPACE');
           const uniqueApplied = new Set(applied.map((item) => item.toLowerCase())).size;
           const diskSavePassed = !outcome.failed && outcome.written === uniqueApplied;
+          // Behavior acceptance, half 2 of 2: re-run the recorded interaction's
+          // probe against the page the patched files produced. The row is added
+          // only when the harness returned a verdict — an unverified run is
+          // reported in the contract panel, not voted into this turn's result.
+          let acceptanceRow: { name: string; ok: boolean; details?: string } | null = null;
+          if (wantsAcceptance && outcome.written > 0) {
+            const post = await acceptance.run('postPatch', { repaintFrom: paintBeforeWrite });
+            if (post.evidence && post.contract) {
+              const outcomeState = acceptanceOutcome(post.contract);
+              if (post.evidence.result !== 'unverified') {
+                acceptanceRow = {
+                  name: 'Preview acceptance',
+                  ok: post.evidence.result === 'passed',
+                  details: `${outcomeState.summary} Baseline: ${describeEvidence(post.contract.baseline.evidence)}.`
+                };
+              }
+            }
+          }
           const checks = [
             {
               name: 'Static syntax validation',
@@ -3048,9 +3188,11 @@ export default function App() {
               details: diskSavePassed
                 ? `${outcome.written} file(s) confirmed saved`
                 : `${outcome.written} of ${uniqueApplied} file(s) saved${outcome.message ? `: ${outcome.message}` : ''}`
-            }
+            },
+            ...(acceptanceRow ? [acceptanceRow] : [])
           ];
           const passed = checks.every((check) => check.ok);
+          verification = { passed, checks };
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === messageId
@@ -3075,12 +3217,17 @@ export default function App() {
               void workspace.loadDirectory(directory);
             }
           }
-          await healAfterApply(messageId, applied, jobs, beforeDiagnostics);
+          diagnostics = await healAfterApply(messageId, applied, jobs, beforeDiagnostics);
         }
-        return { applied, failures: [] };
+        return {
+          applied,
+          failures: [],
+          ...(verification ? { verification } : {}),
+          ...(diagnostics ? { diagnostics } : {})
+        };
       } finally { await workspace.finishMachineCheckpoint(editCheckpoint); }
     },
-    [workspace, desktop, nativeWorkspaceId, announce, healAfterApply, plan, saveFilesAtomicWithHooks]
+    [workspace, desktop, nativeWorkspaceId, announce, healAfterApply, saveFilesAtomicWithHooks, acceptance, localRuntime.status]
   );
 
   const acceptPatch = useCallback(
@@ -3297,15 +3444,17 @@ export default function App() {
       fullReply: string,
       mode: RefineModeMeta,
       options: { replace?: boolean; onFailures?: (failures: string[]) => void | Promise<void>; onUnmapped?: () => void | Promise<void> } = {}
-    ) => {
-      if (!options.replace && patchSets.some((set) => set.messageId === messageId)) return;
+    ): Promise<ApplyOutcome> => {
+      // Already staged by an earlier pass in this turn: report nothing, so the
+      // same edit is never counted twice in the outcome ledger.
+      if (!options.replace && patchSets.some((set) => set.messageId === messageId)) return NO_APPLY;
 
       if (!mode.writesFiles) {
         if (extractFilePatches(fullReply, workspace.files).patches.length > 0) {
           setToast('Plan mode active — file modifications were not applied.');
           window.setTimeout(() => setToast(null), 5000);
         }
-        return;
+        return NO_APPLY;
       }
 
       const extractedPatches = extractUnifiedPatches(fullReply, workspace.files);
@@ -3328,12 +3477,12 @@ export default function App() {
         if (looksLikeEdit) {
           if (options.onUnmapped) {
             await options.onUnmapped();
-            return;
+            return { ...NO_APPLY, editAttempted: true };
           }
           setToast('The reply contained edit blocks, but none could be applied — nothing was changed.');
           window.setTimeout(() => setToast(null), 6000);
         }
-        return;
+        return { ...NO_APPLY, editAttempted: looksLikeEdit };
       }
 
       const review: ReviewPatch[] = patches.map((patch) => ({
@@ -3348,11 +3497,27 @@ export default function App() {
         ? [...previous.filter((set) => set.messageId !== messageId), { messageId, patches: review }]
         : [...previous, { messageId, patches: review }]));
 
-      if (!autoApplyChanges) return;
-      if (planApprovalGateRef.current.has(messageId)) {
+      // Auto-apply is a user preference, not a permission mode override: Ask
+      // and Plan forbid a machine-sensitive write, so the set stays staged for
+      // the user to apply by hand.
+      const hold = holdReplyApply({
+        autoApplyChanges,
+        awaitingPlanApproval: planApprovalGateRef.current.has(messageId),
+        permissionMode
+      });
+      // A staged set is not an outcome: nothing was checked because nothing was
+      // written, and the user's own choice to review first must never be
+      // recorded as the model failing.
+      if (hold === 'auto-apply-off') return NO_APPLY;
+      if (hold === 'plan-approval') {
         setToast('Plan is waiting for approval — changes are staged, not applied.');
         window.setTimeout(() => setToast(null), 4000);
-        return;
+        return NO_APPLY;
+      }
+      if (hold === 'permission-mode') {
+        setToast(`${permissionMode === 'plan' ? 'Plan' : 'Ask'} mode active — changes are staged for review, not applied.`);
+        window.setTimeout(() => setToast(null), 5000);
+        return NO_APPLY;
       }
 
       setToast(`Verifying ${review.length} file(s)…`);
@@ -3360,8 +3525,15 @@ export default function App() {
       const outcome = await applyReviewSet(messageId, review);
       const failures = [...blockedPaths, ...outcome.failures];
       if (failures.length > 0) await options.onFailures?.(failures);
+      return {
+        editAttempted: true,
+        filesWritten: outcome.applied.length,
+        patchFailures: outcome.failures,
+        verification: outcome.verification ?? null,
+        diagnostics: outcome.diagnostics ?? null
+      };
     },
-    [patchSets, workspace, autoApplyChanges, applyReviewSet]
+    [patchSets, workspace, autoApplyChanges, permissionMode, applyReviewSet]
   );
 
   const handleSend = useCallback(async (
@@ -3397,13 +3569,6 @@ export default function App() {
       : typed;
     if (invocation) announce(`Expanded the ${invocation.skill.name} skill this folder keeps.`, 4000);
 
-    const quota = getMonthlyUsage(plan);
-    if (quota.isCapReached) {
-      setToast(`Monthly credit cap reached (${quota.limit}/${quota.limit} credits). Upgrade in Settings.`);
-      openSettings('PLAN');
-      return;
-    }
-
     const ownsDispatchLock = !chatDispatchLockRef.current;
     if (ownsDispatchLock) chatDispatchLockRef.current = true;
     const controller = new AbortController();
@@ -3429,8 +3594,7 @@ export default function App() {
       ],
       permissionMode,
       refineMode: requestRefineMode,
-      plan,
-      payer: byok.useShadRoxKey ? 'shared' : 'byok',
+      payer: 'byok',
       provider: byok.activeProvider,
       model: byok.selectedModel,
       budgetCredits: runBudget.maxCredits
@@ -3497,13 +3661,17 @@ export default function App() {
     });
     // The system instruction is measured first and subtracted from the window,
     // so the history is trimmed against what is actually left for it.
+    routingNoteRef.current = '';
     const readerModel = autoReaderModel(text, mode.writesFiles ? 'edit' : 'chatter');
+    // Filled by the picker call itself, so the ledger can record what the cheap
+    // pass really returned instead of assuming a reader always helps.
+    const pickerReport: PickerReport = { model: readerModel ?? '', ran: false, shortlist: 0, answered: false, picked: 0, durationMs: 0 };
     let fit: ChatRequestFit;
     try {
       const systemContext = await buildSystemContext(
         text,
         mode,
-        readerModel ? runContextPicker(readerModel) : undefined,
+        readerModel ? runContextPicker(readerModel, pickerReport) : undefined,
         { attachedFiles: requestFiles, pinnedSymbols: requestSymbols }
       );
       if (systemContext.manifest) setContextManifest(systemContext.manifest);
@@ -3528,34 +3696,22 @@ export default function App() {
       return;
     }
 
-    // The answer-side route only applies when ShadRox's own key is paying; on a
-    // BYOK call the user picked a model and Auto must not quietly downgrade it.
-    // It does not need a reader pass to be worth taking, so the two are gated
-    // separately and a small workspace still gets the cheaper answer model.
+    // The answer-side route only applies when ShadRox's own key is paying, and
+    // there is no such key: on BYOK the user picked a model and Auto must not
+    // quietly downgrade it. Auto still gets to choose the cheap reader pass.
     const sentChars =
       fit.systemInstruction.length + fit.messages.reduce((total, turn) => total + turn.content.length, 0);
-    const answerRoute =
-      autoContext && byok.useShadRoxKey
-        ? decideAutoRoute({
-            role: mode.writesFiles ? 'edit' : 'chatter',
-            estimatedInputTokens: Math.round(sentChars / 4),
-            availableModels: rankModelsByOutcome(mode.writesFiles ? 'feature' : 'chat', byok.models.map((model) => model.id)),
-            userModel: byok.selectedModel,
-            isSharedKey: true,
-            plan
-          })
-        : null;
-    const answerModel = answerRoute?.enabled ? answerRoute.answerModel : byok.selectedModel;
+    const answerModel = byok.selectedModel;
 
-    // Say only what this turn actually did: a picker pass, a swapped answer
-    // model, both, or nothing — never a promise about routing that was skipped.
+    // Say only what this turn actually did: a picker pass, or nothing — never a
+    // promise about routing that was skipped.
     const autoNotes: string[] = [];
     if (readerModel) autoNotes.push(`${readerModel} picked the files`);
-    if (answerRoute?.enabled && answerModel !== byok.selectedModel) autoNotes.push(`${answerModel} writes the answer`);
     setContextNotice(
       [
         contextFitNotice(fit, answerModel) ?? '',
         autoNotes.length ? `Auto: ${autoNotes.join(', ')}.` : '',
+        routingNoteRef.current,
         folded.length ? `Compacted: ${folded.join(', ')}.` : '',
         rulesNoteRef.current
       ]
@@ -3566,7 +3722,7 @@ export default function App() {
     setMessages((previous) => [...previous, userMessage, modelMessage]);
     setIsGenerating(true);
 
-    if (!byok.useShadRoxKey && !byok.activeKey) {
+    if (!byok.activeKey) {
       setIsGenerating(false);
       if (abortRef.current === controller) abortRef.current = null;
       chatDispatchLockRef.current = false;
@@ -3593,13 +3749,40 @@ export default function App() {
     let runRepair: (failures: string[]) => Promise<void> = async () => {};
     let runUnmappedRepair: () => Promise<void> = async () => {};
 
+    // Everything the apply passes reported, across the first try and both
+    // bounded repairs. The outcome ledger is decided from this, never from the
+    // fact that the stream finished without throwing.
+    const applyReport: ApplyOutcome = {
+      editAttempted: false,
+      filesWritten: 0,
+      patchFailures: [],
+      verification: null,
+      diagnostics: null
+    };
+    const mergeApply = (next: ApplyOutcome) => {
+      applyReport.editAttempted = applyReport.editAttempted || next.editAttempted;
+      applyReport.filesWritten += next.filesWritten;
+      applyReport.patchFailures = [...applyReport.patchFailures, ...next.patchFailures];
+      if (next.verification) applyReport.verification = next.verification;
+      if (next.diagnostics) applyReport.diagnostics = next.diagnostics;
+    };
+
+    // The tool loop lives inside the try, so the facts the outcome ledger is
+    // built from are collected here rather than re-derived from React state.
+    const turnSignals = {
+      activity: [] as TurnToolCall[],
+      blocked: null as string | null,
+      streamError: null as string | null,
+      answerEmpty: true
+    };
+
     const applyReplyPatches = async () => {
       if (applied) return;
       applied = true;
-      await applyPatchesFromReply(modelMessage.id, reply, mode, {
+      mergeApply(await applyPatchesFromReply(modelMessage.id, reply, mode, {
         onFailures: runRepair,
         onUnmapped: runUnmappedRepair
-      });
+      }));
     };
 
     const markInterrupted = (error: string) => {
@@ -3640,7 +3823,6 @@ export default function App() {
       inputTokens: 0,
       outputTokens: 0,
       cachedTokens: 0,
-      credits: 0,
       durationMs: 0,
       firstTokenMs: null as number | null
     };
@@ -3654,7 +3836,7 @@ export default function App() {
     // metered. A queued request keeps the payer it was frozen with (S01), so a
     // key switch while it waited cannot silently move the bill.
     const resolvedPayer: ResolvedPayer = submission?.envelope?.payer
-      ?? (byok.useShadRoxKey ? 'shared' : 'byok');
+      ?? 'byok';
     // Repair/correction streams run after the loop, so their round numbers are
     // offset well past the loop's own rounds to keep attempt ids unique.
     let repairRoundSeq = DEFAULT_MAX_TOOL_ROUNDS + 100;
@@ -3681,7 +3863,7 @@ export default function App() {
             provider: byok.activeProvider,
             baseUrl: byok.baseUrl,
             model: answerModel,
-            apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
+            apiKey: byok.activeKey,
             messages: loopMessages,
             systemInstruction: fit.systemInstruction,
             temperature: byok.temperature,
@@ -3723,11 +3905,8 @@ export default function App() {
               turnUsage.cachedTokens += info.cachedInputTokens ?? 0;
               turnUsage.durationMs += info.durationMs ?? 0;
               if (turnUsage.firstTokenMs === null) turnUsage.firstTokenMs = info.firstTokenMs ?? null;
-              const credits = creditsForTurn(info.model, { inputTokens: info.inputTokens, outputTokens: info.outputTokens });
-              turnUsage.credits += credits;
-              // One terminal record per dispatched round, charged once for the
-              // request's resolved payer and de-duplicated by the attempt id, so
-              // a repeated done/retry event cannot double-bill.
+              // One terminal record per dispatched round, keyed by the attempt id,
+              // so a repeated done/retry event cannot record the same round twice.
               const attemptId = `${modelMessage.id}:answer:${round}`;
               recordAttempt({
                 taskId: modelMessage.id,
@@ -3745,7 +3924,6 @@ export default function App() {
                 startedAt: roundStartedAt,
                 reason: 'answer route'
               });
-              settleTurnCredits(plan, credits, 'chatter', { payer: resolvedPayer, idempotencyKey: attemptId });
             },
             onError: (error) => { roundError = error; }
           }
@@ -3796,7 +3974,7 @@ export default function App() {
         ], repairRoundSeq++);
         const corrected = stripToolBlocks(repair.text);
         if (!controller.signal.aborted && corrected.trim()) {
-          await applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true });
+          mergeApply(await applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true }));
         }
       } finally {
         setIsGenerating(false);
@@ -3831,7 +4009,7 @@ export default function App() {
         ], repairRoundSeq++);
         const corrected = stripToolBlocks(correction.text);
         if (!controller.signal.aborted && corrected.trim()) {
-          await applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true });
+          mergeApply(await applyPatchesFromReply(modelMessage.id, corrected, mode, { replace: true }));
         }
       } finally {
         setIsGenerating(false);
@@ -3901,10 +4079,14 @@ export default function App() {
       });
       if (loop.error && !controller.signal.aborted) {
         markInterrupted(loop.error);
+        turnSignals.streamError = loop.error;
       } else {
         // A turn that ends with the finish tool can hold no prose at all: the
         // summary in that call is the only answer the user ever sees.
         const answer = reply || loop.text;
+        turnSignals.activity = loop.activity;
+        turnSignals.blocked = loop.finish?.blocked ?? null;
+        turnSignals.answerEmpty = !answer.trim();
         // The model rarely closes its plan; a turn that ended without a blocked
         // reason is done, so no step may keep a spinner forever.
         const closedPlan = loop.plan.length > 0 && !loop.finish?.blocked
@@ -3945,7 +4127,6 @@ export default function App() {
                   inputTokens: turnUsage.inputTokens,
                   outputTokens: turnUsage.outputTokens,
                   cachedTokens: turnUsage.cachedTokens || undefined,
-                  credits: turnUsage.credits,
                   model: answerModel,
                   servedModel: lastAnswerAttempt?.servedModel ?? null,
                   usageState,
@@ -3960,7 +4141,9 @@ export default function App() {
       }
     } catch (error) {
       if (controller.signal.aborted) return;
-      markInterrupted(error instanceof Error ? error.message : 'Unknown error');
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      turnSignals.streamError = message;
+      markInterrupted(message);
     } finally {
       try { if (streamCompleted) await applyReplyPatches(); }
       finally {
@@ -3971,30 +4154,60 @@ export default function App() {
             taskId: modelMessage.id,
             checkpointId: machineCheckpoint,
             promptIntent: text,
-            spend: resolvedPayer === 'byok' ? null : {
-              provider: byok.activeProvider,
-              model: answerModel,
-              inputTokens: turnUsage.inputTokens,
-              outputTokens: turnUsage.outputTokens,
-              cachedTokens: turnUsage.cachedTokens,
-              estimatedCostUsd: null
-            },
+            // Nothing to record as ShadRox-side spend: the user's own key paid
+            // the provider directly for this turn.
+            spend: null,
             machineDeltaRef: machineCheckpoint
           });
         }
-        if (streamCompleted) {
+        // A turn that ended — cleanly or with a provider error — is a data
+        // point. Only the user pressing Stop is excluded: abandoning a run
+        // says nothing about whether the model could do the task.
+        const turnEnded = (streamCompleted || turnSignals.streamError !== null) && !controller.signal.aborted;
+        if (turnEnded) {
+          const repairIterations = turnAttempts.length > 1 ? turnAttempts.length - 1 : 0;
           const outcome = recordOutcome({
-            taskType: mode.writesFiles ? 'feature' : 'chat',
-            route: answerRoute?.answerModel === byok.selectedModel ? 'writer' : (mode.writesFiles ? 'frontier' : 'reader'),
+            ...outcomeOfTurn({
+              prompt: text,
+              writesFiles: mode.writesFiles,
+              editAttempted: applyReport.editAttempted,
+              filesWritten: applyReport.filesWritten,
+              patchFailures: applyReport.patchFailures,
+              verification: applyReport.verification,
+              diagnostics: applyReport.diagnostics,
+              testRuns: testRunsFrom(turnSignals.activity),
+              blocked: turnSignals.blocked,
+              streamError: turnSignals.streamError,
+              answerEmpty: turnSignals.answerEmpty,
+              repairIterations
+            }),
+            route: 'writer',
             model: answerModel,
-            passed: true,
-            repairIterations: turnAttempts.length > 1 ? turnAttempts.length - 1 : 0,
+            repairIterations,
             inputTokens: turnUsage.inputTokens,
             outputTokens: turnUsage.outputTokens,
-            latencyMs: turnUsage.durationMs,
-            verified: true
+            latencyMs: turnUsage.durationMs
           });
           setCalibratedOutcomes((previous) => [outcome, ...previous].slice(0, 500));
+          // The cheap pass gets its own record, judged on its own result: the
+          // paths it named either existed or they did not. Without this the
+          // ranking would be asked to choose a reader on writer evidence.
+          if (pickerReport.ran) {
+            const readerOutcome = recordOutcome({
+              ...outcomeOfReader({
+                shortlist: pickerReport.shortlist,
+                answered: pickerReport.answered,
+                picked: pickerReport.picked
+              }),
+              route: 'reader',
+              model: pickerReport.model,
+              repairIterations: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              latencyMs: pickerReport.durationMs
+            });
+            setCalibratedOutcomes((previous) => [readerOutcome, ...previous].slice(0, 500));
+          }
         }
         setIsGenerating(false);
         setActiveStatusMessage(null);
@@ -4005,7 +4218,6 @@ export default function App() {
   }, [
     input,
     isGenerating,
-    plan,
     autoContext,
     openSettings,
     refineMode,
@@ -4016,7 +4228,6 @@ export default function App() {
     messages,
     autoReaderModel,
     runContextPicker,
-    byok.useShadRoxKey,
     byok.activeKey,
     byok.activeProvider,
     byok.baseUrl,
@@ -4053,7 +4264,7 @@ export default function App() {
   /** One model call that returns raw text, used for planning. */
   const askPlanText = useCallback(
     async (prompt: string): Promise<string> => {
-      if (!byok.useShadRoxKey && !byok.activeKey) {
+      if (!byok.activeKey) {
         throw new Error('No API key found. Add one in Settings → Models & Keys.');
       }
       let text = '';
@@ -4064,7 +4275,7 @@ export default function App() {
           provider: byok.activeProvider,
           baseUrl: byok.baseUrl,
           model: byok.selectedModel,
-          apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
+          apiKey: byok.activeKey,
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.2,
           signal: controller.signal
@@ -4083,13 +4294,13 @@ export default function App() {
       if (failed || !text.trim()) throw new Error('The planner did not return a plan.');
       return text;
     },
-    [byok.useShadRoxKey, byok.activeKey, byok.activeProvider, byok.baseUrl, byok.selectedModel]
+    [byok.activeKey, byok.activeProvider, byok.baseUrl, byok.selectedModel]
   );
 
   /** Headless run and team turns use the bounded tools and guarded patch policy. */
   const runAutonomousTurn = useCallback(
     async (request: TurnRequest): Promise<TurnResult> => {
-      if (!byok.useShadRoxKey && !byok.activeKey) {
+      if (!byok.activeKey) {
         throw new Error('No API key found. Add one in Settings → Models & Keys.');
       }
       const mode = getRefineMode('code');
@@ -4109,7 +4320,7 @@ export default function App() {
       let runAttemptSeq = 0;
       // Headless workers obey the same permission mode as an interactive turn.
       const runPolicy = { mode: permissionMode };
-      const runPayer: ResolvedPayer = byok.useShadRoxKey ? 'shared' : 'byok';
+      const runPayer: ResolvedPayer = 'byok';
       const runId = makeId('run');
       const machineCheckpoint = await workspace.markCheckpoint(runId, instruction);
       try {
@@ -4155,7 +4366,7 @@ export default function App() {
                   provider: byok.activeProvider,
                   baseUrl: byok.baseUrl,
                   model: byok.selectedModel,
-                  apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
+                  apiKey: byok.activeKey,
                   messages,
                   systemInstruction: fit.systemInstruction,
                   temperature: byok.temperature,
@@ -4164,15 +4375,9 @@ export default function App() {
                 }, {
                   onDelta: (chunk) => { text += chunk; },
                   onDone: (info) => {
-                    const spent = creditsForTurn(info.model, {
+                    credits += creditsForTurn(info.model, {
                       inputTokens: info.inputTokens,
                       outputTokens: info.outputTokens
-                    });
-                    credits += spent;
-                    runAttemptSeq += 1;
-                    settleTurnCredits(plan, spent, 'chatter', {
-                      payer: runPayer,
-                      idempotencyKey: `${runId}:${runAttemptSeq}`
                     });
                   },
                   onError: (message) => { error = message; }
@@ -4194,18 +4399,19 @@ export default function App() {
           stopped: outcome.stopped,
           filesRead: outcome.filesRead,
           touchedFiles: outcome.applied,
-          pendingReview: outcome.pendingReview
+          pendingReview: outcome.pendingReview,
+          // What the run's tool-call ceiling counts: calls that actually ran.
+          // A call the permission guard refused never reached a provider or a disk.
+          toolCalls: outcome.toolActivity.filter((entry) => !entry.refused).length
         };
       } finally { await workspace.finishMachineCheckpoint(machineCheckpoint); }
     },
-    [
-      byok.useShadRoxKey,
+    [,
       byok.activeKey,
       byok.activeProvider,
       byok.baseUrl,
       byok.selectedModel,
       byok.temperature,
-      plan,
       permissionMode,
       activeModel,
       buildSystemContext,
@@ -4221,7 +4427,10 @@ export default function App() {
     () => ({
       runTurn: runAutonomousTurn,
       getDiagnostics: async () => {
-        if (!desktop || !nativeWorkspaceId) return [];
+        // `null` is the honest answer when no checker exists: returning [] here
+        // used to read as "checked, found nothing" and hand milestones a pass
+        // they had not earned.
+        if (!desktop || !nativeWorkspaceId) return null;
         const result = await desktop.diagnostics(nativeWorkspaceId);
         return result.diagnostics;
       },
@@ -4242,7 +4451,7 @@ export default function App() {
             declinedReason: 'No folder is open, so no terminal is available.'
           };
         }
-        const result = await desktop.runCommand(nativeWorkspaceId, argv);
+        const result = await desktop.runCommand(nativeWorkspaceId, argv, commandApprovalNotice(argv));
         if (result.deniedReason) {
           return {
             argv,
@@ -4258,7 +4467,9 @@ export default function App() {
           exitCode: result.exitCode,
           stdoutTail: result.stdout,
           stderrTail: result.stderr,
-          timedOut: false
+          // The main process says when it killed the command; a half-run test is
+          // not a passing one, and the verifier decides on this flag.
+          timedOut: result.timedOut === true
         };
       }
     }),
@@ -4371,7 +4582,11 @@ export default function App() {
 
     const state = active.kind === 'autonomy' ? autonomy.state : team.state;
     const matches = Boolean(
-      state && state.goal === active.goal && state.startedAt >= active.startedAt - 1_000
+      state &&
+        state.goal === active.goal &&
+        // A resumed run carries its original `startedAt`, so the recency check
+        // that catches a stale hook only applies to a run started just now.
+        (active.resumed || state.startedAt >= active.startedAt - 1_000)
     );
     // Before the first running render, the hook still holds the previous run.
     // Wait for the new goal instead of finalizing against stale state.
@@ -4387,36 +4602,45 @@ export default function App() {
     if (active.kind === 'autonomy') {
       const milestones = autonomy.state?.milestones ?? [];
       const passed = milestones.filter((milestone) => milestone.status === 'passed').length;
+      const unverified = milestones.filter((milestone) => milestone.status === 'unverified').length;
       const touched = milestones.filter((milestone) =>
         milestone.attempts.some((attempt) => attempt.patchesApplied > 0)
       ).length;
+      // Unverified is named in the same breath as passed, never folded into it.
+      const tally = (total: number) => `${passed}/${total} passed${unverified ? ` · ${unverified} unverified` : ''}`;
       detail = matches
-        ? `${passed}/${milestones.length} milestones passed · ${creditsSpent} credits${touched ? ` · ${touched} touched files` : ''}`
+        ? `${tally(milestones.length)} · ${creditsSpent} of the spend budget${touched ? ` · ${touched} touched files` : ''}`
         : 'The run did not start.';
       content = !matches
         ? 'The autonomous run could not start. Check the key and folder, then try again.'
         : status === 'done'
-          ? `Autonomous run finished: **${passed}/${milestones.length}** milestones passed, **${creditsSpent}** credits spent.`
+          ? `Autonomous run finished: **${tally(milestones.length)}**, **${creditsSpent}** of the spend budget used.`
           : status === 'budget'
-            ? `Autonomous run stopped at its **${active.budgetCredits}-credit** budget after **${passed}/${milestones.length}** milestones.`
+            ? `Autonomous run stopped at a hard ceiling after **${tally(milestones.length)}**: ${autonomy.state?.error ?? `the spend cap of ${active.budgetCredits}.`}`
             : status === 'stopped'
-              ? `Autonomous run stopped. **${passed}/${milestones.length}** milestones had passed.`
-              : `Autonomous run failed${autonomy.state?.error ? `: ${autonomy.state.error.replace(/\.$/, '')}` : ''}.`;
+              ? `Autonomous run stopped. **${tally(milestones.length)}** had settled.`
+              : status === 'paused'
+                ? `Autonomous run paused after **${tally(milestones.length)}**. Resume continues from the milestone it left off at.`
+                : `Autonomous run failed${autonomy.state?.error ? `: ${autonomy.state.error.replace(/\.$/, '')}` : ''}.`;
     } else {
       const tasks = team.state?.tasks ?? [];
       const passed = tasks.filter((task) => task.status === 'passed').length;
+      const unverified = tasks.filter((task) => task.status === 'unverified').length;
+      const tally = (total: number) => `${passed}/${total} passed${unverified ? ` · ${unverified} unverified` : ''}`;
       detail = matches
-        ? `${passed}/${tasks.length} tasks passed · ${creditsSpent} credits`
+        ? `${tally(tasks.length)} · ${creditsSpent} of the spend budget`
         : 'The team did not start.';
       content = !matches
         ? 'The agent team could not start. Check the key and folder, then try again.'
         : status === 'done'
-          ? `Agent team finished: **${passed}/${tasks.length}** tasks passed, **${creditsSpent}** credits spent.`
+          ? `Agent team finished: **${tally(tasks.length)}**, **${creditsSpent}** of the spend budget used.`
           : status === 'budget'
-            ? `Agent team stopped at its **${active.budgetCredits}-credit** budget after **${passed}/${tasks.length}** tasks.`
+            ? `Agent team stopped at a hard ceiling after **${tally(tasks.length)}**: ${team.state?.error ?? `the spend cap of ${active.budgetCredits}.`}`
             : status === 'stopped'
-              ? `Agent team stopped. **${passed}/${tasks.length}** tasks had passed.`
-              : `Agent team failed${team.state?.error ? `: ${team.state.error.replace(/\.$/, '')}` : ''}.`;
+              ? `Agent team stopped. **${tally(tasks.length)}** had settled.`
+              : status === 'paused'
+                ? `Agent team paused after **${tally(tasks.length)}**. A team plans once, so continuing means starting the goal again.`
+                : `Agent team failed${team.state?.error ? `: ${team.state.error.replace(/\.$/, '')}` : ''}.`;
     }
 
     setMessages((previous) =>
@@ -4469,7 +4693,7 @@ export default function App() {
       refineMode: draftRefineMode,
       // Freeze the execution identity (S01): a request that waits in the queue
       // must bill and run as the request the user actually made, even if they
-      // later switch workspace, plan, key or model. A request dispatched *from*
+      // later switch workspace, key or model. A request dispatched *from*
       // the queue already carries its frozen envelope — keep it verbatim.
       envelope: queuedSubmission?.envelope ?? createRequestEnvelope({
         id: submissionId,
@@ -4481,8 +4705,7 @@ export default function App() {
         ],
         permissionMode,
         refineMode: draftRefineMode,
-        plan,
-        payer: byok.useShadRoxKey ? 'shared' : 'byok',
+        payer: 'byok',
         provider: byok.activeProvider,
         model: byok.selectedModel,
         budgetCredits: runBudget.maxCredits
@@ -4512,24 +4735,17 @@ export default function App() {
       return;
     }
 
-    const quota = getMonthlyUsage(plan);
-    if (quota.isCapReached) {
-      setToast(`Monthly credit cap reached (${quota.limit}/${quota.limit} credits). Upgrade in Settings.`);
-      openSettings('PLAN');
-      return;
-    }
-
     const decision = decideOrchestration({
       prompt: text,
       mode: submission.refineMode,
       workspaceFileCount: workspace.workspace?.diskFileTree?.length ?? workspace.files.length,
-      hasKey: Boolean(byok.activeKey) || byok.useShadRoxKey,
+      hasKey: Boolean(byok.activeKey),
       canRun: Boolean(desktop && nativeWorkspaceId && workspaceRootPath),
       busy: autonomy.isRunning || team.isRunning
     });
 
     chatDispatchLockRef.current = true;
-    if (!chatHookGuardRef.current && desktop && nativeWorkspaceId && (byok.useShadRoxKey || byok.activeKey)) {
+    if (!chatHookGuardRef.current && desktop && nativeWorkspaceId && (byok.activeKey)) {
       dispatchPluginActionRuns(selectHooks(pluginsRef.current, 'onChatSend'));
     }
 
@@ -4576,7 +4792,26 @@ export default function App() {
       }
     };
 
-    setMessages((previous) => [...previous, userMessage, modelMessage]);
+    setMessages((previous) => [
+      // Only one run can be resumed at a time — the hook holds one state — so a
+      // card left `paused` by an earlier run stops being resumable the moment a
+      // new one takes its place. Saying so beats a Resume button that continues
+      // the wrong goal.
+      ...previous.map((message) =>
+        message.orchestration?.status === 'paused'
+          ? {
+              ...message,
+              orchestration: {
+                ...message.orchestration,
+                status: 'stopped' as const,
+                detail: 'Not resumable: a newer run replaced it.'
+              }
+            }
+          : message
+      ),
+      userMessage,
+      modelMessage
+    ]);
     setInput('');
     setPendingRefine(null);
     setAttachedFiles([]);
@@ -4601,14 +4836,12 @@ export default function App() {
     workspace.workspace?.diskFileTree?.length,
     workspace.files.length,
     byok.activeKey,
-    byok.useShadRoxKey,
     desktop,
     nativeWorkspaceId,
     workspaceRootPath,
     autonomy.isRunning,
     team.isRunning,
     handleSend,
-    plan,
     pendingRefine,
     attachedFiles,
     pinnedSymbols,
@@ -4629,7 +4862,6 @@ export default function App() {
       || team.isRunning
       || chatDispatchLockRef.current
       || orchestrationRef.current
-      || getMonthlyUsage(plan).isCapReached
     ) return;
     const result = dequeueChatItem(queuedChatItemsRef.current);
     if (!result.item) return;
@@ -4645,8 +4877,7 @@ export default function App() {
       targets: frozen.targets,
       permissionMode,
       refineMode: result.item.refineMode,
-      plan,
-      payer: byok.useShadRoxKey ? 'shared' : 'byok',
+      payer: 'byok',
       provider: byok.activeProvider,
       model: byok.selectedModel,
       budgetCredits: runBudget.maxCredits
@@ -4665,14 +4896,14 @@ export default function App() {
       window.setTimeout(() => setToast(null), 6000);
     }
     handleChatSend(result.item);
-  }, [isGenerating, autonomy.isRunning, team.isRunning, queuedChatItems, handleChatSend, plan, nativeWorkspaceId, permissionMode, byok.activeProvider, byok.selectedModel, byok.useShadRoxKey]);
+  }, [isGenerating, autonomy.isRunning, team.isRunning, queuedChatItems, handleChatSend, nativeWorkspaceId, permissionMode, byok.activeProvider, byok.selectedModel]);
 
   /** Budget-gated dispatch shared by interval, save and webhook triggers. */
   const runAutomationRequest = useCallback(
     (request: AutomationRunRequest) => {
       if (!workspaceRootPath || !desktop || !nativeWorkspaceId) return;
       if (busyRef.current || isGenerating || autonomy.isRunning || team.isRunning) return;
-      if (!byok.useShadRoxKey && !byok.activeKey) return;
+      if (!byok.activeKey) return;
       const definition = automationsRef.current.find((entry) => entry.id === request.automationId);
       if (!definition || !definition.enabled) return;
       const state = automationStatesRef.current[definition.id] ?? {
@@ -4689,7 +4920,7 @@ export default function App() {
         pendingPromptQueueRef.current.push(definition.action.prompt);
       } else {
         void desktop
-          .runCommand(nativeWorkspaceId, definition.action.argv)
+          .runCommand(nativeWorkspaceId, definition.action.argv, commandApprovalNotice(definition.action.argv))
           .catch((error) => warnBridgeError('automation-command', error));
       }
     },
@@ -4700,7 +4931,6 @@ export default function App() {
       isGenerating,
       autonomy.isRunning,
       team.isRunning,
-      byok.useShadRoxKey,
       byok.activeKey,
       persistAutomationStates
     ]
@@ -4750,7 +4980,7 @@ export default function App() {
     if (!snapshot) return;
     if (isGenerating || autonomy.isRunning || team.isRunning) return;
     if (!desktop || !nativeWorkspaceId || !workspaceRootPath) return;
-    if (!byok.useShadRoxKey && !byok.activeKey) {
+    if (!byok.activeKey) {
       openSettings('CHAT');
       return;
     }
@@ -4785,10 +5015,18 @@ export default function App() {
       startedAt: Date.now(),
       kind: 'autonomy',
       budgetCredits,
-      seenRunning: false
+      seenRunning: false,
+      resumed: true
     };
     trackedRunRef.current = { kind: 'autonomy', goal: snapshot.goal };
-    autonomy.start(snapshot.goal);
+    // Continuing means reusing the milestones that were already paid for. A run
+    // restarted from the goal would re-plan and re-run finished work, so resume
+    // only when the restored state actually is this goal.
+    if (autonomy.state && autonomy.state.goal === snapshot.goal && autonomy.state.milestones.length > 0) {
+      autonomy.resume();
+    } else {
+      autonomy.start(snapshot.goal);
+    }
   }, [
     resumeSnapshot,
     isGenerating,
@@ -4797,7 +5035,6 @@ export default function App() {
     desktop,
     nativeWorkspaceId,
     workspaceRootPath,
-    byok.useShadRoxKey,
     byok.activeKey,
     openSettings,
     snapshotStore,
@@ -4814,7 +5051,7 @@ export default function App() {
   useEffect(() => {
     if (isGenerating || autonomy.isRunning || team.isRunning) return;
     if (pendingPromptQueueRef.current.length === 0) return;
-    if (!byok.useShadRoxKey && !byok.activeKey) {
+    if (!byok.activeKey) {
       pendingPromptQueueRef.current = [];
       return;
     }
@@ -4824,7 +5061,7 @@ export default function App() {
     void handleSend(next).finally(() => {
       chatHookGuardRef.current = false;
     });
-  }, [isGenerating, autonomy.isRunning, team.isRunning, byok.useShadRoxKey, byok.activeKey, handleSend]);
+  }, [isGenerating, autonomy.isRunning, team.isRunning, byok.activeKey, handleSend]);
 
   /** One-click, model-assisted fix for the type errors the last apply introduced. */
   const fixTypeErrors = useCallback(
@@ -4957,8 +5194,7 @@ export default function App() {
         targets: frozen.targets,
         permissionMode,
         refineMode: frozen.refineMode,
-        plan,
-        payer: byok.useShadRoxKey ? 'shared' : 'byok',
+        payer: 'byok',
         provider: byok.activeProvider,
         model: byok.selectedModel,
         budgetCredits: runBudget.maxCredits
@@ -4986,7 +5222,7 @@ export default function App() {
     setMessages(baseMessages);
     setPendingRefine(null);
     void handleSend(lastUser.content, history);
-  }, [handleSend, isGenerating, messages, nativeWorkspaceId, permissionMode, plan, byok.useShadRoxKey, byok.activeProvider, byok.selectedModel, runBudget]);
+  }, [handleSend, isGenerating, messages, nativeWorkspaceId, permissionMode, byok.activeProvider, byok.selectedModel, runBudget]);
 
   /**
    * Stream recovery: re-request an interrupted reply, continuing from the
@@ -5015,8 +5251,7 @@ export default function App() {
           targets: frozenResume.targets,
           permissionMode,
           refineMode,
-          plan,
-          payer: byok.useShadRoxKey ? 'shared' : 'byok',
+          payer: 'byok',
           provider: byok.activeProvider,
           model: byok.selectedModel,
           budgetCredits: runBudget.maxCredits
@@ -5072,7 +5307,7 @@ export default function App() {
             provider: byok.activeProvider,
             baseUrl: byok.baseUrl,
             model: byok.selectedModel,
-            apiKey: byok.useShadRoxKey ? undefined : byok.activeKey,
+            apiKey: byok.activeKey,
             messages: fit.messages,
             systemInstruction: fit.systemInstruction,
             temperature: byok.temperature,
@@ -5092,17 +5327,6 @@ export default function App() {
             },
             onDone: (info) => {
               streamCompleted = true;
-              // The turn that was interrupted charged nothing, so finishing it
-              // here is what pays for it — never both. Bound to the request's
-              // payer and de-duplicated so a repeated resume cannot double-bill.
-              const credits = creditsForTurn(info.model, {
-                inputTokens: info.inputTokens,
-                outputTokens: info.outputTokens
-              });
-              settleTurnCredits(plan, credits, 'chatter', {
-                payer: byok.useShadRoxKey ? 'shared' : 'byok',
-                idempotencyKey: `${messageId}:resume`
-              });
               setResumePrefixes((previous) => {
                 const next = { ...previous };
                 delete next[messageId];
@@ -5119,7 +5343,6 @@ export default function App() {
                           tokens: info.tokens,
                           inputTokens: info.inputTokens,
                           outputTokens: info.outputTokens,
-                          credits,
                           model: info.model,
                           servedModel: info.servedModel ?? null,
                           usageState: Number.isFinite(info.inputTokens) && Number.isFinite(info.outputTokens) ? 'measured' : 'pending',
@@ -5159,10 +5382,8 @@ export default function App() {
     [
       isGenerating,
       messages,
-      plan,
       resumePrefixes,
       refineMode,
-      byok.useShadRoxKey,
       byok.activeKey,
       byok.activeProvider,
       byok.baseUrl,
@@ -5217,6 +5438,74 @@ export default function App() {
     }
     handleStop();
   }, [autonomy, team, handleStop]);
+
+  /**
+   * Pause leaves a resumable run, so — unlike Stop — it writes nothing itself.
+   * The engine settles the milestone it was in, and the finalizer below records
+   * what actually happened.
+   */
+  const handlePauseOrchestration = useCallback(() => {
+    const active = orchestrationRef.current;
+    if (!active) return;
+    if (active.kind === 'autonomy') autonomy.pause();
+    else team.pause();
+  }, [autonomy, team]);
+
+  /** Continues the paused run in the same card, from its persisted milestones. */
+  const handleResumeOrchestration = useCallback((messageId: string) => {
+    const paused = autonomy.state;
+    if (!paused || paused.status !== 'paused' || paused.milestones.length === 0) return;
+    if (isGenerating || autonomy.isRunning || team.isRunning) return;
+    if (!desktop || !nativeWorkspaceId || !workspaceRootPath) {
+      setToast('A paused run continues in the folder it started in.');
+      window.setTimeout(() => setToast(null), 5000);
+      return;
+    }
+    if (!byok.activeKey) {
+      openSettings('CHAT');
+      return;
+    }
+
+    setMessages((previous) =>
+      previous.map((message) =>
+        message.id === messageId && message.orchestration
+          ? {
+              ...message,
+              streaming: true,
+              content: '',
+              orchestration: {
+                ...message.orchestration,
+                status: 'running',
+                detail: 'Resuming from the milestone it paused at.'
+              }
+            }
+          : message
+      )
+    );
+    setIsGenerating(true);
+    chatDispatchLockRef.current = true;
+    orchestrationRef.current = {
+      messageId,
+      goal: paused.goal,
+      startedAt: Date.now(),
+      kind: 'autonomy',
+      budgetCredits: runBudget.maxCredits,
+      seenRunning: false,
+      resumed: true
+    };
+    trackedRunRef.current = { kind: 'autonomy', goal: paused.goal };
+    autonomy.resume();
+  }, [
+    autonomy,
+    team,
+    isGenerating,
+    desktop,
+    nativeWorkspaceId,
+    workspaceRootPath,
+    byok.activeKey,
+    openSettings,
+    runBudget.maxCredits
+  ]);
 
   const handleRefinePrompt = useCallback(async () => {
     const raw = input.trim();
@@ -5509,7 +5798,7 @@ export default function App() {
     stopLocalPreview
   ]);
 
-  const hasKey = Boolean(byok.activeKey) || byok.useShadRoxKey;
+  const hasKey = Boolean(byok.activeKey);
 
   if (auth.status !== 'signed-in') {
     return (
@@ -5541,10 +5830,6 @@ export default function App() {
       keyStatus={byok.keyStatus}
       onValidateKey={byok.validateKey}
       onForgetKey={byok.forgetKey}
-      useShadRoxKey={byok.useShadRoxKey}
-      onUseShadRoxKeyChange={byok.setUseShadRoxKey}
-      plan={plan}
-      onPlanChange={changePlan}
       secrets={secrets}
       onSecretsChange={setSecrets}
       workspaceFiles={workspace.files}
@@ -5609,6 +5894,7 @@ export default function App() {
       lastReloadAt={previewSync.lastReloadAt}
       onRevealSource={(target) => void handleRevealSource(target)}
       onBehaviorEvent={handleBehaviorEvent}
+      onFramePaint={acceptance.onFramePaint}
       fullscreen={isPreviewFullscreen}
       onToggleFullscreen={() => setIsPreviewFullscreen((fullscreen) => !fullscreen)}
       onClose={() => {
@@ -5776,18 +6062,26 @@ export default function App() {
               intentGraph={intent.graph}
               intentDecisions={intent.decisions}
               intentLoading={intent.loading}
+              indexedFiles={intent.indexedFiles}
               onIntentRefresh={() => void intent.refresh()}
-              onAddDecision={(input) => void intent.addDecision(input)}
+              onAddDecision={(input) => void handleAddDecision(input)}
               onDeleteDecision={(id) => void intent.removeDecision(id)}
+              onAskDependencies={intent.answer}
               onIntentExport={handleIntentExport}
               onIntentImport={handleIntentImport}
               behaviorEvents={behaviorEvents}
               contract={behaviorContract}
               onClearBehavior={handleClearBehavior}
               onGenerateContract={handleGenerateContract}
-              onUpdateContract={handleContractUpdate}
+              onRunCheck={(phase) => void handleRunCheck(phase)}
+              checkPhase={acceptance.busy}
+              previewReady={localRuntime.status === 'ready'}
               outcomes={calibratedOutcomes}
               routeProfiles={calibratedProfiles}
+              calibratedTaskType={calibratedTaskType}
+              onCalibratedTaskType={setCalibratedTaskType}
+              modelRanking={calibratedRanking}
+              onPinModel={(taskType, model) => setModelPins(setPreferredModel(taskType, model))}
             />
           </div>
         </div>
@@ -5947,7 +6241,7 @@ export default function App() {
                         {auth.user?.email ?? 'Not signed in'}
                       </p>
                       <p className="mt-0.5 text-[10px] uppercase tracking-wider text-neutral-500">
-                        {plan === 'free' ? 'Free plan' : plan === 'starter' ? 'Starter plan' : 'Pro plan'}
+                        Free · bring your own key
                       </p>
                     </div>
                   </div>
@@ -5979,6 +6273,8 @@ export default function App() {
             queuedMessages={queuedChatItems}
             onCancelQueuedMessage={handleCancelQueuedChat}
             onStop={handleStopAll}
+            onPauseOrchestration={handlePauseOrchestration}
+            onResumeOrchestration={handleResumeOrchestration}
             onClearChat={handleClearChat}
             isGenerating={isGenerating}
             isRefining={isRefining}
@@ -5994,7 +6290,6 @@ export default function App() {
             selectedModel={byok.selectedModel}
             onSelectModel={byok.selectModel}
             hasKey={hasKey}
-            plan={plan}
             onOpenSettings={openSettings}
             attachedFiles={attachedFiles}
             onAttachedFilesChange={setAttachedFiles}
@@ -6050,7 +6345,7 @@ export default function App() {
                       desktop &&
                         nativeWorkspaceId &&
                         workspaceRootPath &&
-                        (byok.activeKey || byok.useShadRoxKey) &&
+                        (byok.activeKey) &&
                         !isGenerating &&
                         !autonomy.isRunning &&
                         !team.isRunning

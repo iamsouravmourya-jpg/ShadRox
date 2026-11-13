@@ -172,6 +172,23 @@ test('verifyMilestone: when no checker can run, the verdict is unverified, never
   assert.match(commandThrew.notes.join(' '), /no terminal/);
 });
 
+test('verifyMilestone: a checker that is not attached is unverified, not a silent green', async () => {
+  const report = await verifyMilestone(milestone(), host({ getDiagnostics: async () => null }), ROOT);
+  assert.equal(report.verdict, 'unverified');
+  assert.match(report.notes.join(' '), /no type checker is attached/);
+});
+
+test('verifyMilestone: a proof command killed by its time limit cannot carry a pass', async () => {
+  const timedOut = await verifyMilestone(
+    milestone({ verifyCommand: 'npm test' }),
+    host({ getDiagnostics: async () => null, runCommand: async () => okCommand({ exitCode: 0, timedOut: true }) }),
+    ROOT
+  );
+  assert.notEqual(timedOut.verdict, 'passed', 'a half-finished run proved nothing');
+  assert.equal(timedOut.verdict, 'failed');
+  assert.match(timedOut.notes.join(' '), /killed by its time limit/);
+});
+
 test('createAutonomyPorts forwards every capability and hides the host behind the contract', async () => {
   const events: AutonomyEvent[] = [];
   let cancelled = false;
@@ -205,4 +222,24 @@ test('createAutonomyPorts forwards every capability and hides the host behind th
 
   const report = await ports.verify(milestone());
   assert.equal(report.verdict, 'passed');
+});
+
+test('a caller without a Pause button gets a port that cannot pause', () => {
+  const plain = createAutonomyPorts(host({}), {
+    rootPath: ROOT,
+    onEvent: () => undefined,
+    isCancellationRequested: () => false
+  });
+  assert.equal(plain.isPauseRequested, undefined);
+
+  let paused = false;
+  const withPause = createAutonomyPorts(host({}), {
+    rootPath: ROOT,
+    onEvent: () => undefined,
+    isCancellationRequested: () => false,
+    isPauseRequested: () => paused
+  });
+  assert.equal(withPause.isPauseRequested?.(), false);
+  paused = true;
+  assert.equal(withPause.isPauseRequested?.(), true, 'the panel flag reaches the driver through the port');
 });

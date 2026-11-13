@@ -40,8 +40,8 @@ const faqs = [
     a: 'The app checks for a newer release on start and tells you when an update is ready. Restart only after reviewing the release. If a rebuilt installer keeps the same version number — like the second v0.0.8 build — auto-update cannot detect it, so install that one manually from the release page.',
   },
   {
-    q: 'Are billing and credits enabled?',
-    a: 'No. The beta runs on bring-your-own-key: your provider bills you directly, and ShadRox neither meters nor caps those turns. The ₹699 Starter and ₹1,299 Heavy catalogue plans are locked beta prices only; checkout and shared-key access are not enabled, and prices may change before launch.',
+    q: 'Does ShadRox cost anything?',
+    a: 'No. ShadRox is free and runs on bring-your-own-key. There is no plan to buy, no checkout and no charge from ShadRox; your own provider key carries every request and your provider bills you directly.',
   },
   {
     q: 'Can I preview any project?',

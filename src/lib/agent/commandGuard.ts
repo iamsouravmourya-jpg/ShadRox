@@ -8,7 +8,9 @@
  * (`autonomyHost.runCommand` in App.tsx). Models — especially weaker ones —
  * use that channel to touch files the turn should never touch. ShadRox shows
  * an explicit extra-approval dialog before running any command that matches
- * this blacklist, and the detected reason travels with the request.
+ * this blacklist, and the detected reason travels with the request — that text
+ * comes from `commandApprovalNotice`, which every caller of
+ * `desktop.runCommand` hands to the main process.
  *
  * This is a simple blacklist, not a shell interpreter. Commands are lightly
  * preprocessed (quoted text, heredoc bodies, escapes, and comments are masked
@@ -506,7 +508,21 @@ export function formatCommandRiskNotice(command: string, reason: string): string
   return (
     `Blocked from running silently: ${reason} can modify files, and file modifications need explicit approval for assistant-requested commands. ` +
     'Review the command below before allowing it to run once — this is an extra gate on top of the normal run action, ' +
-    'so if the change is needed, approve here or let the turn continue with read-only commands. \n\n' +
+    `so if the change is needed, approve here or let the turn continue with read-only commands. \n\n` +
     `Command: ${command}`
   );
+}
+
+/**
+ * What the approval dialog should say about this command, or undefined when the
+ * blacklist has nothing to flag.
+ *
+ * Callers hand the result to `terminal:run-command` as display text: main still
+ * shows its own fail-closed dialog either way, so a notice can inform a decision
+ * but never replace one — and a command nobody flagged is still a command the
+ * user has to allow.
+ */
+export function commandApprovalNotice(command: string): string | undefined {
+  const reason = findFileEditingCommand(command);
+  return reason ? formatCommandRiskNotice(command, reason) : undefined;
 }

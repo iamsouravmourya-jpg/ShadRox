@@ -38,6 +38,50 @@ test('stop flips the cancellation flag the executor checks', async () => {
   assert.equal(final?.status, 'cancelled');
 });
 
+test('pause is its own flag, kept apart from Stop so the panel can tell them apart', async () => {
+  const controller = createRunController({
+    execute: async (_goal, helpers: RunExecutorHelpers) => {
+      controller.pause();
+      assert.equal(helpers.isPauseRequested(), true, 'Pause is visible to the running loop');
+      assert.equal(helpers.isCancellationRequested(), false, 'a pause is not a cancellation');
+      return state('paused');
+    }
+  });
+  const final = await controller.start('goal');
+  assert.equal(final?.status, 'paused');
+});
+
+test('Stop and Pause both end the signal of the turn in flight', async () => {
+  for (const press of ['stop', 'pause'] as const) {
+    let sawAbort = false;
+    const controller = createRunController({
+      execute: async (_goal, helpers: RunExecutorHelpers) => {
+        helpers.turnSignal().addEventListener('abort', () => {
+          sawAbort = true;
+        });
+        controller[press]();
+        return state(press === 'stop' ? 'cancelled' : 'paused');
+      }
+    });
+    await controller.start('goal');
+    assert.equal(sawAbort, true, `${press} must interrupt the request that is being paid for`);
+  }
+});
+
+test('a new run starts with both halt flags clear', async () => {
+  const controller = createRunController({
+    execute: async (_goal, helpers: RunExecutorHelpers) => {
+      const first = helpers.isCancellationRequested() || helpers.isPauseRequested();
+      return { ...state(), goal: first ? 'stale halt' : 'clean' };
+    }
+  });
+  assert.equal((await controller.start('one'))?.goal, 'clean');
+  controller.pause();
+  controller.stop();
+  // The halted run left its flags set; the next run must not inherit them.
+  assert.equal((await controller.start('two'))?.goal, 'clean');
+});
+
 test('events from the run are forwarded to subscribers while it is in flight', async () => {
   const events: string[] = [];
   const controller = createRunController({

@@ -9,7 +9,6 @@ const base: RequestEnvelopeInput = {
   targets: ['src/a.ts'],
   permissionMode: 'agent',
   refineMode: 'code',
-  plan: 'starter',
   payer: 'shared',
   provider: 'groq',
   model: 'glm-4.7-flash',
@@ -36,10 +35,10 @@ test('switching workspace, payer or model is reported as drift', () => {
   assert.deepEqual(envelopeDrift(frozen, current), ['workspace', 'payer', 'model']);
 });
 
-test('plan, provider and permission changes are all detected', () => {
+test('provider and permission changes are detected', () => {
   const frozen = createRequestEnvelope(base);
-  const current = createRequestEnvelope({ ...base, plan: 'heavy', provider: 'gemini', permissionMode: 'plan' });
-  assert.deepEqual(envelopeDrift(frozen, current), ['plan', 'provider', 'permission']);
+  const current = createRequestEnvelope({ ...base, provider: 'gemini', permissionMode: 'plan' });
+  assert.deepEqual(envelopeDrift(frozen, current), ['provider', 'permission']);
 });
 
 test('drift is described in plain language for the user', () => {

@@ -1,8 +1,10 @@
 import { getDesktopBridge } from '../desktop';
+import { confirmAction } from '../confirm';
 import { publishTerminalDockEvent } from '../terminal/echoChannel';
 import { terminalStateManager } from '../terminal/state';
 import { formatInjectionOutcome, injectStdinWithApproval, wasInjected } from '../terminal/injectStdin';
 import { buildRepairBrief, failureSourceForCommand, type FailureReceipt } from '../repairProof';
+import { commandApprovalNotice } from './commandGuard';
 import { globalRepairSession } from '../repairSession';
 import { describeFinish } from './finishTool';
 import { MCP_TOOL_PREFIX } from './mcpTools';
@@ -69,8 +71,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'delete_file',
-    description: 'Delete one file from disk, or remove an empty folder. Refuses non-empty folders. The result is verified against the filesystem; never claim a delete you did not see succeed.',
-    parameters: 'path: string (required, workspace-relative), confirm: true (required)'
+    description:
+      'Delete one file from disk, or remove an empty folder. Refuses non-empty folders. The user is asked to approve every delete, so expect a refusal and never retry one. The result is verified against the filesystem; never claim a delete you did not see succeed.',
+    parameters: 'path: string (required, workspace-relative), confirm: true (required — the user still has to click)'
   },
   {
     name: 'problems',
@@ -468,6 +471,18 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         if (asBoolean(call.args.confirm) !== true) {
           return refusal('delete_file needs confirm: true. Only delete when the user asked for this exact file.');
         }
+        // `confirm: true` is the model saying it is sure, which is not approval.
+        // A delete is the one tool with no undo inside the chat, so a person has
+        // to click, and the path they click on is the path that is removed.
+        const approved = await confirmAction({
+          title: `Delete ${path}?`,
+          body: `The assistant asked ShadRox to remove this from the opened folder:\n\n${path}\n\nNothing in the chat can undo a delete — it would have to come back from a checkpoint or your version control. Cancel removes nothing.`,
+          confirmLabel: 'Delete',
+          tone: 'danger'
+        });
+        if (!approved) {
+          return refusal(`The user did not approve deleting ${path}, so nothing was removed. Do not retry this call or delete a different file instead.`);
+        }
         const deleted = await desktop.deletePath(workspaceId, path);
         // A delete that did not happen must never be reported as done, and a read
         // that failed for any reason other than not-found must never prove absence.
@@ -512,7 +527,10 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         if (/[\r\n]/.test(command)) return refusal('run_command takes a single line. Run one command at a time.');
         publishTerminalDockEvent({ kind: 'command', command, source: 'assistant' });
         const started = Date.now();
-        const result = await desktop.runCommand(workspaceId, command);
+        // The blacklist names what this command can do to the folder. It travels
+        // to the native dialog as text: the user still decides, and still
+        // defaults to blocking, whether or not anything was flagged.
+        const result = await desktop.runCommand(workspaceId, command, commandApprovalNotice(command));
         publishTerminalDockEvent({
           kind: 'result',
           command,

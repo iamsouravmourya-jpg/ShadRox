@@ -8,7 +8,17 @@ test('only patches inside expectedFiles survive confinement', () => {
   const { allowed, refused } = confinePatches(patches, ['src/a.ts']);
   assert.deepEqual(allowed.map((patch) => patch.path), ['src/a.ts']);
   assert.equal(refused.length, 2);
-  assert.match(refused[0], /outside this milestone's expectedFiles/);
+  assert.match(refused[0], /outside the files this turn may write/);
+});
+
+test('the refusal names the effective writable set, never a wider one', () => {
+  // A narrowed scope reaches confinement as the already-narrowed list, so the
+  // reason a model reads must not invite it to retry a file that was cut.
+  const { allowed, refused } = confinePatches([{ path: 'src/b.ts' }], ['src/a.ts']);
+  assert.deepEqual(allowed, []);
+  assert.equal(refused.length, 1);
+  assert.ok(refused[0].includes('(src/a.ts)'), refused[0]);
+  assert.equal(refused[0].includes('src/b.ts)'), false, 'the writable set must not name the refused file');
 });
 
 test('confinement normalizes separators and leading ./, case-sensitively', () => {

@@ -1,4 +1,4 @@
-import type { PlanTier, RefineMode } from './types';
+import type { RefineMode } from './types';
 import type { PermissionMode } from './agent/runPolicy';
 import type { ResolvedPayer } from './sharedKeyPolicy';
 
@@ -6,8 +6,8 @@ import type { ResolvedPayer } from './sharedKeyPolicy';
  * The parts of a request that must not change under it once the user has hit
  * send (S01). Everything here is captured before queueing or execution: a
  * request that is parked in the queue and then dispatched after the user
- * switched workspace, plan or key must still run — and bill — as the request
- * they actually made, or say so out loud. It must never silently rebind.
+ * switched workspace, provider or key must still run as the request they
+ * actually made, or say so out loud. It must never silently rebind.
  *
  * This is deliberately a small, plain record, not a live view of app state.
  */
@@ -23,8 +23,6 @@ export interface RequestEnvelope {
   permissionMode: PermissionMode;
   /** Reasoning/refinement mode chosen at send time. */
   refineMode: RefineMode;
-  /** Which plan was active, since it gates metering. */
-  plan: PlanTier;
   /** Who pays for this request. Frozen so a mid-flight key change cannot flip it. */
   payer: ResolvedPayer;
   provider: string;
@@ -40,7 +38,6 @@ export interface RequestEnvelopeInput {
   targets?: readonly string[];
   permissionMode: PermissionMode;
   refineMode: RefineMode;
-  plan: PlanTier;
   payer: ResolvedPayer;
   provider: string;
   model: string;
@@ -55,7 +52,6 @@ export function createRequestEnvelope(input: RequestEnvelopeInput): RequestEnvel
     targets: [...(input.targets ?? [])],
     permissionMode: input.permissionMode,
     refineMode: input.refineMode,
-    plan: input.plan,
     payer: input.payer,
     provider: input.provider,
     model: input.model,
@@ -64,7 +60,7 @@ export function createRequestEnvelope(input: RequestEnvelopeInput): RequestEnvel
 }
 
 /** The dimensions a frozen request can drift on between queueing and dispatch. */
-export type EnvelopeDrift = 'workspace' | 'payer' | 'plan' | 'provider' | 'model' | 'permission';
+export type EnvelopeDrift = 'workspace' | 'payer' | 'provider' | 'model' | 'permission';
 
 /**
  * Which frozen dimensions no longer match the live app state. An empty list
@@ -78,7 +74,6 @@ export function envelopeDrift(frozen: RequestEnvelope, current: RequestEnvelope)
   const drift: EnvelopeDrift[] = [];
   if (frozen.workspaceId !== current.workspaceId) drift.push('workspace');
   if (frozen.payer !== current.payer) drift.push('payer');
-  if (frozen.plan !== current.plan) drift.push('plan');
   if (frozen.provider !== current.provider) drift.push('provider');
   if (frozen.model !== current.model) drift.push('model');
   if (frozen.permissionMode !== current.permissionMode) drift.push('permission');
@@ -91,7 +86,6 @@ export function describeEnvelopeDrift(drift: readonly EnvelopeDrift[]): string {
   const labels: Record<EnvelopeDrift, string> = {
     workspace: 'the workspace changed',
     payer: 'the paying key changed',
-    plan: 'the plan changed',
     provider: 'the provider changed',
     model: 'the model changed',
     permission: 'the permission mode changed'

@@ -336,11 +336,11 @@ test('the resume summary counts pending and running tasks and pluralizes', () =>
   ];
   assert.equal(
     resumeSummary(snapshot({ milestones: five, creditsSpent: 3.4, budgetCredits: 24 })),
-    'Resume: 2 of 5 tasks left, 3.4 credits spent of 24.'
+    'Resume: 2 of 5 tasks left, 3.4 spent of the 24 budget.'
   );
   assert.equal(
     resumeSummary(snapshot({ milestones: [five[3]], creditsSpent: 1, budgetCredits: 20 })),
-    'Resume: 1 of 1 task left, 1 credit spent of 20.'
+    'Resume: 1 of 1 task left, 1 spent of the 20 budget.'
   );
 });
 

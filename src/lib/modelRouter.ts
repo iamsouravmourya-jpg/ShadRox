@@ -10,8 +10,15 @@
 
 import { CREDIT_RATES, RUPEES_PER_CREDIT, type CreditRate } from './plans';
 import { USD_TO_INR, costRupees, costUsd, isPriced, type TokenSplit } from './modelRates';
-import type { PlanTier } from './types';
 import type { ResolvedPayer } from './sharedKeyPolicy';
+
+/**
+ * Keys for the operator-owned shared stack. ShadRox sells no plans, so nothing
+ * in the product can produce one of these values; the matrix is kept because
+ * `api/ai/_access.ts` can still be run with a shared key by an operator, and it
+ * must not drift onto a model no tier ever approved.
+ */
+export type SharedPlanKey = 'starter' | 'heavy';
 
 export type RouteRole = 'select' | 'summarize' | 'chatter' | 'edit' | 'premium' | 'complete';
 
@@ -71,12 +78,19 @@ function servesRole(role: RouteRole, model: string): boolean {
 }
 
 /**
- * Cheapest priced model that fits the role's budget. When nothing fits, the
- * cheapest overall is returned with `withinBudget: false` — the caller decides
- * whether to degrade the context or bill more credits, this file does not
- * silently pick an unaffordable model.
+ * Cheapest priced model that fits the role's budget, or the best-proven one
+ * when the caller supplies an outcome ranking — always among the candidates
+ * that already fit, so a recommendation can never raise the bill above the
+ * budget. When nothing fits, the cheapest overall is returned with
+ * `withinBudget: false`; the caller decides whether to degrade the context or
+ * bill more credits, this file does not silently pick an unaffordable model.
  */
-export function routeRequest(role: RouteRole, tokens: TokenSplit, availableModels: string[]): RouteChoice {
+export function routeRequest(
+  role: RouteRole,
+  tokens: TokenSplit,
+  availableModels: string[],
+  preference?: readonly string[]
+): RouteChoice {
   const budget = roleBudgetRupees(role);
   const models = (availableModels || []).filter((model) => model && isPriced(model));
   if (models.length === 0) {
@@ -104,21 +118,38 @@ export function routeRequest(role: RouteRole, tokens: TokenSplit, availableModel
   }
 
   const costs = byCost(inRole);
-  const fitted = costs.find((entry) => entry.exact <= budget);
-  const winner = fitted ?? costs[0];
+  const fitting = costs.filter((entry) => entry.exact <= budget);
+  const pool = fitting.length > 0 ? fitting : costs;
+  const cheapest = pool[0];
+  const winner = preferredWithin(pool, preference);
   const rupees = round2(winner.exact);
-  const reason = fitted
-    ? `cheapest ${role} model inside ₹${round2(budget)}`
-    : `no ${role} model fits ₹${round2(budget)}; cheapest in class is ₹${rupees}`;
+  const reason = fitting.length === 0
+    ? `no ${role} model fits ₹${round2(budget)}; cheapest in class is ₹${rupees}`
+    : winner.model === cheapest.model
+      ? `cheapest ${role} model inside ₹${round2(budget)}`
+      : `best-proven ${role} model inside ₹${round2(budget)} — ₹${rupees}, ₹${round2(winner.exact - cheapest.exact)} above the cheapest`;
 
   return {
     role,
     model: winner.model,
     rupees,
     credits: round2(winner.exact / RUPEES_PER_CREDIT),
-    withinBudget: Boolean(fitted),
+    withinBudget: fitting.length > 0,
     reason
   };
+}
+
+/**
+ * The top-ranked candidate the caller has evidence for, otherwise the cheapest.
+ *
+ * A model absent from the preference list is not disqualified — it simply
+ * carries no record, so it keeps only its price position.
+ */
+function preferredWithin(candidates: Array<{ model: string; exact: number }>, preference?: readonly string[]) {
+  if (!preference || preference.length === 0) return candidates[0];
+  const rank = new Map(preference.map((model, index) => [model, index] as const));
+  const position = (model: string) => rank.get(model) ?? Number.MAX_SAFE_INTEGER;
+  return [...candidates].sort((a, b) => position(a.model) - position(b.model) || a.exact - b.exact)[0];
 }
 
 /** What routing saves against running the same role on the user's picked model. */
@@ -183,7 +214,7 @@ const SHARED_TASK_ROLE: Record<SharedTaskClass, RouteRole> = {
  * These are exact IDs, deliberately: a shared request must not drift onto a
  * "cheapest model in the family" that the plan never approved.
  */
-const APPROVED_SHARED: Record<'starter' | 'heavy', Partial<Record<SharedTaskClass, string>>> = {
+const APPROVED_SHARED: Record<SharedPlanKey, Partial<Record<SharedTaskClass, string>>> = {
   starter: {
     'file-selection': 'amazon/nova-micro-v1',
     chat: 'google/gemini-2.5-flash-lite',
@@ -204,7 +235,7 @@ const APPROVED_SHARED: Record<'starter' | 'heavy', Partial<Record<SharedTaskClas
 };
 
 export interface SharedRouteInput {
-  plan: PlanTier;
+  plan: SharedPlanKey;
   taskClass: SharedTaskClass;
   tokens: TokenSplit;
 }
@@ -219,9 +250,8 @@ export interface SharedRouteChoice {
   reason: string;
 }
 
-/** The approved model for a tier/class, or null when the plan has none. */
-export function approvedSharedModel(plan: PlanTier, taskClass: SharedTaskClass): string | null {
-  if (plan !== 'starter' && plan !== 'heavy') return null;
+/** The approved model for a tier/class, or null when the stack has none. */
+export function approvedSharedModel(plan: SharedPlanKey, taskClass: SharedTaskClass): string | null {
   return APPROVED_SHARED[plan][taskClass] ?? null;
 }
 
@@ -241,10 +271,7 @@ export function routeSharedTask({ plan, taskClass, tokens }: SharedRouteInput): 
       rupees: 0,
       credits: 0,
       withinBudget: false,
-      reason:
-        plan === 'free'
-          ? 'the free plan is BYOK — it has no shared model to route'
-          : `${plan} has no approved ${taskClass} model, and no substitute is chosen`
+      reason: `${plan} has no approved ${taskClass} model, and no substitute is chosen`
     };
   }
   if (!isPriced(model)) {

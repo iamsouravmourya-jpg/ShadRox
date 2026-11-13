@@ -1,0 +1,24 @@
+{
+  "id": "test-covers-flag-parser",
+  "kind": "test",
+  "title": "A spec for every way parseFlags() takes an argument",
+  "notes": "Shape: working code with no tests. The job is to describe what it already does, so the implementation row must stay true and the new spec must pass against the code as it is — a reply that edits flags.mjs to suit its tests is caught by the second row.",
+  "checks": [
+    {
+      "name": "A spec file was added",
+      "file": "src/flags.test.mjs",
+      "match": "import \\{ parseFlags \\} from '\\./flags\\.mjs';"
+    },
+    {
+      "name": "The parser itself was not rewritten",
+      "file": "src/flags.mjs",
+      "match": "flags\\[body\\.slice\\(0, equals\\)\\] = body\\.slice\\(equals \\+ 1\\);"
+    }
+  ],
+  "commands": [
+    {
+      "name": "node --test src/flags.test.mjs",
+      "argv": ["node", "--test", "src/flags.test.mjs"]
+    }
+  ]
+}

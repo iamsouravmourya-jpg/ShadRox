@@ -16,9 +16,13 @@ import {
   X
 } from 'lucide-react';
 import type { CapsuleFileDiff, CapsuleStatus, ChangeCapsule } from '../lib/capsules/types';
-import type { DecisionInput, IntentDecision, IntentGraph } from '../lib/intent/types';
-import type { AcceptanceContract, BehaviorEvent } from '../lib/behavior/types';
-import type { OutcomeRecord, RouteProfile } from '../lib/calibratedAuto/types';
+import { hashesForTargets } from '../lib/intent/graph';
+import type { DecisionInput, DecisionStatus, DependencyAnswer, DependencyEvidence, IntentDecision, IntentGraph } from '../lib/intent/types';
+import type { AcceptanceContract, AcceptancePhase, AcceptanceResult, BehaviorEvent } from '../lib/behavior/types';
+import { acceptanceOutcome, describeEvidence, type AcceptanceOutcome } from '../lib/behavior/verification';
+import type { CalibratedTaskType, OutcomeRecord, RouteProfile } from '../lib/calibratedAuto/types';
+import type { RankedModel } from '../lib/calibratedAuto/router';
+import { MIN_VERIFIED_RUNS } from '../lib/calibratedAuto/statistics';
 
 export interface TaskInspectorProps {
   workspaceRoot: string | null;
@@ -33,18 +37,32 @@ export interface TaskInspectorProps {
   intentGraph: IntentGraph | null;
   intentDecisions: IntentDecision[];
   intentLoading: boolean;
+  /** How many files the intent index actually read; the rest is unverified. */
+  indexedFiles: number;
   onIntentRefresh: () => void;
   onAddDecision: (input: DecisionInput) => void;
   onDeleteDecision: (id: string) => void;
+  onAskDependencies: (question: string) => DependencyAnswer | null;
   onIntentExport: () => void;
   onIntentImport: (data: unknown) => void;
   behaviorEvents: BehaviorEvent[];
   contract: AcceptanceContract | null;
   onClearBehavior: () => void;
   onGenerateContract: () => void;
-  onUpdateContract: (contract: AcceptanceContract) => void;
+  /** Asks the preview harness to run one phase and record its receipt. */
+  onRunCheck: (phase: 'baseline' | 'postPatch') => void;
+  checkPhase: 'baseline' | 'postPatch' | null;
+  /** False when the local preview is not serving, so no check can prove anything. */
+  previewReady: boolean;
   outcomes: OutcomeRecord[];
   routeProfiles: RouteProfile[];
+  /** Which task type the ranking and the route profiles are read for. */
+  calibratedTaskType: CalibratedTaskType;
+  onCalibratedTaskType: (taskType: CalibratedTaskType) => void;
+  /** The models ordered by measured outcome, pin first. */
+  modelRanking: RankedModel[];
+  /** Passing null hands the choice back to the router. */
+  onPinModel: (taskType: CalibratedTaskType, model: string | null) => void;
 }
 
 const TABS = [
@@ -55,6 +73,8 @@ const TABS = [
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
+
+const CALIBRATED_TASK_TYPES: CalibratedTaskType[] = ['chat', 'bugfix', 'refactor', 'feature', 'test'];
 
 const STATUS_TONE: Record<CapsuleStatus, string> = {
   captured: 'border-sky-400/30 bg-sky-500/10 text-sky-300',
@@ -70,8 +90,71 @@ const KIND_GLYPH: Record<CapsuleFileDiff['kind'], { mark: string; tone: string; 
   edited: { mark: '~', tone: 'text-amber-300', badge: 'border-amber-400/30 bg-amber-500/10 text-amber-200' }
 };
 
-const SNIPPET_LENGTH = 80;
+/**
+ * `unknown` is deliberately grey, not amber: it means the governing file is not
+ * in the index, which is a limit of what ShadRox has read, not a decision that
+ * needs reviewing.
+ */
+const DECISION_TONE: Record<DecisionStatus, string> = {
+  fresh: 'border-emerald-400/30 text-emerald-300',
+  stale: 'border-amber-400/30 text-amber-200',
+  unknown: 'border-white/15 text-neutral-500'
+};
 
+/** Grey for `unverified` on purpose: nothing ran, so nothing is claimed. */
+const CHECK_TONE: Record<AcceptanceResult, string> = {
+  passed: 'border-emerald-400/30 text-emerald-300',
+  failed: 'border-rose-400/30 text-rose-200',
+  unverified: 'border-white/15 text-neutral-500'
+};
+
+const OUTCOME_TONE: Record<AcceptanceOutcome, string> = {
+  fixed: 'text-emerald-300',
+  'still-broken': 'text-rose-300',
+  regressed: 'text-rose-300',
+  unverified: 'text-neutral-500'
+};
+
+/**
+ * One phase of a contract: the verdict the harness returned plus the receipt
+ * that produced it. The button asks main process to run the probe; there is no
+ * control that writes a result without running one.
+ */
+function AcceptancePhaseRow({
+  label,
+  phase,
+  disabled,
+  running,
+  onRun
+}: {
+  label: string;
+  phase: AcceptancePhase;
+  disabled: boolean;
+  running: boolean;
+  onRun: () => void;
+}): ReactElement {
+  return (
+    <div className="rounded border border-white/[0.08] bg-neutral-950/40 p-1.5">
+      <div className="flex items-center gap-1.5">
+        <span className={`rounded border px-1 py-px font-mono text-[9px] uppercase ${CHECK_TONE[phase.result]}`}>{phase.result}</span>
+        <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-400">{label}</span>
+        <button
+          type="button"
+          onClick={onRun}
+          disabled={disabled || running}
+          title={disabled ? 'Start the local preview to run this check' : 'Run this check against the live preview'}
+          className="ml-auto flex items-center gap-1 rounded border border-cyan-400/30 px-1.5 py-0.5 text-[9px] text-cyan-200 hover:bg-cyan-500/10 disabled:opacity-40 cursor-pointer"
+        >
+          {running ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Play className="h-2.5 w-2.5" />}
+          {running ? 'Running' : 'Run check'}
+        </button>
+      </div>
+      <p className="mt-1 font-mono text-[9px] leading-snug text-neutral-500">{describeEvidence(phase.evidence)}</p>
+    </div>
+  );
+}
+
+const SNIPPET_LENGTH = 80;
 function snippet(text: string): string {
   const clean = text.replace(/\s+/g, ' ').trim();
   if (!clean) return '(no intent captured)';
@@ -87,6 +170,27 @@ function spendLabel(capsule: ChangeCapsule): string {
   return `${spend.model} · ${cost}`;
 }
 
+/** One edge list of a dependency answer, dimmed where the far end is not indexed. */
+function DependencyRows({ title, rows }: { title: string; rows: DependencyEvidence[] }): ReactElement {
+  return (
+    <div>
+      <p className="font-mono text-[9px] uppercase tracking-wider text-neutral-600">{title} · {rows.length}</p>
+      {rows.length === 0 ? (
+        <p className="text-[9px] text-neutral-600">none seen by the index</p>
+      ) : (
+        <ul className="mt-0.5 space-y-0.5">
+          {rows.map((row) => (
+            <li key={`${title}-${row.path}`} className="flex items-center gap-1 font-mono text-[9px]">
+              <span className={row.indexed ? 'text-neutral-300' : 'text-neutral-600'}>{row.path}</span>
+              <span className="ml-auto text-neutral-600">w{row.weight}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function TaskInspector({
   workspaceRoot,
   capsules,
@@ -100,18 +204,26 @@ export function TaskInspector({
   intentGraph,
   intentDecisions,
   intentLoading,
+  indexedFiles,
   onIntentRefresh,
   onAddDecision,
   onDeleteDecision,
+  onAskDependencies,
   onIntentExport,
   onIntentImport,
   behaviorEvents,
   contract,
   onClearBehavior,
   onGenerateContract,
-  onUpdateContract,
+  onRunCheck,
+  checkPhase,
+  previewReady,
   outcomes,
-  routeProfiles
+  routeProfiles,
+  calibratedTaskType,
+  onCalibratedTaskType,
+  modelRanking,
+  onPinModel
 }: TaskInspectorProps): ReactElement {
   const [activeTab, setActiveTab] = useState<TabId>('capsules');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -119,6 +231,8 @@ export function TaskInspector({
   const [intentTitle, setIntentTitle] = useState('');
   const [intentBody, setIntentBody] = useState('');
   const [intentPath, setIntentPath] = useState('');
+  const [dependencyQuestion, setDependencyQuestion] = useState('');
+  const [dependencyAnswer, setDependencyAnswer] = useState<DependencyAnswer | null>(null);
   const intentFileRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -184,7 +298,7 @@ export function TaskInspector({
           <header className="flex shrink-0 items-center justify-between border-b border-white/[0.07] px-3 py-1.5">
             <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-neutral-400">
               <span className="text-emerald-300">Intent Graph</span>
-              <span className="text-neutral-600">{intentGraph?.symbols.length ?? 0} symbols · {intentDecisions.length} decisions</span>
+              <span className="text-neutral-600">{intentGraph?.symbols.length ?? 0} symbols · {intentDecisions.length} decisions · {indexedFiles} files indexed</span>
               {intentLoading && <Loader2 className="h-3 w-3 animate-spin text-emerald-300" />}
             </div>
             <div className="flex items-center gap-1">
@@ -202,7 +316,10 @@ export function TaskInspector({
             <form className="mb-2 rounded-lg border border-emerald-400/20 bg-emerald-500/5 p-2" onSubmit={(event) => {
               event.preventDefault();
               if (!workspaceRoot || !intentTitle.trim() || !intentBody.trim() || !intentPath.trim()) return;
-              onAddDecision({ workspaceRoot, kind: 'rationale', title: intentTitle, body: intentBody, targets: [{ path: intentPath }], baseHashes: intentGraph?.fileHashes ?? {} });
+              // Pin only the files this decision governs. Pinning the whole
+              // index would make every unrelated edit look like a review need.
+              const targets = [{ path: intentPath }];
+              onAddDecision({ workspaceRoot, kind: 'rationale', title: intentTitle, body: intentBody, targets, baseHashes: hashesForTargets(intentGraph?.fileHashes ?? {}, targets) });
               setIntentTitle(''); setIntentBody(''); setIntentPath('');
             }}>
               <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-emerald-300">Add approved decision</div>
@@ -218,7 +335,7 @@ export function TaskInspector({
                 {intentDecisions.map((decision) => (
                   <li key={decision.id} className="rounded-lg border border-white/[0.08] bg-neutral-950/50 p-2">
                     <div className="flex items-center gap-1.5">
-                      <span className={`rounded border px-1 py-px font-mono text-[9px] uppercase ${decision.status === 'stale' ? 'border-amber-400/30 text-amber-200' : 'border-emerald-400/30 text-emerald-300'}`}>{decision.status}</span>
+                      <span className={`rounded border px-1 py-px font-mono text-[9px] uppercase ${DECISION_TONE[decision.status]}`}>{decision.status}</span>
                       <span className="truncate text-[11px] text-neutral-200">{decision.title}</span>
                       <button type="button" onClick={() => onDeleteDecision(decision.id)} title="Delete decision" className="ml-auto rounded p-1 text-neutral-600 hover:text-rose-300 cursor-pointer"><Trash2 className="h-3 w-3" /></button>
                     </div>
@@ -228,6 +345,34 @@ export function TaskInspector({
                 ))}
               </ul>
             )}
+            <form className="mt-2 rounded-lg border border-white/[0.08] bg-neutral-950/50 p-2" onSubmit={(event) => {
+              event.preventDefault();
+              const question = dependencyQuestion.trim();
+              setDependencyAnswer(question ? onAskDependencies(question) : null);
+            }}>
+              <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-neutral-400">Dependency question</div>
+              <div className="flex gap-1">
+                <input value={dependencyQuestion} onChange={(event) => setDependencyQuestion(event.target.value)} placeholder="what depends on src/a.ts?" className="min-w-0 flex-1 rounded border border-white/10 bg-neutral-950 px-2 py-1 text-[10px] text-neutral-200 outline-none" />
+                <button type="submit" className="flex items-center gap-1 rounded border border-white/15 px-2 py-1 text-[10px] text-neutral-300 hover:text-white cursor-pointer"><FileCode className="h-3 w-3" />Ask</button>
+              </div>
+              {dependencyAnswer && (dependencyAnswer.resolved ? (
+                <div className="mt-2 space-y-1.5">
+                  <p className="font-mono text-[9px] text-neutral-500">
+                    {dependencyAnswer.subject} · confidence {Math.round(dependencyAnswer.confidence * 100)}%
+                    {dependencyAnswer.truncated ? ' · list capped' : ''}
+                  </p>
+                  <DependencyRows title="depends on" rows={dependencyAnswer.dependsOn} />
+                  <DependencyRows title="depended by" rows={dependencyAnswer.dependedBy} />
+                  <ul className="space-y-0.5">
+                    {dependencyAnswer.reasons.map((reason) => <li key={reason} className="text-[9px] leading-snug text-neutral-500">{reason}</li>)}
+                  </ul>
+                </div>
+              ) : (
+                <p className="mt-2 text-[9px] leading-snug text-neutral-500">
+                  {dependencyAnswer.reasons[0] ?? 'Nothing in the index matches this question.'}
+                </p>
+              ))}
+            </form>
           </div>
         </div>
       ) : activeTab === 'behavior' ? (
@@ -245,10 +390,33 @@ export function TaskInspector({
               <p className="mt-1 text-[10px] text-neutral-300">{contract.observedFailure}</p>
               <p className="mt-1 text-[10px] text-neutral-400">Expected: {contract.expectedBehavior}</p>
               <p className="mt-1 font-mono text-[9px] text-neutral-500">{contract.target.path ?? 'unmapped'}{contract.target.line ? `:${contract.target.line}` : ''}</p>
-              <div className="mt-2 flex gap-1">
-                <button type="button" onClick={() => onUpdateContract({ ...contract, baseline: 'failed' })} className={`rounded border px-1.5 py-0.5 text-[9px] cursor-pointer ${contract.baseline === 'failed' ? 'border-rose-400/40 text-rose-200' : 'border-white/10 text-neutral-500'}`}>Baseline failed</button>
-                <button type="button" onClick={() => onUpdateContract({ ...contract, postPatch: 'passed' })} className={`rounded border px-1.5 py-0.5 text-[9px] cursor-pointer ${contract.postPatch === 'passed' ? 'border-emerald-400/40 text-emerald-200' : 'border-white/10 text-neutral-500'}`}>Post-patch passed</button>
+              <p className="mt-1 font-mono text-[9px] text-neutral-500">
+                probe: {contract.probe.selectors.length > 0 ? contract.probe.selectors.join(', ') : 'derived from the served HTML on the first run'}
+              </p>
+              <div className="mt-2 space-y-1">
+                <AcceptancePhaseRow
+                  label="Baseline"
+                  phase={contract.baseline}
+                  disabled={!previewReady}
+                  running={checkPhase === 'baseline'}
+                  onRun={() => onRunCheck('baseline')}
+                />
+                <AcceptancePhaseRow
+                  label="Post-patch"
+                  phase={contract.postPatch}
+                  disabled={!previewReady}
+                  running={checkPhase === 'postPatch'}
+                  onRun={() => onRunCheck('postPatch')}
+                />
               </div>
+              <p className={`mt-2 font-mono text-[9px] leading-snug ${OUTCOME_TONE[acceptanceOutcome(contract).state]}`}>
+                {acceptanceOutcome(contract).summary}
+              </p>
+              {!previewReady && (
+                <p className="mt-1 text-[9px] leading-snug text-neutral-500">
+                  Neither phase can be decided until the local preview is running.
+                </p>
+              )}
             </div>}
             {behaviorEvents.length === 0 ? <p className="py-5 text-center text-[10px] text-neutral-500">Use Pick mode or interact with the preview to record clicks and runtime errors.</p> : (
               <ul className="space-y-1">{behaviorEvents.map((event) => <li key={event.id} className="rounded border border-white/[0.08] bg-neutral-950/50 p-1.5 text-[10px] text-neutral-300"><span className="mr-1 font-mono uppercase text-cyan-300">{event.type}</span>{event.target}{event.path ? ` · ${event.path}` : ''}{event.message ? ` · ${event.message}` : ''}</li>)}</ul>
@@ -257,10 +425,42 @@ export function TaskInspector({
         </div>
       ) : activeTab === 'calibrated' ? (
         <div role="tabpanel" aria-label="Calibrated Auto" className="flex min-h-0 flex-1 flex-col">
-          <header className="flex items-center gap-1.5 border-b border-white/[0.07] px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-neutral-400"><Activity className="h-3 w-3 text-violet-300" />Outcome-Calibrated Auto <span className="text-neutral-600">{outcomes.length} outcomes</span></header>
+          <header className="flex items-center gap-1.5 border-b border-white/[0.07] px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-neutral-400"><Activity className="h-3 w-3 text-violet-300" />Outcome-Calibrated Auto <span className="text-neutral-600">{outcomes.filter((outcome) => outcome.verified).length} checked of {outcomes.length}</span></header>
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-            <ul className="space-y-1.5">{routeProfiles.map((profile) => <li key={profile.route} className="rounded-lg border border-white/[0.08] bg-neutral-950/50 p-2"><div className="flex justify-between text-[10px] text-neutral-200"><span className="uppercase">{profile.route}</span><span>{Math.round(profile.passRate * 100)}% pass</span></div><div className="mt-1 text-[9px] text-neutral-500">{profile.attempts} runs · {profile.averageRepairs.toFixed(1)} repairs · {Math.round(profile.averageTokens)} tokens</div></li>)}</ul>
-            {outcomes.length === 0 && <p className="py-5 text-center text-[10px] text-neutral-500">Verified outcomes will calibrate route selection over time.</p>}
+            <div className="mb-1.5 flex flex-wrap gap-1">
+              {CALIBRATED_TASK_TYPES.map((taskType) => (
+                <button
+                  key={taskType}
+                  type="button"
+                  onClick={() => onCalibratedTaskType(taskType)}
+                  className={`rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase transition-colors ${taskType === calibratedTaskType ? 'border-violet-400/40 bg-violet-500/15 text-violet-200' : 'border-white/[0.08] text-neutral-400 hover:text-neutral-200'}`}
+                >
+                  {taskType}
+                </button>
+              ))}
+            </div>
+            <p className="mb-2 text-[9px] leading-snug text-neutral-500">
+              Ranked only on {calibratedTaskType} turns something outside the model checked. Rates are shrunk toward the pool average, and a model under {MIN_VERIFIED_RUNS} checked runs sits behind every proven one. Pinning puts your choice above the record.
+            </p>
+            <ul className="space-y-1.5">{routeProfiles.map((profile) => <li key={profile.route} className="rounded-lg border border-white/[0.08] bg-neutral-950/50 p-2"><div className="flex justify-between text-[10px] text-neutral-200"><span className="uppercase">{profile.route}</span><span>{profile.passRate === null ? 'no verified run' : `${Math.round(profile.passRate * 100)}% checked`}</span></div><div className="mt-1 text-[9px] text-neutral-500">{profile.verifiedAttempts} verified of {profile.attempts} run(s){profile.unverifiedAttempts > 0 ? ` · ${profile.unverifiedAttempts} unchecked, not counted` : ''} · {profile.averageRepairs.toFixed(1)} repairs · {Math.round(profile.averageTokens)} tokens</div></li>)}</ul>
+            {modelRanking.length > 0 && <ul className="mt-2 space-y-1">
+              {modelRanking.map((entry) => (
+                <li key={entry.model} className="rounded-lg border border-white/[0.08] bg-neutral-950/50 p-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate font-mono text-[9px] text-neutral-200">#{entry.rank + 1} {entry.model}</span>
+                    <button
+                      type="button"
+                      onClick={() => onPinModel(calibratedTaskType, entry.pinned ? null : entry.model)}
+                      className={`shrink-0 rounded border px-1.5 py-0.5 text-[9px] transition-colors ${entry.pinned ? 'border-amber-400/40 bg-amber-500/10 text-amber-200' : 'border-white/[0.08] text-neutral-400 hover:text-neutral-200'}`}
+                    >
+                      {entry.pinned ? 'Unpin' : 'Pin'}
+                    </button>
+                  </div>
+                  <p className={`mt-1 text-[9px] leading-snug ${entry.pinned ? 'text-amber-200/80' : entry.proven ? 'text-emerald-300/80' : 'text-neutral-500'}`}>{entry.reason}</p>
+                </li>
+              ))}
+            </ul>}
+            {outcomes.length === 0 && <p className="py-5 text-center text-[10px] text-neutral-500">Nothing has been verified yet — the first checked turn is what starts the record.</p>}
           </div>
         </div>
       ) : activeTab !== 'capsules' ? (

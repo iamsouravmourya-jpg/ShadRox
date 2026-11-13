@@ -14,7 +14,7 @@
  */
 
 import type { PlanError, Verdict, VerificationReport } from '../autonomy/types';
-import type { AgentRole, TaskStatus, TeamBudget, TeamMessage, TeamState, TeamTask } from './types';
+import { DEFAULT_TEAM_BUDGET, type AgentRole, type TaskStatus, type TeamBudget, type TeamMessage, type TeamState, type TeamTask } from './types';
 
 export interface TeamStorage {
   getItem: (key: string) => string | null;
@@ -43,9 +43,10 @@ const MAX_MESSAGE_CHARS = 800;
 const MAX_PATH_CHARS = 300;
 const MAX_ERROR_CHARS = 1500;
 const MAX_CREDITS = 100_000;
+const MAX_DURATION_MS = 24 * 60 * 60 * 1000;
 
 const TASK_STATUSES: readonly TaskStatus[] = ['pending', 'running', 'passed', 'unverified', 'failed', 'blocked', 'stopped'];
-const TEAM_STATUSES = ['planning', 'running', 'done', 'failed', 'cancelled', 'stopped-budget'] as const;
+const TEAM_STATUSES = ['planning', 'running', 'done', 'failed', 'paused', 'cancelled', 'stopped-budget'] as const;
 const VERDICTS: readonly Verdict[] = ['passed', 'failed', 'unverified'];
 const ROLES: readonly AgentRole[] = ['coordinator', 'frontend', 'backend', 'tests', 'reviewer'];
 const MESSAGE_KINDS = ['handoff', 'finding', 'blocked'] as const;
@@ -56,6 +57,14 @@ function text(value: unknown, limit: number): string {
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.min(Math.max(value, 0), MAX_CREDITS) : fallback;
+}
+
+/**
+ * Milliseconds are not credits: the credit clamp that keeps a stored total
+ * honest would turn a twenty-minute ceiling into a hundred-second one.
+ */
+function durationOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(value, MAX_DURATION_MS) : fallback;
 }
 
 function pathList(value: unknown): string[] {
@@ -135,7 +144,10 @@ function sanitizeTask(value: unknown): TeamTask | null {
     touchedFiles: pathList(raw.touchedFiles),
     pendingReview: pathList(raw.pendingReview),
     filesRead: pathList(raw.filesRead),
-    summary: text(raw.summary, 400)
+    summary: text(raw.summary, 400),
+    ...(typeof raw.toolCalls === 'number' && Number.isFinite(raw.toolCalls)
+      ? { toolCalls: Math.max(0, Math.floor(raw.toolCalls)) }
+      : {})
   };
 }
 
@@ -159,7 +171,16 @@ function sanitizeBudget(value: unknown): TeamBudget | undefined {
   const maxTasks = Math.floor(numberOr(raw.maxTasks, 0));
   const maxAttemptsPerTask = Math.floor(numberOr(raw.maxAttemptsPerTask, 0));
   if (maxCredits <= 0 || maxTasks <= 0 || maxAttemptsPerTask <= 0) return undefined;
-  return { maxCredits, maxTasks, maxAttemptsPerTask };
+  // A state saved before the work ceilings existed is read with the shipped
+  // defaults rather than zero, so an old run cannot come back unbounded.
+  return {
+    maxCredits,
+    maxTasks,
+    maxAttemptsPerTask,
+    maxTurns: Math.floor(numberOr(raw.maxTurns, DEFAULT_TEAM_BUDGET.maxTurns)),
+    maxToolCalls: Math.floor(numberOr(raw.maxToolCalls, DEFAULT_TEAM_BUDGET.maxToolCalls)),
+    maxWallClockMs: durationOr(raw.maxWallClockMs, DEFAULT_TEAM_BUDGET.maxWallClockMs)
+  };
 }
 
 /**

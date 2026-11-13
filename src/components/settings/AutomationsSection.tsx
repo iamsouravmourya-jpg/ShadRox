@@ -249,8 +249,10 @@ export function AutomationsSection({ workspaceId, workspaceRoot }: AutomationsSe
                     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-500">
                       <span className="text-violet-300">{triggerSummary(definition.trigger)}</span>
                       <span className="break-all">{actionSummary(definition.action)}</span>
-                      <span>
-                        {definition.creditsPerRun} credit{definition.creditsPerRun === 1 ? '' : 's'}/run
+                      <span
+                        title={`One run may not spend more than ${definition.creditsPerRun} units of work on your own key (1 ≈ one edit-sized turn). ShadRox bills nothing; this only stops a runaway run.`}
+                      >
+                        cap {definition.creditsPerRun}/run
                       </span>
                       {definition.maxRunsPerDay !== undefined && (
                         <span>max {definition.maxRunsPerDay}/day</span>

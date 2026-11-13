@@ -8,7 +8,7 @@
 
 import type { TeamEvent, TeamMergeReport } from './types';
 
-/** One line per event, or null for the ones that only move the credit meter. */
+/** One line per event, or null for an event this build does not describe. */
 export function describeTeamEvent(event: TeamEvent): string | null {
   switch (event.type) {
     case 'team:planned':
@@ -26,7 +26,7 @@ export function describeTeamEvent(event: TeamEvent): string | null {
     case 'message':
       return `${event.message.from} → ${event.message.to}: ${event.message.text}`;
     case 'credit':
-      return `Spent ${event.spent} credits (team total ${event.total}).`;
+      return `Spent ${event.spent} of the team budget (total ${event.total}).`;
     case 'team:log':
       return event.text;
     case 'team:integration':

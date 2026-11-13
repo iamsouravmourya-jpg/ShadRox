@@ -109,6 +109,11 @@ export interface DesktopCommandResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /**
+   * True when the main process killed the command at its time limit. A killed
+   * command proved nothing, so it must not read as an ordinary exit code.
+   */
+  timedOut?: boolean;
   deniedReason?: string;
 }
 
@@ -332,6 +337,36 @@ export type DesktopPreviewState =
   | { status: 'starting'; url: null }
   | { status: 'ready'; url: string; /** `static` previews reload on file changes; `dev` servers may use their own HMR. */ mode?: 'dev' | 'static'; hmr?: boolean }
   | { status: 'error'; url: null; message: string };
+
+/**
+ * The verdict `electron/preview-assert.cjs` merges and hands over IPC — the
+ * shape `mergePreviewVerdict()` actually returns, so a caller cannot invent a
+ * pass the harness did not give it.
+ *
+ * `status` is the ladder: `fatal` proves a break, `ok` proves the app mounted
+ * with a clean console, and `warn`/`observed` prove nothing in either direction.
+ * `assertedSelectors` is empty when only the generic body check ran, which is
+ * why such a run can never be `ok`.
+ */
+export interface PreviewVerdict {
+  ok: boolean;
+  status: 'ok' | 'warn' | 'fatal' | 'observed';
+  detail: string | null;
+  errorCount: number;
+  failedSelectors?: string[];
+  warningSelectors?: string[];
+  consoleErrors?: string[];
+  assertedSelectors?: string[];
+}
+
+export type DesktopScreenshotCapture =
+  | { ok: true; dataUrl: string; error?: undefined }
+  | { ok: false; error: string; dataUrl?: undefined };
+
+export type DesktopScreenshotSave =
+  | { ok: true; path: string; canceled?: undefined; error?: undefined }
+  | { ok: false; canceled: true; path?: undefined; error?: undefined }
+  | { ok: false; error: string; path?: undefined; canceled?: undefined };
 
 export interface McpServerConfig {
   id: string;
@@ -597,9 +632,22 @@ export interface ShadRoxDesktopAPI {
   verifyMachineReceipt: (workspaceId: string, receiptId: string) => Promise<import('./machine/receipt').MachineReceiptVerification>;
   /** Static pre-apply check of proposed file contents (syntax, JSON, markup). */
   verifyChangeSet: (workspaceId: string, files: VerifyChangeFile[]) => Promise<VerifyChangeResult>;
-  runCommand: (workspaceId: string, command: string) => Promise<DesktopCommandResult>;
-  /** Structured preview sanity check. `observed` means the frame could not prove a pass. */
-  assertPreview: (workspaceId: string) => Promise<{ ok: boolean; status: 'ok' | 'warn' | 'fatal' | 'observed'; detail: string | null; errorCount: number }>;
+  /**
+   * Ask the user to approve and run one command. `riskNotice` is display text
+   * the renderer computed with `commandApprovalNotice`: main shows it above the
+   * command and still defaults to blocking, so it informs the decision only.
+   */
+  runCommand: (workspaceId: string, command: string, riskNotice?: string) => Promise<DesktopCommandResult>;
+  /**
+   * Structured preview sanity check. `observed` means the frame could not prove
+   * a pass. Pass `selectors` to re-run the same pinned check instead of letting
+   * main re-derive mount points from the current HTML.
+   */
+  assertPreview: (workspaceId: string, options?: { selectors?: readonly string[] }) => Promise<PreviewVerdict>;
+  /** Pixels of the preview region, for acceptance evidence. Never stored — hashed. */
+  capturePreviewPage: (rect?: { x: number; y: number; width: number; height: number }) => Promise<DesktopScreenshotCapture>;
+  /** Hands a PNG data URL to the OS save dialog; `canceled` means the user said no. */
+  savePreviewScreenshot: (dataUrl: string) => Promise<DesktopScreenshotSave>;
   /** Read-only git status/diff/log for AI commit messages. */
   gitRead: (workspaceId: string) => Promise<GitReadResult>;
   /** Unmerged index paths, read-only, for the conflict banner. */

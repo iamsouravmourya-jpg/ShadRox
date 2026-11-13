@@ -88,8 +88,8 @@ const notes: { icon: typeof Info; title: string; text: string; link?: { label: s
   },
   {
     icon: IndianRupee,
-    title: 'Locked beta prices',
-    text: 'The ₹699 Starter and ₹1,299 Heavy catalogue plans are locked beta prices only. Checkout and shared-key access are not enabled, and prices may change before launch.',
+    title: 'Free, with your own key',
+    text: 'ShadRox is free and runs on bring-your-own-key. There is no plan to buy and no charge from ShadRox — your own provider key carries every request and your provider bills you directly.',
   },
 ]
 

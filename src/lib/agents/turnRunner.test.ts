@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { runToolRounds } from '../agent/toolLoop';
 import type { ToolLoopInput } from '../agent/toolLoop';
+import type { RunPolicy } from '../agent/runPolicy';
 import type { ApplyPolicyKind } from '../autonomy/types';
 import type { AgentTurnPorts, TurnPatch } from './turnRunner';
 import { filesReadFromActivity, runAgentTurn, turnReviewLine } from './turnRunner';
@@ -65,6 +66,7 @@ interface TurnOptions {
   files?: Record<string, string>;
   expectedFiles?: string[];
   applyPolicy?: ApplyPolicyKind;
+  policy?: RunPolicy;
   signal?: AbortSignal;
   writer?: boolean;
   credits?: number;
@@ -118,6 +120,7 @@ async function turn(options: TurnOptions) {
     expectedFiles: options.expectedFiles ?? ['src/a.ts'],
     ports,
     applyPolicy: options.applyPolicy,
+    policy: options.policy,
     signal: options.signal,
     maxToolRounds: options.maxToolRounds,
     systemInstruction: options.systemInstruction
@@ -212,9 +215,61 @@ test('a patch outside the declared files is refused and reported, never written'
     });
     assert.equal(written.length, 0);
     assert.equal(result.patchFailures.length, 1);
-    assert.match(result.patchFailures[0], /expectedFiles/);
+    assert.match(result.patchFailures[0], /outside the files this turn may write/);
     assert.equal(store.store.get('src/other.ts'), undefined);
   });
+});
+
+/**
+ * The request scope is the user's narrowing of a milestone's contract, so it
+ * only ever subtracts: a file the milestone declared but the scope cut cannot
+ * be written, and a file the scope names the milestone never declared cannot
+ * be added to the writable set.
+ */
+test('a request scope narrower than the milestone refuses the file it cut', async () => {
+  await withBridge({ readFile: async (_id: string, path: string) => ({ name: path, content: 'const a = 1;\n', version: 'v1' }) }, async () => {
+    const { result, store } = await turn({
+      responses: [
+        toolBlock([readCall]),
+        `Done.\n${edits([EDIT_ONE, { path: 'src/b.ts', kind: 'rewrite', content: 'boom' }])}`
+      ],
+      files: { 'src/a.ts': 'const a = 1;\n', 'src/b.ts': 'const b = 1;\n' },
+      expectedFiles: ['src/a.ts', 'src/b.ts'],
+      policy: { mode: 'agent', scope: { workspaceId: 'ws', allowedPaths: ['src/a.ts'] } }
+    });
+    assert.deepEqual(result.applied, ['src/a.ts']);
+    assert.equal(store.store.get('src/a.ts'), 'const a = 2;\n');
+    assert.equal(store.store.get('src/b.ts'), 'const b = 1;\n', 'the cut file keeps its bytes');
+    assert.equal(result.patchFailures.length, 1);
+    assert.match(result.patchFailures[0], /^src\/b\.ts/);
+  });
+});
+
+test('a request scope never widens what the milestone declared', async () => {
+  const { result, store } = await turn({
+    responses: [`Done.\n${edits([EDIT_ONE])}`],
+    files: { 'src/a.ts': 'const a = 1;\n' },
+    expectedFiles: ['src/a.ts'],
+    policy: { mode: 'agent', scope: { workspaceId: 'ws', allowedPaths: ['src/elsewhere.ts'] } }
+  });
+  assert.deepEqual(result.applied, []);
+  assert.equal(result.patchFailures.length, 1);
+  assert.match(result.patchFailures[0], /^src\/a\.ts/);
+  assert.equal(store.store.get('src/a.ts'), 'const a = 1;\n');
+});
+
+test('an empty or absent scope leaves the milestone contract unchanged', async () => {
+  for (const scope of [undefined, { workspaceId: 'ws' }, { workspaceId: 'ws', allowedPaths: [] }]) {
+    const { result } = await turn({
+      responses: [`Done.\n${edits([{ path: 'src/new.ts', kind: 'rewrite', content: 'x' }])}`],
+      files: {},
+      expectedFiles: ['src/new.ts'],
+      writer: false,
+      policy: { mode: 'agent', scope }
+    });
+    assert.equal(result.patchFailures.length, 0, JSON.stringify(scope));
+    assert.deepEqual(result.autoApply.map((patch) => patch.path), ['src/new.ts'], JSON.stringify(scope));
+  }
 });
 
 test('an investigation task that emits edits has every patch refused', async () => {

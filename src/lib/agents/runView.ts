@@ -19,7 +19,7 @@ import type { Milestone, MilestoneStatus, RunState, RunStatus } from '../autonom
 import { findAgent } from './roles';
 import type { TaskStatus, TeamState, TeamTask } from './types';
 
-export type RunViewStatus = 'planning' | 'running' | 'done' | 'failed' | 'stopped' | 'budget';
+export type RunViewStatus = 'planning' | 'running' | 'done' | 'failed' | 'paused' | 'stopped' | 'budget';
 
 export interface RunViewRow {
   id: string;
@@ -82,7 +82,7 @@ export interface RunViewOptions {
   log?: readonly string[];
   /** Why the request escalated, from `decideOrchestration`. */
   reason?: string;
-  /** The credit ceiling; falls back to the state's own budget when known. */
+  /** The spend ceiling; falls back to the state's own budget when known. */
   budgetCredits?: number;
   /** The run/team is still executing in this process. */
   isRunning?: boolean;
@@ -191,6 +191,7 @@ function statusOfRun(status: RunStatus): RunViewStatus {
     case 'stopped-budget':
       return 'budget';
     case 'paused':
+      return 'paused';
     case 'cancelled':
       return 'stopped';
     default:
@@ -210,6 +211,8 @@ function statusOfTeam(status: TeamState['status']): RunViewStatus {
       return 'failed';
     case 'stopped-budget':
       return 'budget';
+    case 'paused':
+      return 'paused';
     case 'cancelled':
       return 'stopped';
     default:
@@ -218,7 +221,7 @@ function statusOfTeam(status: TeamState['status']): RunViewStatus {
 }
 
 function resumable(status: RunViewStatus, rows: readonly RunViewRow[]): boolean {
-  return (status === 'stopped' || status === 'budget' || status === 'failed') && rows.some((row) => row.status === 'pending' || row.status === 'stopped');
+  return (status === 'paused' || status === 'stopped' || status === 'budget' || status === 'failed') && rows.some((row) => row.status === 'pending' || row.status === 'stopped');
 }
 
 function assemble(
@@ -241,12 +244,14 @@ function assemble(
       : status === 'done'
       ? `${done} of ${total} ${noun.units} passed`
       : status === 'budget'
-        ? `stopped at the credit cap after ${done} of ${total} ${noun.units}`
-        : status === 'stopped'
-          ? `stopped after ${done} of ${total} ${noun.units}`
-          : status === 'failed'
-            ? `${done} of ${total} ${noun.units} passed`
-            : `${done} of ${total} ${noun.units} planned`;
+        ? `stopped at the spend cap after ${done} of ${total} ${noun.units}`
+        : status === 'paused'
+          ? `paused after ${done} of ${total} ${noun.units}`
+          : status === 'stopped'
+            ? `stopped after ${done} of ${total} ${noun.units}`
+            : status === 'failed'
+              ? `${done} of ${total} ${noun.units} passed`
+              : `${done} of ${total} ${noun.units} planned`;
   const statusLine = error && status !== 'running' ? firstSentence(`${head} — ${error}`, 300) : head;
   return {
     kind,

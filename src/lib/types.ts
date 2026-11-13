@@ -4,7 +4,7 @@ import type { RequestEnvelope } from './requestEnvelope';
 
 export type TabType = 'CODE' | 'PREVIEW' | 'PLAN' | 'PLUGINS' | 'AGENTS' | 'AUTOMATIONS';
 
-export type SettingsTab = 'CHAT' | 'PLAN' | 'GITHUB' | 'SECRETS' | 'TOOLS' | 'AUTOMATIONS';
+export type SettingsTab = 'CHAT' | 'GITHUB' | 'SECRETS' | 'TOOLS' | 'AUTOMATIONS';
 
 /**
  * Local-embedding retrieval state shown in the chat toolbar. `unavailable`
@@ -14,11 +14,12 @@ export type SettingsTab = 'CHAT' | 'PLAN' | 'GITHUB' | 'SECRETS' | 'TOOLS' | 'AU
 export type SemanticStatus = 'off' | 'checking' | 'ready' | 'unavailable';
 
 /**
- * UI-only plan ladder. Nothing is wired to billing yet — there is no database,
- * so the upgrade buttons just preview a tier locally.
- * Paid tiers are metered in credits, not messages.
+ * ShadRox has one entitlement state: Free, bring-your-own-key. There is no paid
+ * tier, no credit balance and no shared-key purchase. The type stays a union of
+ * one so a stale `shadrox.plan` value written by an older build resolves to
+ * 'free' instead of crashing — see `purgeLegacyEntitlements` in storage.ts.
  */
-export type PlanTier = 'free' | 'starter' | 'heavy';
+export type PlanTier = 'free';
 
 export type ViewportSize = 'desktop' | 'tablet' | 'mobile';
 
@@ -151,7 +152,7 @@ export interface ChatMessage {
   /** An automatic run/team turn, rendered inline instead of a separate panel. */
   orchestration?: {
     kind: 'autonomy' | 'team';
-    status: 'planning' | 'running' | 'done' | 'failed' | 'stopped' | 'budget';
+    status: 'planning' | 'running' | 'done' | 'failed' | 'paused' | 'stopped' | 'budget';
     /** Why Auto escalated this request instead of answering it directly. */
     reason: string;
     /** Hard ceiling the engine enforces for this run, in credits. */

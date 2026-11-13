@@ -5,7 +5,8 @@ import { detectLanguage } from '../lib/languages';
 import type { FilePatch } from '../lib/markdown';
 import { loadHandleRecord, pruneHandles, saveHandles } from '../lib/fileHandles';
 import { addCheckpointCreatedPaths, listCheckpoints, loadCheckpointCreatedPaths, loadCheckpointFiles, mergeCheckpointFiles, saveCheckpoint, type CheckpointMeta } from '../lib/history';
-import { diffToCheckpoint, type CheckpointDiff } from '../lib/checkpointDiff';
+import { diskCurrentView, diffToCheckpoint, type CheckpointDiff } from '../lib/checkpointDiff';
+import { contentVersion, expectedDiskVersion } from '../lib/saveVersions';
 import { composerAfterCheckpointFailure } from '../lib/agents/scopePreserve';
 import { getSnapshot, pruneSnapshots, saveSnapshot } from '../lib/snapshots';
 import { getRecentWorkspaces, pushRecentWorkspace, removeRecentWorkspace } from '../lib/storage';
@@ -195,6 +196,10 @@ interface UseWorkspaceResult {
 const EMPTY_FILES: WorkspaceFile[] = [];
 /** Unedited, unopened buffers past this count are dropped back to the file list. */
 const MAX_LOADED_BUFFERS = 48;
+/** A restore preview reads disk bytes; past this many files it falls back to buffers. */
+const MAX_PREVIEW_DISK_FILES = 200;
+/** One file bigger than this is skipped by the disk read and reported from its buffer. */
+const MAX_PREVIEW_DISK_FILE_BYTES = 2 * 1024 * 1024;
 
 /** Strips the `./` and backslashes that models write into patch paths. */
 export function normalizeWorkspacePath(value: string): string {
@@ -204,11 +209,6 @@ export function normalizeWorkspacePath(value: string): string {
 /** Traversal-safe, dot-free workspace-relative path. */
 function isEditablePath(path: string): boolean {
   return path.length > 0 && path.split('/').every((part) => part && part !== '.' && part !== '..');
-}
-
-async function contentVersion(content: string): Promise<string> {
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
-  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 export function useWorkspace(): UseWorkspaceResult {
@@ -1204,13 +1204,16 @@ export function useWorkspace(): UseWorkspaceResult {
       setDiskMessage(null);
       let transactionId: string | null = null;
       try {
-        const staged = await desktop.stageFiles(id, snapshot.map((file) => ({
+        const staged = await desktop.stageFiles(id, await Promise.all(snapshot.map(async (file) => ({
           name: file.name,
           content: file.content,
           // Unknown baseline (a brand-new buffer) skips the stage-time comparison;
           // the staged transaction still pins the on-disk version at commit time.
-          expectedVersion: baselineRef.current[file.name] !== undefined ? file.version ?? null : undefined
-        })));
+          // A buffer with no remembered version — which is every checkpoint
+          // restore — is pinned to the copy we last knew was on disk, so a stale
+          // rewind refuses instead of overwriting an edit made outside ShadRox.
+          expectedVersion: await expectedDiskVersion(file, baselineRef.current[file.name])
+        }))));
         transactionId = staged.transactionId;
         const result = await desktop.commitTransaction(id, staged.transactionId);
         const errorText = result.errors.map((error) => `${error.name || 'File'}: ${error.message}`).join(' ');
@@ -1745,9 +1748,29 @@ export function useWorkspace(): UseWorkspaceResult {
     [activeFileIndex, checkpoints, refreshDiskFile, loadDirectory, inspectMachineCheckpoint]
   );
 
+  /**
+   * What a rewind would do, read from the disk rather than the editor tabs.
+   *
+   * A machine checkpoint rewinds bytes, so answering from buffers would hide
+   * every edit made outside ShadRox — including a file created or deleted after
+   * the checkpoint, which the rewind is about to overwrite. Beyond the cap, or
+   * without a native folder, the buffers are the only honest answer left.
+   */
   const previewCheckpointDiff = useCallback(async (id: string): Promise<CheckpointDiff | null> => {
     const stored = await loadCheckpointFiles(id);
-    return stored ? diffToCheckpoint(filesRef.current, stored) : null;
+    if (!stored) return null;
+    const desktop = getDesktopBridge();
+    const nativeId = desktopWorkspaceIdRef.current;
+    const names = [...new Set([
+      ...stored.map((file) => normalizeWorkspacePath(file.name)),
+      ...filesRef.current.map((file) => normalizeWorkspacePath(file.name))
+    ])].filter(isEditablePath);
+    if (!desktop || !nativeId || names.length > MAX_PREVIEW_DISK_FILES) {
+      return diffToCheckpoint(filesRef.current, stored);
+    }
+    const disk = await desktop.loadFiles(nativeId, names, { maxBytesPerFile: MAX_PREVIEW_DISK_FILE_BYTES }).catch(() => null);
+    if (!disk || desktopWorkspaceIdRef.current !== nativeId) return diffToCheckpoint(filesRef.current, stored);
+    return diffToCheckpoint(diskCurrentView(filesRef.current, disk), stored);
   }, []);
 
   /**

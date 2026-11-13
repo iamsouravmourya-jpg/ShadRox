@@ -179,11 +179,11 @@ test('a budget stop is its own status and offers a resume', () => {
   const view = teamRunView(
     teamState([task(), task({ id: 't2', status: 'pending' })], {
       status: 'stopped-budget',
-      error: 'Stopped at the 24-credit cap. 1 task(s) did not run.'
+      error: 'Stopped at the spend cap of 24. 1 task(s) did not run.'
     })
   );
   assert.equal(view?.status, 'budget');
-  assert.match(view?.statusLine ?? '', /stopped at the credit cap/);
+  assert.match(view?.statusLine ?? '', /stopped at the spend cap/);
   assert.equal(view?.canResume, true);
   assert.equal(view?.canStop, false);
 });

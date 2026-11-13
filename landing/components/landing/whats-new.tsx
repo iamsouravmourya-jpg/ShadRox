@@ -18,7 +18,7 @@ const notes = [
   {
     icon: MessagesSquare,
     title: 'A calmer chat',
-    text: 'Long code blocks collapse to a one-line summary, reasoning traces fold once the answer lands, and model, credits and token stats live under a single Usage toggle.',
+    text: 'Long code blocks collapse to a one-line summary, reasoning traces fold once the answer lands, and model and token stats live under a single Usage toggle.',
   },
 ]
 
