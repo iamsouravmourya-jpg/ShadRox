@@ -8,22 +8,22 @@
 
 A native desktop workspace for working on local projects with an editor, Markdown preview, BYOK AI chat, project preview, Git tools, and an integrated terminal.
 
-[![Version](https://img.shields.io/badge/version-0.0.8-violet?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
+[![Version](https://img.shields.io/badge/version-0.0.9-violet?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0d0f13?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
 [![License](https://img.shields.io/badge/license-Proprietary-orange?style=flat-square)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-44-47848F?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-[Download for Windows](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.8-Setup.exe) · [All Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Report an Issue](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
+[Download for Windows](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.9-Setup.exe) · [All Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Report an Issue](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
 
 </div>
 
 ---
 
-> **ShadRox is beta software (v0.0.8).** It is not a mature replacement for a general-purpose IDE. Agent output and model-generated edits can be incorrect — inspect proposed changes and keep backups or use Git for important work.
+> **ShadRox is beta software (v0.0.9).** It is not a mature replacement for a general-purpose IDE. Agent output and model-generated edits can be incorrect — inspect proposed changes and keep backups or use Git for important work.
 
-The download button points at the **last published** GitHub release. This source tree is version `0.0.8` and includes the behavior below.
+The download button points at the **last published** GitHub release. This source tree is version `0.0.9` and includes the behavior below.
 
 **In this source tree**
 - **Recent workspace reopen.** Reopen a saved folder or file set with an in-app loading status, access checks, and a ready-file count so it is clear when the workspace is still opening.
@@ -495,7 +495,7 @@ Without prior written permission you may not copy, redistribute, mirror, sell, o
 
 Built with care by [Sourav Maurya](https://github.com/iamsouravmourya-jpg)
 
-[Download](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.8-Setup.exe) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Issues](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
+[Download](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.9-Setup.exe) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Issues](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
 
 </div>
 

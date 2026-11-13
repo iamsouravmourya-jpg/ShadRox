@@ -130,9 +130,9 @@ const groups: Group[] = [
       },
       {
         icon: RefreshCw,
-        title: 'Auto-updates',
-        text: 'ShadRox checks for a newer release when it starts and installs the update when you restart the app.',
-        chips: ['checks on start', 'installs on restart'],
+        title: 'Update checks',
+        text: 'ShadRox checks for a newer release on start and every 6 hours, and shows a badge when one is ready. You download and install it yourself.',
+        chips: ['checks on start', 'badge only', 'manual install'],
       },
     ],
   },

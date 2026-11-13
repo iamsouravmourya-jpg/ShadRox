@@ -12,7 +12,7 @@ export function AnnBar() {
     <div className="relative flex items-center justify-center gap-2 bg-[linear-gradient(90deg,var(--ac),var(--pink))] px-8 py-2 text-center text-[12px] font-semibold leading-snug text-white sm:px-10">
       <Sparkles className="size-3.5 shrink-0" aria-hidden />
       <p className="min-w-0">
-        ShadRox v{APP_VERSION} rebuilt — honest edit reports + a calmer chat.{' '}
+        ShadRox v{APP_VERSION} — durable runs, evidence-backed checks, free + BYOK.{' '}
         <a
           href={`https://github.com/iamsouravmourya-jpg/ShadRox/releases/tag/v${APP_VERSION}`}
           className="underline underline-offset-2 transition hover:opacity-80"
