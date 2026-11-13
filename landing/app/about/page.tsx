@@ -77,8 +77,8 @@ const notes: { icon: typeof Info; title: string; text: string; link?: { label: s
   },
   {
     icon: ScrollText,
-    title: 'Proprietary, source in the open',
-    text: 'ShadRox is proprietary software. The source is published on GitHub for viewing only — not as an open-source project.',
+    title: 'Open source, AGPL-3.0',
+    text: 'ShadRox is free, open-source software under the GNU Affero General Public License v3.0. Use it, study it, modify it, share it — the full source is on GitHub.',
     link: { label: 'View the repo', href: GITHUB_REPO },
   },
   {

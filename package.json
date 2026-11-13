@@ -4,7 +4,7 @@
   "version": "0.0.9",
   "description": "Native desktop AI engineering workspace with BYOK and live project preview.",
   "author": "Sourav Maurya",
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {

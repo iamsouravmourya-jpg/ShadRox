@@ -10,7 +10,7 @@ A native desktop workspace for working on local projects with an editor, Markdow
 
 [![Version](https://img.shields.io/badge/version-0.0.9-violet?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0d0f13?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
-[![License](https://img.shields.io/badge/license-Proprietary-orange?style=flat-square)](./LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-44-47848F?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
@@ -485,9 +485,9 @@ ShadRox is built on excellent open-source projects including [Electron](https://
 
 ## License
 
-ShadRox is proprietary software. Copyright (c) 2026 Sourav Maurya. All rights reserved. See [LICENSE](./LICENSE) for the full terms. The source code is published for viewing and reference only — access does not grant any license, right of use, or ownership interest.
+ShadRox is free, open-source software: you can redistribute it and/or modify it under the terms of the [GNU Affero General Public License version 3](./LICENSE) as published by the Free Software Foundation. Copyright (c) 2026 Sourav Maurya.
 
-Without prior written permission you may not copy, redistribute, mirror, sell, or create derivative works from ShadRox; reverse engineer, decompile, disassemble, or reconstruct source from its bytecode (`.jsc`) or obfuscated bundles; circumvent or disable its technical protection measures; or remove its proprietary notices. Breach automatically terminates the viewing permission and obliges you to destroy all copies. The Owner may seek injunctive relief and damages for violations. Rights that applicable law grants and that cannot be waived by contract (such as mandatory interoperability rights) are preserved, but only to the extent that law actually permits. Third-party dependencies remain governed by their own licenses.
+The AGPL-3.0 lets you use, study, modify and share ShadRox. If you run a modified version as a service over a network, you must offer its complete corresponding source to the users of that service. ShadRox is distributed without any warranty; see the license for the full terms. Third-party dependencies remain governed by their own licenses.
 
 ---
 
