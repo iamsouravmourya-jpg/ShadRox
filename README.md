@@ -54,7 +54,7 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 
 | | Feature | What it does |
 |---|---|---|
-| 🛡️ | **Command approval** | Shell commands, verification commands, and Git status/diff require a native approval dialog. `delete_file` also requires `confirm: true` and a follow-up read that proves the path is gone. |
+| 🛡️ | **Command approval** | Shell commands, verification commands, and Git status/diff require a native approval dialog with a plain-language risk notice for the command. `delete_file` also requires `confirm: true` and a follow-up read that proves the path is gone. |
 | 📟 | **Terminal state** | PowerShell and bash report cwd, the command line, and the exit code. The panel shows them, and `terminal_state` lets the agent read the same summary, including how long a command has been silent. |
 | 🩹 | **Failure receipts** | A failed assistant command becomes a receipt on the chat message, with the turn's undo checkpoint id. The model sees the error. A patch is still a normal reviewed edit, not an automatic rewrite. |
 | 📊 | **Proof and usage** | Command ledger lines store the redacted command, hashes and exit code — not output text — in a signed Ed25519 chain. The usage shown in Settings is the token count the provider reports for each turn, including cache hits when that field exists; ShadRox bills nothing and keeps no meter. |
@@ -73,7 +73,7 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 | 🧠 | **Living Intent Graph** | Index workspace symbols and dependencies, persist approved rationale locally, flag decisions stale after SHA-256 changes, and inject budgeted intent context into AI tasks. |
 | 📈 | **Outcome-Calibrated Auto** | Record route outcomes, pass rates, repair iterations, token use, and latency locally; Auto ranks models using verified historical results instead of token price alone. |
 | 🧩 | **Task Inspector** | One dock for capsules, Intent Graph, Behavior Studio, and Calibrated Auto. Capsule and intent data support offline JSON export/import. |
-| 🔀 | **Source control** | Inspect staged and unstaged Git changes, preview file diffs, stage or unstage, commit with AI-generated messages, switch local branches, and detect and resolve merge conflicts. |
+| 🔀 | **Source control** | Inspect staged and unstaged Git changes, preview file diffs, stage or unstage, commit with AI-generated messages, switch local branches, see ahead/behind counts against the upstream, and detect and resolve merge conflicts. |
 | 🔎 | **Workspace search & replace** | Search files on disk and in buffers, review matching results, and replace selected or matching text. |
 | ⏮️ | **Checkpoints** | Review assistant checkpoints and restore earlier workspace content. |
 | 📝 | **Rules & skills** | Load project conventions from `SHADROX.md`, `AGENTS.md`, `QODER.md`, `.cursorrules`, and `.shadrox/rules/*.md`; reusable skills live under `.shadrox/skills/`. |
@@ -81,13 +81,13 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 | 🔧 | **Plugins & automations** | Use declarative workspace plugins and scheduled or webhook-triggered automations. |
 | ⏪ | **Machine Delta core** | Main-process snapshot, inspection, and explicit restore primitives for bounded workspace, local Git, and ShadRox-owned preview changes. |
 | 🐛 | **Debugger (DAP)** | Launches a Node program declared in the workspace's `shadrox.debug.json` through the Debug Adapter Protocol: breakpoints in the editor gutter, call stack, scopes and variables, hover values while paused, and pause/continue/step. Bundled adapters may start directly; external adapters require native approval and a scrubbed environment. Adapters run as bounded argv processes, never through a shell. Heap profiling is not included. |
-| 🔄 | **Auto-updates** | The app checks for releases and installs downloaded updates when you restart or quit. |
+| 🔄 | **Update checks** | The app checks for a newer release 15 seconds after start and every 6 hours, and shows a badge when one exists. Downloading and installing the new installer stays manual from GitHub Releases. |
 
 ### Task Inspector systems
 
 The Task Inspector groups the local-first engineering records that accompany an AI task:
 
-- **Behavior Studio** listens to preview bridge events such as source-mapped clicks and runtime errors. It keeps a bounded interaction history and turns it into an acceptance contract containing the target source location, observed failure, expected behavior, and reproduction steps.
+- **Behavior Studio** listens to preview bridge events such as source-mapped clicks and runtime errors. It keeps a bounded interaction history and turns it into an acceptance contract containing the target source location, observed failure, expected behavior, and reproduction steps. Running the contract captures evidence per phase — a screenshot digest plus DOM and console assertion results — for `baseline` and `postPatch`, so a pass is backed by what the page actually did.
 - **Living Intent Graph** scans loaded source files for symbols and dependency edges. User-approved decisions are stored in browser local storage, re-hashed against current files, and marked `stale` when their governing content changes.
 - **Outcome-Calibrated Auto** keeps a bounded local ledger of route, model, verification, repair, token, and latency outcomes. Ranking uses a pass rate shrunk toward the pool's own prior and only reorders a route once it has five verified runs, so a lucky 1-for-1 cannot beat a proven model; new and unproven models keep the neutral fallback order. Every choice carries a human-readable reason, the fallback reason included, and the Task Inspector can pin a model per task type (`bugfix`, `refactor`, `feature`, `test`, `chat`), which overrides the ranking until unpinned.
 
@@ -123,8 +123,8 @@ These records remain local to the workspace/browser profile. Use the Inspector's
 ┌─────────────────────────────────────────────────────────────────┐
 │                            API Layer                              │
 │  /ai/chat · /ai/commit-message · /ai/fim · /byok/validate        │
-│  /github/create-repo · /github/push · /prompt/refine             │
-│  Gemini · Groq · OpenAI-compatible · BYOK · Budget/SpendGuard      │
+│  /github/create-repo · /github/push · /github/validate           │
+│  /prompt/refine · Gemini · Groq · OpenAI-compatible · BYOK       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -162,7 +162,7 @@ The agent is more than a one-shot text patch parser. It can request bounded roun
 - Read the paused debugger (`debugger_state`: top frame, scopes, bounded locals; read-only)
 - One shell command per call (`run_command`)
 
-`run_command` runs in the opened folder and returns the real exit code, stdout, and stderr. A model field is not permission. The verify allowlist above can run without a dialog; every other command opens a native approval dialog, and the workspace is checked again before execution. A non-zero exit becomes a failure receipt on that chat message. The command and its result are also echoed into the terminal panel. `terminal_state` only reads. `terminal_answer` types one printable line, and only into a terminal that is already running a command — never into an idle prompt — after the user approves the exact bytes; a cancel types nothing. Passwords, tokens and secrets are refused.
+`run_command` runs in the opened folder and returns the real exit code, stdout, and stderr. A model field is not permission. Every command opens a native approval dialog, and the workspace is checked again before execution. A non-zero exit becomes a failure receipt on that chat message. The command and its result are also echoed into the terminal panel. `terminal_state` only reads. `terminal_answer` types one printable line, and only into a terminal that is already running a command — never into an idle prompt — after the user approves the exact bytes; a cancel types nothing. Passwords, tokens and secrets are refused.
 
 The model can also update its task plan and finish a turn explicitly. A turn is limited to **five tool rounds** by default, with up to six calls in a round.
 
@@ -181,7 +181,7 @@ Goal → Plan (task DAG) → Milestone turn (guarded patches) → Verify
                   rollback to checkpoint on an unrecoverable failure
 ```
 
-The engine plans work as a **task DAG** of milestones, applies changes through the same guarded patch pipeline, and **verifies** each milestone with diagnostics plus an optional approval-gated command. A failed milestone gets a repair brief and up to a configurable number of attempts; a run that still fails and has written files rolls the workspace back to its checkpoint.
+The engine plans work as a **task DAG** of milestones, applies changes through the same guarded patch pipeline, and **verifies** each milestone with diagnostics plus an optional approval-gated command. A failed milestone gets a repair brief and up to a configurable number of attempts; a run that still fails and has written files rolls the workspace back to its checkpoint. Runs are durable: a journal and run store survive restarts, a run can be paused, cancelled and resumed, and enforced time, tool-call and spend budgets stop a runaway run.
 
 ### Agent Teams
 
@@ -238,7 +238,7 @@ Opening a project workspace automatically starts its detected preview script and
 
 For a running local preview, **Check** inspects only bounded frame structure and recent console errors. An **Observed** result is deliberately not a claim that the page looks correct.
 
-The **integrated terminal** is an interactive shell rooted in the workspace. Credential-shaped environment variables are stripped before the shell starts. PowerShell and bash load a small ShadRox script that reports cwd, the command line, and the exit code. Assistant commands are a separate non-interactive run: they do not type into that shell. The same verify allowlist can run without a prompt; **everything else requires approval in a native dialog**, and the workspace is checked again between approval and execution.
+The **integrated terminal** is an interactive shell rooted in the workspace. Credential-shaped environment variables are stripped before the shell starts. PowerShell and bash load a small ShadRox script that reports cwd, the command line, and the exit code. Assistant commands are a separate non-interactive run: they do not type into that shell. **Every assistant command requires approval in a native dialog**, and the workspace is checked again between approval and execution.
 
 Assistant commands append a proof line under the app's user-data folder: the redacted command, hashes of the command, stdout, and stderr, plus the exit code. The line never stores the output text, and credential-shaped parts of the command (tokens, passwords, `Authorization` headers, credentials in URLs) are replaced before the line is signed. The Ed25519 proof ledger signs records and keeps its keys in the OS encrypted store, so an edited, reordered or torn ledger is detected on read rather than trusted. `npm run verify:proofs` re-checks every ledger offline and exits non-zero on any failure. This is not remote attestation, and it does not protect a machine the attacker already controls.
 
@@ -311,7 +311,7 @@ npm run dev:landing
 | `npm test` | Run the Node test suite. |
 | `npm run benchmark` | Grade the model-free agent benchmark suite in `benchmark/cases/`. |
 | `npm run verify:proofs` | Re-verify every signed proof ledger offline; exits non-zero on any failure. |
-| `npm start` | Run the local API/dev server without Vite's dev middleware. |
+| `npm start` | Alias of `npm run dev` — the same Express server with Vite dev middleware. |
 | `npm run preview` | Serve the built `dist/` renderer locally. |
 | `npm run build:desktop` | Stage and package the desktop application. |
 | `npm run dist:win` | Build a Windows NSIS installer (no publish). |
@@ -350,7 +350,7 @@ shadrox/
 │       ├── benchmark/   # Model-free agent benchmark runner and graders
 │       ├── calibratedAuto/ # Outcome ledger, route profiles, calibrated ranking
 │       ├── intent/      # Living intent graph, symbol dependencies, local decisions
-│       ├── debug/       # DAP framing, adapter/session rails, runtime capture for repair receipts
+│       ├── debug/       # DAP framing, adapter rails, runtime capture for repair receipts
 │       ├── machine/     # Machine Delta support modules
 │       ├── patch/       # Cline-style diff parsing, UI diff rendering, and patch application
 │       ├── plugins/     # Plugin manifest, loader, hook engine
@@ -374,7 +374,7 @@ shadrox/
 
 ## Testing
 
-ShadRox keeps its test suite close to the code — files under `src/`, `electron/`, and `api/` cover the agent loop, autonomy engine, agent teams, plugins, automations, editor operations, packaging, and security. `npm test` runs the curated suite:
+ShadRox keeps its test suite close to the code — files under `src/`, `electron/`, and `api/` cover the agent loop, autonomy engine, agent teams, plugins, automations, editor operations, packaging, and security. `npm test` auto-discovers and runs every `*.test.*` file in those three trees:
 
 ```sh
 npm test
@@ -384,11 +384,12 @@ Tests run through Node's built-in test runner with `tsx` for TypeScript support.
 
 ### Agent benchmark
 
-`npm run benchmark` grades the agent end-to-end without calling any model. Each case in `benchmark/cases/<kind>/<id>/` pins a fixture, a prompt, the expected reply, and the commands that must pass afterwards; the reply is replayed through the same parse → verify → atomic-apply → git rail the product uses, so a passing run is evidence about the real pipeline rather than a mock.
+`npm run benchmark` grades the agent end-to-end without calling any model. Each case in `benchmark/cases/<case-id>/` (its task kind lives in `case.json`) pins a fixture, a prompt, the expected reply, and the commands that must pass afterwards; the reply is replayed through the same parse → verify → atomic-apply → git rail the product uses, so a passing run is evidence about the real pipeline rather than a mock.
 
 ```sh
 npm run benchmark                 # grade every case, report failures
 npm run benchmark -- --case id    # grade one case
+npm run benchmark -- --case id --reply reply.md   # grade a reply an agent really produced
 npm run benchmark -- --json       # machine-readable output
 ```
 
@@ -437,7 +438,7 @@ Yes. On first launch the app asks you to continue with Google. It opens your bro
 <details>
 <summary><b>How do updates work?</b></summary>
 
-The app checks for a newer release when it starts and downloads it in the background. The update installs when you restart or quit the app, so testers never have to re-download the installer.
+The app checks for a newer release 15 seconds after start and every 6 hours, and shows an update badge when one exists. It does not download or install updates by itself — download the new installer from GitHub Releases and run it to update.
 </details>
 
 <details>

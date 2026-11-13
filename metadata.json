@@ -1,6 +1,0 @@
-{
-  "name": "ShadRox",
-  "description": "Browser-native AI engineering workspace. Mount local folders, stream reasoning from Gemini/Groq, and build full-stack SaaS apps with next-level live preview.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
