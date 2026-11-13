@@ -20,6 +20,7 @@ import type {
   VerificationReport,
   Verdict
 } from './types';
+import { ceilingReached, type CeilingStop, workUsageOf } from './budget';
 
 export interface CreditTracker {
   credit(cost: number): { allowed: boolean; spent: number };
@@ -49,6 +50,11 @@ export interface DriverDeps {
   now: () => number;
   /** Plan and validate, then stop before the first write. */
   dryRun?: boolean;
+  /**
+   * The Stop/Pause button's signal, handed to every turn so an in-flight request
+   * ends when the user asks. Absent means the driver has nothing to abort with.
+   */
+  turnSignal?: () => AbortSignal | undefined;
 }
 
 export const MAX_PLAN_REPAIRS = 2;
@@ -63,6 +69,17 @@ function describeErrors(errors: PlanError[]): string {
 
 function verdictOf(report: VerificationReport | undefined): Verdict {
   return report?.verdict ?? 'unverified';
+}
+
+/**
+ * Why the user asked the driver to take no more turns, or null when they have
+ * not. Stop outranks Pause when both were pressed: one ends the run, the other
+ * only waits, and the run cannot do both.
+ */
+function userHalt(ports: AutonomyPorts): 'cancelled' | 'paused' | null {
+  if (ports.isCancellationRequested()) return 'cancelled';
+  if (ports.isPauseRequested?.()) return 'paused';
+  return null;
 }
 
 /**
@@ -84,10 +101,16 @@ export async function runAutonomous(
         error: undefined,
         rolledBack: undefined,
         checkpointId: undefined,
-        // A milestone left mid-flight by a crash or a stop is runnable again.
+        // A milestone left mid-flight by a crash, a Stop or a Pause is runnable
+        // again. Leaving it `stopped` would make `nextRunnable` skip it forever,
+        // and the resumed pass would then report `done` with work still owing —
+        // which is exactly the dishonesty this loop exists to avoid.
         milestones: (resumeFrom as RunState).milestones.map((milestone) => ({
           ...milestone,
-          status: milestone.status === 'running' ? 'pending' : milestone.status
+          status:
+            milestone.status === 'running' || milestone.status === 'stopped' || milestone.status === 'blocked'
+              ? 'pending'
+              : milestone.status
         }))
       }
     : {
@@ -144,15 +167,31 @@ export async function runAutonomous(
   let checkpointed = false;
   let checkpointId: string | null = null;
   let wrote = false;
+  /**
+   * Set when a turn reported that the user ended it. The halt flags are normally
+   * already set at that moment, but a run must never claim `done` because a host
+   * said "stopped" without also saying which button was pressed.
+   */
+  let endedByUser: 'cancelled' | 'paused' | null = null;
   const unverified: string[] = [];
+  // The clock starts here, not at `state.startedAt`: a run that was stopped on
+  // Tuesday and resumed on Friday is not four days out of a time budget.
+  const clockStart = deps.now();
 
-  while (!deps.ports.isCancellationRequested()) {
+  while (userHalt(deps.ports) === null) {
     const next = deps.nextRunnable(state.milestones);
     if (!next) break;
 
     if (deps.tracker.exhausted()) {
       state.status = 'stopped-budget';
-      state.error = `Stopped at the ${deps.budget.maxCredits}-credit cap. ${remaining(state.milestones)} milestone(s) did not run.`;
+      state.error = `Stopped at the spend cap of ${deps.budget.maxCredits}. ${remaining(state.milestones)} milestone(s) did not run.`;
+      break;
+    }
+
+    const ceiling = workStop(deps, state.milestones, deps.now() - clockStart);
+    if (ceiling) {
+      state.status = 'stopped-budget';
+      state.error = `${ceiling.message} ${remaining(state.milestones)} milestone(s) did not run.`;
       break;
     }
 
@@ -165,17 +204,42 @@ export async function runAutonomous(
     next.status = 'running';
     deps.ports.onEvent({ type: 'milestone:start', id: next.id });
 
-    let outcome: 'passed' | 'failed' | 'blocked' | 'stopped' = 'failed';
+    let outcome: 'passed' | 'unverified' | 'failed' | 'blocked' | 'stopped' = 'failed';
+    /** Set when a turn's real cost pushed the run past its cap. */
+    let overSpend: number | null = null;
     for (let attempt = 1; attempt <= deps.budget.maxAttemptsPerMilestone; attempt += 1) {
-      if (deps.ports.isCancellationRequested()) break;
+      if (userHalt(deps.ports) !== null) {
+        // The unit was set running above. Leaving it `running` in a persisted
+        // state would tell the next panel that work is in flight which died
+        // here, so it is filed as stopped — or back as pending when it never
+        // got a turn at all.
+        next.status = next.attempts.length > 0 ? 'stopped' : 'pending';
+        outcome = 'stopped';
+        break;
+      }
 
       const estimate = deps.estimateTurn(next);
-      if (deps.tracker.spent() + estimate > deps.budget.maxCredits) {
+      // The estimate is a prediction; the milestone's own turns are evidence. A
+      // unit that has already cost more than it was guessed to cost is refused
+      // on what it really costs, not on the guess that let it start.
+      const reserve = Math.max(estimate, ...next.attempts.map((attempt) => attempt.creditsSpent), 0);
+      if (deps.tracker.spent() + reserve > deps.budget.maxCredits) {
         // Nothing has been attempted yet, so the milestone goes back to pending
         // rather than staying flagged as running in a persisted state.
         next.status = 'pending';
         state.status = 'stopped-budget';
-        state.error = `Stopped before "${next.title}": the next turn is estimated at ${estimate} credits and the cap is ${deps.budget.maxCredits}.`;
+        state.error = `Stopped before "${next.title}": the next turn is estimated at ${reserve} spend and the cap is ${deps.budget.maxCredits}.`;
+        outcome = 'stopped';
+        break;
+      }
+
+      // A turn can take minutes, so the clock and the iteration caps are read
+      // again at the point where one more turn would otherwise be paid for.
+      const midCeiling = workStop(deps, state.milestones, deps.now() - clockStart);
+      if (midCeiling) {
+        next.status = next.attempts.length > 0 ? 'stopped' : 'pending';
+        state.status = 'stopped-budget';
+        state.error = `${midCeiling.message} ${remaining(state.milestones)} milestone(s) did not run.`;
         outcome = 'stopped';
         break;
       }
@@ -187,7 +251,10 @@ export async function runAutonomous(
         goal,
         milestone: next,
         feedback: prior,
-        feedbackText: prior ? deps.feedbackFor(next, prior, lastFailures(next), next.attempts.length) : undefined
+        feedbackText: prior ? deps.feedbackFor(next, prior, lastFailures(next), next.attempts.length) : undefined,
+        // Without this the Stop button only lands between units, so a paid turn
+        // keeps streaming after the user asked for it to end.
+        signal: deps.turnSignal?.()
       });
       next.touchedFiles = [...new Set([...(next.touchedFiles ?? []), ...(turn.touchedFiles ?? [])])];
       next.pendingReview = [...new Set([...(next.pendingReview ?? []), ...(turn.pendingReview ?? [])])];
@@ -203,22 +270,31 @@ export async function runAutonomous(
         patchFailures: turn.patchFailures,
         verification: report,
         creditsSpent: turn.creditsSpent,
+        toolCalls: turn.toolCalls,
         startedAt
       };
       next.attempts.push(attemptRecord);
       if (turn.patchesApplied > 0) wrote = true;
       // The real cost is settled after the turn, from the tokens the provider
       // reported; the estimate before it is only the gate that stops a runaway.
-      deps.tracker.credit(turn.creditsSpent);
+      const settled = deps.tracker.credit(turn.creditsSpent);
+      if (!settled.allowed) overSpend = settled.spent;
       state.creditsSpent = deps.tracker.spent();
       deps.ports.onEvent({ type: 'credit', spent: turn.creditsSpent, total: state.creditsSpent });
       deps.ports.onEvent({ type: 'milestone:verdict', id: next.id, verdict, report });
       deps.persist(state);
 
       if (turn.aborted) {
-        next.status = 'failed';
-        outcome = 'failed';
-        deps.ports.onEvent({ type: 'log', text: `"${next.title}" was interrupted mid-turn.` });
+        // A turn the user ended and a turn that died are different outcomes:
+        // one is a stop to honour, the other a failure to report and repair.
+        const byUser = turn.stopped === true || userHalt(deps.ports) !== null;
+        next.status = byUser ? 'stopped' : 'failed';
+        outcome = byUser ? 'stopped' : 'failed';
+        if (byUser) endedByUser = userHalt(deps.ports) ?? 'cancelled';
+        deps.ports.onEvent({
+          type: 'log',
+          text: `"${next.title}" ${byUser ? 'was stopped mid-turn' : 'was interrupted mid-turn'}.`
+        });
         break;
       }
 
@@ -229,11 +305,13 @@ export async function runAutonomous(
       }
 
       if (verdict === 'unverified') {
-        // The run advances — nothing was disproved — but the verdict itself is
-        // never rewritten, so the panel and this summary both keep saying so.
-        next.status = 'passed';
+        // The plan advances — nothing was disproved — but the milestone is not
+        // recorded as passed. `unverified` is its own status all the way into the
+        // panel, the summary and a resumed run, because a step nobody proved is
+        // not a step that succeeded.
+        next.status = 'unverified';
         unverified.push(`${next.title}: ${report.notes.join('; ') || 'no checker could run'}`);
-        outcome = 'passed';
+        outcome = 'unverified';
         deps.ports.onEvent({
           type: 'log',
           text: `"${next.title}" was not verified (${report.notes.join('; ') || 'no checker could run'}).`
@@ -261,11 +339,24 @@ export async function runAutonomous(
     }
     deps.ports.onEvent({ type: 'milestone:done', id: next.id, status: next.status });
     deps.persist(state);
+
+    // The estimate is what let the turn start; the real cost is the evidence.
+    // One turn may overshoot the cap because nobody can bill a turn it has not
+    // run yet — many turns may not, so the run stops on the overshoot rather
+    // than rediscovering it at the next boundary.
+    if (overSpend !== null) {
+      const last = next.attempts[next.attempts.length - 1];
+      state.status = 'stopped-budget';
+      state.error = `Stopped at the spend cap of ${deps.budget.maxCredits}: "${next.title}" cost ${last?.creditsSpent ?? 0} and took the run to ${overSpend}, so no further turn is started. ${remaining(state.milestones)} milestone(s) did not run.`;
+      deps.persist(state);
+      break;
+    }
   }
 
-  if (deps.ports.isCancellationRequested() && state.status === 'running') {
-    state.status = 'cancelled';
-    state.error = `Cancelled with ${remaining(state.milestones)} milestone(s) left.`;
+  const halt = userHalt(deps.ports) ?? endedByUser;
+  if (halt && state.status === 'running') {
+    state.status = halt;
+    state.error = `${halt === 'paused' ? 'Paused' : 'Cancelled'} with ${remaining(state.milestones)} milestone(s) left.`;
   }
 
   for (const blocked of deps.findBlocked(state.milestones)) {
@@ -278,11 +369,17 @@ export async function runAutonomous(
   state.creditsSpent = deps.tracker.spent();
   if (state.status === 'running') {
     const unresolved = state.milestones.filter((m) => m.status === 'failed' || m.status === 'blocked');
+    // Counted from the milestone list, not the local log, so a run that resumes
+    // still reports the steps an earlier pass left unproven.
+    // An unverified step only raises the alarm when it owned files: a read-only
+    // milestone has nothing to prove, and flagging every one of them would make
+    // the warning that matters — an unproven edit — noise.
+    const unproven = state.milestones.filter((m) => m.status === 'unverified' && m.expectedFiles.length > 0);
     state.status = unresolved.length > 0 ? 'failed' : 'done';
     if (unresolved.length > 0) {
       state.error = `${unresolved.length} of ${state.milestones.length} milestones did not complete.`;
-    } else if (unverified.length > 0) {
-      state.error = `${unverified.length} milestone(s) finished without a check that could prove them — ${unverified.join('; ')}.`;
+    } else if (unproven.length > 0) {
+      state.error = `${unproven.length} of ${state.milestones.length} milestones finished unverified — nothing checked them, so they are not claimed as passed.${unverified.length > 0 ? ` (${unverified.join('; ')}).` : ''}`;
     }
   }
 
@@ -309,6 +406,17 @@ export async function runAutonomous(
 
 function remaining(milestones: Milestone[]): number {
   return milestones.filter((milestone) => milestone.status === 'pending').length;
+}
+
+/**
+ * Which work ceiling this run has reached, if any.
+ *
+ * Read off the attempts in the milestone list rather than a counter the loop
+ * keeps: a resumed run then starts with the turns its earlier pass already made
+ * still counted against the cap, which is what a cap is for.
+ */
+function workStop(deps: DriverDeps, milestones: Milestone[], elapsedMs: number): CeilingStop | null {
+  return ceilingReached(deps.budget, workUsageOf(milestones.flatMap((milestone) => milestone.attempts), elapsedMs));
 }
 
 /** The last attempt's report, which is what the model needs to see to repair. */

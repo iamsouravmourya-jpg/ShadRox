@@ -34,6 +34,8 @@ export interface AutonomyEngineOptions {
   dryRun?: boolean;
   estimateTurn?: (milestone: Milestone) => number;
   now?: () => number;
+  /** The Stop/Pause signal handed to each turn so an in-flight request can end. */
+  turnSignal?: () => AbortSignal | undefined;
 }
 
 /** Compose the engine's driver dependencies from the app-provided pieces. */
@@ -56,7 +58,8 @@ export function createDriverDeps(options: AutonomyEngineOptions): DriverDeps {
     rollback: options.rollback,
     persist: options.persist,
     now: options.now ?? Date.now,
-    dryRun: options.dryRun
+    dryRun: options.dryRun,
+    turnSignal: options.turnSignal
   };
 }
 

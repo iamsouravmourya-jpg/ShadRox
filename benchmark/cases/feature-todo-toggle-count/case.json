@@ -1,0 +1,29 @@
+{
+  "id": "feature-todo-toggle-count",
+  "kind": "feature",
+  "title": "toggle(index) and remaining() on the todo store",
+  "notes": "Shape: a spec that already asks for two exports the store never had. The spec is given, so the baseline fails on behaviour, not on wording — a stub that only names the functions still fails the count and the refusal.",
+  "checks": [
+    {
+      "name": "remaining() is exported",
+      "file": "src/todo.mjs",
+      "match": "export function remaining\\(\\)"
+    },
+    {
+      "name": "toggle() is exported",
+      "file": "src/todo.mjs",
+      "match": "export function toggle\\(index\\)"
+    },
+    {
+      "name": "A bad index is refused out loud",
+      "file": "src/todo.mjs",
+      "match": "no todo at index "
+    }
+  ],
+  "commands": [
+    {
+      "name": "node --test src/todo.test.mjs",
+      "argv": ["node", "--test", "src/todo.test.mjs"]
+    }
+  ]
+}

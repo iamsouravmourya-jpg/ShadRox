@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { findFileEditingCommand, formatCommandRiskNotice } from './agent/commandGuard.ts';
+import { commandApprovalNotice, findFileEditingCommand, formatCommandRiskNotice } from './agent/commandGuard.ts';
 
 /** Convenience: true when the guard flags the command. */
 function blocks(command: string): boolean {
@@ -157,4 +157,13 @@ test('formatCommandRiskNotice names the construct and shows the command', () => 
   assert.match(message, /`rm`/);
   assert.match(message, /can modify files/);
   assert.match(message, /rm -rf build/);
+});
+
+test('commandApprovalNotice travels with a flagged command and stays silent without one', () => {
+  const notice = commandApprovalNotice('rm -rf build');
+  assert.ok(notice, 'a mutating command gets a notice');
+  assert.match(notice, /`rm`/);
+  assert.match(notice, /rm -rf build/);
+  assert.equal(commandApprovalNotice('npm test'), undefined, 'a read-only command needs nothing said');
+  assert.equal(commandApprovalNotice('git status'), undefined);
 });

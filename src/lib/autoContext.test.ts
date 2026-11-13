@@ -8,7 +8,7 @@ const tree: WorkspaceFileEntry[] = [
   { path: 'src/App.tsx', size: 4000 },
   { path: 'src/components/ChatPanel.tsx', size: 6000 },
   { path: 'src/components/Sender.tsx', size: 2000 },
-  { path: 'src/lib/quota.ts', size: 1500 },
+  { path: 'src/lib/spendLedger.ts', size: 1500 },
   { path: 'README.md', size: 800 },
   { path: 'src/generated/schema.d.ts', size: 900_000 }
 ];
@@ -34,7 +34,7 @@ test('a file larger than the per-file cap is never shortlisted', () => {
 });
 
 test('the instruction forbids inventing a path and forbids prose', () => {
-  const instruction = buildSelectionInstruction(['src/App.tsx', 'src/lib/quota.ts'], 'add a credit meter', 3);
+  const instruction = buildSelectionInstruction(['src/App.tsx', 'src/lib/spendLedger.ts'], 'add a credit meter', 3);
   assert.match(instruction, /add a credit meter/);
   assert.match(instruction, /src\/App\.tsx/);
   assert.match(instruction, /at most 3 paths/i);
@@ -43,7 +43,7 @@ test('the instruction forbids inventing a path and forbids prose', () => {
 });
 
 test('exact paths are kept in the order the model chose', () => {
-  const allowed = ['src/App.tsx', 'src/components/Sender.tsx', 'src/lib/quota.ts'];
+  const allowed = ['src/App.tsx', 'src/components/Sender.tsx', 'src/lib/spendLedger.ts'];
   const answer = 'src/components/Sender.tsx\nsrc/App.tsx\n';
   assert.deepEqual(parseSelectedPaths(answer, allowed, 5), ['src/components/Sender.tsx', 'src/App.tsx']);
 });
@@ -54,29 +54,29 @@ test('an invented path is dropped instead of repaired', () => {
 });
 
 test('decoration around a path does not hide it', () => {
-  const allowed = ['src/App.tsx', 'src/lib/quota.ts'];
-  const answer = '- `src/App.tsx`\n2. "src/lib/quota.ts"';
-  assert.deepEqual(parseSelectedPaths(answer, allowed, 5), ['src/App.tsx', 'src/lib/quota.ts']);
+  const allowed = ['src/App.tsx', 'src/lib/spendLedger.ts'];
+  const answer = '- `src/App.tsx`\n2. "src/lib/spendLedger.ts"';
+  assert.deepEqual(parseSelectedPaths(answer, allowed, 5), ['src/App.tsx', 'src/lib/spendLedger.ts']);
 });
 
 test('a unique basename resolves, an ambiguous one does not', () => {
-  const allowed = ['src/components/Sender.tsx', 'src/lib/quota.ts'];
+  const allowed = ['src/components/Sender.tsx', 'src/lib/spendLedger.ts'];
   assert.deepEqual(parseSelectedPaths('Sender.tsx', allowed, 5), ['src/components/Sender.tsx']);
-  assert.deepEqual(parseSelectedPaths('Sender.tsx\nquota.ts\nSender.tsx', allowed, 2), [
+  assert.deepEqual(parseSelectedPaths('Sender.tsx\nspendLedger.ts\nSender.tsx', allowed, 2), [
     'src/components/Sender.tsx',
-    'src/lib/quota.ts'
+    'src/lib/spendLedger.ts'
   ]);
   const ambiguous = ['a/Widget.tsx', 'b/Widget.tsx'];
   assert.deepEqual(parseSelectedPaths('Widget.tsx', ambiguous, 5), []);
 });
 
 test('repeats are collapsed and the cap is honoured', () => {
-  const allowed = ['src/App.tsx', 'src/lib/quota.ts'];
-  assert.deepEqual(parseSelectedPaths('src/App.tsx\nsrc/App.tsx\nsrc/lib/quota.ts', allowed, 5), [
+  const allowed = ['src/App.tsx', 'src/lib/spendLedger.ts'];
+  assert.deepEqual(parseSelectedPaths('src/App.tsx\nsrc/App.tsx\nsrc/lib/spendLedger.ts', allowed, 5), [
     'src/App.tsx',
-    'src/lib/quota.ts'
+    'src/lib/spendLedger.ts'
   ]);
-  assert.deepEqual(parseSelectedPaths('src/App.tsx\nsrc/lib/quota.ts', allowed, 1), ['src/App.tsx']);
+  assert.deepEqual(parseSelectedPaths('src/App.tsx\nsrc/lib/spendLedger.ts', allowed, 1), ['src/App.tsx']);
 });
 
 test('prose lines and empty answers select nothing', () => {
@@ -86,7 +86,7 @@ test('prose lines and empty answers select nothing', () => {
 });
 
 test('a selection can never add a file the shortlist did not offer', () => {
-  const shortlist = ['src/App.tsx', 'src/lib/quota.ts'];
-  assert.deepEqual(applySelection(shortlist, ['src/lib/quota.ts', 'src/other.ts']), ['src/lib/quota.ts']);
+  const shortlist = ['src/App.tsx', 'src/lib/spendLedger.ts'];
+  assert.deepEqual(applySelection(shortlist, ['src/lib/spendLedger.ts', 'src/other.ts']), ['src/lib/spendLedger.ts']);
   assert.deepEqual(applySelection(shortlist, ['src/other.ts']), []);
 });

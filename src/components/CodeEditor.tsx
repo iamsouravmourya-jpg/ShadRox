@@ -59,6 +59,7 @@ import {
 } from '../lib/fimClient';
 import { runQuickEdit, sliceQuickEditContext } from '../lib/quickEdit';
 import { computeHunks, hunkStats } from '../lib/editor/hunks';
+import { reanchorEditRange } from '../lib/editor/edits';
 import { semanticHighlighting, setSemanticTokens } from '../lib/editor/semanticLayer';
 import { breakpointGutterExtension, setBreakpointLines } from '../lib/editor/breakpoints';
 import { debugHoverExtension } from '../lib/editor/hoverValues';
@@ -1067,7 +1068,21 @@ export function CodeEditor({
   const commitQuickEdit = useCallback(() => {
     const view = editorRef.current?.view;
     if (!view || !quickEditPreview) return;
-    const { from, to, replacement } = quickEditPreview;
+    const { replacement, original } = quickEditPreview;
+    // The span was captured before the model call; typing or an agent write
+    // during that call can push it past the end of the document, and CodeMirror
+    // throws instead of applying. Re-anchor it, or refuse.
+    const span = reanchorEditRange(
+      view.state.doc.toString(),
+      { from: quickEditPreview.from, to: quickEditPreview.to },
+      original
+    );
+    if (!span.ok) {
+      setQuickEditPreview(null);
+      setQuickEditError(span.reason);
+      return;
+    }
+    const { from, to } = span;
     view.dispatch({
       changes: { from, to, insert: replacement },
       selection: { anchor: from + replacement.length },

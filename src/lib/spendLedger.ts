@@ -1,8 +1,8 @@
 /**
  * Spend caps: the user's own money limits, enforced in the agent loop.
  *
- * A BYOK key has no monthly meter — `quota.ts` deliberately counts nothing for
- * the free plan, because the user pays their provider directly. That is the right
+ * A BYOK key has no monthly meter — nothing here counts for a plan, because the
+ * user pays their provider directly. That is the right
  * product answer and the wrong safety answer: nothing then stands between a
  * runaway tool loop and a four-figure provider bill. This module is the client
  * side of that wall. It is explicitly NOT a replacement for the server meter —

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { describeCheckpointDiff, diffToCheckpoint } from './checkpointDiff';
+import { describeCheckpointDiff, diffToCheckpoint, diskCurrentView } from './checkpointDiff';
 
 const file = (name: string, content: string) => ({ name, content });
 
@@ -69,4 +69,48 @@ test('the summary sentence names each kind of change', () => {
   assert.match(summary, /1 edited/);
   assert.match(summary, /1 came back/);
   assert.match(summary, /1 deleted by restore/);
+});
+
+test('a disk read replaces the buffer copy, so an edit made outside ShadRox is seen', () => {
+  const view = diskCurrentView([file('a.ts', 'tab text')], { files: [file('a.ts', 'edited in another editor')] });
+  assert.deepEqual(view, [file('a.ts', 'edited in another editor')]);
+});
+
+test('a file created on disk that no tab has opened joins the view', () => {
+  const view = diskCurrentView([file('a.ts', 'a')], { files: [file('a.ts', 'a'), file('made.outside.ts', 'new')] });
+  assert.deepEqual(view.map((entry) => entry.name), ['a.ts', 'made.outside.ts']);
+});
+
+test('a name the disk could not supply keeps its buffer copy rather than vanishing', () => {
+  const view = diskCurrentView([file('a.ts', 'a'), file('too.big.ts', 'buffered')], {
+    files: [file('a.ts', 'a')],
+    missing: [{ path: 'too.big.ts', reason: 'over the read limit' }]
+  });
+  const byName = new Map(view.map((entry) => [entry.name, entry.content]));
+  assert.equal(byName.get('too.big.ts'), 'buffered');
+});
+
+test('the disk view exposes an external edit the buffers alone called a clean restore', () => {
+  const checkpoint = [file('a.ts', 'one\ntwo')];
+  const buffers = [file('a.ts', 'one\ntwo')];
+  const disk = { files: [file('a.ts', 'one\ntwo\nthree — added outside ShadRox')] };
+
+  assert.equal(diffToCheckpoint(buffers, checkpoint).clean, true, 'the tab-only answer is the bug');
+
+  const honest = diffToCheckpoint(diskCurrentView(buffers, disk), checkpoint);
+  assert.equal(honest.clean, false);
+  assert.equal(honest.edited, 1);
+  assert.equal(honest.changes[0].kind, 'edit');
+  assert.equal(honest.changes[0].removed, 1, 'the restore takes away the line added outside');
+  assert.equal(honest.changes[0].added, 0);
+});
+
+test('a file the read could not supply is never reported as deleted by the restore', () => {
+  const checkpoint = [file('a.ts', 'one'), file('b.ts', 'two')];
+  const buffers = [file('a.ts', 'one'), file('b.ts', 'two')];
+  const disk = { files: [file('a.ts', 'one')], missing: [{ path: 'b.ts', reason: 'over the read limit' }] };
+
+  const diff = diffToCheckpoint(diskCurrentView(buffers, disk), checkpoint);
+  assert.equal(diff.deleted, 0);
+  assert.equal(diff.changes.some((change) => change.kind === 'delete'), false);
 });

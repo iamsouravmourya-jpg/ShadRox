@@ -22,216 +22,18 @@
  *    through it.
  */
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { createRequire } from 'node:module';
-import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import test from 'node:test';
 
-import { applyAtomicJobs, planAtomicApply, revertAtomicJobs, type AtomicPlanJob } from './atomicApply';
-import { extractUnifiedPatches } from './patchEngine';
-import type { ReviewPatch, WorkspaceFile } from './types';
-
-const require = createRequire(import.meta.url);
-const { createWorkspaceAccess } = require('../../electron/workspace.cjs');
-const { verifyChangeSet } = require('../../electron/change-verify.cjs');
-
-interface HarnessBuffer {
-  name: string;
-  content: string;
-  version?: string;
-}
-
-interface LandOutcome {
-  written: number;
-  failed: boolean;
-  message: string | null;
-}
-
-interface PlanFailure {
-  path: string;
-  reason: string;
-}
-
-type TurnResult =
-  | { blocked: null; jobs: AtomicPlanJob[]; outcome: LandOutcome; failures?: undefined; issues?: undefined }
-  | { blocked: 'plan'; failures: PlanFailure[]; jobs?: undefined; outcome: undefined; issues?: undefined }
-  | { blocked: 'verify'; issues: any[]; jobs?: undefined; outcome: undefined; failures?: undefined };
-
-/** Flat result shape (optional members, no discriminated union) so property
- *  access stays valid without strictNullChecks, which the project disables. */
-interface PlanResult {
-  ok: boolean;
-  stage?: 'plan' | 'verify';
-  jobs?: AtomicPlanJob[];
-  patches?: ReviewPatch[];
-  failures?: PlanFailure[];
-  issues?: any[];
-}
-
-const diskSha256 = (content: string): string => createHash('sha256').update(content, 'utf8').digest('hex');
-
-/** The fenced-reply shapes the model emits: S/R with `path=`, rewrite with `path=`. */
-const fence = (file: string, body: string): string => '```ts path=' + file + '\n' + body + '\n```';
-const srBlock = (original: string, updated: string): string =>
-  ['<<<<<<< ORIGINAL', original, '=======', updated, '>>>>>>> UPDATED'].join('\n');
-
-/**
- * Mirror of the renderer apply path (App.applyReviewSet +
- * useWorkspace.loadFilesForPatching/saveFilesAtomic) on plain arrays instead
- * of React state. The disk layer is the real workspace.cjs access object.
- */
-class Pipeline {
-  access: any;
-  workspaceId: string;
-  root: string;
-  buffers: HarnessBuffer[] = [];
-  /** Mirrors useWorkspace.baselineRef: name -> content as last seen on disk. */
-  baselines: Record<string, string> = {};
-
-  constructor(access: any, opened: any) {
-    this.access = access;
-    this.workspaceId = opened.workspaceId;
-    this.root = opened.rootPath;
-  }
-
-  static async open(files: Record<string, string>): Promise<Pipeline> {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-pipeline-'));
-    for (const [relative, content] of Object.entries(files)) {
-      const target = path.join(tempRoot, ...relative.split('/'));
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.writeFile(target, content, 'utf8');
-    }
-    const access = createWorkspaceAccess();
-    const opened = await access.openFolder(tempRoot);
-    return new Pipeline(access, opened);
-  }
-
-  diskPath(relative: string): string {
-    return path.join(this.root, ...relative.split('/'));
-  }
-
-  async readDisk(relative: string): Promise<string> {
-    return fs.readFile(this.diskPath(relative), 'utf8');
-  }
-
-  /** Mirrors useWorkspace.loadFilesForPatching: only paths with no buffer are read. */
-  async load(paths: string[]): Promise<void> {
-    const wanted = [...new Set(paths)].filter((name) => !this.buffers.some((buffer) => buffer.name === name));
-    if (wanted.length === 0) return;
-    const loaded = await this.access.loadFiles(this.workspaceId, wanted);
-    for (const file of loaded.files) {
-      this.buffers.push({ name: file.name, content: file.content, version: file.version });
-      this.baselines[file.name] = file.content;
-    }
-  }
-
-  /**
-   * Parse the reply, load the targets off disk, plan atomically, then run the
-   * pre-apply verification gate over the resolved contents — everything up to
-   * (but not including) the write.
-   */
-  async planFor(reply: string, options: { allowDestructive?: boolean } = {}): Promise<PlanResult> {
-    const known = this.buffers.map((buffer) => ({ name: buffer.name, content: buffer.content }));
-    const targets: ReviewPatch[] = extractUnifiedPatches(reply, known)
-      .map((patch) => ({ ...patch, status: 'pending' } as ReviewPatch));
-    await this.load(targets.map((patch) => patch.path));
-
-    const applyPlan = planAtomicApply(targets, this.buffers as unknown as WorkspaceFile[], options);
-    if ('failures' in applyPlan) {
-      return { ok: false, stage: 'plan', failures: applyPlan.failures, patches: applyPlan.patches };
-    }
-    const verdict = verifyChangeSet({
-      root: this.root,
-      files: applyPlan.jobs.map((job: AtomicPlanJob) => ({ path: job.path, content: job.content }))
-    });
-    if (!verdict.ok) return { ok: false, stage: 'verify', issues: verdict.issues };
-    return { ok: true, jobs: applyPlan.jobs, patches: applyPlan.patches };
-  }
-
-  /** Mirrors workspace.applyFilePatches: update buffers, keep their stale versions. */
-  private applyToBuffers(updates: Array<{ path: string; content: string }>): void {
-    for (const update of updates) {
-      const index = this.buffers.findIndex((buffer) => buffer.name.toLowerCase() === update.path.toLowerCase());
-      if (index >= 0) this.buffers[index] = { ...this.buffers[index], content: update.content };
-      else this.buffers.push({ name: update.path, content: update.content });
-    }
-  }
-
-  /** Mirrors the first half of useWorkspace.saveFilesAtomic: one stage call. */
-  async stage(jobs: AtomicPlanJob[]): Promise<{ transactionId: string } | { failed: true; message: string }> {
-    const names = jobs.map((job) => job.path);
-    applyAtomicJobs(jobs, (updates: any) => this.applyToBuffers(updates));
-    const snapshot = this.buffers.filter((buffer) => names.includes(buffer.name));
-    try {
-      const staged = await this.access.stageFiles(this.workspaceId, snapshot.map((buffer) => ({
-        name: buffer.name,
-        content: buffer.content,
-        // The hook passes undefined for buffers with no disk baseline (files
-        // created this turn); the commit still pins the then-current version.
-        expectedVersion: this.baselines[buffer.name] !== undefined ? buffer.version ?? null : undefined
-      })));
-      return { transactionId: staged.transactionId };
-    } catch (error) {
-      // Same rollback the app does when the save fails with nothing written.
-      this.applyToBuffers(revertAtomicJobs(jobs));
-      return { failed: true, message: error instanceof Error ? error.message : String(error) };
-    }
-  }
-
-  async commit(transactionId: string, jobs: AtomicPlanJob[]): Promise<LandOutcome> {
-    try {
-      const result = await this.access.commitTransaction(this.workspaceId, transactionId);
-      if (result.errors.length) {
-        throw new Error(result.errors.map((entry: any) => `${entry.name}: ${entry.message}`).join(' '));
-      }
-      const names = new Set(jobs.map((job) => job.path));
-      for (const buffer of this.buffers) {
-        if (!names.has(buffer.name)) continue;
-        buffer.version = diskSha256(buffer.content);
-        this.baselines[buffer.name] = buffer.content;
-      }
-      return { written: result.saved.length, failed: false, message: null };
-    } catch (error) {
-      // The hook restores original buffers when nothing landed; created files
-      // revertAtomicJobs skips, exactly as in the app.
-      this.applyToBuffers(revertAtomicJobs(jobs));
-      return { written: 0, failed: true, message: error instanceof Error ? error.message : String(error) };
-    }
-  }
-
-  async land(jobs: AtomicPlanJob[]): Promise<LandOutcome> {
-    const staged = await this.stage(jobs);
-    if ('failed' in staged) return { written: 0, failed: true, message: staged.message };
-    return this.commit(staged.transactionId, jobs);
-  }
-
-  /** Full turn: plan + land, refusing exactly where the real app refuses. */
-  async applyReply(reply: string, options: { allowDestructive?: boolean } = {}): Promise<TurnResult> {
-    const plan = await this.planFor(reply, options);
-    if (!plan.ok) {
-      return plan.stage === 'plan'
-        ? { blocked: 'plan', failures: plan.failures ?? [], outcome: undefined }
-        : { blocked: 'verify', issues: plan.issues ?? [], outcome: undefined };
-    }
-    const jobs = plan.jobs ?? [];
-    return { blocked: null, jobs, outcome: await this.land(jobs) };
-  }
-}
-
-async function withPipeline(
-  files: Record<string, string>,
-  run: (pipeline: Pipeline, root: string) => Promise<void>
-): Promise<void> {
-  const pipeline = await Pipeline.open(files);
-  try {
-    await run(pipeline, pipeline.root);
-  } finally {
-    pipeline.access.closeWorkspace(pipeline.workspaceId);
-    await fs.rm(pipeline.root, { recursive: true, force: true });
-  }
-}
+import {
+  fence,
+  srBlock,
+  withPipeline,
+  type AtomicPlanJob,
+  type LandOutcome,
+  type Pipeline
+} from './benchmark/pipelineHarness';
 
 const APP_V1 = 'export function App() {\n  const old = 1;\n  return old;\n}\n';
 
@@ -489,3 +291,56 @@ test('a fence that declares a file and writes nothing is refused with a reason, 
     assert.equal(await fs.readFile(path.join(root, 'notes', 'todo.txt'), 'utf8'), 'first\n');
   });
 });
+
+/**
+ * Mirrors useWorkspace.rollbackToCheckpoint's write: the checkpoint hands back
+ * stored text with no version, so the transaction has to be pinned from the
+ * disk copy the app last knew. This is the stale-restore case — an agent run
+ * that failed and rewinds onto bytes the user edited by hand meanwhile.
+ */
+async function rollback(pipeline: Pipeline, files: Record<string, string>): Promise<LandOutcome> {
+  const jobs: AtomicPlanJob[] = Object.entries(files).map(([name, content]) => ({
+    path: name,
+    content,
+    originalContent: pipeline.buffers.find((buffer) => buffer.name === name)?.content ?? content,
+    created: false
+  }));
+  for (const job of jobs) {
+    const index = pipeline.buffers.findIndex((buffer) => buffer.name === job.path);
+    const stored = { name: job.path, content: job.content, version: undefined };
+    if (index >= 0) pipeline.buffers[index] = stored;
+    else pipeline.buffers.push(stored);
+  }
+  const staged = await pipeline.stage(jobs);
+  if ('failed' in staged) return { written: 0, failed: true, message: staged.message };
+  return pipeline.commit(staged.transactionId, jobs);
+}
+
+test('a rollback onto a file the user edited since the checkpoint refuses and keeps their edit', async () => {
+  const checkpointed = 'export const a = 1;\n';
+  const external = 'export const a = 2; // written by hand, after the run failed\n';
+  await withPipeline({ 'src/a.ts': checkpointed }, async (pipeline, root) => {
+    await pipeline.load(['src/a.ts']);
+    await fs.writeFile(pipeline.diskPath('src/a.ts'), external, 'utf8');
+
+    const outcome = await rollback(pipeline, { 'src/a.ts': checkpointed });
+    assert.equal(outcome.failed, true, outcome.message ?? 'the stale rollback was accepted');
+    assert.match(outcome.message ?? '', /changed on disk/);
+    assert.equal(await fs.readFile(pipeline.diskPath('src/a.ts'), 'utf8'), external);
+  });
+});
+
+test('a rollback with nothing foreign on disk lands the checkpoint text exactly', async () => {
+  const checkpointed = 'export const a = 1;\n';
+  const drifted = 'export const a = 99;\n';
+  await withPipeline({ 'src/a.ts': checkpointed }, async (pipeline) => {
+    await pipeline.load(['src/a.ts']);
+    // The buffers moved (the run wrote them), the disk copy is what was last seen.
+    pipeline.buffers[0].content = drifted;
+    const outcome = await rollback(pipeline, { 'src/a.ts': checkpointed });
+    assert.equal(outcome.failed, false, outcome.message ?? '');
+    assert.equal(outcome.written, 1);
+    assert.equal(await fs.readFile(pipeline.diskPath('src/a.ts'), 'utf8'), checkpointed);
+  });
+});
+

@@ -9,7 +9,7 @@ const points = [
   'Google sign-in is required to enter the app',
   'Agent, autonomous run, team, plugin, and automation features are evolving',
   'Preview support depends on your project and installed runtimes',
-  'Turns on your own key are neither metered nor capped; the plan and credit-meter screens are previews, and public payments are not enabled',
+  'Turns on your own key are neither metered nor capped; ShadRox has no plan, no checkout and no payments — your provider bills you directly',
 ]
 
 export function BetaHonesty() {

@@ -14,6 +14,17 @@ export type RunStateListener = (state: RunState | null, event?: AutonomyEvent) =
 export interface RunExecutorHelpers {
   /** True once the user has hit Stop; the run-loop checks this between milestones. */
   isCancellationRequested: () => boolean;
+  /**
+   * True once the user has hit Pause. Kept apart from Stop on purpose: a paused
+   * run is expected to continue, a stopped one is finished, and the panel says
+   * different things about each.
+   */
+  isPauseRequested: () => boolean;
+  /**
+   * Aborted the moment the user Stops or Pauses, so the turn in flight ends
+   * instead of finishing a paid request nobody asked for any more.
+   */
+  turnSignal: () => AbortSignal;
   /** Every event the run emits, forwarded to subscribers as it happens. */
   onEvent: (event: AutonomyEvent) => void;
 }
@@ -34,10 +45,15 @@ export interface RunControllerOptions {
 }
 
 export interface RunController {
-  /** Starts a run. Returns null if one is already in flight. */
+  /** Starts a run, or continues one when `resumeFrom` is given. Returns null if one is already in flight. */
   start: (goal: string, options?: RunStartOptions) => Promise<RunState | null>;
-  /** Asks the in-flight run to stop at the next milestone boundary. */
+  /** Asks the in-flight run to end at the next milestone boundary. */
   stop: () => void;
+  /**
+   * Asks the in-flight run to pause at the next boundary and ends the turn that
+   * is running. The state it leaves is resumable by `start(goal, { resumeFrom })`.
+   */
+  pause: () => void;
   getState: () => RunState | null;
   isRunning: () => boolean;
   /** Subscribe to state/event updates; returns an unsubscribe function. */
@@ -48,10 +64,16 @@ export function createRunController(options: RunControllerOptions): RunControlle
   let state: RunState | null = options.restore?.() ?? null;
   let running = false;
   let cancelled = false;
+  let paused = false;
+  let turnAbort: AbortController | null = null;
   const listeners = new Set<RunStateListener>();
 
   const notify = (event?: AutonomyEvent): void => {
     for (const listener of listeners) listener(state, event);
+  };
+
+  const endTheTurnInFlight = (): void => {
+    turnAbort?.abort();
   };
 
   return {
@@ -59,9 +81,14 @@ export function createRunController(options: RunControllerOptions): RunControlle
       if (running) return null;
       running = true;
       cancelled = false;
+      paused = false;
+      const abort = new AbortController();
+      turnAbort = abort;
       try {
         const final = await options.execute(goal, {
           isCancellationRequested: () => cancelled,
+          isPauseRequested: () => paused,
+          turnSignal: () => abort.signal,
           onEvent: (event) => {
             notify(event);
           }
@@ -71,11 +98,19 @@ export function createRunController(options: RunControllerOptions): RunControlle
         notify();
         return final;
       } finally {
+        turnAbort = null;
         running = false;
       }
     },
     stop(): void {
       cancelled = true;
+      // Stop means the same thing to the loop and to the request in flight, but
+      // only the second one is still costing the user.
+      endTheTurnInFlight();
+    },
+    pause(): void {
+      paused = true;
+      endTheTurnInFlight();
     },
     getState: () => state,
     isRunning: () => running,

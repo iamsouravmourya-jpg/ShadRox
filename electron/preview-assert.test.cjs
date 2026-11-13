@@ -69,3 +69,16 @@ test('missing roots and runtime errors are reported as fatal', () => {
   assert.equal(missing.status, 'fatal');
   assert.equal(runtime.status, 'fatal');
 });
+
+// The acceptance contract stores what a run asserted so the next run is the
+// same check — so the list must be the allowlisted one, never raw caller input.
+test('the verdict reports the selectors it actually asserted', () => {
+  const result = mergePreviewVerdict({
+    frameFound: true,
+    evaluated: true,
+    containerDerived: true,
+    assertedSelectors: ['#root', 'img.onerror()', '.App', '.App', '#second', '#third', '#fourth', '#fifth', '#sixth']
+  });
+  assert.deepEqual(result.assertedSelectors, ['#root', '.App', '#second', '#third', '#fourth', '#fifth', '#sixth']);
+  assert.deepEqual(mergePreviewVerdict({}).assertedSelectors, []);
+});

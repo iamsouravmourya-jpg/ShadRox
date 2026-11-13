@@ -1,6 +1,16 @@
-import type { AcceptanceContract, BehaviorEvent } from './types';
+import type { AcceptanceContract, AcceptancePhase, BehaviorEvent } from './types';
 import { eventLabel } from './recorder';
 
+const unverified = (): AcceptancePhase => ({ result: 'unverified', evidence: null });
+
+/**
+ * A contract is a promise to check, not a result.
+ *
+ * Both phases start `unverified` with no evidence: the only way either can move
+ * is `recordContractEvidence`, which takes a verdict the preview harness
+ * returned. The generated text describes what was recorded, so it is a lead for
+ * the human — nothing downstream treats it as proof that anything is broken.
+ */
 export function generateAcceptanceContract(events: readonly BehaviorEvent[]): AcceptanceContract | null {
   if (events.length === 0) return null;
   const target = events.find((event) => event.path) ?? events[0];
@@ -19,18 +29,9 @@ export function generateAcceptanceContract(events: readonly BehaviorEvent[]): Ac
       ? `${target.target} should respond to the click without a runtime error.`
       : 'The interaction should complete successfully.',
     steps,
-    baseline: failure ? 'failed' : 'unverified',
-    postPatch: 'unverified',
+    probe: { selectors: [] },
+    baseline: unverified(),
+    postPatch: unverified(),
     events: [...events]
   };
-}
-
-export function updateContractVerification(
-  contract: AcceptanceContract,
-  phase: 'baseline' | 'postPatch',
-  result: 'failed' | 'passed'
-): AcceptanceContract {
-  return phase === 'baseline'
-    ? { ...contract, baseline: result }
-    : { ...contract, postPatch: result };
 }

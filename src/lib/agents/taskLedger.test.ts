@@ -19,7 +19,6 @@ const ENVELOPE: RequestEnvelope = createRequestEnvelope({
   targets: ['src/parser.ts'],
   permissionMode: 'ask',
   refineMode: 'code',
-  plan: 'starter',
   payer: 'shared',
   provider: 'gateway',
   model: 'glm-4.7-flash',
@@ -27,13 +26,12 @@ const ENVELOPE: RequestEnvelope = createRequestEnvelope({
 });
 
 describe('workerScope parity (S16)', () => {
-  it('gives every worker the same frozen permission mode, payer, plan and budget (S16)', () => {
+  it('gives every worker the same frozen permission mode, payer and budget (S16)', () => {
     const a = workerScope(ENVELOPE, { id: 't1', files: [{ path: 'src/a.ts', version: 'v1' }] });
     const b = workerScope(ENVELOPE, { id: 't2', files: [{ path: 'src/b.ts', version: 'v1' }] });
     for (const scope of [a, b]) {
       assert.equal(scope.permissionMode, 'ask');
       assert.equal(scope.payer, 'shared');
-      assert.equal(scope.plan, 'starter');
       assert.equal(scope.budgetCredits, 24);
       assert.equal(scope.workspaceId, 'ws-a');
     }

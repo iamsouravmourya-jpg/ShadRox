@@ -108,3 +108,64 @@ export function planFileEdits(
   }
   return planned;
 }
+
+export interface StaleEditRange {
+  from: number;
+  to: number;
+}
+
+/**
+ * Flat result shape (no discriminated union) so callers can read `reason`
+ * without narrowing — the project compiles with strictNullChecks off, where a
+ * union member missing a field is a type error, not a warning.
+ */
+export interface ReanchoredEdit {
+  ok: boolean;
+  from: number;
+  to: number;
+  moved: boolean;
+  reason: string;
+}
+
+/**
+ * Re-validate a quick-edit span against the document as it is *now*.
+ *
+ * The span is captured before the model round-trip, so any typing (or an agent
+ * write) during that call can leave `to` past the end of the document, which
+ * makes CodeMirror throw inside the apply click. Rather than crash, the span is
+ * re-anchored on the text it was meant to replace: an exact match at the old
+ * offsets wins, a unique match elsewhere is followed, and anything ambiguous or
+ * missing refuses the apply so the user keeps their undo history intact.
+ */
+export function reanchorEditRange(
+  text: string,
+  range: StaleEditRange,
+  original: string
+): ReanchoredEdit {
+  const from = Math.max(0, Math.min(Math.trunc(range.from) || 0, text.length));
+  const to = Math.max(from, Math.min(Math.trunc(range.to) || 0, text.length));
+  const clamped = { ok: true, from, to, moved: from !== range.from || to !== range.to, reason: '' };
+
+  if (!original || text.slice(from, to) === original) return clamped;
+
+  const first = text.indexOf(original);
+  if (first === -1) {
+    return {
+      ok: false,
+      from,
+      to,
+      moved: false,
+      reason: 'The code this edit was written against is no longer in the file. Close the diff and ask again.'
+    };
+  }
+  if (first !== text.lastIndexOf(original)) {
+    return {
+      ok: false,
+      from,
+      to,
+      moved: false,
+      reason: 'The code this edit was written against now appears more than once, so it cannot be placed safely. Close the diff and ask again.'
+    };
+  }
+  return { ok: true, from: first, to: first + original.length, moved: true, reason: '' };
+}

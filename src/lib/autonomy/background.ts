@@ -27,7 +27,7 @@ export const BACKGROUND_KEEP_LIMIT = 5;
 
 export type BackgroundMode = 'autonomy' | 'team';
 export type BackgroundStatus = 'running' | 'paused' | 'stopped' | 'done' | 'failed';
-export type BackgroundTaskStatus = 'pending' | 'running' | 'passed' | 'failed' | 'blocked';
+export type BackgroundTaskStatus = 'pending' | 'running' | 'passed' | 'unverified' | 'failed' | 'blocked';
 
 /** The only slice of a milestone/task the resume line needs. */
 export interface BackgroundTaskSummary {
@@ -100,7 +100,7 @@ export interface BackgroundRunStore {
 }
 
 const STATUSES: readonly BackgroundStatus[] = ['running', 'paused', 'stopped', 'done', 'failed'];
-const TASK_STATUSES: readonly BackgroundTaskStatus[] = ['pending', 'running', 'passed', 'failed', 'blocked'];
+const TASK_STATUSES: readonly BackgroundTaskStatus[] = ['pending', 'running', 'passed', 'unverified', 'failed', 'blocked'];
 
 /**
  * Secrets still reach this module through a goal or an event line. They are
@@ -165,7 +165,7 @@ function toTaskStatus(value: unknown): BackgroundTaskStatus {
     : 'pending';
 }
 
-function formatCredits(value: number): string {
+function formatSpend(value: number): string {
   return String(Math.round(value * 10) / 10);
 }
 
@@ -174,8 +174,9 @@ function defaultEvent(
   status: BackgroundStatus,
   tasks: BackgroundTaskSummary[]
 ): string {
-  const done = tasks.filter((task) => task.status === 'passed').length;
-  return `${mode === 'team' ? 'Team' : 'Run'} ${status}: ${done} of ${tasks.length} tasks complete.`;
+  const passed = tasks.filter((task) => task.status === 'passed').length;
+  const unverified = tasks.filter((task) => task.status === 'unverified').length;
+  return `${mode === 'team' ? 'Team' : 'Run'} ${status}: ${passed} of ${tasks.length} tasks passed${unverified ? `, ${unverified} unverified` : ''}.`;
 }
 
 function summarizeTask(source: BackgroundTaskSource, index: number): BackgroundTaskSummary {
@@ -491,19 +492,18 @@ export function canResume(snapshot: BackgroundRunSnapshot, currentWorkspaceRoot:
   if (budgetRemaining(snapshot) < MIN_RESUME_CREDITS) {
     return {
       ok: false,
-      reason: `The budget is spent (${formatCredits(snapshot.creditsSpent)} of ${formatCredits(snapshot.budgetCredits)} credits).`
+      reason: `The run's spend budget is used up (${formatSpend(snapshot.creditsSpent)} of ${formatSpend(snapshot.budgetCredits)}).`
     };
   }
   return { ok: true };
 }
 
-/** One line for the chat resume prompt: what is left and what it has cost. */
+/** One line for the chat resume prompt: what is left and what it has spent. */
 export function resumeSummary(snapshot: BackgroundRunSnapshot): string {
   const total = snapshot.tasks.length;
   const left = snapshot.tasks.filter((task) => task.status === 'pending' || task.status === 'running').length;
   const taskWord = total === 1 ? 'task' : 'tasks';
-  const creditWord = snapshot.creditsSpent === 1 ? 'credit' : 'credits';
-  return `Resume: ${left} of ${total} ${taskWord} left, ${formatCredits(snapshot.creditsSpent)} ${creditWord} spent of ${formatCredits(snapshot.budgetCredits)}.`;
+  return `Resume: ${left} of ${total} ${taskWord} left, ${formatSpend(snapshot.creditsSpent)} spent of the ${formatSpend(snapshot.budgetCredits)} budget.`;
 }
 
 function runIdOf(raw: string): string | null {

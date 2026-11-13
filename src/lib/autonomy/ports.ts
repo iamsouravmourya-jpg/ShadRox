@@ -27,8 +27,15 @@ import type {
 export interface AutonomyHost {
   /** Send one milestone instruction through the real chat path and apply its patches. */
   runTurn: (request: TurnRequest) => Promise<TurnResult>;
-  /** A fresh workspace-wide diagnostics request (absolute file paths). */
-  getDiagnostics: () => Promise<DesktopDiagnostic[]>;
+  /**
+   * A fresh workspace-wide diagnostics request (absolute file paths).
+   *
+   * `null` means no checker is attached at all — no folder open, no language
+   * service. It must not be written as `[]`, because an empty array is a real
+   * answer ("checked, found nothing"), and an empty answer would let a milestone
+   * with no working checker be reported as passed.
+   */
+  getDiagnostics: () => Promise<DesktopDiagnostic[] | null>;
   /** Workspace-relative paths on disk right now. */
   listFiles: () => string[];
   /** One model call that returns raw text (used for planning). */
@@ -42,6 +49,8 @@ export interface AutonomyPortsOptions {
   rootPath: string;
   onEvent: (event: AutonomyEvent) => void;
   isCancellationRequested: () => boolean;
+  /** The panel's Pause button, when the caller has one. */
+  isPauseRequested?: () => boolean;
 }
 
 /** Normalize to forward slashes with no leading `./` — the form the planner emits. */
@@ -71,13 +80,19 @@ export function toDiagnosticLine(diagnostic: DesktopDiagnostic, relativePath: st
   };
 }
 
-/** The error diagnostics for a milestone's files, or null when the milestone named none. */
+/**
+ * The error diagnostics for a milestone's files.
+ *
+ * `null` means nothing was checked: either the workspace has no checker, or the
+ * milestone named no files. Both are the same to a user — no evidence — so both
+ * come back null rather than as an empty list that reads like a clean bill.
+ */
 export function collectMilestoneDiagnostics(
   unit: VerifiableUnit,
-  diagnostics: DesktopDiagnostic[],
+  diagnostics: DesktopDiagnostic[] | null,
   rootPath: string
 ): DiagnosticLine[] | null {
-  if (unit.expectedFiles.length === 0) return null;
+  if (diagnostics === null || unit.expectedFiles.length === 0) return null;
   const wanted = new Set(unit.expectedFiles.map(normalizeRelativePath));
   const lines: DiagnosticLine[] = [];
   for (const diagnostic of diagnostics) {
@@ -113,7 +128,9 @@ export async function verifyMilestone(
   let diagnostics: DiagnosticLine[] | null = null;
 
   try {
-    diagnostics = collectMilestoneDiagnostics(unit, await host.getDiagnostics(), rootPath);
+    const answer = await host.getDiagnostics();
+    if (answer === null) notes.push('no type checker is attached to this workspace, so nothing was actually checked.');
+    diagnostics = collectMilestoneDiagnostics(unit, answer, rootPath);
   } catch (error) {
     notes.push(`the type service did not answer: ${error instanceof Error ? error.message : String(error)}`);
     diagnostics = null;
@@ -125,6 +142,9 @@ export async function verifyMilestone(
     try {
       const outcome = await host.runCommand(unit.verifyCommand);
       command = { ...outcome, stdoutTail: tail(outcome.stdoutTail), stderrTail: tail(outcome.stderrTail) };
+      if (outcome.timedOut) {
+        notes.push('the proof command was killed by its time limit, so its result is not a verdict.');
+      }
       if (outcome.declinedReason) {
         notes.push(`the proof command was not run: ${outcome.declinedReason}`);
       } else if (outcome.exitCode !== 0) {
@@ -136,8 +156,10 @@ export async function verifyMilestone(
   }
 
   const commandRan = command !== undefined && !command.declinedReason;
-  const commandPassed = commandRan && command.exitCode === 0;
-  const commandFailed = commandRan && command.exitCode !== 0;
+  // A command killed by its time limit proved nothing, whatever exit code the
+  // runner reported for it, so it can never carry a milestone to `passed`.
+  const commandPassed = commandRan && command.exitCode === 0 && !command.timedOut;
+  const commandFailed = commandRan && (command.exitCode !== 0 || command.timedOut);
   const hasError = diagnostics?.some((line) => line.severity === 'error') ?? false;
 
   // A failure is sticky: a green command never erases a type error the same
@@ -165,6 +187,7 @@ export function createAutonomyPorts(host: AutonomyHost, options: AutonomyPortsOp
     listFiles: () => host.listFiles(),
     askPlan: (prompt) => host.askPlan(prompt),
     onEvent: options.onEvent,
-    isCancellationRequested: options.isCancellationRequested
+    isCancellationRequested: options.isCancellationRequested,
+    ...(options.isPauseRequested ? { isPauseRequested: options.isPauseRequested } : {})
   };
 }

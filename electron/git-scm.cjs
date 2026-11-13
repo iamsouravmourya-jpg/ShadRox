@@ -3,13 +3,30 @@
 function parseGitStatus(text) {
   const changes = [];
   let branch = '';
+  let detached = false;
+  let upstream = null;
+  let ahead = 0;
+  let behind = 0;
   const entries = String(text || '').split('\0');
 
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
     if (!entry) continue;
     if (entry.startsWith('## ')) {
-      branch = entry.slice(3).split('...')[0].replace(/^No commits yet on /, '');
+      // The header is the only place git says how far the branch is from its
+      // upstream, and dropping it made a repo with unpushed work look exactly
+      // like a clean one.
+      const header = entry.slice(3);
+      detached = header.startsWith('HEAD (no branch)') || header.startsWith('HEAD (detached');
+      const refs = header.replace(/\s+\[[^\]]*\]$/, '');
+      const [ref, remote] = refs.split('...');
+      branch = detached ? '' : (ref || '').replace(/^No commits yet on /, '').trim();
+      upstream = remote || null;
+      const counts = /\[ahead (\d+)(?:, behind (\d+))?\]|\[behind (\d+)(?:, ahead (\d+))?\]/.exec(header);
+      if (counts) {
+        ahead = Number(counts[1] ?? counts[4] ?? 0);
+        behind = Number(counts[2] ?? counts[3] ?? 0);
+      }
       continue;
     }
     if (entry.length < 4 || entry[2] !== ' ') continue;
@@ -26,7 +43,7 @@ function parseGitStatus(text) {
       untracked: status === '??'
     });
   }
-  return { branch, changes };
+  return { branch, changes, detached, upstream, ahead, behind };
 }
 
 function parseGitBranches(text) {
@@ -60,6 +77,11 @@ function validateGitPaths(rawPaths) {
     }
     const normalized = rawPath.replace(/\\/g, '/');
     const segments = normalized.split('/');
+    // A leading ':' is git pathspec magic (:(exclude)…), not a filename, and
+    // would let one staged path silently widen to every path in the repo.
+    if (normalized.startsWith(':')) {
+      throw new Error('Git paths may not use pathspec magic.');
+    }
     if (!normalized || normalized.startsWith('/') || /^[a-z]:/i.test(normalized) ||
       segments.some((segment) => !segment || segment === '.' || segment === '..')) {
       throw new Error('Git paths must be workspace-relative and must not traverse directories.');

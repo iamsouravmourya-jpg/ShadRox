@@ -47,12 +47,17 @@ interface Harness {
   events: TeamEvent[];
   states: TeamState[];
   turns: { id: string; attempt: number; instruction: string; feedbackText?: string }[];
+  /** The `signal` each task turn was handed, so the abort wiring is observable. */
+  signals: (AbortSignal | undefined)[];
   checkpoints: () => number;
   validateCalls: () => number;
   setVerify: (fn: (unit: VerifiableUnit) => VerificationReport) => void;
   setTurn: (fn: (unit: TurnUnit, attempt: number) => TurnResult) => void;
   setValidate: (fn: () => PlanError[]) => void;
   cancelAfter: (count: number) => void;
+  pauseAfter: (count: number) => void;
+  /** Moves the fake clock, so a wall-clock ceiling can be tested without waiting. */
+  advanceClock: (ms: number) => void;
   run: (goal: string) => Promise<TeamState>;
 }
 
@@ -60,6 +65,7 @@ function harness(plan: TeamPlan, budget: TeamBudget = DEFAULT_TEAM_BUDGET): Harn
   const events: TeamEvent[] = [];
   const states: TeamState[] = [];
   const turns: Harness['turns'] = [];
+  const signals: Harness['signals'] = [];
   let verifyImpl = (_unit: VerifiableUnit): VerificationReport => PASSED;
   let turnImpl = (_unit: TurnUnit, _attempt: number): TurnResult => ({
     reply: 'ok',
@@ -70,9 +76,13 @@ function harness(plan: TeamPlan, budget: TeamBudget = DEFAULT_TEAM_BUDGET): Harn
   });
   let validateImpl = (): PlanError[] => [];
   let cancelAfterTurn = Infinity;
+  let pauseAfterTurn = Infinity;
   let turnCount = 0;
   let checkpointCount = 0;
   let validateCount = 0;
+  let clockMs = 1000;
+  /** Stands in for the panel's per-run AbortController. */
+  const turnAbort = new AbortController();
   /** The port hands the loop a `TurnUnit`, which has no attempts array, so the
    *  fake counts them itself rather than reading them back off the request. */
   const attemptCounts = new Map<string, number>();
@@ -82,6 +92,7 @@ function harness(plan: TeamPlan, budget: TeamBudget = DEFAULT_TEAM_BUDGET): Harn
       turnCount += 1;
       const attempt = (attemptCounts.get(request.milestone.id) ?? 0) + 1;
       attemptCounts.set(request.milestone.id, attempt);
+      signals.push(request.signal);
       turns.push({
         id: request.milestone.id,
         attempt,
@@ -93,7 +104,8 @@ function harness(plan: TeamPlan, budget: TeamBudget = DEFAULT_TEAM_BUDGET): Harn
     verify: async (unit) => verifyImpl(unit),
     listFiles: () => ['src/a.ts'],
     onEvent: (event) => events.push(event),
-    isCancellationRequested: () => turnCount >= cancelAfterTurn
+    isCancellationRequested: () => turnCount >= cancelAfterTurn,
+    isPauseRequested: () => turnCount >= pauseAfterTurn
   };
 
   const deps: TeamDeps = {
@@ -109,7 +121,8 @@ function harness(plan: TeamPlan, budget: TeamBudget = DEFAULT_TEAM_BUDGET): Harn
       checkpointCount += 1;
     },
     persist: (state) => states.push(state),
-    now: () => 1000
+    turnSignal: () => turnAbort.signal,
+    now: () => clockMs
   };
 
   return {
@@ -117,6 +130,7 @@ function harness(plan: TeamPlan, budget: TeamBudget = DEFAULT_TEAM_BUDGET): Harn
     events,
     states,
     turns,
+    signals,
     checkpoints: () => checkpointCount,
     validateCalls: () => validateCount,
     setVerify: (fn) => {
@@ -130,6 +144,12 @@ function harness(plan: TeamPlan, budget: TeamBudget = DEFAULT_TEAM_BUDGET): Harn
     },
     cancelAfter: (count) => {
       cancelAfterTurn = count;
+    },
+    pauseAfter: (count) => {
+      pauseAfterTurn = count;
+    },
+    advanceClock: (ms) => {
+      clockMs += ms;
     },
     run: (goal) => runTeam(goal, deps)
   };
@@ -224,21 +244,30 @@ test('a task that never passes fails, and its dependent is blocked', async () =>
   assert.equal(h.turns.length, 2);
 });
 
-test('an unverified file-changing task advances but is never reported as proven', async () => {
+test('an unverified file-changing task advances but is never recorded as passed', async () => {
   const h = harness({ tasks: [plannedTask({ id: 't1' })], errors: [] });
   h.setVerify(() => ({ verdict: 'unverified', diagnostics: [], notes: ['no checker could run'] }));
   const state = await h.run('goal');
-  assert.equal(state.tasks[0].status, 'passed');
+  // The rule this pins: an unproven step keeps its own status. It is not folded
+  // into `passed` anywhere — not the task, not the team's shared note.
+  assert.equal(state.tasks[0].status, 'unverified');
   assert.equal(state.tasks[0].lastReport?.verdict, 'unverified');
+  assert.equal(state.tasks.filter((task) => task.status === 'passed').length, 0);
   assert.equal(state.status, 'done');
-  assert.match(state.error ?? '', /without a check that could prove them/);
+  assert.match(state.error ?? '', /finished unverified/);
+  // The note the rest of the team reads says the same thing the status does.
+  const handoff = state.messages.find((message) => message.text.includes('add a route'));
+  assert.match(handoff?.text ?? '', /is unverified — nothing checked it/);
+  assert.doesNotMatch(handoff?.text ?? '', /the check said passed/);
 });
 
-test('an unverified investigation task is not flagged — there were no files to prove', async () => {
+test('an unverified investigation task carries the status but raises no alarm', async () => {
   const h = harness({ tasks: [plannedTask({ id: 't1', expectedFiles: [] })], errors: [] });
   h.setVerify(() => ({ verdict: 'unverified', diagnostics: [], notes: ['nothing to check'] }));
   const state = await h.run('goal');
   assert.equal(state.status, 'done');
+  // Still not called a pass, even though a read-only task has nothing to prove.
+  assert.equal(state.tasks[0].status, 'unverified');
   assert.equal(state.error, undefined);
 });
 
@@ -250,7 +279,7 @@ test('an aborted turn fails the task and is not retried', async () => {
   assert.equal(h.turns.length, 1);
 });
 
-test('the team stops at the credit cap and leaves the rest pending', async () => {
+test('the team stops at the spend cap and leaves the rest pending', async () => {
   // One turn costs exactly one edit, so a one-edit cap must stop before task two.
   const h = harness({ tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] }, { ...DEFAULT_TEAM_BUDGET, maxCredits: CREDIT_RATES.codeEdit });
   h.setTurn((unit) => ({ reply: `reply for ${unit.id}`, patchesApplied: 0, patchFailures: [], creditsSpent: CREDIT_RATES.codeEdit, aborted: false }));
@@ -258,7 +287,7 @@ test('the team stops at the credit cap and leaves the rest pending', async () =>
   assert.equal(state.status, 'stopped-budget');
   assert.equal(state.tasks[0].status, 'passed');
   assert.equal(state.tasks[1].status, 'pending');
-  assert.match(state.error ?? '', /1\.2-credit cap/);
+  assert.match(state.error ?? '', /spend cap of 1\.2/);
 });
 
 test('the team stops before a turn that would exceed the cap, returning the task to pending', async () => {
@@ -267,7 +296,74 @@ test('the team stops before a turn that would exceed the cap, returning the task
   assert.equal(state.status, 'stopped-budget');
   assert.equal(state.tasks[0].status, 'pending');
   assert.equal(h.turns.length, 0);
-  assert.match(state.error ?? '', /estimated at 1\.2 credits/);
+  assert.match(state.error ?? '', /estimated at 1\.2 spend/);
+});
+
+test('the team obeys the same turn and clock ceilings as a solo run', async () => {
+  const turns = harness(
+    { tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] },
+    { ...DEFAULT_TEAM_BUDGET, maxTurns: 1 }
+  );
+  const turnState = await turns.run('goal');
+  assert.equal(turnState.status, 'stopped-budget');
+  assert.match(turnState.error ?? '', /turn cap of 1/);
+  assert.equal(turns.turns.length, 1);
+
+  const clock = harness(
+    { tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] },
+    { ...DEFAULT_TEAM_BUDGET, maxWallClockMs: 1000 }
+  );
+  clock.setTurn((unit) => {
+    clock.advanceClock(1500);
+    return { reply: `reply for ${unit.id}`, patchesApplied: 1, patchFailures: [], creditsSpent: 1, aborted: false };
+  });
+  const clockState = await clock.run('goal');
+  assert.equal(clockState.status, 'stopped-budget');
+  assert.match(clockState.error ?? '', /Stopped after 2s/);
+  assert.equal(clock.turns.length, 1);
+});
+
+test('the team counts reported tool calls and ignores ones nobody measured', async () => {
+  const counted = harness(
+    { tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] },
+    { ...DEFAULT_TEAM_BUDGET, maxToolCalls: 4 }
+  );
+  counted.setTurn((unit) => ({
+    reply: `reply for ${unit.id}`,
+    patchesApplied: 1,
+    patchFailures: [],
+    creditsSpent: 1,
+    aborted: false,
+    toolCalls: 4
+  }));
+  const state = await counted.run('goal');
+  assert.equal(state.status, 'stopped-budget');
+  assert.match(state.error ?? '', /tool-call cap of 4/);
+
+  const unmeasured = harness(
+    { tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] },
+    { ...DEFAULT_TEAM_BUDGET, maxToolCalls: 0 }
+  );
+  assert.equal((await unmeasured.run('goal')).status, 'done');
+});
+
+test('a team turn that overshoots the cap stops the run on the evidence', async () => {
+  const h = harness(
+    { tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] },
+    { ...DEFAULT_TEAM_BUDGET, maxCredits: 10 }
+  );
+  h.setTurn((unit) => ({
+    reply: `reply for ${unit.id}`,
+    patchesApplied: 1,
+    patchFailures: [],
+    creditsSpent: 11,
+    aborted: false
+  }));
+  const state = await h.run('goal');
+  assert.equal(state.status, 'stopped-budget');
+  assert.match(state.error ?? '', /spend cap of 10/);
+  assert.match(state.error ?? '', /the team is at 11/);
+  assert.equal(h.turns.length, 1);
 });
 
 test('cancellation stops between tasks and marks the run cancelled', async () => {
@@ -278,6 +374,56 @@ test('cancellation stops between tasks and marks the run cancelled', async () =>
   assert.equal(state.tasks[0].status, 'passed');
   assert.equal(state.tasks[1].status, 'pending');
   assert.match(state.error ?? '', /Cancelled with 1 task/);
+});
+
+test('pause halts between tasks, files the run paused and buys no further turn', async () => {
+  const h = harness({ tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] });
+  h.pauseAfter(1);
+  const state = await h.run('goal');
+  assert.equal(state.status, 'paused');
+  assert.match(state.error ?? '', /Paused with 1 task/);
+  assert.equal(state.tasks[0].status, 'passed', 'a finished task is not undone by a pause');
+  assert.equal(state.tasks[1].status, 'pending');
+  assert.equal(h.turns.length, 1);
+});
+
+test('a task paused mid-turn is filed stopped, never left running or called failed', async () => {
+  const h = harness({ tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] });
+  h.pauseAfter(2);
+  h.setTurn((unit) =>
+    unit.id === 't2'
+      ? { reply: '', patchesApplied: 1, patchFailures: [], creditsSpent: 0.4, aborted: true, stopped: true }
+      : { reply: 'ok', patchesApplied: 1, patchFailures: [], creditsSpent: 0.4, aborted: false }
+  );
+  const state = await h.run('goal');
+  assert.equal(state.status, 'paused');
+  assert.equal(state.tasks[1].status, 'stopped', 'no task is persisted as running when nothing is running');
+  assert.notEqual(state.tasks[1].status, 'failed', 'the user pressed Pause; the model is not blamed');
+});
+
+test('Stop outranks Pause for a team, and a stopped turn is not reported as a failure', async () => {
+  const h = harness({ tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] });
+  h.cancelAfter(1);
+  h.pauseAfter(1);
+  const state = await h.run('goal');
+  assert.equal(state.status, 'cancelled');
+});
+
+test('a turn the user stopped leaves the task stopped and the team not done', async () => {
+  const h = harness({ tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] });
+  h.cancelAfter(1);
+  h.setTurn(() => ({ reply: '', patchesApplied: 0, patchFailures: [], creditsSpent: 0.4, aborted: true, stopped: true }));
+  const state = await h.run('goal');
+  assert.equal(state.tasks[0].status, 'stopped');
+  assert.equal(state.status, 'cancelled');
+  assert.equal(h.turns.length, 1);
+});
+
+test('every task turn is handed the abort signal, so Stop ends the paid request', async () => {
+  const h = harness({ tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] });
+  await h.run('goal');
+  assert.equal(h.signals.length, 2);
+  assert.equal(h.signals.every((signal) => signal instanceof AbortSignal), true);
 });
 
 /* ── the closing integration turn ─────────────────────────────────────────── */
