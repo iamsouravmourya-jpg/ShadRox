@@ -3,6 +3,7 @@ import Link from 'next/link'
 import {
   Download,
   ArrowRight,
+  ArrowUpRight,
   PackageCheck,
   ShieldAlert,
   LogIn,
@@ -11,16 +12,20 @@ import {
   SquareTerminal,
   RefreshCw,
   HardDrive,
+  EyeOff,
+  CodeXml,
+  BadgeCheck,
 } from 'lucide-react'
 import { PageShell } from '@/components/landing/page-shell'
 import { Reveal } from '@/components/landing/reveal'
-import { APP_VERSION, WINDOWS_DOWNLOAD_URL, LATEST_RELEASE_URL } from '@/lib/download'
+import { APP_VERSION, WINDOWS_DOWNLOAD_URL, LATEST_RELEASE_URL, GITHUB_REPO } from '@/lib/download'
 import { CopyButton } from './copy-button'
+import { SmartScreenMock } from './smartscreen-mock'
 
 export const metadata: Metadata = {
   title: 'Download — ShadRox',
   description:
-    'Download ShadRox for Windows 10 / 11 (64-bit). Free during beta — install in four steps, verify the SHA-512 hash, and see how updates work. The build is unsigned, so Windows SmartScreen will ask you to confirm.',
+    'Download ShadRox for Windows 10 / 11 (64-bit). Free during beta — install in four steps, verify the SHA-512 hash, and see exactly why the unsigned build triggers a Windows SmartScreen warning.',
   alternates: { canonical: '/download' },
 }
 
@@ -29,6 +34,7 @@ const FILE_BYTES = '144,847,123'
 const SHA512 =
   'AizaIYv7E0dd/cw6vbxNT6bxyXJvL5uknlex462z0xxOphKd1rJzhQJ9msWVCOnF5K7vWWFjPPS/wBG8ukdxKw=='
 const PS_CMD = `Get-FileHash .\\${INSTALLER_NAME} -Algorithm SHA512`
+const BUILD_CMD = 'npm install && npm run dist:win'
 
 const steps = [
   {
@@ -40,7 +46,7 @@ const steps = [
     icon: ShieldAlert,
     title: 'Confirm SmartScreen',
     text: 'The build is unsigned, so Windows SmartScreen may show a warning. That is expected for a beta installer — choose:',
-    chip: 'More → Run anyway',
+    chip: 'More info → Run anyway',
   },
   {
     icon: LogIn,
@@ -69,6 +75,40 @@ const reassurance = [
     icon: LogIn,
     title: 'Google sign-in',
     text: 'Required once at first launch to enter the app. Free during beta.',
+  },
+]
+
+const clickThrough = [
+  {
+    title: 'Click “More info”',
+    text: 'The small link under the warning text expands the details panel.',
+  },
+  {
+    title: 'Check the publisher line',
+    text: `It reads App: ${INSTALLER_NAME} and Publisher: Unknown — exactly what an unsigned build shows.`,
+  },
+  {
+    title: 'Click “Run anyway”',
+    text: 'The installer starts. Do this only after the checksum matches — or build from source instead.',
+  },
+]
+
+const trustAnchors = [
+  {
+    icon: EyeOff,
+    title: 'No hidden telemetry',
+    text: 'The app runs no usage analytics. Google sign-in stores only email, name, avatar, app version and platform — and the only background network call is the update check against GitHub Releases.',
+  },
+  {
+    icon: KeyRound,
+    title: 'Your keys stay local',
+    text: 'Bring your own key: provider keys sit in OS-backed encrypted storage on your device and are never sent to ShadRox. Prompts go only to the provider you configure.',
+  },
+  {
+    icon: CodeXml,
+    title: 'Open source, AGPL-3.0',
+    text: 'The full source is public on GitHub — read it, audit it, or build the installer yourself instead of trusting ours.',
+    link: { label: 'View the repository', href: GITHUB_REPO },
   },
 ]
 
@@ -174,8 +214,14 @@ export default function DownloadPage() {
 
                 <p className="mx-auto mt-5 max-w-[540px] text-xs leading-5 text-[var(--mut)]">
                   The build is unsigned, so Windows SmartScreen may warn you — choose{' '}
-                  <span className="font-semibold text-[var(--ink2)]">More → Run anyway</span>. The app
-                  checks for newer releases when it starts.
+                  <span className="font-semibold text-[var(--ink2)]">More info → Run anyway</span>.{' '}
+                  <a
+                    href="#smartscreen"
+                    className="font-semibold text-[var(--ac)] underline-offset-2 transition hover:underline"
+                  >
+                    Why this happens, and how to verify
+                  </a>
+                  . The app checks for newer releases when it starts.
                 </p>
               </div>
             </div>
@@ -219,8 +265,155 @@ export default function DownloadPage() {
         </div>
       </section>
 
+      {/* ── Windows SmartScreen ── */}
+      <section
+        id="smartscreen"
+        className="border-t border-[var(--line)] bg-[var(--bg)] px-5 py-16 lg:px-8 lg:py-20"
+      >
+        <div className="mx-auto max-w-[1180px]">
+          <SectionHead
+            eyebrow="SmartScreen"
+            title="The warning is"
+            accent="expected."
+            sub="ShadRox is an indie, open-source beta maintained by one person. The installer is not code-signed yet, so Windows cannot verify its publisher — and SmartScreen says so. Here is exactly what you will see, and how to check the file before you run it."
+          />
+
+          <Reveal variant="scale">
+            <div className="grid gap-10 rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-10 lg:grid-cols-2 lg:gap-12">
+              {/* Left: why it happens + exact click-through + verify */}
+              <div>
+                <div className="flex items-start gap-4 rounded-2xl border border-amber-500/30 bg-amber-500/[0.06] p-5">
+                  <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400">
+                    <ShieldAlert className="size-5" strokeWidth={1.75} />
+                  </span>
+                  <div>
+                    <h3 className="text-sm font-bold text-[var(--ink)]">Why Windows warns</h3>
+                    <p className="mt-1.5 text-[13px] leading-6 text-[var(--mut)]">
+                      Code-signing certificates cost money, and ShadRox is a free indie project —
+                      signing is planned as it grows. Until then, SmartScreen treats the installer
+                      as unrecognized. That is a reputation check, not a report that malware was
+                      found.
+                    </p>
+                  </div>
+                </div>
+
+                <p className="mb-4 mt-7 text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--mut)]">
+                  The click-through, exactly
+                </p>
+                <ol className="space-y-4">
+                  {clickThrough.map((s, i) => (
+                    <li key={s.title} className="flex gap-3.5">
+                      <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[var(--bg2)] font-mono text-[12px] font-bold text-[var(--ac)]">
+                        {i + 1}
+                      </span>
+                      <div>
+                        <h4 className="text-sm font-bold text-[var(--ink)]">{s.title}</h4>
+                        <p className="mt-0.5 text-[13px] leading-6 text-[var(--mut)]">{s.text}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+
+                <div className="mt-7 rounded-2xl border border-[var(--line)] bg-[var(--bg2)] p-5">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="inline-flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--mut)]">
+                      <SquareTerminal className="size-3.5 text-[var(--ac)]" />
+                      Verify before you run
+                    </span>
+                    <CopyButton value={PS_CMD} label="Copy command" />
+                  </div>
+                  <p className="break-all rounded-xl border border-[var(--line)] bg-[var(--card)] p-3 font-mono text-[12px] leading-6 text-[var(--ink2)]">
+                    {PS_CMD}
+                  </p>
+                  <p className="mt-2.5 text-xs leading-5 text-[var(--mut)]">
+                    PowerShell prints hex; the published SHA-512 is the same hash in base64 —
+                    convert one side to compare.{' '}
+                    <a
+                      href="#verify"
+                      className="font-semibold text-[var(--ac)] underline-offset-2 transition hover:underline"
+                    >
+                      Checksum &amp; comparison guide
+                    </a>{' '}
+                    just below.
+                  </p>
+                </div>
+              </div>
+
+              {/* Right: interactive mock dialog */}
+              <div className="flex flex-col justify-center">
+                <SmartScreenMock installerName={INSTALLER_NAME} />
+              </div>
+            </div>
+          </Reveal>
+
+          {/* Trust anchors */}
+          <div className="mt-[18px] grid gap-[18px] sm:grid-cols-3">
+            {trustAnchors.map(({ icon: Icon, title, text, link }, i) => (
+              <Reveal key={title} delay={i * 90}>
+                <article className="feature-card flex h-full flex-col rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6">
+                  <span className="mb-4 grid size-11 place-items-center rounded-[14px] bg-[var(--bg2)]">
+                    <Icon className="size-5 text-[var(--ac)]" strokeWidth={1.75} />
+                  </span>
+                  <h3 className="text-sm font-bold text-[var(--ink)]">{title}</h3>
+                  <p className="mt-1.5 text-[13px] leading-6 text-[var(--mut)]">{text}</p>
+                  {link && (
+                    <a
+                      href={link.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="group mt-4 inline-flex items-center gap-1 text-[13px] font-semibold text-[var(--ac)] transition hover:gap-2"
+                    >
+                      {link.label}
+                      <ArrowUpRight className="size-3.5" />
+                    </a>
+                  )}
+                </article>
+              </Reveal>
+            ))}
+          </div>
+
+          {/* Forward-looking: signing roadmap + build from source */}
+          <Reveal delay={120} variant="scale">
+            <div className="mt-[18px] flex flex-col gap-6 rounded-3xl border border-[var(--line)] bg-[var(--bg2)] p-6 sm:p-8 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-start gap-4">
+                <span className="grid size-11 shrink-0 place-items-center rounded-[14px] bg-[var(--card)]">
+                  <BadgeCheck className="size-5 text-[var(--ac)]" strokeWidth={1.75} />
+                </span>
+                <div>
+                  <h3 className="text-[15px] font-bold text-[var(--ink)]">
+                    Signing is on the roadmap.
+                  </h3>
+                  <p className="mt-1.5 max-w-[520px] text-[13px] leading-6 text-[var(--mut)]">
+                    A code-signing certificate is planned as the project grows. Until then,
+                    download only from the official GitHub release, verify the SHA-512 — or build
+                    the installer yourself from the public source.
+                  </p>
+                </div>
+              </div>
+              <div className="shrink-0 lg:w-[340px]">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--mut)]">
+                    Build from source
+                  </span>
+                  <CopyButton value={BUILD_CMD} label="Copy" />
+                </div>
+                <p className="break-all rounded-xl border border-[var(--line)] bg-[var(--card)] p-3 font-mono text-[12px] leading-6 text-[var(--ink2)]">
+                  {BUILD_CMD}
+                </p>
+                <p className="mt-2 text-[11px] leading-4 text-[var(--mut)]">
+                  From the repo root, after the README&apos;s .env setup. Requires Node.js 22.12+.
+                </p>
+              </div>
+            </div>
+          </Reveal>
+        </div>
+      </section>
+
       {/* ── Verify your download ── */}
-      <section className="border-t border-[var(--line)] bg-[var(--bg)] px-5 py-16 lg:px-8 lg:py-20">
+      <section
+        id="verify"
+        className="border-t border-[var(--line)] bg-[var(--bg2)] px-5 py-16 lg:px-8 lg:py-20"
+      >
         <div className="mx-auto max-w-[1180px]">
           <SectionHead
             eyebrow="Integrity"
@@ -293,7 +486,7 @@ export default function DownloadPage() {
       </section>
 
       {/* ── After install ── */}
-      <section className="border-t border-[var(--line)] bg-[var(--bg2)] px-5 py-16 lg:px-8 lg:py-20">
+      <section className="border-t border-[var(--line)] bg-[var(--bg)] px-5 py-16 lg:px-8 lg:py-20">
         <div className="mx-auto max-w-[1180px]">
           <SectionHead
             eyebrow="After install"
@@ -353,7 +546,7 @@ export default function DownloadPage() {
       </section>
 
       {/* ── Reassurance row ── */}
-      <section className="border-t border-[var(--line)] bg-[var(--bg)] px-5 py-16 lg:px-8 lg:py-20">
+      <section className="border-t border-[var(--line)] bg-[var(--bg2)] px-5 py-16 lg:px-8 lg:py-20">
         <div className="mx-auto max-w-[1180px]">
           <div className="grid gap-[18px] sm:grid-cols-3">
             {reassurance.map(({ icon: Icon, title, text }, i) => (
