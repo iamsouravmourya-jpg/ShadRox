@@ -19,26 +19,27 @@ const caveats = [
 
 export function PreviewSupport() {
   return (
-    <section className="border-t border-[var(--line)] bg-[var(--bg)] px-5 py-20 lg:px-8 lg:py-28">
-      <div className="mx-auto max-w-[1180px]">
+    <section className="border-t border-[var(--line)] bg-[var(--bg)] py-20 lg:py-28">
+      <div className="container-page">
         <Reveal variant="scale">
-          <div className="relative overflow-hidden rounded-3xl border border-[var(--line)] bg-[var(--bg2)] p-7 sm:p-10 lg:p-14">
+          <div className="relative overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--bg2)] p-6 sm:p-10 lg:p-12">
             {/* Glow orb */}
             <div
+              aria-hidden
               className="pointer-events-none absolute -right-24 -top-24 size-80 rounded-full blur-3xl"
               style={{ background: 'radial-gradient(circle, var(--glow), transparent 70%)' }}
             />
 
-            <div className="relative grid gap-10 lg:grid-cols-[1fr_.75fr] lg:items-end">
+            <div className="relative grid gap-10 lg:grid-cols-[1.1fr_.9fr] lg:items-end lg:gap-14">
               <div>
-                <p className="mb-4 text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--ac)]">
+                <p className="eyebrow mb-4">
                   Preview support
                 </p>
-                <h2 className="max-w-xl text-[clamp(26px,3.5vw,40px)] font-bold tracking-[-0.04em] leading-[1.12] text-[var(--ink)]">
+                <h2 className="max-w-xl text-[clamp(1.625rem,3.2vw,2.5rem)] font-bold leading-[1.12] tracking-[-0.04em] text-[var(--ink)]">
                   Preview the web projects{' '}
                   <em className="font-normal italic text-[var(--ac)]">you are working on.</em>
                 </h2>
-                <p className="mt-4 max-w-xl text-sm leading-6 text-[var(--mut)]">
+                <p className="mt-4 max-w-xl text-[13.5px] leading-6 text-[var(--mut)]">
                   ShadRox can serve static sites and launch detected Node-based web projects with
                   supported package scripts. It detects Python, Go, PHP, Java, and .NET entry
                   points — the runtime itself must be installed on your machine. Opening a project
@@ -48,16 +49,16 @@ export function PreviewSupport() {
 
                 <div className="mt-8 flex flex-col gap-6 sm:flex-row sm:items-start">
                   <div className="flex-1">
-                    <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-600 dark:text-emerald-400">
+                    <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-700 dark:text-emerald-400">
                       Currently supported
                     </p>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-1.5">
                       {supported.map((s) => (
                         <span
                           key={s}
-                          className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/[.07] px-3 py-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"
+                          className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/[.06] px-3 py-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"
                         >
-                          <Check className="size-3" /> {s}
+                          <Check className="size-3" aria-hidden /> {s}
                         </span>
                       ))}
                     </div>
@@ -66,7 +67,7 @@ export function PreviewSupport() {
                     <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--mut)]">
                       Good to know
                     </p>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-1.5">
                       {caveats.map((s) => (
                         <span
                           key={s}
@@ -80,9 +81,9 @@ export function PreviewSupport() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--card)] px-5 py-4 text-sm font-medium text-[var(--ink)]">
-                <div className="grid size-8 shrink-0 place-items-center rounded-xl bg-[var(--bg2)]">
-                  <Play className="size-4 text-[var(--ac)]" />
+              <div className="flex items-start gap-3 rounded-xl border border-[var(--line)] bg-[var(--card)] px-5 py-4 text-[13.5px] font-medium leading-6 text-[var(--ink)] shadow-[0_1px_2px_var(--shadow)]">
+                <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-[var(--bg2)]">
+                  <Play className="size-4 text-[var(--ac)]" aria-hidden />
                 </div>
                 Managed run actions, with your approval before anything installs or launches.
               </div>

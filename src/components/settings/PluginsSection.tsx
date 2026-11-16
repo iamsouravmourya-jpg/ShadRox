@@ -150,9 +150,9 @@ export function PluginsSection({ workspaceId, workspaceRoot }: PluginsSectionPro
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> Rescan
           </button>
         </div>
-        <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">
+        <p className="mt-1 text-[11px] leading-relaxed text-ink-4">
           Plugins are declarative JSON under{' '}
-          <code className="font-mono text-violet-300">.shadrox/plugins</code>. Nothing runs until you enable a
+          <code className="font-mono text-accent">.shadrox/plugins</code>. Nothing runs until you enable a
           plugin here; enabling is stored per workspace, outside the repository, and commands still go through the
           normal approval path.
         </p>
@@ -161,11 +161,11 @@ export function PluginsSection({ workspaceId, workspaceRoot }: PluginsSectionPro
       {scanError && <Notice tone="error">{scanError}</Notice>}
 
       {scanIssues.length > 0 && (
-        <div className="space-y-0.5 rounded-2xl border border-amber-500/25 bg-amber-500/[.06] px-3 py-2">
+        <div className="space-y-0.5 rounded-2xl border border-warn/30 bg-warn/10 px-3 py-2">
           {scanIssues.map((issue, index) => (
             <p
               key={`${index}-${issue}`}
-              className="whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-amber-300"
+              className="whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-warn"
             >
               {issue}
             </p>
@@ -176,18 +176,18 @@ export function PluginsSection({ workspaceId, workspaceRoot }: PluginsSectionPro
       {!workspaceId ? (
         <EmptyState title="No workspace open">
           Open a folder to load its plugins. Each plugin lives in its own folder:
-          <pre className="mt-2 whitespace-pre rounded-lg border border-white/[0.07] bg-white/[0.02] p-2 font-mono text-[10px] text-violet-200">
+          <pre className="mt-2 whitespace-pre rounded-lg border border-line bg-overlay p-2 font-mono text-[10px] text-accent">
             {LAYOUT}
           </pre>
         </EmptyState>
       ) : loading ? (
-        <div className="flex items-center gap-2 text-[11px] text-neutral-500">
+        <div className="flex items-center gap-2 text-[11px] text-ink-4">
           <Loader2 className="h-3.5 w-3.5 animate-spin" /> Scanning workspace...
         </div>
       ) : plugins.length === 0 && errors.length === 0 ? (
         <EmptyState title="No plugins found">
-          Add a manifest at <code className="font-mono text-violet-300">.shadrox/plugins/&lt;id&gt;/plugin.json</code>:
-          <pre className="mt-2 whitespace-pre rounded-lg border border-white/[0.07] bg-white/[0.02] p-2 font-mono text-[10px] text-violet-200">
+          Add a manifest at <code className="font-mono text-accent">.shadrox/plugins/&lt;id&gt;/plugin.json</code>:
+          <pre className="mt-2 whitespace-pre rounded-lg border border-line bg-overlay p-2 font-mono text-[10px] text-accent">
             {LAYOUT}
           </pre>
         </EmptyState>
@@ -202,13 +202,13 @@ export function PluginsSection({ workspaceId, workspaceRoot }: PluginsSectionPro
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="truncate text-xs font-medium text-neutral-100">
+                      <span className="truncate text-xs font-medium text-ink">
                         {plugin.manifest.name}
                       </span>
-                      <span className="font-mono text-[10px] text-violet-300">v{plugin.manifest.version}</span>
+                      <span className="font-mono text-[10px] text-accent">v{plugin.manifest.version}</span>
                       <StatusBadge enabled={plugin.enabled} />
                     </div>
-                    <div className="mt-0.5 truncate font-mono text-[10px] text-neutral-500">
+                    <div className="mt-0.5 truncate font-mono text-[10px] text-ink-4">
                       {plugin.sourcePath}
                     </div>
                   </div>
@@ -227,17 +227,17 @@ export function PluginsSection({ workspaceId, workspaceRoot }: PluginsSectionPro
                   </button>
                 </div>
                 {plugin.manifest.description && (
-                  <p className="text-[11px] leading-relaxed text-neutral-400">{plugin.manifest.description}</p>
+                  <p className="text-[11px] leading-relaxed text-ink-3">{plugin.manifest.description}</p>
                 )}
                 {plugin.consentChanged && !plugin.enabled && (
-                  <p className="text-[11px] text-amber-300">
+                  <p className="text-[11px] text-warn">
                     This manifest changed since you enabled it. Review its updated actions and enable it again to re-consent.
                   </p>
                 )}
                 <ul className="space-y-1">
                   {plugin.manifest.hooks.map((hook, index) => (
-                    <li key={index} className="flex flex-wrap gap-x-1 font-mono text-[10px] text-neutral-400">
-                      <span className="text-violet-300">{hook.event}</span>
+                    <li key={index} className="flex flex-wrap gap-x-1 font-mono text-[10px] text-ink-3">
+                      <span className="text-accent">{hook.event}</span>
                       {hook.when && <span>· {describeWhen(hook.when)}</span>}
                       <span>→</span>
                       <span className="break-all">
@@ -253,17 +253,17 @@ export function PluginsSection({ workspaceId, workspaceRoot }: PluginsSectionPro
           </div>
 
           {errors.length > 0 && (
-            <div className="space-y-2 rounded-2xl border border-red-900/60 bg-red-950/20 p-4">
-              <p className="text-[11px] uppercase tracking-wider text-red-400">
+            <div className="space-y-2 rounded-2xl border border-danger/30 bg-danger/10 p-4">
+              <p className="text-[11px] uppercase tracking-wider text-danger">
                 Manifests that could not load ({errors.length})
               </p>
               {errors.map((entry) => (
                 <div key={entry.path} className="space-y-0.5">
-                  <p className="break-all font-mono text-[10px] text-red-300">{entry.path}</p>
+                  <p className="break-all font-mono text-[10px] text-danger">{entry.path}</p>
                   {entry.errors.map((message, index) => (
                     <p
                       key={`${entry.path}-${index}`}
-                      className="whitespace-pre-wrap break-words font-mono text-[10px] text-red-400"
+                      className="whitespace-pre-wrap break-words font-mono text-[10px] text-danger"
                     >
                       {message}
                     </p>

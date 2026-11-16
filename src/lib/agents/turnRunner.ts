@@ -78,6 +78,13 @@ export interface AgentTurnInput {
   /** Keeps a plan across milestones when the caller wants one. */
   initialPlan?: TaskPlan;
   applyPolicy?: ApplyPolicyKind;
+  /**
+   * The caller took a restorable checkpoint before this turn (runs and team
+   * tasks do). Under the `auto` policy the checkpoint replaces the
+   * read-before-write floor, so the turn's edits land on disk and the run's
+   * verification judges real bytes instead of a review queue.
+   */
+  checkpointBacked?: boolean;
   /** The Stop button's signal. Ends the in-flight request and forbids any write. */
   signal?: AbortSignal;
   /** The request's permission mode and target scope, threaded into the tool loop. */
@@ -388,7 +395,12 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
   // caller's apply policy.
   const writeAllowed = !input.policy || allowsEffect(input.policy.mode, 'write');
   const policy = writeAllowed ? resolvePolicy(input.applyPolicy) : 'review';
-  const partition = partitionPatches(policy, allowed, (patch) => states.get(patch.path) ?? { exists: false, read: false });
+  const partition = partitionPatches(
+    policy,
+    allowed,
+    (patch) => states.get(patch.path) ?? { exists: false, read: false },
+    { checkpointBacked: input.checkpointBacked }
+  );
   const pendingReview = partition.review.map((decision) => decision.patch.path);
 
   let applied: string[] = [];

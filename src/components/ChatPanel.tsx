@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -34,7 +34,6 @@ import {
   Zap
 } from 'lucide-react';
 import { maskFileWrites, renderMarkdownContent, type PatchWriteOutcome } from '../lib/markdown';
-import { getRefineMode, REFINE_MODES } from '../lib/ai';
 import type { PermissionMode } from '../lib/agent/runPolicy';
 import { getProviderMeta, type ModelInfo, type ModelTier } from '../lib/providers';
 import { estimateTokens } from '../lib/toolUtils';
@@ -73,11 +72,18 @@ interface MentionItem {
   symbolKind?: string;
 }
 
+/** A long paste captured as a .txt attachment instead of flooding the composer. */
+export interface PastedText {
+  id: string;
+  name: string;
+  content: string;
+}
+
 interface ChatPanelProps {
   messages: ChatMessage[];
   input: string;
   onInputChange: (value: string) => void;
-  onSend: () => void;
+  onSend: (pastedTexts?: PastedText[]) => void;
   queuedMessages?: Array<{ id: string; text: string }>;
   onCancelQueuedMessage?: (id: string) => void;
   onStop: () => void;
@@ -173,9 +179,9 @@ interface ChatPanelProps {
 }
 
 const TIER_STYLES: Record<ModelTier, string> = {
-  free: 'text-violet-300 border-violet-300/25 bg-violet-500/10',
-  own: 'text-sky-300 border-sky-300/25 bg-sky-500/10',
-  pro: 'text-amber-400 border-amber-900/60 bg-amber-950/30'
+  free: 'text-accent border-accent-line bg-accent-soft',
+  own: 'text-cool border-cool/30 bg-cool-soft',
+  pro: 'text-warn border-warn/30 bg-warn/10'
 };
 
 // The tier describes what the *provider* charges the user's own key, never a
@@ -192,11 +198,9 @@ const TIER_BADGE_LABEL: Record<ModelTier, string> = {
   pro: 'paid on key'
 };
 
-const MODE_ICONS: Record<RefineMode, typeof Code2> = {
-  code: Code2,
-  plan: FileText,
-  complex: Brain
-};
+/** A long paste is captured as a .txt attachment instead of flooding the composer. */
+const PASTE_AS_FILE_CHARS = 4000;
+const PASTE_AS_FILE_LINES = 60;
 
 /**
  * The permission modes shown in the composer. This is the capability boundary,
@@ -224,9 +228,9 @@ const PERMISSION_MODES: Array<{ id: PermissionMode; label: string; hint: string;
 ];
 
 const PERMISSION_BUTTON_STYLE: Record<PermissionMode, string> = {
-  ask: 'border-sky-400/30 bg-sky-500/[.10] text-sky-200',
-  plan: 'border-amber-500/30 bg-amber-500/[.08] text-amber-300',
-  agent: 'border-violet-300/30 bg-violet-500/10 text-violet-200'
+  ask: 'border-cool/30 bg-cool-soft text-cool',
+  plan: 'border-warn/30 bg-warn/10 text-warn',
+  agent: 'border-accent-line bg-accent-soft text-accent'
 };
 
 /**
@@ -248,13 +252,13 @@ function describeAnswerRoute(metrics: NonNullable<ChatMessage['metrics']>, model
 }
 
 const ORCHESTRATION_STATUS: Record<NonNullable<ChatMessage['orchestration']>['status'], { label: string; tone: string }> = {
-  planning: { label: 'planning', tone: 'text-violet-200 border-violet-300/25 bg-violet-500/10' },
-  running: { label: 'working', tone: 'text-violet-200 border-violet-300/25 bg-violet-500/10' },
-  done: { label: 'done', tone: 'text-emerald-200 border-emerald-400/25 bg-emerald-500/10' },
-  failed: { label: 'failed', tone: 'text-red-200 border-red-400/25 bg-red-500/10' },
-  stopped: { label: 'stopped', tone: 'text-neutral-300 border-white/10 bg-white/[0.04]' },
-  paused: { label: 'paused', tone: 'text-sky-200 border-sky-400/25 bg-sky-500/10' },
-  budget: { label: 'budget cap', tone: 'text-amber-200 border-amber-500/25 bg-amber-500/10' }
+  planning: { label: 'planning', tone: 'text-accent border-accent-line bg-accent-soft' },
+  running: { label: 'working', tone: 'text-accent border-accent-line bg-accent-soft' },
+  done: { label: 'done', tone: 'text-ok border-ok/30 bg-ok/10' },
+  failed: { label: 'failed', tone: 'text-danger border-danger/30 bg-danger/10' },
+  stopped: { label: 'stopped', tone: 'text-ink-3 border-line-2 bg-overlay' },
+  paused: { label: 'paused', tone: 'text-cool border-cool/30 bg-cool-soft' },
+  budget: { label: 'budget cap', tone: 'text-warn border-warn/30 bg-warn/10' }
 };
 
 /** The chat-inline trace of an automatic run or team with Executive Summary Report. */
@@ -277,22 +281,22 @@ function OrchestrationCard({
   const report = orchestration.summaryReport;
 
   return (
-    <div className="mb-2.5 rounded-xl border border-white/[0.08] bg-white/[0.02] p-3 text-[11px]">
+    <div className="mb-2.5 rounded-xl border border-line bg-overlay p-3 text-[11px]">
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="grid size-6 shrink-0 place-items-center rounded-md border border-violet-300/20 bg-violet-500/10">
-            <Icon className="h-3.5 w-3.5 text-violet-200" />
+          <span className="grid size-6 shrink-0 place-items-center rounded-md border border-accent-line bg-accent-soft">
+            <Icon className="h-3.5 w-3.5 text-accent" />
           </span>
           <div>
-            <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-neutral-200">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-ink-2">
               {orchestration.kind === 'team' ? 'Autonomous Specialist Team' : 'Autonomous Agent Run'}
-              {active && <Loader2 className="h-3 w-3 animate-spin text-violet-300" />}
+              {active && <Loader2 className="h-3 w-3 animate-spin text-accent" />}
               <span className={`rounded-full border px-1.5 py-px text-[9px] uppercase tracking-wide ${status.tone}`}>
                 {status.label}
               </span>
             </div>
             {orchestration.detail && (
-              <p className="text-[10.5px] text-neutral-400 mt-0.5 font-mono">{orchestration.detail}</p>
+              <p className="text-[10.5px] text-ink-3 mt-0.5 font-mono">{orchestration.detail}</p>
             )}
           </div>
         </div>
@@ -307,7 +311,7 @@ function OrchestrationCard({
                     ? 'Pause at the next milestone. The run keeps its progress and can be resumed.'
                     : 'Pause at the next task. A team plans once, so this halts the run rather than continuing it later.'
                 }
-                className="flex cursor-pointer items-center gap-1 rounded-md border border-sky-400/30 px-2 py-0.5 text-[10px] text-sky-300 transition-colors hover:bg-sky-500/10"
+                className="flex cursor-pointer items-center gap-1 rounded-md border border-cool/30 px-2 py-0.5 text-[10px] text-cool transition-colors hover:bg-cool-soft"
               >
                 <Pause className="h-2.5 w-2.5" />
                 Pause
@@ -316,7 +320,7 @@ function OrchestrationCard({
             <button
               type="button"
               onClick={onStop}
-              className="flex cursor-pointer items-center gap-1 rounded-md border border-red-500/30 px-2 py-0.5 text-[10px] text-red-300 transition-colors hover:bg-red-500/10"
+              className="flex cursor-pointer items-center gap-1 rounded-md border border-danger/30 px-2 py-0.5 text-[10px] text-danger transition-colors hover:bg-danger/10"
             >
               <Square className="h-2.5 w-2.5 fill-current" />
               Stop
@@ -328,7 +332,7 @@ function OrchestrationCard({
             type="button"
             onClick={() => onResume(message.id)}
             title="Continue from the milestone this run paused at. Already-passed milestones are not paid for again."
-            className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-emerald-400/30 px-2 py-0.5 text-[10px] text-emerald-300 transition-colors hover:bg-emerald-500/10"
+            className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-ok/30 px-2 py-0.5 text-[10px] text-ok transition-colors hover:bg-ok/10"
           >
             <Play className="h-2.5 w-2.5 fill-current" />
             Resume
@@ -338,39 +342,39 @@ function OrchestrationCard({
 
       {/* Structured Executive Summary Report */}
       {report && (
-        <div className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-950/20 p-2.5 space-y-2">
-          <div className="flex items-center justify-between gap-2 border-b border-emerald-500/20 pb-1.5">
-            <span className="font-semibold text-emerald-200 text-xs flex items-center gap-1.5">
-              <Check className="w-3.5 h-3.5 text-emerald-400" />
+        <div className="mt-3 rounded-lg border border-ok/30 bg-ok/10 p-2.5 space-y-2">
+          <div className="flex items-center justify-between gap-2 border-b border-ok/30 pb-1.5">
+            <span className="font-semibold text-ok text-xs flex items-center gap-1.5">
+              <Check className="w-3.5 h-3.5 text-ok" />
               Executive Summary Report
             </span>
-            <span className="font-mono text-[9.5px] text-emerald-400">
+            <span className="font-mono text-[9.5px] text-ok">
               {report.tasksCompleted}/{report.totalTasks} tasks passed
             </span>
           </div>
-          <p className="text-[10.5px] text-neutral-200 leading-relaxed">{report.overview}</p>
-          <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-neutral-400 pt-1">
-            <div className="rounded bg-black/30 p-1.5 border border-white/[0.04]">
-              <span className="text-neutral-500 block text-[9px] uppercase">Files Modified</span>
-              <span className="text-emerald-300 font-bold">{report.filesModified.length} file(s)</span>
+          <p className="text-[10.5px] text-ink-2 leading-relaxed">{report.overview}</p>
+          <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-ink-3 pt-1">
+            <div className="rounded bg-base/30 p-1.5 border border-line">
+              <span className="text-ink-4 block text-[9px] uppercase">Files Modified</span>
+              <span className="text-ok font-bold">{report.filesModified.length} file(s)</span>
             </div>
-            <div className="rounded bg-black/30 p-1.5 border border-white/[0.04]">
-              <span className="text-neutral-500 block text-[9px] uppercase">Tests Executed</span>
-              <span className="text-violet-300 font-bold">{report.testsPassed ?? 0} / {report.testsRun ?? 0}</span>
+            <div className="rounded bg-base/30 p-1.5 border border-line">
+              <span className="text-ink-4 block text-[9px] uppercase">Tests Executed</span>
+              <span className="text-accent font-bold">{report.testsPassed ?? 0} / {report.testsRun ?? 0}</span>
             </div>
           </div>
           {report.filesModified.length > 0 && (
             <div className="flex flex-wrap gap-1 pt-1">
               {report.filesModified.map((file) => (
-                <span key={file} className="rounded bg-white/[0.05] border border-white/[0.08] px-1.5 py-0.5 font-mono text-[9.5px] text-neutral-300">
+                <span key={file} className="rounded bg-overlay border border-line px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3">
                   {file}
                 </span>
               ))}
             </div>
           )}
           {report.openIssues && report.openIssues.length > 0 && (
-            <div className="mt-1 border-t border-emerald-500/15 pt-1 text-[10px] text-amber-300 font-mono space-y-0.5">
-              <span className="text-neutral-500 uppercase text-[9px]">Open Follow-ups:</span>
+            <div className="mt-1 border-t border-ok/30 pt-1 text-[10px] text-warn font-mono space-y-0.5">
+              <span className="text-ink-4 uppercase text-[9px]">Open Follow-ups:</span>
               {report.openIssues.map((issue, idx) => (
                 <div key={idx}>• {issue}</div>
               ))}
@@ -381,10 +385,10 @@ function OrchestrationCard({
 
       {orchestration.progress && orchestration.progress.length > 0 && (
         <details className="mt-2 pl-8">
-          <summary className="cursor-pointer text-[10px] font-mono text-neutral-500 hover:text-neutral-300">
+          <summary className="cursor-pointer text-[10px] font-mono text-ink-4 hover:text-ink-3">
             Execution trace ({orchestration.progress.length} logs)
           </summary>
-          <div className="mt-1.5 max-h-36 space-y-0.5 overflow-y-auto rounded bg-ink-950/80 p-2 font-mono text-[9.5px] text-neutral-400 border border-white/[0.04]">
+          <div className="mt-1.5 max-h-36 space-y-0.5 overflow-y-auto rounded bg-base/80 p-2 font-mono text-[9.5px] text-ink-3 border border-line">
             {orchestration.progress.map((line, index) => (
               <div key={`${index}-${line}`} className="break-words">
                 {line}
@@ -408,27 +412,27 @@ function ThinkingTrace({ reasoning, streaming }: { reasoning: string; streaming?
   }, [streaming]);
 
   return (
-    <div className="mb-2.5 rounded-xl border border-violet-500/20 bg-violet-950/15 p-2.5 text-[11px]">
+    <div className="mb-2.5 rounded-xl border border-accent-line bg-accent-soft p-2.5 text-[11px]">
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         className="flex w-full cursor-pointer items-center justify-between gap-2 text-left"
       >
         <div className="flex items-center gap-1.5 min-w-0">
-          <Brain className="w-3.5 h-3.5 text-violet-300 shrink-0" />
-          <span className="font-semibold text-violet-200 text-xs">
+          <Brain className="w-3.5 h-3.5 text-accent shrink-0" />
+          <span className="font-semibold text-accent text-xs">
             {streaming ? 'Deep Reasoning in Progress…' : 'Deep Reasoning Trace'}
           </span>
-          <span className="text-[10px] text-neutral-500 font-mono">
+          <span className="text-[10px] text-ink-4 font-mono">
             · {wordCount} words
           </span>
-          {streaming && <Loader2 className="w-3 h-3 animate-spin text-violet-300 ml-1" />}
+          {streaming && <Loader2 className="w-3 h-3 animate-spin text-accent ml-1" />}
         </div>
-        <ChevronRight className={`w-3.5 h-3.5 text-neutral-400 transition-transform ${open ? 'rotate-90' : ''}`} />
+        <ChevronRight className={`w-3.5 h-3.5 text-ink-3 transition-transform ${open ? 'rotate-90' : ''}`} />
       </button>
 
       {open && (
-        <div className="mt-2 pt-2 border-t border-violet-400/10 max-h-60 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-relaxed text-neutral-400 bg-black/30 p-2 rounded">
+        <div className="mt-2 pt-2 border-t border-accent-line max-h-60 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-relaxed text-ink-3 bg-base/30 p-2 rounded">
           {reasoning}
         </div>
       )}
@@ -451,32 +455,32 @@ function SelfHealingProofCard({
   const isRejected = proof.status === 'rejected';
   const checkpointId = proof.checkpointId;
   const surface = isHealed
-    ? 'border-emerald-500/25 bg-emerald-950/15'
+    ? 'border-ok/30 bg-ok/10'
     : isRejected
-      ? 'border-amber-500/25 bg-amber-950/15'
-      : 'border-rose-500/25 bg-rose-950/15';
+      ? 'border-warn/30 bg-warn/10'
+      : 'border-danger/30 bg-danger/10';
   const badge = isHealed
-    ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300'
+    ? 'border-ok/30 bg-ok/10 text-ok'
     : isRejected
-      ? 'border-amber-400/25 bg-amber-500/10 text-amber-200'
-      : 'border-rose-400/25 bg-rose-500/10 text-rose-300';
+      ? 'border-warn/30 bg-warn/10 text-warn'
+      : 'border-danger/30 bg-danger/10 text-danger';
 
   return (
     <div className={`mb-2.5 rounded-xl border p-3 text-[11px] ${surface}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className={`grid size-6 shrink-0 place-items-center rounded-md border ${isHealed ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300' : isRejected ? 'border-amber-400/30 bg-amber-500/10 text-amber-200' : 'border-rose-400/30 bg-rose-500/10 text-rose-300'}`}>
+          <span className={`grid size-6 shrink-0 place-items-center rounded-md border ${isHealed ? 'border-ok/30 bg-ok/10 text-ok' : isRejected ? 'border-warn/30 bg-warn/10 text-warn' : 'border-danger/30 bg-danger/10 text-danger'}`}>
             <ShieldCheck className="h-3.5 w-3.5" />
           </span>
           <div>
-            <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-neutral-200">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-ink-2">
               <span>Self-Healing Proof</span>
               <span className={`rounded-full border px-1.5 py-px text-[9px] uppercase font-mono tracking-wide ${badge}`}>
                 {proof.status.replace('_', ' ')}
               </span>
-              <span className="text-[10px] text-neutral-500 font-mono">[{proof.source.toUpperCase()}]</span>
+              <span className="text-[10px] text-ink-4 font-mono">[{proof.source.toUpperCase()}]</span>
             </div>
-            <p className="text-[10.5px] text-neutral-300 mt-0.5 font-mono truncate max-w-[20rem]" title={proof.target}>
+            <p className="text-[10.5px] text-ink-3 mt-0.5 font-mono truncate max-w-[20rem]" title={proof.target}>
               {proof.target}
             </p>
           </div>
@@ -484,13 +488,13 @@ function SelfHealingProofCard({
       </div>
 
       {proof.errorMessage && (
-        <div className="mt-2 text-[10.5px] font-mono text-neutral-300 bg-black/40 rounded p-2 border border-white/[0.04]">
+        <div className="mt-2 text-[10.5px] font-mono text-ink-3 bg-base/40 rounded p-2 border border-line">
           {proof.errorMessage}
         </div>
       )}
       {checkpointId && (
         <div className="mt-1.5 flex items-center justify-between gap-2">
-          <p className="min-w-0 truncate text-[10px] font-mono text-neutral-500" title={checkpointId}>
+          <p className="min-w-0 truncate text-[10px] font-mono text-ink-4" title={checkpointId}>
             Checkpoint {checkpointId}
           </p>
           {checkpointAvailable && proof.status !== 'rejected' && (
@@ -499,7 +503,7 @@ function SelfHealingProofCard({
               onClick={() => onUndo(checkpointId)}
               disabled={restoring}
               title="Restore the workspace to this turn's checkpoint"
-              className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-white/[0.09] bg-white/[0.04] px-2 py-1 text-[10px] font-mono text-neutral-300 transition-colors hover:border-rose-400/30 hover:text-rose-200 disabled:cursor-wait disabled:opacity-60"
+              className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-line bg-overlay px-2 py-1 text-[10px] font-mono text-ink-3 transition-colors hover:border-danger/30 hover:text-danger disabled:cursor-wait disabled:opacity-60"
             >
               <Undo2 className="h-3 w-3" />
               {restoring ? 'Restoring…' : 'Undo this turn'}
@@ -509,7 +513,7 @@ function SelfHealingProofCard({
       )}
 
       {proof.verificationEvidence && (
-        <div className={`mt-2 text-[10px] font-mono flex items-center gap-1 ${isHealed ? 'text-emerald-400' : isRejected ? 'text-amber-200/90' : 'text-rose-300'}`}>
+        <div className={`mt-2 text-[10px] font-mono flex items-center gap-1 ${isHealed ? 'text-ok' : isRejected ? 'text-warn/90' : 'text-danger'}`}>
           <Check className="h-3 w-3 shrink-0" />
           <span>{proof.verificationEvidence}</span>
         </div>
@@ -517,13 +521,13 @@ function SelfHealingProofCard({
 
       {(proof.stackTrace || (proof.diagnostics && proof.diagnostics.length > 0)) && (
         <details className="mt-2">
-          <summary className="cursor-pointer text-[10px] font-mono text-neutral-500 hover:text-neutral-300">
+          <summary className="cursor-pointer text-[10px] font-mono text-ink-4 hover:text-ink-3">
             View captured failure evidence
           </summary>
-          <div className="mt-1.5 max-h-32 overflow-y-auto rounded bg-ink-950/80 p-2 font-mono text-[9px] text-neutral-400 border border-white/[0.04]">
+          <div className="mt-1.5 max-h-32 overflow-y-auto rounded bg-base/80 p-2 font-mono text-[9px] text-ink-3 border border-line">
             {proof.stackTrace && <div className="whitespace-pre-wrap">{proof.stackTrace}</div>}
             {proof.diagnostics && proof.diagnostics.map((d, i) => (
-              <div key={i} className="text-rose-300">{d.file}:{d.line} - {d.message}</div>
+              <div key={i} className="text-danger">{d.file}:{d.line} - {d.message}</div>
             ))}
           </div>
         </details>
@@ -543,19 +547,19 @@ function ToolCard({ tool }: ToolCardProps) {
   const stage = tool.stage ?? (tool.ok ? (tool.name.includes('read') || tool.name.includes('list') ? 'reading' : 'completed') : 'failed');
   
   const stageStyles: Record<string, { label: string; tone: string }> = {
-    reading: { label: 'READ', tone: 'text-sky-300 border-sky-400/25 bg-sky-500/10' },
-    planning: { label: 'PLAN', tone: 'text-violet-300 border-violet-400/25 bg-violet-500/10' },
-    editing: { label: 'EDIT', tone: 'text-amber-300 border-amber-400/25 bg-amber-500/10' },
-    checking: { label: 'CHECK', tone: 'text-indigo-300 border-indigo-400/25 bg-indigo-500/10' },
-    completed: { label: 'DONE', tone: 'text-emerald-300 border-emerald-400/25 bg-emerald-500/10' },
-    failed: { label: 'FAIL', tone: 'text-rose-300 border-rose-400/25 bg-rose-500/10' }
+    reading: { label: 'READ', tone: 'text-cool border-cool/30 bg-cool-soft' },
+    planning: { label: 'PLAN', tone: 'text-accent border-accent-line bg-accent-soft' },
+    editing: { label: 'EDIT', tone: 'text-warn border-warn/30 bg-warn/10' },
+    checking: { label: 'CHECK', tone: 'text-cool border-cool/30 bg-cool-soft' },
+    completed: { label: 'DONE', tone: 'text-ok border-ok/30 bg-ok/10' },
+    failed: { label: 'FAIL', tone: 'text-danger border-danger/30 bg-danger/10' }
   };
   const config = tool.refused
-    ? { label: 'HELD', tone: 'text-amber-300 border-amber-400/25 bg-amber-500/10' }
-    : stageStyles[stage] || { label: 'TOOL', tone: 'text-neutral-300 border-white/10 bg-white/[0.04]' };
+    ? { label: 'HELD', tone: 'text-warn border-warn/30 bg-warn/10' }
+    : stageStyles[stage] || { label: 'TOOL', tone: 'text-ink-3 border-line-2 bg-overlay' };
 
   return (
-    <div className="rounded-lg border border-white/[0.06] bg-ink-950/80 transition-colors hover:border-white/[0.12]">
+    <div className="rounded-lg border border-line bg-base/80 transition-colors hover:border-line-2">
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
@@ -565,47 +569,47 @@ function ToolCard({ tool }: ToolCardProps) {
           <span className={`rounded px-1.5 py-0.5 text-[9px] font-mono font-semibold tracking-wider border ${config.tone}`}>
             {config.label}
           </span>
-          <span className="font-mono text-neutral-300 truncate" title={tool.label}>
+          <span className="font-mono text-ink-3 truncate" title={tool.label}>
             {tool.label}
           </span>
         </div>
-        <div className="flex shrink-0 items-center gap-2 text-neutral-500 font-mono text-[10px]">
+        <div className="flex shrink-0 items-center gap-2 text-ink-4 font-mono text-[10px]">
           {typeof tool.durationMs === 'number' && (
-            <span className="flex items-center gap-0.5 text-neutral-500">
+            <span className="flex items-center gap-0.5 text-ink-4">
               <Clock className="w-2.5 h-2.5" />
               {tool.durationMs}ms
             </span>
           )}
           {tool.refused ? (
-            <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+            <AlertCircle className="w-3.5 h-3.5 text-warn" />
           ) : tool.ok ? (
-            <Check className="w-3.5 h-3.5 text-emerald-400" />
+            <Check className="w-3.5 h-3.5 text-ok" />
           ) : (
-            <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
+            <AlertCircle className="w-3.5 h-3.5 text-danger" />
           )}
-          <ChevronRight className={`w-3 h-3 text-neutral-500 transition-transform ${open ? 'rotate-90' : ''}`} />
+          <ChevronRight className={`w-3 h-3 text-ink-4 transition-transform ${open ? 'rotate-90' : ''}`} />
         </div>
       </button>
 
       {open && (
-        <div className="border-t border-white/[0.06] bg-black/30 p-2.5 space-y-2 text-[10.5px]">
+        <div className="border-t border-line bg-base/30 p-2.5 space-y-2 text-[10.5px]">
           {tool.error && (
-            <div className="rounded border border-rose-500/30 bg-rose-950/30 p-2 text-rose-200 font-mono break-all">
+            <div className="rounded border border-danger/30 bg-danger/10 p-2 text-danger font-mono break-all">
               {tool.error}
             </div>
           )}
           {tool.input && Object.keys(tool.input).length > 0 && (
             <div>
-              <p className="text-[9.5px] uppercase tracking-wider text-neutral-500 mb-1 font-semibold">Arguments</p>
-              <pre className="max-h-36 overflow-y-auto rounded bg-ink-900/90 p-2 font-mono text-neutral-300 leading-relaxed break-all whitespace-pre-wrap">
+              <p className="text-[9.5px] uppercase tracking-wider text-ink-4 mb-1 font-semibold">Arguments</p>
+              <pre className="max-h-36 overflow-y-auto rounded bg-base-2/90 p-2 font-mono text-ink-3 leading-relaxed break-all whitespace-pre-wrap">
                 {JSON.stringify(tool.input, null, 2)}
               </pre>
             </div>
           )}
           {tool.output && (
             <div>
-              <p className="text-[9.5px] uppercase tracking-wider text-neutral-500 mb-1 font-semibold">Output</p>
-              <pre className="max-h-44 overflow-y-auto rounded bg-ink-900/90 p-2 font-mono text-neutral-300 leading-relaxed break-all whitespace-pre-wrap">
+              <p className="text-[9.5px] uppercase tracking-wider text-ink-4 mb-1 font-semibold">Output</p>
+              <pre className="max-h-44 overflow-y-auto rounded bg-base-2/90 p-2 font-mono text-ink-3 leading-relaxed break-all whitespace-pre-wrap">
                 {tool.output}
               </pre>
             </div>
@@ -623,34 +627,34 @@ function ToolActivityFeed({ tools, streaming }: { tools: NonNullable<ChatMessage
   const heldCount = tools.filter((t) => t.refused).length;
 
   return (
-    <div className="mb-2 rounded-xl border border-white/[0.08] bg-white/[0.02] px-2.5 py-2 text-[11px]">
+    <div className="mb-2 rounded-xl border border-line bg-overlay px-2.5 py-2 text-[11px]">
       <button
         type="button"
         onClick={() => setExpanded((prev) => !prev)}
         className="flex w-full cursor-pointer items-center justify-between gap-2 text-left"
       >
         <div className="flex items-center gap-2 min-w-0">
-          <span className="grid size-5 place-items-center rounded-md border border-violet-400/20 bg-violet-500/10 text-violet-300">
+          <span className="grid size-5 place-items-center rounded-md border border-accent-line bg-accent-soft text-accent">
             <ListTree className="w-3 h-3" />
           </span>
-          <span className="font-medium text-neutral-200">
+          <span className="font-medium text-ink-2">
             Agent Operations · {tools.length} step{tools.length === 1 ? '' : 's'}
           </span>
           {failedCount > 0 && (
-            <span className="rounded-full border border-rose-500/30 bg-rose-500/10 px-1.5 py-px text-[9px] text-rose-300">
+            <span className="rounded-full border border-danger/30 bg-danger/10 px-1.5 py-px text-[9px] text-danger">
               {failedCount} failed
             </span>
           )}
           {heldCount > 0 && (
-            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-px text-[9px] text-amber-300">
+            <span className="rounded-full border border-warn/30 bg-warn/10 px-1.5 py-px text-[9px] text-warn">
               {heldCount} held
             </span>
           )}
-          {streaming && <Loader2 className="w-3 h-3 animate-spin text-violet-300" />}
+          {streaming && <Loader2 className="w-3 h-3 animate-spin text-accent" />}
         </div>
-        <div className="flex shrink-0 items-center gap-2 text-[10px] text-neutral-500 font-mono">
+        <div className="flex shrink-0 items-center gap-2 text-[10px] text-ink-4 font-mono">
           {totalDuration > 0 && <span>{totalDuration}ms</span>}
-          <ChevronRight className={`w-3.5 h-3.5 text-neutral-400 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+          <ChevronRight className={`w-3.5 h-3.5 text-ink-3 transition-transform ${expanded ? 'rotate-90' : ''}`} />
         </div>
       </button>
 
@@ -679,22 +683,22 @@ function TaskPlanView({ plan, streaming, approval, onApprove, onReject }: TaskPl
   const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
 
   return (
-    <div className="mb-2.5 rounded-xl border border-white/[0.08] bg-white/[0.02] p-3 text-[11px]">
+    <div className="mb-2.5 rounded-xl border border-line bg-overlay p-3 text-[11px]">
       <div className="flex items-center justify-between gap-2 mb-2">
         <div className="flex items-center gap-2">
-          <Brain className="w-3.5 h-3.5 text-violet-300" />
-          <span className="font-semibold text-neutral-200 text-xs">Autonomous Task Plan</span>
-          <span className="text-[10px] font-mono text-neutral-500">
+          <Brain className="w-3.5 h-3.5 text-accent" />
+          <span className="font-semibold text-ink-2 text-xs">Autonomous Task Plan</span>
+          <span className="text-[10px] font-mono text-ink-4">
             {completed}/{total} done ({percent}%)
           </span>
         </div>
-        {streaming && <Loader2 className="w-3 h-3 animate-spin text-violet-300" />}
+        {streaming && <Loader2 className="w-3 h-3 animate-spin text-accent" />}
       </div>
 
       {/* Progress Bar */}
-      <div className="w-full bg-white/[0.06] h-1.5 rounded-full overflow-hidden mb-3">
+      <div className="w-full bg-overlay-2 h-1.5 rounded-full overflow-hidden mb-3">
         <div
-          className="h-full bg-gradient-to-r from-violet-500 to-emerald-400 transition-all duration-300"
+          className="h-full bg-gradient-to-r from-[var(--accent)] to-[var(--ok)] transition-all duration-300"
           style={{ width: `${percent}%` }}
         />
       </div>
@@ -702,33 +706,33 @@ function TaskPlanView({ plan, streaming, approval, onApprove, onReject }: TaskPl
       {/* Steps List */}
       <ul className="space-y-1.5">
         {plan.map((task) => (
-          <li key={task.id} className="flex items-start gap-2 rounded-lg bg-ink-950/40 p-2 border border-white/[0.04]">
+          <li key={task.id} className="flex items-start gap-2 rounded-lg bg-base/40 p-2 border border-line">
             <div className="mt-0.5 shrink-0">
               {task.status === 'done' ? (
-                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                <Check className="w-3.5 h-3.5 text-ok" />
               ) : task.status === 'blocked' ? (
-                <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+                <AlertCircle className="w-3.5 h-3.5 text-warn" />
               ) : task.status === 'doing' ? (
-                <Loader2 className={`w-3.5 h-3.5 ${streaming ? 'text-violet-300 animate-spin' : 'text-neutral-500'}`} />
+                <Loader2 className={`w-3.5 h-3.5 ${streaming ? 'text-accent animate-spin' : 'text-ink-4'}`} />
               ) : (
-                <span className="block size-2 rounded-full border border-neutral-600 bg-neutral-800 ml-1 mt-1" />
+                <span className="block size-2 rounded-full border border-line-2 bg-surface-2 ml-1 mt-1" />
               )}
             </div>
             <div className="min-w-0 flex-1">
-              <p className={`leading-snug ${task.status === 'done' ? 'text-neutral-500 line-through' : task.status === 'doing' ? 'text-white font-medium' : 'text-neutral-300'}`}>
+              <p className={`leading-snug ${task.status === 'done' ? 'text-ink-4 line-through' : task.status === 'doing' ? 'text-ink font-medium' : 'text-ink-3'}`}>
                 {task.subject}
               </p>
               {task.files && task.files.length > 0 && (
                 <div className="mt-1 flex flex-wrap gap-1">
                   {task.files.map((file) => (
-                    <span key={file} className="rounded bg-white/[0.05] border border-white/[0.08] px-1.5 py-0.5 font-mono text-[9.5px] text-neutral-400">
+                    <span key={file} className="rounded bg-overlay border border-line px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3">
                       {file}
                     </span>
                   ))}
                 </div>
               )}
               {task.evidence && (
-                <p className="mt-1 text-[10px] text-emerald-400/90 font-mono bg-emerald-950/20 rounded px-1.5 py-0.5 border border-emerald-500/20">
+                <p className="mt-1 text-[10px] text-ok/90 font-mono bg-ok/10 rounded px-1.5 py-0.5 border border-ok/30">
                   {task.evidence}
                 </p>
               )}
@@ -739,20 +743,20 @@ function TaskPlanView({ plan, streaming, approval, onApprove, onReject }: TaskPl
 
       {/* Plan review is separate from execution approval; file changes remain reviewable below. */}
       {approval && (approval.status === 'pending' || approval.status === 'required') && (
-        <div className="mt-3 rounded-lg border border-violet-400/30 bg-violet-950/20 p-2.5">
-          <div className="flex items-center gap-1.5 text-violet-200 font-medium text-xs mb-1">
-            <Sparkles className="w-3.5 h-3.5 text-violet-300" />
+        <div className="mt-3 rounded-lg border border-accent-line bg-accent-soft p-2.5">
+          <div className="flex items-center gap-1.5 text-accent font-medium text-xs mb-1">
+            <Sparkles className="w-3.5 h-3.5 text-accent" />
             <span>Review proposed plan changes</span>
           </div>
           {approval.planSummary && (
-            <p className="text-[11px] text-neutral-300 mb-2 leading-relaxed">
+            <p className="text-[11px] text-ink-3 mb-2 leading-relaxed">
               {approval.planSummary}
             </p>
           )}
           {approval.targetFiles && approval.targetFiles.length > 0 && (
             <div className="mb-2.5 flex flex-wrap gap-1">
               {approval.targetFiles.map((file) => (
-                <span key={file} className="rounded bg-violet-500/10 border border-violet-400/20 px-1.5 py-0.5 font-mono text-[9.5px] text-violet-300">
+                <span key={file} className="rounded bg-accent-soft border border-accent-line px-1.5 py-0.5 font-mono text-[9.5px] text-accent">
                   {file}
                 </span>
               ))}
@@ -762,7 +766,7 @@ function TaskPlanView({ plan, streaming, approval, onApprove, onReject }: TaskPl
             <button
               type="button"
               onClick={onApprove}
-              className="flex items-center gap-1.5 rounded-md bg-violet-600 px-3 py-1 text-xs font-semibold text-white shadow hover:bg-violet-500 transition-colors cursor-pointer"
+              className="flex items-center gap-1.5 rounded-md bg-accent-strong px-3 py-1 text-xs font-semibold text-white shadow hover:opacity-90 transition-colors cursor-pointer"
             >
               <Check className="w-3.5 h-3.5" />
               Accept proposed changes
@@ -770,7 +774,7 @@ function TaskPlanView({ plan, streaming, approval, onApprove, onReject }: TaskPl
             <button
               type="button"
               onClick={onReject}
-              className="flex items-center gap-1 rounded-md border border-white/10 px-2.5 py-1 text-xs text-neutral-400 hover:text-white hover:bg-white/[0.05] transition-colors cursor-pointer"
+              className="flex items-center gap-1 rounded-md border border-line-2 px-2.5 py-1 text-xs text-ink-3 hover:text-ink hover:bg-overlay transition-colors cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
               Reject proposed changes
@@ -780,8 +784,8 @@ function TaskPlanView({ plan, streaming, approval, onApprove, onReject }: TaskPl
       )}
 
       {approval && approval.status === 'approved' && (
-        <div className="mt-2.5 flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-950/20 px-2.5 py-1.5 text-[11px] text-emerald-300">
-          <Check className="w-3.5 h-3.5 text-emerald-400" />
+        <div className="mt-2.5 flex items-center gap-1.5 rounded-lg border border-ok/30 bg-ok/10 px-2.5 py-1.5 text-[11px] text-ok">
+          <Check className="w-3.5 h-3.5 text-ok" />
           <span>Proposed changes accepted</span>
         </div>
       )}
@@ -796,21 +800,21 @@ function VerificationOutcomeBanner({ result }: { result: NonNullable<ChatMessage
     <div
       className={`mb-2.5 rounded-xl border p-2.5 text-[11px] ${
         result.passed
-          ? 'border-emerald-500/25 bg-emerald-950/20 text-emerald-200'
-          : 'border-amber-500/30 bg-amber-950/20 text-amber-200'
+          ? 'border-ok/30 bg-ok/10 text-ok'
+          : 'border-warn/30 bg-warn/10 text-warn'
       }`}
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           {result.passed ? (
-            <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+            <ShieldCheck className="w-4 h-4 text-ok shrink-0" />
           ) : (
-            <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
+            <ShieldAlert className="w-4 h-4 text-warn shrink-0" />
           )}
           <span className="font-semibold text-xs">
             {result.passed ? 'Code Verification Passed' : 'Verification Warnings'}
           </span>
-          <span className="text-[10px] text-neutral-400 font-mono">
+          <span className="text-[10px] text-ink-3 font-mono">
             {result.summary}
           </span>
         </div>
@@ -818,7 +822,7 @@ function VerificationOutcomeBanner({ result }: { result: NonNullable<ChatMessage
           <button
             type="button"
             onClick={() => setOpen((prev) => !prev)}
-            className="flex items-center gap-1 font-mono text-[10px] text-neutral-400 hover:text-white cursor-pointer"
+            className="flex items-center gap-1 font-mono text-[10px] text-ink-3 hover:text-ink cursor-pointer"
           >
             <span>{result.checks.length} checks</span>
             <ChevronRight className={`w-3 h-3 transition-transform ${open ? 'rotate-90' : ''}`} />
@@ -827,19 +831,19 @@ function VerificationOutcomeBanner({ result }: { result: NonNullable<ChatMessage
       </div>
 
       {open && result.checks && (
-        <div className="mt-2 pt-2 border-t border-white/[0.08] space-y-1">
+        <div className="mt-2 pt-2 border-t border-line space-y-1">
           {result.checks.map((chk, i) => (
             <div key={`${chk.name}-${i}`} className="flex items-start gap-1.5 font-mono text-[10.5px]">
               {chk.ok ? (
-                <Check className="w-3 h-3 text-emerald-400 mt-0.5 shrink-0" />
+                <Check className="w-3 h-3 text-ok mt-0.5 shrink-0" />
               ) : (
-                <AlertCircle className="w-3 h-3 text-amber-400 mt-0.5 shrink-0" />
+                <AlertCircle className="w-3 h-3 text-warn mt-0.5 shrink-0" />
               )}
-              <span className={chk.ok ? 'text-neutral-300' : 'text-amber-300'}>
+              <span className={chk.ok ? 'text-ink-3' : 'text-warn'}>
                 {chk.name}
               </span>
               {chk.details && (
-                <span className="text-neutral-500 truncate" title={chk.details}>
+                <span className="text-ink-4 truncate" title={chk.details}>
                   — {chk.details}
                 </span>
               )}
@@ -917,17 +921,17 @@ function PatchHunkReview({ sections, onApply }: PatchHunkReviewProps) {
     });
 
   return (
-    <div className="border-t border-white/[0.06] px-2 pb-1.5 pt-1">
+    <div className="border-t border-line px-2 pb-1.5 pt-1">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center gap-1.5 text-[10px] text-neutral-400 transition-colors hover:text-neutral-200 cursor-pointer"
+        className="flex w-full items-center gap-1.5 text-[10px] text-ink-3 transition-colors hover:text-ink-2 cursor-pointer"
       >
         <ChevronDown className={`w-3 h-3 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
         <span className="font-medium">Review hunks</span>
-        <span className="text-emerald-400/90">+{stats.added}</span>
-        <span className="text-rose-400/90">−{stats.removed}</span>
-        <span className="text-neutral-600">
+        <span className="text-ok/90">+{stats.added}</span>
+        <span className="text-danger/90">−{stats.removed}</span>
+        <span className="text-ink-5">
           {hunks.length} hunk{hunks.length === 1 ? '' : 's'}
           {rejectedCount > 0 ? ` · ${rejectedCount} rejected` : ''}
         </span>
@@ -938,7 +942,7 @@ function PatchHunkReview({ sections, onApply }: PatchHunkReviewProps) {
           {groupedSections.map((section) => (
             <div key={section.key} className="space-y-1.5">
               {section.label && (
-                <div className="px-1 text-[10px] font-medium text-neutral-500">{section.label}</div>
+                <div className="px-1 text-[10px] font-medium text-ink-4">{section.label}</div>
               )}
               {section.hunks.map((hunk) => {
                 const isRejected = rejected.has(hunk.reviewId);
@@ -947,11 +951,11 @@ function PatchHunkReview({ sections, onApply }: PatchHunkReviewProps) {
               <div
                 key={hunk.reviewId}
                 className={`overflow-hidden rounded-md border ${
-                  isRejected ? 'border-white/[0.06] opacity-50' : 'border-white/[0.1]'
+                  isRejected ? 'border-line opacity-50' : 'border-line-2'
                 }`}
               >
                 <div className="flex items-center justify-between gap-2 px-1.5 py-1">
-                  <span className="font-mono text-[10px] text-neutral-500">
+                  <span className="font-mono text-[10px] text-ink-4">
                     line {hunk.beforeStart + 1}
                     {removed > 0 ? ` · −${removed}` : ''}
                     {hunk.afterLines.length > 0 ? ` +${hunk.afterLines.length}` : ''}
@@ -961,8 +965,8 @@ function PatchHunkReview({ sections, onApply }: PatchHunkReviewProps) {
                     onClick={() => toggle(hunk.reviewId)}
                     className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] transition-colors cursor-pointer ${
                       isRejected
-                        ? 'border-white/[0.12] text-neutral-400 hover:text-neutral-200'
-                        : 'border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10'
+                        ? 'border-line-2 text-ink-3 hover:text-ink-2'
+                        : 'border-ok/30 text-ok hover:bg-ok/10'
                     }`}
                   >
                     {isRejected ? <X className="w-3 h-3" /> : <Check className="w-3 h-3" />}
@@ -971,14 +975,14 @@ function PatchHunkReview({ sections, onApply }: PatchHunkReviewProps) {
                 </div>
                 <div className="max-h-40 overflow-auto px-1.5 pb-1.5 font-mono text-[10px] leading-relaxed">
                   {section.beforeLines.slice(hunk.beforeStart, hunk.beforeEnd).map((line, index) => (
-                    <div key={`removed-${index}`} className="flex gap-1.5 whitespace-pre text-rose-200/90">
-                      <span className="w-2 shrink-0 select-none text-rose-400/60">−</span>
+                    <div key={`removed-${index}`} className="flex gap-1.5 whitespace-pre text-danger/90">
+                      <span className="w-2 shrink-0 select-none text-danger/60">−</span>
                       <span>{line || ' '}</span>
                     </div>
                   ))}
                   {hunk.afterLines.map((line, index) => (
-                    <div key={`added-${index}`} className="flex gap-1.5 whitespace-pre text-emerald-200/90">
-                      <span className="w-2 shrink-0 select-none text-emerald-400/60">+</span>
+                    <div key={`added-${index}`} className="flex gap-1.5 whitespace-pre text-ok/90">
+                      <span className="w-2 shrink-0 select-none text-ok/60">+</span>
                       <span>{line || ' '}</span>
                     </div>
                   ))}
@@ -993,14 +997,14 @@ function PatchHunkReview({ sections, onApply }: PatchHunkReviewProps) {
               <button
                 type="button"
                 onClick={() => setRejected(new Set())}
-                className="text-[10px] text-neutral-500 transition-colors hover:text-neutral-300 cursor-pointer"
+                className="text-[10px] text-ink-4 transition-colors hover:text-ink-3 cursor-pointer"
               >
                 Accept all
               </button>
               <button
                 type="button"
                 onClick={() => setRejected(new Set(hunks.map((hunk) => hunk.reviewId)))}
-                className="text-[10px] text-neutral-500 transition-colors hover:text-neutral-300 cursor-pointer"
+                className="text-[10px] text-ink-4 transition-colors hover:text-ink-3 cursor-pointer"
               >
                 Reject all
               </button>
@@ -1009,7 +1013,7 @@ function PatchHunkReview({ sections, onApply }: PatchHunkReviewProps) {
               type="button"
               disabled={acceptedIds.length === 0}
               onClick={() => onApply(acceptedIds)}
-              className="rounded-md border border-violet-300/25 bg-violet-500/[.12] px-2 py-0.5 text-[10px] font-semibold text-violet-200 transition-colors hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
+              className="rounded-md border border-accent-line bg-accent-soft px-2 py-0.5 text-[10px] font-semibold text-accent transition-colors hover:bg-accent-strong/20 disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
             >
               Apply{' '}
               {acceptedIds.length === hunks.length
@@ -1040,8 +1044,6 @@ export function ChatPanel({
   onRefinePrompt,
   onUndoRefine,
   canUndoRefine = false,
-  refineMode,
-  onRefineModeChange,
   permissionMode,
   onPermissionModeChange,
   models,
@@ -1111,7 +1113,7 @@ export function ChatPanel({
   const [isRunMenuOpen, setIsRunMenuOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [isContextOpen, setIsContextOpen] = useState(false);
-  const activeMode = getRefineMode(refineMode);
+  const [pastedTexts, setPastedTexts] = useState<PastedText[]>([]);
   const activePermission = PERMISSION_MODES.find((mode) => mode.id === permissionMode) || PERMISSION_MODES[2];
   const ActivePermissionIcon = activePermission.icon;
 
@@ -1185,8 +1187,9 @@ export function ChatPanel({
   }, [messages]);
 
   const activeModel = models.find((model) => model.id === selectedModel) || null;
-  const canSend = input.trim().length > 0 && !isGenerating;
-  const canQueue = input.trim().length > 0 && isGenerating;
+  const hasDraft = input.trim().length > 0 || pastedTexts.length > 0;
+  const canSend = hasDraft && !isGenerating;
+  const canQueue = hasDraft && isGenerating;
   const manifestTotals = contextManifest ? contextManifestTotals(contextManifest) : null;
   const lastAssistantId = [...messages].reverse().find((message) => message.role === 'model')?.id ?? null;
 
@@ -1262,6 +1265,40 @@ export function ChatPanel({
     closeMention();
   };
 
+  /**
+   * A long paste becomes a named `.txt` attachment so the composer stays short.
+   * Names are unique even for two pastes inside the same second.
+   */
+  const addPastedText = (content: string) => {
+    setPastedTexts((current) => {
+      const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, '');
+      let name = `pasted-${stamp}.txt`;
+      let counter = 2;
+      while (current.some((entry) => entry.name === name)) {
+        name = `pasted-${stamp}-${counter}.txt`;
+        counter += 1;
+      }
+      const id = crypto.randomUUID?.() ?? `paste-${Date.now()}`;
+      return [...current, { id, name, content }];
+    });
+  };
+
+  const handlePaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const text = event.clipboardData.getData('text/plain');
+    if (!text) return;
+    const isLong = text.length >= PASTE_AS_FILE_CHARS || text.split('\n').length >= PASTE_AS_FILE_LINES;
+    if (!isLong) return;
+    event.preventDefault();
+    addPastedText(text);
+  };
+
+  /** One send path so long pastes always travel with the message they belong to. */
+  const submitDraft = () => {
+    const outgoing = pastedTexts;
+    setPastedTexts([]);
+    onSend(outgoing.length > 0 ? outgoing : undefined);
+  };
+
   const copyMessage = async (message: ChatMessage) => {
     try {
       await navigator.clipboard.writeText(message.content);
@@ -1280,9 +1317,9 @@ export function ChatPanel({
 
 
   return (
-    <div className="h-full flex flex-col bg-ink-950 select-text">
+    <div className="h-full flex flex-col bg-base select-text">
       {/* Header */}
-      <header className="h-12 shrink-0 flex items-center justify-between px-3 border-b border-white/[0.07]">
+      <header className="h-12 shrink-0 flex items-center justify-between px-3 border-b border-line">
         <button
           type="button"
           ref={modelTriggerRef}
@@ -1291,18 +1328,18 @@ export function ChatPanel({
           title={activeModel ? activeModel.label : 'Select Model'}
           className={`mr-2 flex min-w-0 flex-1 items-center gap-2 rounded-lg border px-2 py-1 text-xs transition-colors cursor-pointer disabled:opacity-50 ${
             isModelMenuOpen
-              ? 'border-violet-300/50 bg-violet-500/20 text-white'
-              : 'border-violet-300/25 bg-violet-500/[0.08] text-neutral-100 hover:border-violet-300/40 hover:bg-violet-500/15'
+              ? 'border-accent-line bg-accent-strong/20 text-ink'
+              : 'border-accent-line bg-accent-soft text-ink hover:border-accent-line hover:bg-accent-strong/15'
           }`}
         >
-          <Sparkles className="h-3.5 w-3.5 shrink-0 text-violet-300" />
+          <Sparkles className="h-3.5 w-3.5 shrink-0 text-accent" />
           <span className="truncate font-medium">{activeModel ? activeModel.label : 'Select Model'}</span>
           {activeModel && (
             <span className={`shrink-0 rounded px-1.5 py-0.5 border text-[10px] uppercase tracking-wide ${TIER_STYLES[activeModel.tier]}`}>
               {TIER_BADGE_LABEL[activeModel.tier]}
             </span>
           )}
-          <ChevronDown className="ml-auto w-3 h-3 shrink-0 text-neutral-400" />
+          <ChevronDown className="ml-auto w-3 h-3 shrink-0 text-ink-3" />
         </button>
 
         <div className="flex shrink-0 items-center gap-1.5">
@@ -1311,9 +1348,9 @@ export function ChatPanel({
             type="button"
             onClick={() => onOpenSettings('CHAT')}
             title="ShadRox bills nothing — every token is paid to the provider key you saved in Settings."
-            className="flex items-center gap-1 rounded-full border border-violet-300/25 bg-violet-500/[.07] px-2 py-1 text-[10px] tracking-wide text-violet-300 transition-colors hover:border-violet-300/45 cursor-pointer"
+            className="flex items-center gap-1 rounded-full border border-accent-line bg-accent-soft px-2 py-1 text-[10px] tracking-wide text-accent transition-colors hover:border-accent-line cursor-pointer"
           >
-            <KeyRound className="w-3 h-3 text-violet-300" />
+            <KeyRound className="w-3 h-3 text-accent" />
             <span className="font-mono">BYOK</span>
           </button>
 
@@ -1322,37 +1359,37 @@ export function ChatPanel({
               type="button"
               onClick={() => setIsContextOpen((open) => !open)}
               title="What the model can see: repo map, retrieval mode and pinned context"
-              className={`p-1.5 transition-colors cursor-pointer ${isContextOpen ? 'text-violet-300' : 'text-neutral-500 hover:text-white'}`}
+              className={`p-1.5 transition-colors cursor-pointer ${isContextOpen ? 'text-accent' : 'text-ink-4 hover:text-ink'}`}
             >
               <ListTree className="w-3.5 h-3.5" />
             </button>
             {isContextOpen && (
-              <div className="absolute right-0 top-8 z-30 w-80 overflow-hidden rounded-xl border border-white/[0.09] bg-ink-900/95 shadow-2xl backdrop-blur-xl">
-                <div className="flex items-center justify-between border-b border-white/[0.07] px-3 py-2">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+              <div className="absolute right-0 top-8 z-30 w-80 overflow-hidden rounded-xl border border-line bg-base-2/95 shadow-2xl backdrop-blur-xl">
+                <div className="flex items-center justify-between border-b border-line px-3 py-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-ink-4">
                     What the model can see
                   </p>
                   <button
                     type="button"
                     onClick={() => setIsContextOpen(false)}
-                    className="text-neutral-500 hover:text-white cursor-pointer"
+                    className="text-ink-4 hover:text-ink cursor-pointer"
                     aria-label="Close context details"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
-                <div className="space-y-1.5 border-b border-white/[0.07] px-3 py-2 text-[11px]">
-                  <div className="flex items-center justify-between text-neutral-400">
+                <div className="space-y-1.5 border-b border-line px-3 py-2 text-[11px]">
+                  <div className="flex items-center justify-between text-ink-3">
                     <span>Files indexed</span>
-                    <span className="font-mono text-neutral-300">{workspaceFiles.length}</span>
+                    <span className="font-mono text-ink-3">{workspaceFiles.length}</span>
                   </div>
-                  <div className="flex items-center justify-between text-neutral-400">
+                  <div className="flex items-center justify-between text-ink-3">
                     <span>Pinned context</span>
-                    <span className="font-mono text-neutral-300">{attachedFiles.length + pinnedSymbols.length}</span>
+                    <span className="font-mono text-ink-3">{attachedFiles.length + pinnedSymbols.length}</span>
                   </div>
-                  <div className="flex items-start justify-between gap-3 text-neutral-400">
+                  <div className="flex items-start justify-between gap-3 text-ink-3">
                     <span>Retrieval</span>
-                    <span className="text-right text-neutral-300">
+                    <span className="text-right text-ink-3">
                       {semanticStatus === 'ready'
                         ? `BM25 + embeddings · ${semanticChunkCount} chunks`
                         : semanticStatus === 'checking'
@@ -1364,15 +1401,15 @@ export function ChatPanel({
                   </div>
                 </div>
                 {contextManifest && manifestTotals && (
-                  <div className="border-b border-white/[0.07] px-3 py-2">
+                  <div className="border-b border-line px-3 py-2">
                     <div className="mb-1 flex items-center justify-between">
-                      <p className="text-[10px] uppercase tracking-wider text-neutral-500">Request manifest</p>
-                      <span className="font-mono text-[10px] text-neutral-400">
+                      <p className="text-[10px] uppercase tracking-wider text-ink-4">Request manifest</p>
+                      <span className="font-mono text-[10px] text-ink-3">
                         {manifestTotals.files} file(s) · ~{manifestTotals.tokens.toLocaleString('en-US')} tok
                       </span>
                     </div>
                     {(manifestTotals.missing > 0 || manifestTotals.stale > 0 || manifestTotals.truncated > 0) && (
-                      <p className="mb-1 text-[10px] text-amber-300/90">
+                      <p className="mb-1 text-[10px] text-warn/90">
                         {[
                           manifestTotals.missing > 0 ? `missing: ${contextManifest.missing.join(', ')}` : '',
                           manifestTotals.stale > 0 ? `${manifestTotals.stale} stale` : '',
@@ -1381,7 +1418,7 @@ export function ChatPanel({
                       </p>
                     )}
                     {contextManifest.sources.length === 0 ? (
-                      <p className="text-[10px] text-neutral-600">No sources resolved for this request.</p>
+                      <p className="text-[10px] text-ink-5">No sources resolved for this request.</p>
                     ) : (
                       <ul className="max-h-40 space-y-0.5 overflow-auto">
                         {contextManifest.sources.slice(0, 24).map((source) => (
@@ -1390,32 +1427,32 @@ export function ChatPanel({
                             className="flex items-center justify-between gap-2 font-mono text-[10px]"
                             title={`${source.reason} — ${source.path}`}
                           >
-                            <span className="min-w-0 truncate text-neutral-400">{source.path}</span>
-                            <span className="shrink-0 text-neutral-600">{source.kind}</span>
+                            <span className="min-w-0 truncate text-ink-3">{source.path}</span>
+                            <span className="shrink-0 text-ink-5">{source.kind}</span>
                           </li>
                         ))}
                       </ul>
                     )}
                     {contextManifest.deduped > 0 && (
-                      <p className="mt-1 text-[10px] text-neutral-600">
+                      <p className="mt-1 text-[10px] text-ink-5">
                         {contextManifest.deduped} overlapping source(s) merged.
                       </p>
                     )}
                   </div>
                 )}
                 <div className="px-3 py-2">
-                  <p className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">Repo map sent with each request</p>
+                  <p className="mb-1 text-[10px] uppercase tracking-wider text-ink-4">Repo map sent with each request</p>
                   {repoMap ? (
-                    <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.07] bg-ink-950/60 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-neutral-400">
+                    <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-base/60 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-ink-3">
                       {repoMap}
                     </pre>
                   ) : repoMapLoading ? (
-                    <p className="text-[11px] text-neutral-600">Reading the folder once to build the map…</p>
+                    <p className="text-[11px] text-ink-5">Reading the folder once to build the map…</p>
                   ) : (
-                    <p className="text-[11px] text-neutral-600">Open a folder or attach a file to build a map.</p>
+                    <p className="text-[11px] text-ink-5">Open a folder or attach a file to build a map.</p>
                   )}
-                  <p className="mt-2 text-[10px] text-neutral-600">
-                    Attach a file or pin a symbol with <span className="font-mono text-neutral-400">@</span> to force it into context.
+                  <p className="mt-2 text-[10px] text-ink-5">
+                    Attach a file or pin a symbol with <span className="font-mono text-ink-3">@</span> to force it into context.
                   </p>
                 </div>
               </div>
@@ -1427,7 +1464,7 @@ export function ChatPanel({
             onClick={onClearChat}
             disabled={messages.length === 0 || isGenerating}
             title="Start a new chat"
-            className="p-1.5 text-neutral-500 hover:text-white disabled:opacity-30 transition-colors cursor-pointer"
+            className="p-1.5 text-ink-4 hover:text-ink disabled:opacity-30 transition-colors cursor-pointer"
           >
             <MessageSquarePlus className="w-3.5 h-3.5" />
           </button>
@@ -1436,7 +1473,7 @@ export function ChatPanel({
 
       {/* Model Selector Dropdown */}
       {isModelMenuOpen && (
-        <div ref={modelMenuRef} className="shrink-0 max-h-64 overflow-y-auto border-b border-white/[0.07] bg-ink-950">
+        <div ref={modelMenuRef} className="shrink-0 max-h-64 overflow-y-auto border-b border-line bg-base">
           {models.length === 0 ? (
             <button
               type="button"
@@ -1444,7 +1481,7 @@ export function ChatPanel({
                 setIsModelMenuOpen(false);
                 onOpenSettings('CHAT');
               }}
-              className="w-full px-3 py-4 text-left text-xs text-neutral-400 hover:text-white cursor-pointer"
+              className="w-full px-3 py-4 text-left text-xs text-ink-3 hover:text-ink cursor-pointer"
             >
               No models available. Add your API key — and for a custom endpoint its URL and model ids — in Settings.
             </button>
@@ -1452,7 +1489,7 @@ export function ChatPanel({
             (['free', 'own', 'pro'] as ModelTier[]).map((tier) =>
               groupedModels[tier].length === 0 ? null : (
                 <div key={tier}>
-                  <div className="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-neutral-600">
+                  <div className="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-ink-5">
                     {TIER_GROUP_LABEL[tier]}
                   </div>
                   {groupedModels[tier].map((model) => (
@@ -1463,13 +1500,13 @@ export function ChatPanel({
                         onSelectModel(model.id);
                         setIsModelMenuOpen(false);
                       }}
-                      className={`w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-white/[0.04] cursor-pointer ${
-                        model.id === selectedModel ? 'text-white' : 'text-neutral-400'
+                      className={`w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-overlay cursor-pointer ${
+                        model.id === selectedModel ? 'text-ink' : 'text-ink-3'
                       }`}
                     >
                       <span className="truncate">{model.label}</span>
                       {model.contextWindow && (
-                        <span className="text-[10px] text-neutral-600 shrink-0">
+                        <span className="text-[10px] text-ink-5 shrink-0">
                           {Math.round(model.contextWindow / 1000)}k ctx
                         </span>
                       )}
@@ -1492,12 +1529,12 @@ export function ChatPanel({
         }}
       >
         {backgroundResume && (
-          <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.07] px-3 py-2.5">
+          <div className="rounded-xl border border-warn/30 bg-warn/10 px-3 py-2.5">
             <div className="flex items-start gap-2">
-              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" />
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
               <div className="min-w-0 flex-1">
-                <p className="text-[11px] font-medium text-amber-100">Background run paused</p>
-                <p className="mt-0.5 text-[10px] leading-relaxed text-amber-200/80">
+                <p className="text-[11px] font-medium text-warn">Background run paused</p>
+                <p className="mt-0.5 text-[10px] leading-relaxed text-warn/80">
                   {backgroundResume.summary} Interrupted when the app closed.
                 </p>
               </div>
@@ -1511,7 +1548,7 @@ export function ChatPanel({
                       ? 'Continue the stored goal in the autonomy engine'
                       : 'A key, an open folder and an idle engine are required to resume'
                   }
-                  className="flex items-center gap-1 rounded-md border border-amber-500/30 px-2 py-0.5 text-[10px] text-amber-200 transition-colors hover:bg-amber-500/10 disabled:opacity-40 cursor-pointer"
+                  className="flex items-center gap-1 rounded-md border border-warn/30 px-2 py-0.5 text-[10px] text-warn transition-colors hover:bg-warn/10 disabled:opacity-40 cursor-pointer"
                 >
                   <Play className="h-2.5 w-2.5" />
                   Resume
@@ -1520,7 +1557,7 @@ export function ChatPanel({
                   type="button"
                   onClick={backgroundResume.onDismiss}
                   title="Forget this interrupted run"
-                  className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-0.5 text-[10px] text-neutral-400 transition-colors hover:bg-white/[0.04] cursor-pointer"
+                  className="flex items-center gap-1 rounded-md border border-line-2 px-2 py-0.5 text-[10px] text-ink-3 transition-colors hover:bg-overlay cursor-pointer"
                 >
                   <X className="h-2.5 w-2.5" />
                   Dismiss
@@ -1530,10 +1567,10 @@ export function ChatPanel({
           </div>
         )}
         {messages.length === 0 && (
-          <div className="h-full flex flex-col items-center justify-center text-center p-6 text-neutral-500">
-            <Sparkles className="w-6 h-6 text-violet-300/70 mb-2" />
-            <p className="text-xs text-neutral-300 font-medium">ShadRox Assistant</p>
-            <p className="mt-1 text-[11px] text-neutral-500 max-w-xs leading-relaxed">
+          <div className="h-full flex flex-col items-center justify-center text-center p-6 text-ink-4">
+            <Sparkles className="w-6 h-6 text-accent/70 mb-2" />
+            <p className="text-xs text-ink-3 font-medium">ShadRox Assistant</p>
+            <p className="mt-1 text-[11px] text-ink-4 max-w-xs leading-relaxed">
               Describe what you want to build or change. ShadRox answers directly, or quietly switches to an autonomous
               run or a team when the task actually needs one.
             </p>
@@ -1546,7 +1583,7 @@ export function ChatPanel({
             className={`flex flex-col ${message.role === 'user' ? 'items-end' : 'items-start'}`}
           >
             {message.role === 'user' && (
-              <div className="flex items-center gap-1.5 mb-1 px-1 text-[10px] text-neutral-500">
+              <div className="flex items-center gap-1.5 mb-1 px-1 text-[10px] text-ink-4">
                 <span className="uppercase font-semibold tracking-wider">You</span>
                 <span>·</span>
                 <span>{message.timestamp}</span>
@@ -1558,7 +1595,7 @@ export function ChatPanel({
                 {message.attachments.map((file) => (
                   <span
                     key={file}
-                    className="rounded-md border border-white/[0.09] bg-white/[0.04] px-2 py-0.5 text-[10px] font-mono text-neutral-400"
+                    className="rounded-md border border-line bg-overlay px-2 py-0.5 text-[10px] font-mono text-ink-3"
                   >
                     {file}
                   </span>
@@ -1569,27 +1606,27 @@ export function ChatPanel({
               <img
                 src={message.attachedImage}
                 alt="Attached photo"
-                className="mb-1 max-h-40 max-w-[70%] rounded-lg border border-white/[0.09] object-contain"
+                className="mb-1 max-h-40 max-w-[70%] rounded-lg border border-line object-contain"
               />
             )}
 
             {message.role === 'user' ? (
-              <div className="max-w-[85%] rounded-2xl rounded-br-md border border-violet-300/15 bg-gradient-to-b from-violet-500/[0.14] to-violet-500/[0.07] px-3.5 py-2.5 text-neutral-100 leading-relaxed whitespace-pre-wrap shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
+              <div className="max-w-[85%] rounded-2xl rounded-br-md border border-accent-line bg-gradient-to-b from-[var(--accent)]/[0.14] to-[var(--accent)]/[0.07] px-3.5 py-2.5 text-ink leading-relaxed whitespace-pre-wrap shadow-[0_1px_0_var(--overlay)_inset]">
                 {message.content}
               </div>
             ) : (
-              <div className="relative w-full max-w-[96%] overflow-hidden rounded-2xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.012)_42%,rgba(255,255,255,0.008))] shadow-[0_1px_0_rgba(255,255,255,0.03)_inset,0_14px_36px_-24px_rgba(0,0,0,0.9)]">
-                <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-violet-400/35 to-transparent" />
+              <div className="relative w-full max-w-[96%] overflow-hidden rounded-2xl border border-line bg-[linear-gradient(180deg,var(--overlay),transparent)] shadow-[0_1px_0_var(--overlay)_inset,0_14px_36px_-24px_rgba(0,0,0,0.9)]">
+                <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent)]/35 to-transparent" />
                 <div className="px-3.5 pb-2.5 pt-3">
                   <div className="mb-2.5 flex items-center gap-2">
-                    <span className="grid size-5 shrink-0 place-items-center rounded-md bg-gradient-to-br from-violet-500 to-indigo-600 text-white shadow-[0_2px_10px_-2px_rgba(139,92,246,0.7)]">
+                    <span className="grid size-5 shrink-0 place-items-center rounded-md bg-gradient-to-br from-[var(--accent)] to-[var(--accent-strong)] text-white shadow-[0_2px_10px_-2px_var(--glow)]">
                       <Sparkles className="size-3" />
                     </span>
-                    <span className="text-[11px] font-semibold tracking-tight text-neutral-100">ShadRox</span>
-                    <span className="font-mono text-[10px] text-neutral-600">{message.timestamp}</span>
+                    <span className="text-[11px] font-semibold tracking-tight text-ink">ShadRox</span>
+                    <span className="font-mono text-[10px] text-ink-5">{message.timestamp}</span>
                     {message.streaming && (
-                      <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-violet-400/20 bg-violet-500/10 px-1.5 py-px text-[9px] font-medium tracking-wide text-violet-200">
-                        <span className="size-1 animate-pulse rounded-full bg-violet-300" />
+                      <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-accent-line bg-accent-soft px-1.5 py-px text-[9px] font-medium tracking-wide text-accent">
+                        <span className="size-1 animate-pulse rounded-full bg-accent-strong" />
                         writing
                       </span>
                     )}
@@ -1640,8 +1677,8 @@ export function ChatPanel({
                 {(() => {
                   if (!message.content) {
                     return message.streaming ? (
-                      <span className="inline-flex items-center gap-2 text-neutral-500">
-                        <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-300" />
+                      <span className="inline-flex items-center gap-2 text-ink-4">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-accent" />
                         Thinking...
                       </span>
                     ) : null;
@@ -1675,23 +1712,23 @@ export function ChatPanel({
                   const fileCount = new Set(patchSet.patches.map((patch) => patch.path.toLowerCase())).size;
                   const editCount = patchSet.patches.length;
                   return (
-                    <div className="mt-2 rounded-xl border border-white/[0.08] bg-white/[0.02] p-2.5 text-[11px]">
+                    <div className="mt-2 rounded-xl border border-line bg-overlay p-2.5 text-[11px]">
                       <div className="mb-1.5 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 text-neutral-300 font-medium">
-                          <FileDiff className="w-3.5 h-3.5 text-violet-300 shrink-0" />
+                        <div className="flex items-center gap-1.5 text-ink-3 font-medium">
+                          <FileDiff className="w-3.5 h-3.5 text-accent shrink-0" />
                           Changes · {fileCount} file{fileCount === 1 ? '' : 's'}
                           {editCount > fileCount ? ` · ${editCount} edits` : ''}
                         </div>
                         <div className="flex items-center gap-2">
                           <label
                             title="Apply AI file changes immediately instead of asking first"
-                            className="flex items-center gap-1 text-[10px] text-neutral-500 cursor-pointer"
+                            className="flex items-center gap-1 text-[10px] text-ink-4 cursor-pointer"
                           >
                             <input
                               type="checkbox"
                               checked={autoApplyChanges}
                               onChange={onToggleAutoApply}
-                              className="accent-violet-400 cursor-pointer"
+                              className="accent-[var(--accent)] cursor-pointer"
                             />
                             Auto-apply
                           </label>
@@ -1700,7 +1737,7 @@ export function ChatPanel({
                               type="button"
                               onClick={() => onFixTypeErrors?.(message.id)}
                               title="Ask the model to fix only the type errors this apply introduced"
-                              className="rounded-md border border-amber-700/50 bg-amber-950/40 px-2 py-0.5 text-[10px] font-semibold text-amber-200 transition-colors hover:bg-amber-900/40 cursor-pointer"
+                              className="rounded-md border border-warn/30 bg-warn/10 px-2 py-0.5 text-[10px] font-semibold text-warn transition-colors hover:bg-warn/20 cursor-pointer"
                             >
                               Fix {typeFixCounts[message.id]} type error{typeFixCounts[message.id] === 1 ? '' : 's'}
                             </button>
@@ -1709,7 +1746,7 @@ export function ChatPanel({
                             <button
                               type="button"
                               onClick={() => onAcceptAllPatches(message.id)}
-                              className="rounded-md border border-violet-300/25 bg-violet-500/[.12] px-2 py-0.5 text-[10px] font-semibold text-violet-200 transition-colors hover:bg-violet-500/20 cursor-pointer"
+                              className="rounded-md border border-accent-line bg-accent-soft px-2 py-0.5 text-[10px] font-semibold text-accent transition-colors hover:bg-accent-strong/20 cursor-pointer"
                             >
                               Accept all
                             </button>
@@ -1720,18 +1757,18 @@ export function ChatPanel({
                         {patchSet.patches.map((patch, index) => (
                           <div
                             key={`${patch.path}-${index}`}
-                            className="rounded-lg border border-white/[0.06] bg-ink-950/60"
+                            className="rounded-lg border border-line bg-base/60"
                           >
                             <div className="flex items-center justify-between gap-2 px-2 py-1">
                               <div className="flex items-center gap-1.5 min-w-0">
-                                <FileCode2 className="w-3 h-3 text-neutral-500 shrink-0" />
-                                <span className="font-mono truncate text-neutral-300">{patch.path}</span>
-                                <span className="text-[9px] uppercase tracking-wide text-neutral-600 shrink-0">
+                                <FileCode2 className="w-3 h-3 text-ink-4 shrink-0" />
+                                <span className="font-mono truncate text-ink-3">{patch.path}</span>
+                                <span className="text-[9px] uppercase tracking-wide text-ink-5 shrink-0">
                                   {patch.kind === 'searchReplace' ? `${patch.blocks?.length ?? 0} s/r` : 'rewrite'}
                                 </span>
                                 {patch.failure && (
                                   <span
-                                    className="flex items-center gap-1 text-rose-400 min-w-0"
+                                    className="flex items-center gap-1 text-danger min-w-0"
                                     title={patch.failure}
                                   >
                                     <AlertTriangle className="w-3 h-3 shrink-0" />
@@ -1746,7 +1783,7 @@ export function ChatPanel({
                                       type="button"
                                       onClick={() => onAcceptPatch(message.id, index)}
                                       title={`Apply changes to ${patch.path}`}
-                                      className="flex items-center gap-1 rounded-md border border-emerald-500/30 px-2 py-0.5 text-[10px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/10 cursor-pointer"
+                                      className="flex items-center gap-1 rounded-md border border-ok/30 px-2 py-0.5 text-[10px] font-medium text-ok transition-colors hover:bg-ok/10 cursor-pointer"
                                     >
                                       <Check className="w-3 h-3" />
                                       Accept
@@ -1755,7 +1792,7 @@ export function ChatPanel({
                                       type="button"
                                       onClick={() => onRejectPatch(message.id, index)}
                                       title={`Skip changes to ${patch.path}`}
-                                      className="flex items-center gap-1 rounded-md border border-white/[0.12] px-2 py-0.5 text-[10px] text-neutral-400 transition-colors hover:bg-white/[0.05] hover:text-neutral-200 cursor-pointer"
+                                      className="flex items-center gap-1 rounded-md border border-line-2 px-2 py-0.5 text-[10px] text-ink-3 transition-colors hover:bg-overlay hover:text-ink-2 cursor-pointer"
                                     >
                                       <X className="w-3 h-3" />
                                       Skip
@@ -1767,8 +1804,8 @@ export function ChatPanel({
                                     <span
                                       className={
                                         patch.disk === 'saved'
-                                          ? 'flex items-center gap-1 text-emerald-400'
-                                          : 'flex items-center gap-1 text-amber-400'
+                                          ? 'flex items-center gap-1 text-ok'
+                                          : 'flex items-center gap-1 text-warn'
                                       }
                                       title={
                                         patch.disk === 'saved'
@@ -1784,23 +1821,23 @@ export function ChatPanel({
                                       type="button"
                                       onClick={() => onUndoPatch(message.id, index)}
                                       title={`Revert ${patch.path} to its previous content`}
-                                      className="rounded-md border border-white/[0.12] p-0.5 text-neutral-400 transition-colors hover:border-amber-300/40 hover:text-amber-300 cursor-pointer"
+                                      className="rounded-md border border-line-2 p-0.5 text-ink-3 transition-colors hover:border-warn/30 hover:text-warn cursor-pointer"
                                     >
                                       <Undo2 className="w-3 h-3" />
                                     </button>
                                   </>
                                 )}
                                 {patch.status === 'reverted' && (
-                                  <span className="text-neutral-500">
+                                  <span className="text-ink-4">
                                     {patch.disk === 'saved' ? 'Reverted on disk' : 'Reverted in editor'}
                                   </span>
                                 )}
-                                {patch.status === 'rejected' && <span className="text-neutral-500">Skipped</span>}
+                                {patch.status === 'rejected' && <span className="text-ink-4">Skipped</span>}
                                 {patch.status === 'failed' && (
                                   <button
                                     type="button"
                                     onClick={() => onAcceptPatch(message.id, index)}
-                                    className="rounded-md border border-white/[0.12] px-2 py-0.5 text-[10px] text-neutral-300 transition-colors hover:bg-white/[0.05] cursor-pointer"
+                                    className="rounded-md border border-line-2 px-2 py-0.5 text-[10px] text-ink-3 transition-colors hover:bg-overlay cursor-pointer"
                                   >
                                     Retry
                                   </button>
@@ -1835,16 +1872,16 @@ export function ChatPanel({
                 })()}
 
                 {!message.streaming && (message.content || message.id === lastAssistantId) && (
-                  <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-white/[0.06] pt-2 text-[10px] text-neutral-500">
+                  <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-line pt-2 text-[10px] text-ink-4">
                     {message.content && (
                       <button
                         type="button"
                         onClick={() => void copyMessage(message)}
                         title="Copy reply"
-                        className="flex items-center gap-1 transition-colors hover:text-neutral-200 cursor-pointer"
+                        className="flex items-center gap-1 transition-colors hover:text-ink-2 cursor-pointer"
                       >
                         {copiedMessageId === message.id ? (
-                          <Check className="w-3 h-3 text-emerald-400" />
+                          <Check className="w-3 h-3 text-ok" />
                         ) : (
                           <Copy className="w-3 h-3" />
                         )}
@@ -1862,7 +1899,7 @@ export function ChatPanel({
                           onClick={() => (open ? onCloseCheckpoint() : onShowCheckpoint(checkpoint.id))}
                           disabled={restoring}
                           title={open ? 'Hide the history rail' : `See what restoring before this reply changes (${checkpoint.fileCount} files)`}
-                          className={`flex items-center gap-1 transition-colors hover:text-amber-400 disabled:opacity-40 cursor-pointer ${open ? 'text-amber-300' : ''}`}
+                          className={`flex items-center gap-1 transition-colors hover:text-warn disabled:opacity-40 cursor-pointer ${open ? 'text-warn' : ''}`}
                         >
                           {restoring ? (
                             <Loader2 className="w-3 h-3 animate-spin" />
@@ -1878,14 +1915,14 @@ export function ChatPanel({
                         type="button"
                         onClick={() => onResume(message.id)}
                         title="The stream was interrupted — continue this reply from where it stopped"
-                        className="flex items-center gap-1 text-violet-300 transition-colors hover:text-violet-200 cursor-pointer"
+                        className="flex items-center gap-1 text-accent transition-colors hover:text-accent cursor-pointer"
                       >
                         <Play className="w-3 h-3" />
                         Resume reply
                       </button>
                     )}
                     {message.metrics?.model && (
-                      <details className="font-mono text-neutral-600">
+                      <details className="font-mono text-ink-5">
                         <summary className="flex cursor-pointer items-center gap-1">
                           <Zap className="w-3 h-3" />
                           Usage
@@ -1920,7 +1957,7 @@ export function ChatPanel({
       {contextNotice && (
         <div
           role="status"
-          className="flex shrink-0 items-center gap-2 border-t border-amber-300/15 bg-amber-400/[0.06] px-3 py-1.5 text-[10.5px] text-amber-200/90"
+          className="flex shrink-0 items-center gap-2 border-t border-warn/30 bg-warn/10 px-3 py-1.5 text-[10.5px] text-warn/90"
         >
           <AlertTriangle className="w-3 h-3 shrink-0" />
           <span className="min-w-0 flex-1 truncate" title={contextNotice}>
@@ -1930,7 +1967,7 @@ export function ChatPanel({
             type="button"
             onClick={onDismissContextNotice}
             aria-label="Dismiss context notice"
-            className="rounded p-0.5 text-amber-200/60 transition-colors hover:text-white cursor-pointer"
+            className="rounded p-0.5 text-warn/60 transition-colors hover:text-ink cursor-pointer"
           >
             <X className="h-3 w-3" />
           </button>
@@ -1955,17 +1992,17 @@ export function ChatPanel({
       )}
 
       {/* Input Area & Prompt Box */}
-      <div className="shrink-0 border-t border-white/[0.07] p-3 bg-ink-950">
+      <div className="shrink-0 border-t border-line p-3 bg-base">
 
         {/* Live Agent Phase / Activity Status */}
         {activeStatusMessage && (
-          <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-violet-400/25 bg-violet-950/30 px-2.5 py-1.5 text-[11px] text-violet-200">
+          <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-accent-line bg-accent-soft px-2.5 py-1.5 text-[11px] text-accent">
             <div className="flex items-center gap-2 min-w-0">
               <span className="relative flex h-2 w-2 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-violet-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-violet-500"></span>
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-strong opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-strong"></span>
               </span>
-              <span className="truncate font-mono text-[10.5px] text-violet-200">
+              <span className="truncate font-mono text-[10.5px] text-accent">
                 {activeStatusMessage}
               </span>
             </div>
@@ -1973,7 +2010,7 @@ export function ChatPanel({
               <button
                 type="button"
                 onClick={onStop}
-                className="flex items-center gap-1 text-[10px] text-red-300 hover:text-red-200 cursor-pointer shrink-0"
+                className="flex items-center gap-1 text-[10px] text-danger hover:text-danger cursor-pointer shrink-0"
               >
                 <Square className="h-2.5 w-2.5 fill-current" />
                 Stop
@@ -1983,9 +2020,59 @@ export function ChatPanel({
         )}
 
         {isRefining && (
-          <div className="mb-2 flex items-center gap-2 text-[11px] text-violet-300/80">
+          <div className="mb-2 flex items-center gap-2 text-[11px] text-accent/80">
             <Loader2 className="w-3 h-3 animate-spin" />
             {refineStep || 'Refining prompt...'}
+          </div>
+        )}
+
+        {attachedImage && (
+          <div className="mb-2 flex items-center gap-2">
+            <div className="relative shrink-0">
+              <img
+                src={attachedImage}
+                alt="Attached photo preview"
+                className="h-11 w-11 rounded-lg border border-line object-cover"
+              />
+              <button
+                type="button"
+                onClick={() => onAttachedImageChange(null)}
+                aria-label="Remove attached photo"
+                className="absolute -right-1.5 -top-1.5 rounded-full border border-line bg-base-2 p-0.5 text-ink-3 hover:text-ink cursor-pointer"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+            <span className="text-[11px] text-ink-4">Photo ready to send</span>
+          </div>
+        )}
+
+        {pastedTexts.length > 0 && (
+          <div className="mb-2 flex flex-col gap-1">
+            <div className="flex flex-wrap gap-1.5">
+              {pastedTexts.map((entry) => (
+                <span
+                  key={entry.id}
+                  title={entry.name}
+                  className="flex max-w-full items-center gap-1 rounded-lg border border-accent-line/40 bg-accent-soft/60 px-2 py-1 text-[11px] text-ink-3"
+                >
+                  <FileText className="h-3 w-3 shrink-0 text-accent/80" />
+                  <span className="truncate font-mono">{entry.name}</span>
+                  <span className="shrink-0 text-[10px] text-ink-5">
+                    ~{Math.max(1, Math.round(entry.content.length / 1024))} KB
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${entry.name}`}
+                    onClick={() => setPastedTexts((current) => current.filter((item) => item.id !== entry.id))}
+                    className="ml-0.5 text-ink-5 hover:text-ink cursor-pointer"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+            <p className="text-[10px] text-ink-5">Pasted as a .txt attachment — the chat stays short.</p>
           </div>
         )}
 
@@ -1994,28 +2081,19 @@ export function ChatPanel({
             {attachedFiles.map((name) => (
               <span
                 key={name}
-                className="flex max-w-full items-center gap-1 rounded-lg border border-white/[0.09] bg-white/[0.02] px-2 py-1 text-[11px] text-neutral-300"
+                className="flex max-w-full items-center gap-1 rounded-lg border border-line bg-overlay px-2 py-1 text-[11px] text-ink-3"
               >
                 {/\.(mdx?|txt|rst)$/i.test(name) ? (
-                  <FileText className="h-3 w-3 shrink-0 text-violet-300/80" />
+                  <FileText className="h-3 w-3 shrink-0 text-accent/80" />
                 ) : (
-                  <FileCode2 className="h-3 w-3 shrink-0 text-violet-300/80" />
-                )}
-                {attachedImage && (
-                  <div className="mb-2 flex items-center gap-2 rounded-lg border border-emerald-300/20 bg-emerald-500/[.06] px-2 py-1.5">
-                    <img src={attachedImage} alt="Attached photo preview" className="h-10 w-10 rounded object-cover" />
-                    <span className="flex-1 text-[11px] text-emerald-200">One photo attached</span>
-                    <button type="button" onClick={() => onAttachedImageChange(null)} aria-label="Remove attached photo" className="text-neutral-500 hover:text-white cursor-pointer">
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
+                  <FileCode2 className="h-3 w-3 shrink-0 text-accent/80" />
                 )}
                 <span className="truncate font-mono">{name}</span>
                 <button
                   type="button"
                   aria-label={`Remove ${name}`}
                   onClick={() => onAttachedFilesChange(attachedFiles.filter((file) => file !== name))}
-                  className="ml-0.5 text-neutral-600 hover:text-white cursor-pointer"
+                  className="ml-0.5 text-ink-5 hover:text-ink cursor-pointer"
                 >
                   <X className="h-3 w-3" />
                 </button>
@@ -2030,9 +2108,9 @@ export function ChatPanel({
               <span
                 key={`${symbol.name}:${symbol.file}`}
                 title={`${symbol.file}${symbol.line !== undefined ? `:${symbol.line + 1}` : ''}`}
-                className="flex max-w-full items-center gap-1 rounded-lg border border-violet-300/20 bg-violet-500/[.08] px-2 py-1 text-[11px] text-violet-100"
+                className="flex max-w-full items-center gap-1 rounded-lg border border-accent-line bg-accent-soft px-2 py-1 text-[11px] text-accent"
               >
-                <Code2 className="h-3 w-3 shrink-0 text-violet-300/80" />
+                <Code2 className="h-3 w-3 shrink-0 text-accent/80" />
                 <span className="truncate font-mono">{symbol.name}</span>
                 <button
                   type="button"
@@ -2042,7 +2120,7 @@ export function ChatPanel({
                       pinnedSymbols.filter((entry) => !(entry.name === symbol.name && entry.file === symbol.file))
                     )
                   }
-                  className="ml-0.5 text-violet-300/50 hover:text-white cursor-pointer"
+                  className="ml-0.5 text-accent/50 hover:text-ink cursor-pointer"
                 >
                   <X className="h-3 w-3" />
                 </button>
@@ -2052,22 +2130,22 @@ export function ChatPanel({
         )}
 
         {queuedMessages.length > 0 && (
-          <div className="mb-2 rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 py-2">
-            <div className="mb-1.5 flex items-center justify-between text-[10px] font-medium uppercase tracking-wide text-neutral-500">
+          <div className="mb-2 rounded-xl border border-line bg-overlay px-3 py-2">
+            <div className="mb-1.5 flex items-center justify-between text-[10px] font-medium uppercase tracking-wide text-ink-4">
               <span>Queued messages</span>
               <span>{queuedMessages.length}/5</span>
             </div>
             <ol className="space-y-1">
               {queuedMessages.map((message, index) => (
-                <li key={message.id} className="flex items-center gap-2 text-[11px] text-neutral-300">
-                  <span className="shrink-0 font-mono text-neutral-600">{index + 1}.</span>
+                <li key={message.id} className="flex items-center gap-2 text-[11px] text-ink-3">
+                  <span className="shrink-0 font-mono text-ink-5">{index + 1}.</span>
                   <span className="min-w-0 flex-1 truncate">{message.text}</span>
                   {onCancelQueuedMessage && (
                     <button
                       type="button"
                       onClick={() => onCancelQueuedMessage(message.id)}
                       aria-label={`Cancel queued message ${index + 1}`}
-                      className="shrink-0 text-neutral-600 transition-colors hover:text-rose-300 cursor-pointer"
+                      className="shrink-0 text-ink-5 transition-colors hover:text-danger cursor-pointer"
                     >
                       <X className="h-3.5 w-3.5" />
                     </button>
@@ -2079,15 +2157,15 @@ export function ChatPanel({
         )}
 
         {/* Prompt Input Box */}
-        <div className="relative rounded-2xl border border-white/[0.09] bg-white/[0.03] transition-colors focus-within:border-violet-300/40 focus-within:bg-white/[0.04]">
+        <div className="relative rounded-2xl border border-line bg-overlay transition-colors focus-within:border-accent-line focus-within:bg-overlay">
           {slashMatches.length > 0 && (
-            <div className="absolute bottom-full left-2 right-2 z-20 mb-2 overflow-hidden rounded-xl border border-white/[0.09] bg-ink-900/95 py-1 shadow-2xl backdrop-blur-xl">
-              <div className="border-b border-white/[0.07] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+            <div className="absolute bottom-full left-2 right-2 z-20 mb-2 overflow-hidden rounded-xl border border-line bg-base-2/95 py-1 shadow-2xl backdrop-blur-xl">
+              <div className="border-b border-line px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-ink-4">
                 Templates and skills
               </div>
               {templateMatches.length > 0 && (
                 <>
-                  <div className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
+                  <div className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-ink-5">
                     Prompt templates
                   </div>
                   {templateMatches.map((template) => (
@@ -2098,9 +2176,9 @@ export function ChatPanel({
                         event.preventDefault();
                         acceptSlashOption({ kind: 'template', template });
                       }}
-                      className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer text-neutral-400 hover:bg-white/[0.04] hover:text-white"
+                      className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer text-ink-3 hover:bg-overlay hover:text-ink"
                     >
-                      <span className="shrink-0 font-mono text-[11px] text-violet-200">/{template.id}</span>
+                      <span className="shrink-0 font-mono text-[11px] text-accent">/{template.id}</span>
                       <span className="min-w-0 flex-1 truncate text-[11px]">{template.label}</span>
                     </button>
                   ))}
@@ -2108,7 +2186,7 @@ export function ChatPanel({
               )}
               {skillMatches.length > 0 && (
                 <>
-                  <div className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
+                  <div className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-ink-5">
                     Skills of this folder
                   </div>
                   {skillMatches.map((skill) => (
@@ -2119,9 +2197,9 @@ export function ChatPanel({
                         event.preventDefault();
                         acceptSlashOption({ kind: 'skill', skill });
                       }}
-                      className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer text-neutral-400 hover:bg-white/[0.04] hover:text-white"
+                      className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer text-ink-3 hover:bg-overlay hover:text-ink"
                     >
-                      <span className="shrink-0 font-mono text-[11px] text-violet-200">/{skillKey(skill.name)}</span>
+                      <span className="shrink-0 font-mono text-[11px] text-accent">/{skillKey(skill.name)}</span>
                       <span className="min-w-0 flex-1 truncate text-[11px]">
                         {skill.description || skill.whenToUse || 'no description'}
                       </span>
@@ -2129,18 +2207,18 @@ export function ChatPanel({
                   ))}
                 </>
               )}
-              <div className="border-t border-white/[0.07] px-3 py-1 text-[10px] text-neutral-600">
+              <div className="border-t border-line px-3 py-1 text-[10px] text-ink-5">
                 Tab inserts the first · Esc hides
               </div>
             </div>
           )}
           {mentionQuery !== null && (
-            <div className="absolute bottom-full left-2 right-2 z-20 mb-2 overflow-hidden rounded-xl border border-white/[0.09] bg-ink-900/95 py-1 shadow-2xl backdrop-blur-xl">
-              <div className="border-b border-white/[0.07] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+            <div className="absolute bottom-full left-2 right-2 z-20 mb-2 overflow-hidden rounded-xl border border-line bg-base-2/95 py-1 shadow-2xl backdrop-blur-xl">
+              <div className="border-b border-line px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-ink-4">
                 Attach a file or pin a symbol
               </div>
               {mentionMatches.length === 0 ? (
-                <p className="px-3 py-2 text-[11px] text-neutral-500">
+                <p className="px-3 py-2 text-[11px] text-ink-4">
                   Nothing matches “{mentionQuery}”.
                 </p>
               ) : (
@@ -2154,12 +2232,12 @@ export function ChatPanel({
                     }}
                     className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer ${
                       item.id === activeMention?.id
-                        ? 'bg-violet-500/[.14] text-violet-100'
-                        : 'text-neutral-400 hover:bg-white/[0.04] hover:text-white'
+                        ? 'bg-accent-soft text-accent'
+                        : 'text-ink-3 hover:bg-overlay hover:text-ink'
                     }`}
                   >
                     {item.kind === 'symbol' ? (
-                      <Code2 className="h-3.5 w-3.5 shrink-0 text-violet-300/80" />
+                      <Code2 className="h-3.5 w-3.5 shrink-0 text-accent/80" />
                     ) : /\.(mdx?|txt|rst)$/i.test(item.file) ? (
                       <FileText className="h-3.5 w-3.5 shrink-0" />
                     ) : (
@@ -2167,14 +2245,14 @@ export function ChatPanel({
                     )}
                     <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{item.label}</span>
                     {item.kind === 'symbol' && (
-                      <span className="shrink-0 truncate font-mono text-[10px] text-neutral-600">
+                      <span className="shrink-0 truncate font-mono text-[10px] text-ink-5">
                         {item.file}:{(item.line ?? 0) + 1}
                       </span>
                     )}
                   </button>
                 ))
               )}
-              <div className="border-t border-white/[0.07] px-3 py-1 text-[10px] text-neutral-600">
+              <div className="border-t border-line px-3 py-1 text-[10px] text-ink-5">
                 ↑↓ choose · Enter attach · Esc close
               </div>
             </div>
@@ -2182,6 +2260,7 @@ export function ChatPanel({
           <textarea
             value={input}
             onChange={(event) => handleInputChange(event.target.value)}
+            onPaste={handlePaste}
             onKeyDown={(event) => {
               if (slashMatches.length > 0) {
                 if (event.key === 'Tab') {
@@ -2219,38 +2298,35 @@ export function ChatPanel({
               }
               if (shouldSubmitOnEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing })) {
                 event.preventDefault();
-                if (canSend || canQueue) onSend();
+                if (canSend || canQueue) submitDraft();
               }
             }}
             rows={3}
             placeholder="Ask ShadRox to build, refactor, or explain code… (@ to attach a file or symbol)"
-            className="w-full resize-none rounded-2xl bg-transparent py-3 pl-10 pr-3.5 text-xs text-neutral-100 outline-none placeholder:text-neutral-600 disabled:opacity-50"
+            className="w-full resize-none rounded-2xl bg-transparent py-3 pl-10 pr-3.5 text-xs text-ink outline-none placeholder:text-ink-5 disabled:opacity-50"
           />
-          <div className="pointer-events-none absolute left-3 top-3 text-emerald-300/80">
+          <div className="pointer-events-none absolute left-3 top-3 text-ok/80">
             <ShadRoxLogo className="h-4 w-4" />
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2">
-            <div className="flex min-w-0 flex-auto flex-wrap items-center gap-1.5">
-              {/* One clear control for both execution access and work style. */}
+          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 px-2 pb-2">
+            <div className="flex min-w-0 flex-auto flex-wrap items-center gap-1.5 gap-y-1.5">
+              {/* Access boundary for the next turn: Ask, Plan or Agent. */}
               <div ref={runMenuRef} className="relative">
                 <button
                   type="button"
                   onClick={() => setIsRunMenuOpen((open) => !open)}
-                  title={`${activePermission.label} access · ${activeMode.label} work mode`}
-                  className={`flex min-w-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${PERMISSION_BUTTON_STYLE[permissionMode]}`}
+                  title={`${activePermission.label} access`}
+                  className={`flex h-7 min-w-0 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] transition-colors cursor-pointer ${PERMISSION_BUTTON_STYLE[permissionMode]}`}
                 >
                   <ActivePermissionIcon className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate font-medium">{activePermission.label} · {activeMode.label}</span>
-                  <ChevronDown className="w-3 h-3 shrink-0 text-neutral-400" />
+                  <span className="truncate font-medium">{activePermission.label}</span>
+                  <ChevronDown className="w-3 h-3 shrink-0 text-ink-3" />
                 </button>
 
                 {isRunMenuOpen && (
-                  <div className="absolute bottom-9 left-0 z-20 w-72 overflow-hidden rounded-xl border border-white/[0.09] bg-ink-900/95 py-1 shadow-2xl backdrop-blur-xl">
-                    <div className="border-b border-white/[0.07] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500">
-                      Run settings
-                    </div>
-                    <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
+                  <div className="absolute bottom-9 left-0 z-20 w-64 overflow-hidden rounded-xl border border-line bg-base-2/95 py-1 shadow-2xl backdrop-blur-xl">
+                    <div className="border-b border-line px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-ink-4">
                       Access
                     </div>
                     {PERMISSION_MODES.map((mode) => {
@@ -2264,47 +2340,18 @@ export function ChatPanel({
                             onPermissionModeChange(mode.id);
                             setIsRunMenuOpen(false);
                           }}
-                          className={`w-full px-3 py-2 text-left flex items-start justify-between transition-colors hover:bg-white/[0.05] cursor-pointer ${
-                            isSelected ? 'bg-violet-500/[.12] text-violet-100' : 'text-neutral-400'
+                          className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-overlay cursor-pointer ${
+                            isSelected ? 'bg-accent-soft text-accent' : 'text-ink-3'
                           }`}
                         >
-                          <div className="flex items-start gap-2 min-w-0">
-                            <Icon className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${isSelected ? 'text-violet-300' : 'text-neutral-500'}`} />
-                            <div>
-                              <div className="text-xs font-medium text-neutral-200">{mode.label}</div>
-                              <div className="text-[10px] text-neutral-500 leading-tight mt-0.5">{mode.hint}</div>
-                            </div>
-                          </div>
-                          {isSelected && <Check className="w-3.5 h-3.5 text-violet-300 shrink-0 ml-2 mt-0.5" />}
-                        </button>
-                      );
-                    })}
-                    <div className="border-t border-white/[0.07] px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
-                      Work style
-                    </div>
-                    {REFINE_MODES.map((mode) => {
-                      const Icon = MODE_ICONS[mode.id];
-                      const isSelected = mode.id === refineMode;
-                      return (
-                        <button
-                          key={mode.id}
-                          type="button"
-                          onClick={() => {
-                            onRefineModeChange(mode.id);
-                            setIsRunMenuOpen(false);
-                          }}
-                          className={`w-full px-3 py-2 text-left flex items-start justify-between transition-colors hover:bg-white/[0.05] cursor-pointer ${
-                            isSelected ? 'bg-violet-500/[.12] text-violet-100' : 'text-neutral-400'
-                          }`}
-                        >
-                          <div className="flex items-start gap-2 min-w-0">
-                            <Icon className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${isSelected ? 'text-violet-300' : 'text-neutral-500'}`} />
-                            <div>
-                              <div className="text-xs font-medium text-neutral-200">{mode.label}</div>
-                              <div className="text-[10px] text-neutral-500 leading-tight mt-0.5">{mode.hint}</div>
-                            </div>
-                          </div>
-                          {isSelected && <Check className="w-3.5 h-3.5 text-violet-300 shrink-0 ml-2 mt-0.5" />}
+                          <Icon className={`h-3.5 w-3.5 shrink-0 ${isSelected ? 'text-accent' : 'text-ink-4'}`} />
+                          <span className="min-w-0 flex-1">
+                            <span className={`block text-xs font-medium ${isSelected ? 'text-accent' : 'text-ink-2'}`}>
+                              {mode.label}
+                            </span>
+                            <span className="mt-0.5 block text-[10px] leading-tight text-ink-4">{mode.hint}</span>
+                          </span>
+                          <Check className={`h-3.5 w-3.5 shrink-0 text-accent ${isSelected ? 'opacity-100' : 'opacity-0'}`} />
                         </button>
                       );
                     })}
@@ -2323,12 +2370,12 @@ export function ChatPanel({
                         ? 'Open a folder to attach files'
                         : 'Every workspace file is already attached')
                     : 'Attach file context'}
-                  className="shrink-0 p-1.5 text-neutral-500 hover:text-white disabled:opacity-40 transition-colors cursor-pointer"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-4 hover:text-ink disabled:opacity-40 transition-colors cursor-pointer"
                 >
                   <Paperclip className="w-3.5 h-3.5" />
                 </button>
                 {isAttachMenuOpen && (
-                  <div className="absolute bottom-8 left-0 z-10 max-h-64 w-64 overflow-y-auto rounded-xl border border-white/[0.09] bg-ink-900/95 py-1 shadow-2xl backdrop-blur-xl">
+                  <div className="absolute bottom-8 left-0 z-10 max-h-64 w-64 overflow-y-auto rounded-xl border border-line bg-base-2/95 py-1 shadow-2xl backdrop-blur-xl">
                     {attachableFiles.map((file) => (
                       <button
                         key={file.name}
@@ -2337,7 +2384,7 @@ export function ChatPanel({
                           onAttachedFilesChange([...new Set([...attachedFiles, file.name])]);
                           setIsAttachMenuOpen(false);
                         }}
-                        className="block w-full truncate px-3 py-1.5 text-left text-xs text-neutral-400 hover:bg-white/[0.04] hover:text-white cursor-pointer"
+                        className="block w-full truncate px-3 py-1.5 text-left text-xs text-ink-3 hover:bg-overlay hover:text-ink cursor-pointer"
                       >
                         {file.name}
                       </button>
@@ -2369,7 +2416,7 @@ export function ChatPanel({
                   type="button"
                   onClick={() => imageInputRef.current?.click()}
                   title="Attach one photo"
-                  className="shrink-0 p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-4 hover:text-ink transition-colors cursor-pointer"
                 >
                   <Image className="h-3.5 w-3.5" />
                 </button>
@@ -2381,7 +2428,7 @@ export function ChatPanel({
                   type="button"
                   onClick={onUndoRefine}
                   title="Restore the prompt you typed before refining"
-                  className="shrink-0 p-1.5 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-4 hover:text-ink transition-colors cursor-pointer"
                 >
                   <Undo2 className="w-3.5 h-3.5" />
                 </button>
@@ -2391,7 +2438,7 @@ export function ChatPanel({
             {/* Right side: toggles, token count & Send Button */}
             <div className="ml-auto flex shrink-0 items-center gap-1.5">
               {input.length > 0 && (
-                <span className="hidden text-[10px] text-neutral-500 font-mono xl:inline">
+                <span className="hidden text-[10px] text-ink-4 font-mono xl:inline">
                   {input.length}c · ~{estimateTokens(input)} tok
                 </span>
               )}
@@ -2400,10 +2447,10 @@ export function ChatPanel({
                 <>
                   <button
                     type="button"
-                    onClick={() => onSend()}
+                    onClick={submitDraft}
                     disabled={!canQueue || queuedMessages.length >= 5}
                     title="Queue this message after the current task"
-                    className="flex items-center gap-1.5 rounded-lg border border-violet-300/25 px-2.5 py-1.5 text-[11px] text-violet-200 transition-colors hover:bg-violet-500/10 disabled:opacity-30 cursor-pointer"
+                    className="flex h-7 items-center gap-1.5 rounded-lg border border-accent-line px-2.5 text-[11px] text-accent transition-colors hover:bg-accent-soft disabled:opacity-30 cursor-pointer"
                   >
                     <MessageSquarePlus className="w-3 h-3" />
                     Queue
@@ -2411,7 +2458,7 @@ export function ChatPanel({
                   <button
                     type="button"
                     onClick={onStop}
-                    className="flex items-center gap-1.5 rounded-lg border border-red-500/30 px-3 py-1.5 text-[11px] text-red-300 transition-colors hover:bg-red-500/10 cursor-pointer"
+                    className="flex h-7 items-center gap-1.5 rounded-lg border border-danger/30 px-3 text-[11px] text-danger transition-colors hover:bg-danger/10 cursor-pointer"
                   >
                     <Square className="w-3 h-3 fill-current" />
                     Stop
@@ -2420,10 +2467,10 @@ export function ChatPanel({
               ) : (
                 <button
                   type="button"
-                  onClick={() => onSend()}
+                  onClick={submitDraft}
                   disabled={!canSend}
                   title="Send message (Enter)"
-                  className="flex items-center gap-1.5 rounded-lg bg-violet-300 px-3.5 py-1.5 text-[11px] font-semibold text-[#16121f] transition-colors hover:bg-violet-200 disabled:opacity-30 disabled:hover:bg-violet-300 cursor-pointer"
+                  className="flex h-7 items-center gap-1.5 rounded-lg bg-accent-strong px-3.5 text-[11px] font-semibold text-white transition-colors hover:opacity-90 disabled:opacity-30 disabled:hover:bg-accent-strong cursor-pointer"
                 >
                   <Send className="w-3 h-3" />
                   Send

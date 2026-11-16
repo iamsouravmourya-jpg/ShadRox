@@ -14,15 +14,15 @@ const points = [
 
 export function BetaHonesty() {
   return (
-    <section id="beta" className="border-t border-[var(--line)] bg-[var(--bg)] px-5 py-20 lg:px-8 lg:py-24">
-      <div className="mx-auto max-w-[1180px]">
+    <section id="beta" className="border-t border-[var(--line)] bg-[var(--bg)] py-20 lg:py-24">
+      <div className="container-page">
         <Reveal variant="scale">
-          <div className="grid gap-10 rounded-3xl border border-[var(--line)] bg-[var(--card)] p-8 sm:p-10 lg:grid-cols-2 lg:gap-14 lg:p-12">
+          <div className="grid gap-10 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-7 sm:p-10 lg:grid-cols-2 lg:gap-14 lg:p-12">
             <div>
-              <p className="mb-4 text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--ac)]">
+              <p className="eyebrow mb-4">
                 Beta status
               </p>
-              <h2 className="text-[clamp(26px,3.5vw,40px)] font-bold tracking-[-0.04em] leading-[1.12] text-[var(--ink)]">
+              <h2 className="text-[clamp(1.625rem,3.2vw,2.5rem)] font-bold leading-[1.12] tracking-[-0.04em] text-[var(--ink)]">
                 Beta, and <em className="font-normal italic text-[var(--ac)]">honest</em> about it.
               </h2>
               <p className="mt-5 max-w-md text-sm leading-7 text-[var(--mut)]">
@@ -32,9 +32,9 @@ export function BetaHonesty() {
               </p>
             </div>
             <div>
-              <ul className="space-y-3">
+              <ul className="space-y-3.5">
                 {points.map((p) => (
-                  <li key={p} className="flex gap-3 text-sm leading-6 text-[var(--ink2)]">
+                  <li key={p} className="flex gap-3 text-[13.5px] leading-6 text-[var(--ink2)]">
                     <span className="mt-[9px] size-1.5 shrink-0 rounded-full bg-[var(--ac)]" aria-hidden />
                     {p}
                   </li>
@@ -42,9 +42,9 @@ export function BetaHonesty() {
               </ul>
               <a
                 href={WINDOWS_DOWNLOAD_URL}
-                className="mt-7 inline-flex items-center gap-2 rounded-full bg-[linear-gradient(110deg,var(--ac),var(--pink))] px-6 py-3 text-sm font-bold text-white shadow-[0_10px_28px_var(--glow)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_36px_var(--glow)]"
+                className="cta-primary mt-7"
               >
-                <Download className="size-4" />
+                <Download className="size-4" aria-hidden />
                 Download for Windows
               </a>
               <p className="mt-3 text-xs leading-5 text-[var(--mut)]">

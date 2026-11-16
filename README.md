@@ -8,26 +8,31 @@
 
 A native desktop workspace for working on local projects with an editor, Markdown preview, BYOK AI chat, project preview, Git tools, and an integrated terminal.
 
-[![Version](https://img.shields.io/badge/version-0.0.9-violet?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0-violet?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0d0f13?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-44-47848F?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-[Download for Windows](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.9-Setup.exe) · [All Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Report an Issue](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
+[Download for Windows](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.0-Setup.exe) · [All Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Report an Issue](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
 
 </div>
 
 ---
 
-> **ShadRox is beta software (v0.0.9).** It is not a mature replacement for a general-purpose IDE. Agent output and model-generated edits can be incorrect — inspect proposed changes and keep backups or use Git for important work.
+> **ShadRox is beta software (v0.1.0).** It is not a mature replacement for a general-purpose IDE. Agent output and model-generated edits can be incorrect — inspect proposed changes and keep backups or use Git for important work.
 
-The download button points at the **last published** GitHub release. This source tree is version `0.0.9` and includes the behavior below.
+The download button points at the **last published** GitHub release. This source tree is version `0.1.0` and includes the behavior below.
 
 **In this source tree**
 - **Recent workspace reopen.** Reopen a saved folder or file set with an in-app loading status, access checks, and a ready-file count so it is clear when the workspace is still opening.
-- **Simplified chat controls.** Permission and work style are grouped into one Run settings menu. Workspace attachments, one external photo attachment, and `@` mentions remain available, while microphone, prompt auto-refine, Semantic, and Auto composer toggles stay out of the beta UI.
+- **Simplified chat controls.** The Run settings menu holds exactly three access modes — Ask, Plan, and Agent. Ask and Plan are read-only; Agent may edit files and run commands you approve. Workspace attachments, one external photo (shown as a thumbnail above the composer with a remove control), and `@` mentions remain available, while microphone, prompt auto-refine, Semantic, and Auto composer toggles stay out of the beta UI.
+- **Long pastes become attachments.** A clipboard paste of 4,000 or more characters, or 60 or more lines, becomes a named `pasted-<time>.txt` chip above the composer. The chat bubble stays short while the text reaches the model as pasted-text context; shorter pastes insert normally.
+- **Empty new projects.** New project asks for a name and a save location, creates an empty folder there, and opens it. No starter files are written, and an existing non-empty folder is refused rather than overwritten.
+- **Feedback drawer.** The top-bar Feedback button opens a right-side drawer with exactly two report types, Bug and Feature request. The report carries only the message you typed: it is POSTed to the owner's private Google Sheet, which records the date server-side and files the message under a Bug or Feature column. No email, account details, app version, platform, code, or file names are attached.
+- **Day and night themes.** One toggle switches between the light and dark themes. Until you pick a side the app starts on your OS preference; after that your choice is remembered.
+- **Consent before sign-in.** Continue with Google stays disabled until you tick that you agree to the Terms of Service and Privacy Policy.
 - **Branded composer.** The ShadRox mark is shown inside the chat prompt, and the preview toolbar keeps the workspace focused without the extra Live/Manual toggle.
 - **Assistant shell access.** The agent can run a command in the opened folder and read its real exit code and output.
 - **Command approval.** Every shell command now requires a native approval dialog, including the former verification commands (`npm test`, `pytest`, `tsc --noEmit`, and Git status/diff). The workspace is checked again after approval and before the command runs.
@@ -58,12 +63,12 @@ Your project files stay **on your computer**; ShadRox does not sync project fold
 | 📟 | **Terminal state** | PowerShell and bash report cwd, the command line, and the exit code. The panel shows them, and `terminal_state` lets the agent read the same summary, including how long a command has been silent. |
 | 🩹 | **Failure receipts** | A failed assistant command becomes a receipt on the chat message, with the turn's undo checkpoint id. The model sees the error. A patch is still a normal reviewed edit, not an automatic rewrite. |
 | 📊 | **Proof and usage** | Command ledger lines store the redacted command, hashes and exit code — not output text — in a signed Ed25519 chain. The usage shown in Settings is the token count the provider reports for each turn, including cache hits when that field exists; ShadRox bills nothing and keeps no meter. |
-| 📁 | **Project Explorer** | Open a local folder or selected files, browse the workspace tree, and create, rename, or delete files and folders. Files are loaded as you open them. |
+| 📁 | **Project Explorer** | Open a local folder or selected files, create a new empty project folder and open it, browse the workspace tree, and create, rename, or delete files and folders. A new project writes no starter files and refuses a non-empty target folder; files are loaded as you open them. |
 | ✏️ | **Editor & Markdown preview** | CodeMirror 6 editing, split editor groups, pinned/reorderable tabs, quick open, outline, inline completions, and a one-click source/preview toggle for Markdown files. |
 | 🔍 | **Code navigation** | TypeScript diagnostics, go-to-definition, find references, rename, quick fixes, semantic highlighting, and workspace symbol search where supported. |
-| 💬 | **AI chat and queue** | Use Gemini, Groq, or a custom OpenAI-compatible endpoint. Replies render as cards with headings, tables, quotes, and copyable code blocks. Queue follow-up messages while a turn is running; attach workspace files, one photo, or use `@` mentions for files and symbols; inspect proposed file changes and review supported diffs before applying. |
+| 💬 | **AI chat and queue** | Use Gemini, Groq, or a custom OpenAI-compatible endpoint. Replies render as cards with headings, tables, quotes, and copyable code blocks. Queue follow-up messages while a turn is running; attach workspace files, one photo (thumbnail with a remove control), or use `@` mentions for files and symbols; a long paste of 4,000+ characters or 60+ lines becomes a `pasted-<time>.txt` attachment while the bubble stays short; inspect proposed file changes and review supported diffs before applying. |
 | 🧭 | **Recent workspace reopen** | Reopen saved folders and file sets with persisted native consent, a visible loading state, and a confirmation when files are ready. |
-| 🎛️ | **Focused chat controls** | Choose execution access and work style from one Run settings menu. The composer includes the ShadRox mark and keeps optional microphone, auto-refine, Semantic, and Auto controls out of the current beta surface. |
+| 🎛️ | **Focused chat controls** | Choose Ask, Plan, or Agent from one Run settings menu: Ask and Plan are read-only, while Agent may edit files and run commands you approve. The composer includes the ShadRox mark and keeps optional microphone, auto-refine, Semantic, and Auto controls out of the current beta surface. |
 | ⌘ | **Command palette & quick edit** | Fuzzy-find files, workspace symbols, and commands from one palette; select code and press Ctrl+K for an inline AI edit; accept ghost-text completions powered by server-side FIM. |
 | 🤖 | **Bounded agent loop** | Multi-round tool use with native provider calls where supported and a text-protocol fallback. Built-in tools list directories, read files, search names and text, inspect diagnostics and Git state, outline files, delete one path, read terminal state, answer a running prompt with approval, read the paused debugger, and run one shell command with its real exit code. Every request also carries a compact repo map. Turns have tool and iteration limits. |
 | 🚀 | **Multi-step runs and teams** | Plan larger work as tasks, run verification/repair stages, or coordinate specialist roles. Features an autonomous DAG execution engine and role-confined agent teams. |
@@ -405,10 +410,34 @@ The desktop app works against files on your computer. ShadRox does not provide p
 | AI provider key | OS-backed encrypted storage (desktop) | Never sent to a ShadRox cloud server; used by the local API process and the provider you choose |
 | Account identity | Supabase | Email, name, avatar, app version, platform only |
 | AI prompts | Sent to your configured provider | Only the prompt + context you choose |
+| Feedback reports | The owner's private Google Sheet | Sent only when you press Send feedback; contains only your message, a Bug/Feature marker, and a server-side date |
 
-Google sign-in through Supabase is required to enter the app. Supabase stores account identity and profile fields; project files and AI prompts are not sent to Supabase as part of sign-in. AI providers process the prompt and context you send under their own data-handling terms.
+Google sign-in through Supabase is required to enter the app. Continue with Google stays disabled until you tick that you agree to the Terms of Service and Privacy Policy. Supabase stores account identity and profile fields; project files and AI prompts are not sent to Supabase as part of sign-in. AI providers process the prompt and context you send under their own data-handling terms.
 
 The key is encrypted only in the packaged desktop app, where the OS-backed store is available. `npm run dev` has no such bridge, so in the browser build the key sits in that browser's `localStorage` in plain text and is posted to the local `/api/byok/validate` and `/api/ai` routes on your own machine — do not run the browser build on a shared machine or with a key you would not accept seeing in that browser's profile.
+
+## Feedback
+
+The Feedback button in the top bar opens a drawer with two report types, Bug and Feature request. There is no ShadRox feedback server, no Supabase table, and no analytics service in this path. The app POSTs a small JSON body — `{ kind, message }` — straight to a Google Apps Script web app owned by the ShadRox maintainer, which appends one row to a private Google Sheet:
+
+| Column | Contents |
+|---|---|
+| Date | Stamped by Apps Script on the server, in the sheet's time zone (`yyyy-MM-dd HH:mm:ss`) |
+| Bug | The message, when the report type is Bug |
+| Feature | The message, when the report type is Feature request |
+
+Nothing else is collected or stored: no contact field, no email or account row, no app version, no platform or user agent, no code, file names, or diagnostics. The sender only ever appends; the sheet is not readable through the endpoint, and the script rejects calls that do not match the allowed payload, enforces a per-hour write quota, and caps message length.
+
+**Owner setup (one time).** The webhook endpoint is baked into the build, so end users configure nothing:
+
+1. Create a Google Sheet — the first tab is used.
+2. Create the script, either way:
+   - **Standalone (most reliable):** open `script.google.com` → **New project**, paste [`scripts/feedback-apps-script.gs`](scripts/feedback-apps-script.gs), and set `SHEET_ID` at the top to the ID in the sheet URL (`/d/<ID>/edit`). Do this when the browser is signed into more than one Google account; the sheet's Extensions menu can then open a Drive "unable to open the file" page.
+   - **Bound:** in the sheet, Extensions → Apps Script, paste the file, and leave `SHEET_ID` empty.
+3. Deploy → New deployment → Web app, with **Execute as: Me** and **Who has access: Anyone**, then copy the `/exec` URL. Opening that URL in a browser should print only `Not found` — the endpoint is write-only by design.
+4. Add `SHADROX_FEEDBACK_WEBHOOK=<your /exec URL>` to `.env` (gitignored) and rebuild with `npm run dist:win`.
+
+The URL never ships as plain text: Vite encodes it at build time and the renderer decodes it in memory, so the plain string does not appear in the bundle. That is a speed bump against casual copying, not a secret — any endpoint a client can call can be extracted by a determined user. The real limits are on the server side: write-only access, strict payload validation, a per-hour quota, and a sheet that only the owner can read. Keep the URL out of the repo, issues, and screenshots; if it ever leaks, redeploy the web app to get a new `/exec` URL and rebuild.
 
 ## Beta Limitations
 
@@ -495,7 +524,7 @@ The AGPL-3.0 lets you use, study, modify and share ShadRox. If you run a modifie
 
 Built with care by [Sourav Maurya](https://github.com/iamsouravmourya-jpg)
 
-[Download](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.0.9-Setup.exe) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Issues](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
+[Download](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.0-Setup.exe) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Issues](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
 
 </div>
 

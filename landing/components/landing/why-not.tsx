@@ -19,15 +19,15 @@ const comparisons = [
 
 export function WhyNot() {
   return (
-    <section id="why" className="border-t border-[var(--line)] bg-[var(--bg2)] px-5 py-20 lg:px-8 lg:py-28">
-      <div className="mx-auto max-w-[1180px]">
+    <section id="why" className="border-t border-[var(--line)] bg-[var(--bg2)] py-20 lg:py-28">
+      <div className="container-page">
         <Reveal>
-          <p className="mb-3 text-center text-[11px] font-bold uppercase tracking-[0.2em] text-[var(--ac)]">
+          <p className="eyebrow mb-3 text-center">
             Why not just…
           </p>
         </Reveal>
         <Reveal delay={80}>
-          <h2 className="mx-auto mb-4 max-w-[860px] text-center text-[clamp(30px,4.5vw,52px)] font-bold tracking-[-0.04em] leading-[1.08] text-[var(--ink)]">
+          <h2 className="mx-auto mb-4 max-w-[860px] text-center text-[clamp(1.875rem,3.8vw,3.25rem)] font-bold leading-[1.08] tracking-[-0.04em] text-[var(--ink)]">
             Aider and Cline are <em className="font-normal italic text-[var(--ac)]">powerful.</em>
             <br className="hidden sm:block" /> Neither one is the whole workspace.
           </h2>
@@ -39,19 +39,19 @@ export function WhyNot() {
           </p>
         </Reveal>
 
-        <div className="mx-auto grid max-w-[820px] gap-4">
+        <div className="mx-auto grid max-w-[860px] overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--card)]">
           {comparisons.map(({ title, text }, i) => (
-            <Reveal key={title} delay={i * 100}>
-              <div className="flex gap-5 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-6 transition-all duration-300 hover:translate-x-1.5 hover:border-[var(--ac)] hover:shadow-[4px_0_20px_var(--glow)] sm:p-7">
+            <Reveal key={title} delay={i * 100} className="border-b border-[var(--line)] last:border-b-0">
+              <div className="flex gap-5 p-6 transition-colors duration-300 hover:bg-[var(--bg2)] sm:p-7">
                 <span
                   aria-hidden
-                  className="grid size-10 shrink-0 place-items-center rounded-xl bg-[var(--bg2)] font-mono text-[11px] font-bold uppercase text-[var(--ac)]"
+                  className="grid size-10 shrink-0 place-items-center rounded-xl border border-[var(--line)] bg-[var(--bg2)] font-mono text-[11px] font-bold uppercase text-[var(--ac)]"
                 >
                   vs
                 </span>
                 <div>
-                  <h3 className="mb-1.5 text-[15px] font-bold text-[var(--ink)]">{title}</h3>
-                  <p className="text-sm leading-6 text-[var(--mut)]">{text}</p>
+                  <h3 className="mb-1.5 text-[15px] font-bold tracking-[-0.01em] text-[var(--ink)]">{title}</h3>
+                  <p className="text-[13.5px] leading-6 text-[var(--mut)]">{text}</p>
                 </div>
               </div>
             </Reveal>

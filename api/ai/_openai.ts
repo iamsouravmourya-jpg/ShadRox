@@ -3,8 +3,9 @@ import { DEFAULT_MAX_OUTPUT, resolveBudgetCapabilities } from '../../src/lib/mod
 import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
 import { promptCacheReport, shapeStablePrefix } from './_promptCache.js';
 import { UpstreamError, mergeOpenAiUsage, usageFields, type StreamRequest, type StreamResult, type StreamSink, type ThinkingLevel, type TokenUsage } from './_types.js';
-import { OpenAiToolCallCollector, rejectsNativeTools } from './_toolCalls.js';
+import { OpenAiToolCallCollector, rejectsNativeTools, rejectsToolCall } from './_toolCalls.js';
 import { AttemptCounter, fetchUpstream, type MeteredStreamResult } from './_upstream.js';
+import { parseRetryAfterSeconds } from '../../src/lib/ai/retryPolicy.js';
 
 const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
 
@@ -41,6 +42,20 @@ function limitHint(model: string, limits: GroqLimits): string {
   return parts.length
     ? `Groq model \`${model}\` only allows ${parts.join(' and ')} on your key, which is too small for this request — even after shrinking it. Pick a different model with a higher limit from the list (availability and limits are per key), or start a new chat so the history stops growing.`
     : `Groq rejected the request for \`${model}\` — its rate limit on your key is too small for this prompt. Try a model with a higher limit, or start a new chat.`;
+}
+
+/**
+ * A per-minute quota that waiting (not shrinking) fixes. Groq resets every
+ * minute and limits are per model, so switching models usually works at once —
+ * the message says exactly that instead of a bare "giving up".
+ */
+function rateLimitHint(model: string, response: Response): string {
+  const wait =
+    parseRetryAfterSeconds(response.headers.get('retry-after')) ??
+    parseRetryAfterSeconds(response.headers.get('x-ratelimit-reset-requests')) ??
+    parseRetryAfterSeconds(response.headers.get('x-ratelimit-reset-tokens'));
+  const waitText = wait != null && wait > 0 ? ` The provider asked to wait ~${Math.ceil(wait)}s.` : '';
+  return `Groq's per-minute rate limit for \`${model}\` is used up.${waitText} Limits are per model, so switching to a different model in Settings → Models & Keys usually continues immediately — or retry in about a minute. On a free key, a shorter chat history also spends less of the quota.`;
 }
 
 /**
@@ -182,7 +197,11 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
   let response = await send(messages, effort, maxOutputTokens, 1, withTools);
   let payload = response.ok ? '' : await readErrorPayload(response);
 
-  if (!response.ok && withTools && rejectsNativeTools(payload)) {
+  if (!response.ok && withTools && (rejectsNativeTools(payload) || rejectsToolCall(payload))) {
+    // Either the server does not speak native tools, or the model hallucinated
+    // a tool name and Groq 400'd the generation ("Tool call validation failed").
+    // Both recover the same way: resend without native tools and let the text
+    // protocol's unknown-tool repair teach the model the real names.
     withTools = false;
     droppedFeatures.push('tools');
     response = await send(messages, effort, maxOutputTokens, 1, withTools);
@@ -200,20 +219,27 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
   if (!response.ok && isRequestTooLarge(payload)) {
     // Free-tier Groq keys carry per-minute limits far below what a normal chat
     // request needs, and Groq bills the *declared* output ceiling against the
-    // limit up front. Shrink both sides of the request, then try once.
+    // limit up front. When the error names a token budget, shrink both sides of
+    // the request and try once. A pure requests-per-minute limit has nothing to
+    // shrink — the only fix is waiting out the window, so the resend carries a
+    // real retry budget and fetchUpstream honours the provider's wait request.
     const limits = groqLimits(payload);
-    if (limits.outputTokensPerMinute) {
-      const clamped = Math.min(resolvedMaxOutput, Math.max(256, limits.outputTokensPerMinute - 64));
-      if (clamped < resolvedMaxOutput) droppedFeatures.push('output_cap_clamped');
-      maxOutputTokens = clamped;
+    if (limits.outputTokensPerMinute || limits.tokensPerMinute) {
+      if (limits.outputTokensPerMinute) {
+        const clamped = Math.min(resolvedMaxOutput, Math.max(256, limits.outputTokensPerMinute - 64));
+        if (clamped < resolvedMaxOutput) droppedFeatures.push('output_cap_clamped');
+        maxOutputTokens = clamped;
+      }
+      if (limits.tokensPerMinute) {
+        const output = maxOutputTokens ?? Math.min(1024, Math.floor(limits.tokensPerMinute / 2));
+        const roomTokens = Math.max(512, limits.tokensPerMinute - output);
+        messages = clampMessages(messages, roomTokens * 4);
+        droppedFeatures.push('history_clamp');
+      }
+      response = await send(messages, effort, maxOutputTokens, 1, withTools);
+    } else {
+      response = await send(messages, effort, maxOutputTokens, 3, withTools);
     }
-    if (limits.tokensPerMinute) {
-      const output = maxOutputTokens ?? Math.min(1024, Math.floor(limits.tokensPerMinute / 2));
-      const roomTokens = Math.max(512, limits.tokensPerMinute - output);
-      messages = clampMessages(messages, roomTokens * 4);
-      droppedFeatures.push('history_clamp');
-    }
-    response = await send(messages, effort, maxOutputTokens, 1, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
   } else if (!response.ok) {
     // Ordinary transient failure: `fetchUpstream` owns the backoff for these.
@@ -222,10 +248,12 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
   }
 
   if (!response.ok) {
-    throw new UpstreamError(
-      isRequestTooLarge(payload) ? limitHint(model, groqLimits(payload)) : sanitizeErrorMessage(payload, 'Groq request failed.'),
-      response.status
-    );
+    const message = response.status === 429
+      ? rateLimitHint(model, response)
+      : isRequestTooLarge(payload)
+        ? limitHint(model, groqLimits(payload))
+        : sanitizeErrorMessage(payload, 'Groq request failed.');
+    throw new UpstreamError(message, response.status);
   }
 
   let fullText = '';

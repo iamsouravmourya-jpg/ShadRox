@@ -510,6 +510,54 @@ test('a 429 retries after the Retry-After the provider asked for, then succeeds'
   assert.match(out.notices[0].message, /Retrying in 2\.0 seconds\.\.\. \(attempt 2 of 4\)/);
 });
 
+test('fractional and Go-style Retry-After values are honoured, not dropped', async () => {
+  assert.equal(parseRetryAfterSeconds('0.42'), 0.42);
+  assert.equal(parseRetryAfterSeconds('27.36s'), 27.36);
+  assert.equal(parseRetryAfterSeconds('1m30s'), 90);
+  assert.equal(parseRetryAfterSeconds('500ms'), 0.5);
+
+  const clock = fakeClock();
+  const out = await runTurn(
+    [
+      () => errorResponse(429, 'Rate limit reached.', { 'Retry-After': '2.5' }),
+      () => streamResponse([sseDelta('Hello'), sseDone])
+    ],
+    clock.retry
+  );
+  assert.equal(out.error, null);
+  assert.deepEqual(clock.sleeps, [2500]);
+});
+
+test('a long provider-requested wait is served under the extended rate-limit budget', async () => {
+  const clock = fakeClock();
+  const out = await runTurn(
+    [
+      // 70 s would blow the default 30 s turn deadline; a rate limit gets the
+      // longer budget precisely so the quota reset the provider promised is
+      // actually waited out instead of "Giving up after 4 attempts".
+      () => errorResponse(429, 'Rate limit reached for model test.', { 'Retry-After': '1m10s' }),
+      () => streamResponse([sseDelta('Recovered'), sseDone])
+    ],
+    clock.retry
+  );
+  assert.equal(out.error, null);
+  assert.equal(out.calls, 2);
+  assert.equal(out.text, 'Recovered');
+  assert.deepEqual(clock.sleeps, [70_000]);
+});
+
+test('an exhausted rate limit ends with the model-switch hint, not a bare give-up', async () => {
+  const clock = fakeClock();
+  const out = await runTurn(
+    [() => errorResponse(429, 'Rate limit reached for model test.', { 'Retry-After': '40' })],
+    clock.retry
+  );
+  assert.equal(out.calls, 4);
+  assert.ok(out.error);
+  assert.match(out.error, /Giving up after 4 attempts\./);
+  assert.match(out.error, /switching models in Settings/);
+});
+
 test('5xx failures double the aider backoff from the 0.125 s seed', async () => {
   const clock = fakeClock();
   const out = await runTurn(

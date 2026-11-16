@@ -181,6 +181,46 @@ test('review-held files and touched paths survive into the run state', async () 
   assert.ok(h.events.some((event) => event.type === 'milestone:review' && event.paths[0] === 'src/a.ts'));
 });
 
+test('a check failed by review-held files pauses the run instead of burning attempts and rolling back', async () => {
+  const h = harness([milestone('m1'), milestone('m2', { dependsOn: ['m1'] })]);
+  h.setVerify(async () => FAILED);
+  h.setTurn(() => ({
+    reply: 'Proposed the edit.',
+    patchesApplied: 0,
+    patchFailures: [],
+    creditsSpent: 0.4,
+    aborted: false,
+    pendingReview: ['src/a.ts']
+  }));
+  const state = await runAutonomous('goal', h.deps);
+  assert.equal(state.status, 'paused');
+  assert.equal(state.milestones[0].status, 'stopped');
+  assert.equal(h.turns.length, 1, 'no paid retry can accept a review for the user');
+  assert.deepEqual(h.rollbacks, [], 'the work already landed stays on disk while the user reviews');
+  assert.match(state.error ?? '', /waiting for your review/);
+  assert.match(state.error ?? '', /resume the run/);
+});
+
+test('a held file unrelated to the failure does not pause the repair loop', async () => {
+  const h = harness([milestone('m1')]);
+  h.setVerify(async () => FAILED); // the error is in src/a.ts, the held file is not
+  h.setTurn(() => ({
+    reply: 'Proposed an unrelated edit.',
+    patchesApplied: 0,
+    patchFailures: [],
+    creditsSpent: 0.4,
+    aborted: false,
+    pendingReview: ['src/other.ts']
+  }));
+  const state = await runAutonomous('goal', h.deps);
+  assert.equal(state.status, 'failed');
+  assert.equal(state.milestones[0].attempts.length, DEFAULT_RUN_BUDGET.maxAttemptsPerMilestone);
+  // The repair turn is told which files are NOT on disk so it stops building
+  // against content only the review queue has seen.
+  assert.match(h.turns[1].feedbackText ?? '', /held for user review/);
+  assert.match(h.turns[1].feedbackText ?? '', /src\/other\.ts/);
+});
+
 test('a failing milestone repairs up to the cap then fails and blocks dependents', async () => {
   const h = harness([milestone('m1'), milestone('m2', { dependsOn: ['m1'] })]);
   h.setVerify(async () => FAILED);

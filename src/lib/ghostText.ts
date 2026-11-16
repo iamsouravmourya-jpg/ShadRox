@@ -215,7 +215,7 @@ class GhostController {
 
 const ghostTheme = EditorView.baseTheme({
   '.shadrox-ghost': {
-    color: 'rgba(226, 232, 240, 0.32)',
+    color: 'var(--text-5)',
     fontStyle: 'italic',
     whiteSpace: 'pre-wrap',
     pointerEvents: 'none'

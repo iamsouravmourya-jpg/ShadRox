@@ -31,9 +31,9 @@ const RAIL_NODE_SPACING = 26;
 const DIFF_ROWS = 6;
 
 const KIND_GLYPH: Record<string, { mark: string; tone: string; word: string }> = {
-  edit: { mark: '~', tone: 'text-amber-300', word: 'edited' },
-  restore: { mark: '+', tone: 'text-emerald-300', word: 'comes back' },
-  delete: { mark: '−', tone: 'text-rose-300', word: 'deleted' }
+  edit: { mark: '~', tone: 'text-warn', word: 'edited' },
+  restore: { mark: '+', tone: 'text-ok', word: 'comes back' },
+  delete: { mark: '−', tone: 'text-danger', word: 'deleted' }
 };
 
 /**
@@ -195,22 +195,22 @@ export function TimelineSlider({
   return (
     <section
       aria-label="Checkpoint timeline"
-      className="flex max-h-[200px] w-full min-w-0 flex-col overflow-y-auto rounded-xl border border-white/10 bg-neutral-900/90 text-neutral-200"
+      className="flex max-h-[200px] w-full min-w-0 flex-col overflow-y-auto rounded-xl border border-line-2 bg-base-2/90 text-ink-2"
     >
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.07] px-3 py-1.5">
-        <div className="flex min-w-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-neutral-400">
-          <History className="h-3 w-3 shrink-0 text-emerald-400/80" />
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-3 py-1.5">
+        <div className="flex min-w-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-ink-3">
+          <History className="h-3 w-3 shrink-0 text-ok/80" />
           <span className="truncate">Timeline</span>
-          <span className="shrink-0 text-neutral-600">
+          <span className="shrink-0 text-ink-5">
             {count} checkpoint{count === 1 ? '' : 's'}
           </span>
-          {busy && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-emerald-300" />}
+          {busy && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-ok" />}
         </div>
         {onClose && (
           <button
             type="button"
             onClick={onClose}
-            className="shrink-0 rounded p-1 text-neutral-500 transition-colors hover:text-white cursor-pointer"
+            className="shrink-0 rounded p-1 text-ink-4 transition-colors hover:text-ink cursor-pointer"
             title="Close timeline"
             aria-label="Close checkpoint timeline"
           >
@@ -221,18 +221,18 @@ export function TimelineSlider({
 
       {count === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-1.5 px-4 py-5 text-center">
-          <History className="h-4 w-4 text-neutral-600" />
-          <p className="text-[11px] leading-snug text-neutral-500">
+          <History className="h-4 w-4 text-ink-5" />
+          <p className="text-[11px] leading-snug text-ink-4">
             No checkpoints yet — they are created after each assistant reply.
           </p>
         </div>
       ) : (
         <>
           <div className="shrink-0 px-3 pt-2">
-            <p className="truncate text-[11px] font-medium text-white" title={selected ? selected.label : ''}>
+            <p className="truncate text-[11px] font-medium text-ink" title={selected ? selected.label : ''}>
               {selectedLabel}
             </p>
-            <p className="mt-0.5 truncate font-mono text-[10px] text-neutral-500">
+            <p className="mt-0.5 truncate font-mono text-[10px] text-ink-4">
               {selected ? describeCheckpoint(selected) : ''}
             </p>
           </div>
@@ -245,7 +245,7 @@ export function TimelineSlider({
                 disabled={!railOverflow.start}
                 title="Scroll to older checkpoints"
                 aria-label="Scroll timeline to older checkpoints"
-                className="shrink-0 rounded p-0.5 text-neutral-500 transition-colors hover:text-white disabled:pointer-events-none disabled:opacity-25 cursor-pointer"
+                className="shrink-0 rounded p-0.5 text-ink-4 transition-colors hover:text-ink disabled:pointer-events-none disabled:opacity-25 cursor-pointer"
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
               </button>
@@ -257,15 +257,15 @@ export function TimelineSlider({
                 tabIndex={0}
                 role="group"
                 aria-label="Checkpoint markers (arrow keys move between checkpoints)"
-                className="relative min-w-0 flex-1 overflow-x-auto rounded px-2 pb-1 outline-none focus-visible:ring-1 focus-visible:ring-violet-300/40"
+                className="relative min-w-0 flex-1 overflow-x-auto rounded px-2 pb-1 outline-none focus-visible:ring-1 focus-visible:ring-accent-line"
               >
                 <div
                   className="relative h-6"
                   style={{ minWidth: `${Math.max(160, count * RAIL_NODE_SPACING)}px` }}
                 >
-                  <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-white/15" />
+                  <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-[var(--line-2)]" />
                   <div
-                    className="absolute left-0 top-1/2 h-px -translate-y-1/2 bg-emerald-400/40"
+                    className="absolute left-0 top-1/2 h-px -translate-y-1/2 bg-ok/40"
                     style={{ width: `${selectedRatio * 100}%` }}
                   />
                   {chronological.map((checkpoint, index) => {
@@ -283,7 +283,7 @@ export function TimelineSlider({
                         title={`${checkpoint.label} · ${describeCheckpoint(checkpoint)}`}
                         style={{ left: `${timelinePosition(index, count) * 100}%` }}
                         className={`absolute top-1/2 z-10 flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full transition-colors cursor-pointer disabled:cursor-not-allowed ${
-                          isSelected ? 'text-emerald-300' : 'text-neutral-500 hover:text-neutral-200'
+                          isSelected ? 'text-ok' : 'text-ink-4 hover:text-ink-2'
                         }`}
                       >
                         {isRestoring ? (
@@ -292,8 +292,8 @@ export function TimelineSlider({
                           <span
                             className={`h-2 w-2 rounded-full border ${
                               isSelected
-                                ? 'border-emerald-300 bg-emerald-400 shadow-[0_0_0_3px_rgba(52,211,153,0.15)]'
-                                : 'border-neutral-500 bg-neutral-800'
+                                ? 'border-ok bg-ok shadow-[0_0_0_3px_color-mix(in_srgb,var(--ok)_15%,transparent)]'
+                                : 'border-ink-4 bg-surface-2'
                             }`}
                           />
                         )}
@@ -309,30 +309,30 @@ export function TimelineSlider({
                 disabled={!railOverflow.end}
                 title="Scroll to newer checkpoints"
                 aria-label="Scroll timeline to newer checkpoints"
-                className="shrink-0 rounded p-0.5 text-neutral-500 transition-colors hover:text-white disabled:pointer-events-none disabled:opacity-25 cursor-pointer"
+                className="shrink-0 rounded p-0.5 text-ink-4 transition-colors hover:text-ink disabled:pointer-events-none disabled:opacity-25 cursor-pointer"
               >
                 <ChevronRight className="h-3.5 w-3.5" />
               </button>
 
               {/* Edge fades sit on the wrapper, not the scroll content. */}
               {railOverflow.start && (
-                <div className="pointer-events-none absolute inset-y-0 left-5 w-6 bg-gradient-to-r from-neutral-900 to-transparent" />
+                <div className="pointer-events-none absolute inset-y-0 left-5 w-6 bg-gradient-to-r from-base-2 to-transparent" />
               )}
               {railOverflow.end && (
-                <div className="pointer-events-none absolute inset-y-0 right-5 w-6 bg-gradient-to-l from-neutral-900 to-transparent" />
+                <div className="pointer-events-none absolute inset-y-0 right-5 w-6 bg-gradient-to-l from-base-2 to-transparent" />
               )}
             </div>
 
-            <p className="mt-1 truncate text-[10px] text-neutral-500" title={summary}>
+            <p className="mt-1 truncate text-[10px] text-ink-4" title={summary}>
               {summary}
             </p>
           </div>
 
           <div className="shrink-0 px-3 pb-1 pt-2">
             {selected?.machine ? (
-              <div className="space-y-1.5 text-[10px] text-neutral-400" aria-label="Machine Delta">
-                <p className="font-medium text-emerald-300">Machine Delta · {machine?.state ?? 'unavailable'}</p>
-                {machineReason && <p role="status" className="text-amber-200">{machineReason}</p>}
+              <div className="space-y-1.5 text-[10px] text-ink-3" aria-label="Machine Delta">
+                <p className="font-medium text-ok">Machine Delta · {machine?.state ?? 'unavailable'}</p>
+                {machineReason && <p role="status" className="text-warn">{machineReason}</p>}
                 {machine && <>
                   <ul className="space-y-0.5 font-mono">
                     {machine.files.map((file) => <li key={file.path}>{file.kind}: {file.path}{file.dependency ? ' · dependency manifest/lockfile' : ''}</li>)}
@@ -355,13 +355,13 @@ export function TimelineSlider({
                       type="button"
                       onClick={handleExportReceipt}
                       disabled={blocked || receiptBusy}
-                      className="flex items-center gap-1.5 rounded-lg border border-white/15 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-neutral-300 transition-colors hover:border-emerald-400/40 hover:text-emerald-200 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                      className="flex items-center gap-1.5 rounded-lg border border-line-2 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-ink-3 transition-colors hover:border-ok/40 hover:text-ok cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {receiptBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileDown className="h-3 w-3" />}
                       {receiptBusy ? 'Writing receipt' : 'Export delta receipt'}
                     </button>
                     {receiptResult?.id === selected.id && (
-                      <p role="status" className="mt-1 whitespace-normal break-words text-[9.5px] leading-snug text-neutral-400">
+                      <p role="status" className="mt-1 whitespace-normal break-words text-[9.5px] leading-snug text-ink-3">
                         {receiptResult.message}
                       </p>
                     )}
@@ -369,13 +369,13 @@ export function TimelineSlider({
                 )}
               </div>
             ) : diffLoading ? (
-              <p className="flex items-center gap-1.5 font-mono text-[10px] text-neutral-500">
+              <p className="flex items-center gap-1.5 font-mono text-[10px] text-ink-4">
                 <Loader2 className="h-3 w-3 animate-spin" />
                 Comparing files
               </p>
             ) : diff ? (
               <>
-                <p className="truncate text-[10px] text-neutral-400" title={describeCheckpointDiff(diff)}>
+                <p className="truncate text-[10px] text-ink-3" title={describeCheckpointDiff(diff)}>
                   {describeCheckpointDiff(diff)}
                 </p>
                 {diff.changes.length > 0 && (
@@ -385,13 +385,13 @@ export function TimelineSlider({
                       return (
                         <li key={change.path} className="flex min-w-0 items-center gap-1.5 font-mono text-[10px]">
                           <span className={`${glyph.tone} w-2 shrink-0`}>{glyph.mark}</span>
-                          <span className="truncate text-neutral-300" title={`${change.path} · ${glyph.word}`}>
+                          <span className="truncate text-ink-3" title={`${change.path} · ${glyph.word}`}>
                             {change.path}
                           </span>
                           {!change.approximate && (change.added || change.removed) > 0 && (
-                            <span className="ml-auto shrink-0 text-neutral-600">
-                              {change.added > 0 && <span className="text-emerald-400/70">+{change.added}</span>}
-                              {change.removed > 0 && <span className="text-rose-400/70"> −{change.removed}</span>}
+                            <span className="ml-auto shrink-0 text-ink-5">
+                              {change.added > 0 && <span className="text-ok/70">+{change.added}</span>}
+                              {change.removed > 0 && <span className="text-danger/70"> −{change.removed}</span>}
                             </span>
                           )}
                         </li>
@@ -400,7 +400,7 @@ export function TimelineSlider({
                     {diff.changes.length > DIFF_ROWS && (() => {
                       const more = diff.edited + diff.restored + diff.deleted - DIFF_ROWS;
                       return (
-                        <li className="font-mono text-[10px] text-neutral-600">
+                        <li className="font-mono text-[10px] text-ink-5">
                           and {more} more file{more === 1 ? '' : 's'}
                         </li>
                       );
@@ -409,12 +409,12 @@ export function TimelineSlider({
                 )}
               </>
             ) : (
-              <p className="text-[10px] text-neutral-600">File comparison unavailable for this checkpoint.</p>
+              <p className="text-[10px] text-ink-5">File comparison unavailable for this checkpoint.</p>
             )}
           </div>
 
-          <div className="mt-auto flex shrink-0 items-center gap-2 border-t border-white/[0.07] px-3 py-2">
-            <span className="hidden shrink-0 font-mono text-[9px] text-neutral-600 sm:inline">
+          <div className="mt-auto flex shrink-0 items-center gap-2 border-t border-line px-3 py-2">
+            <span className="hidden shrink-0 font-mono text-[9px] text-ink-5 sm:inline">
               {sideCounts.older} older
             </span>
             <button
@@ -423,8 +423,8 @@ export function TimelineSlider({
               disabled={blocked || !selected || Boolean(machineReason)}
               className={`ml-auto flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[10px] font-medium transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 ${
                 confirming
-                  ? 'border-amber-400/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
-                  : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'
+                  ? 'border-warn/40 bg-warn/10 text-warn hover:bg-warn/20'
+                  : 'border-ok/30 bg-ok/10 text-ok hover:bg-ok/20'
               }`}
             >
               {isRestoringSelected ? (

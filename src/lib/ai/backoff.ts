@@ -42,6 +42,15 @@ export interface RetrySettings {
 export const AIDER_INITIAL_RETRY_DELAY_MS = 125;
 export const AIDER_RETRY_TIMEOUT_MS = 60_000;
 
+/**
+ * ADAPTATION: a rate limit is the one failure where the provider tells us
+ * exactly when to come back, and Groq's per-minute windows routinely ask for
+ * 20-60 s. The default 30 s turn budget would kill the wait mid-sleep ("Giving
+ * up after 4 attempts" while the quota was about to reset), so rate-limited
+ * turns get a longer wall-clock budget — still bounded, still abortable.
+ */
+export const RATE_LIMIT_MAX_ELAPSED_MS = 120_000;
+
 export const DEFAULT_RETRY_SETTINGS: RetrySettings = {
   initialDelayMs: AIDER_INITIAL_RETRY_DELAY_MS,
   backoffFactor: 2,

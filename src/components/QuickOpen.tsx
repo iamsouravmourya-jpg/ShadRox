@@ -604,8 +604,8 @@ export function QuickOpen({
     <div
       className={
         docked
-          ? 'flex h-full min-h-0 flex-col bg-ink-950'
-          : 'fixed inset-0 z-[60] flex items-start justify-center bg-black/50 px-4 pt-20 backdrop-blur-sm'
+          ? 'flex h-full min-h-0 flex-col bg-base'
+          : 'fixed inset-0 z-[60] flex items-start justify-center bg-[var(--scrim)] px-4 pt-20 backdrop-blur-sm'
       }
       onMouseDown={docked ? undefined : onClose}
       role="dialog"
@@ -615,15 +615,15 @@ export function QuickOpen({
         className={
           docked
             ? 'flex min-h-0 flex-1 flex-col overflow-hidden'
-            : 'w-full max-w-xl overflow-hidden rounded-xl border border-white/[0.1] bg-ink-950 shadow-2xl'
+            : 'w-full max-w-xl overflow-hidden rounded-xl border border-line-2 bg-base shadow-2xl'
         }
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-2.5">
+        <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
           {panelMode === 'commands' ? (
-            <CommandIcon className="h-3.5 w-3.5 shrink-0 text-neutral-500" />
+            <CommandIcon className="h-3.5 w-3.5 shrink-0 text-ink-4" />
           ) : (
-            <Search className="h-3.5 w-3.5 shrink-0 text-neutral-500" />
+            <Search className="h-3.5 w-3.5 shrink-0 text-ink-4" />
           )}
           <input
             ref={inputRef}
@@ -632,9 +632,9 @@ export function QuickOpen({
             onKeyDown={onKeyDown}
             placeholder={placeholder}
             spellCheck={false}
-            className="min-w-0 flex-1 bg-transparent text-xs text-neutral-100 outline-none placeholder:text-neutral-600"
+            className="min-w-0 flex-1 bg-transparent text-xs text-ink outline-none placeholder:text-ink-5"
           />
-          {(isSearching || isSearchingReplace || isLoadingSymbols) && <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-300" />}
+          {(isSearching || isSearchingReplace || isLoadingSymbols) && <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />}
           {panelMode === 'content' && onReplaceAll && (
             <button
               type="button"
@@ -644,7 +644,7 @@ export function QuickOpen({
                 setReplaceStatus(null);
               }}
               className={`p-1 cursor-pointer transition-colors ${
-                showReplace ? 'text-violet-300' : 'text-neutral-500 hover:text-white'
+                showReplace ? 'text-accent' : 'text-ink-4 hover:text-ink'
               }`}
               title={showReplace ? 'Hide replace' : 'Show replace'}
               aria-label="Toggle replace"
@@ -654,7 +654,7 @@ export function QuickOpen({
             </button>
           )}
           {!docked && (
-            <kbd className="hidden rounded border border-white/[0.1] px-1.5 py-0.5 text-[10px] font-mono text-neutral-500 sm:inline">
+            <kbd className="hidden rounded border border-line-2 px-1.5 py-0.5 text-[10px] font-mono text-ink-4 sm:inline">
               Esc
             </kbd>
           )}
@@ -662,7 +662,7 @@ export function QuickOpen({
             <button
               type="button"
               onClick={onClose}
-              className="p-1 text-neutral-500 hover:text-white cursor-pointer"
+              className="p-1 text-ink-4 hover:text-ink cursor-pointer"
               title="Close"
               aria-label="Close search"
             >
@@ -673,8 +673,8 @@ export function QuickOpen({
 
         {panelMode === 'content' && showReplace && (
           <>
-            <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-2">
-              <Replace className="h-3.5 w-3.5 shrink-0 text-neutral-500" />
+            <div className="flex items-center gap-2 border-b border-line px-3 py-2">
+              <Replace className="h-3.5 w-3.5 shrink-0 text-ink-4" />
               <input
                 value={replacement}
                 onChange={(event) => setReplacement(event.target.value)}
@@ -691,19 +691,19 @@ export function QuickOpen({
                 }}
                 placeholder="Replace with…"
                 spellCheck={false}
-                className="min-w-0 flex-1 bg-transparent text-xs text-neutral-100 outline-none placeholder:text-neutral-600"
+                className="min-w-0 flex-1 bg-transparent text-xs text-ink outline-none placeholder:text-ink-5"
               />
               <button
                 type="button"
                 disabled={!canRunReplaceAll || isReplacing}
                 onClick={() => setConfirmReplace(true)}
-                className="shrink-0 rounded border border-white/[0.12] px-2 py-1 text-[10px] text-neutral-200 transition-colors hover:border-violet-300/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
+                className="shrink-0 rounded border border-line-2 px-2 py-1 text-[10px] text-ink-2 transition-colors hover:border-accent-line hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
               >
                 Replace all
               </button>
             </div>
             {confirmReplace && (
-              <div className="flex items-center justify-between gap-2 border-b border-amber-400/20 bg-amber-500/[.08] px-3 py-2 text-[11px] text-amber-200">
+              <div className="flex items-center justify-between gap-2 border-b border-warn/20 bg-warn/[0.08] px-3 py-2 text-[11px] text-warn">
                 <span>
                   Replace {replaceMatchCount} {replaceMatchCount === 1 ? 'match' : 'matches'} across{' '}
                   {replaceResults.length} {replaceResults.length === 1 ? 'file' : 'files'}?
@@ -713,14 +713,14 @@ export function QuickOpen({
                     type="button"
                     onClick={() => void runReplaceAll()}
                     disabled={isReplacing}
-                    className="rounded bg-amber-400/90 px-2 py-1 text-[10px] font-medium text-ink-950 transition-colors hover:bg-amber-300 disabled:opacity-50 cursor-pointer"
+                    className="rounded bg-warn/90 px-2 py-1 text-[10px] font-medium text-ink-950 transition-colors hover:opacity-90 disabled:opacity-50 cursor-pointer"
                   >
                     {isReplacing ? 'Replacing…' : 'Replace'}
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfirmReplace(false)}
-                    className="rounded border border-white/[0.14] px-2 py-1 text-[10px] text-neutral-200 transition-colors hover:text-white cursor-pointer"
+                    className="rounded border border-line-2 px-2 py-1 text-[10px] text-ink-2 transition-colors hover:text-ink cursor-pointer"
                   >
                     Cancel
                   </button>
@@ -728,7 +728,7 @@ export function QuickOpen({
               </div>
             )}
             {replaceStatus && (
-              <p className="border-b border-white/[0.07] bg-white/[0.03] px-3 py-1.5 text-[11px] text-neutral-300">
+              <p className="border-b border-line bg-overlay px-3 py-1.5 text-[11px] text-ink-3">
                 {replaceStatus}
               </p>
             )}
@@ -737,22 +737,22 @@ export function QuickOpen({
         {panelMode === 'content' && showReplace && (
           <>
             {isSearchingReplace && (
-              <p className="border-b border-white/[0.07] px-3 py-1.5 text-[11px] text-neutral-500">
+              <p className="border-b border-line px-3 py-1.5 text-[11px] text-ink-4">
                 Searching workspace files…
               </p>
             )}
             {replaceSearchError && (
-              <p className="border-b border-amber-400/20 bg-amber-500/[.08] px-3 py-1.5 text-[11px] text-amber-200">
+              <p className="border-b border-warn/20 bg-warn/[0.08] px-3 py-1.5 text-[11px] text-warn">
                 Replace preview unavailable: {replaceSearchError}
               </p>
             )}
             {replaceSearchTruncated && (
-              <p className="border-b border-amber-400/20 bg-amber-500/[.08] px-3 py-1.5 text-[11px] text-amber-200">
+              <p className="border-b border-warn/20 bg-warn/[0.08] px-3 py-1.5 text-[11px] text-warn">
                 Workspace search reached its safety limit. Narrow the query; replacing a partial result is disabled.
               </p>
             )}
             {!replaceSearchError && !replaceSearchTruncated && replaceIncomplete && (
-              <p className="border-b border-amber-400/20 bg-amber-500/[.08] px-3 py-1.5 text-[11px] text-amber-200">
+              <p className="border-b border-warn/20 bg-warn/[0.08] px-3 py-1.5 text-[11px] text-warn">
                 More than 2,000 matches found. Narrow the query before replacing all.
               </p>
             )}
@@ -768,18 +768,18 @@ export function QuickOpen({
           className={docked ? 'min-h-0 flex-1 overflow-y-auto py-1' : 'max-h-80 overflow-y-auto py-1'}
         >
           {panelMode === 'content' && query.trim().length > 0 && query.trim().length < 2 && (
-            <p className="px-4 py-6 text-center text-[11px] text-neutral-500">Type at least 2 characters.</p>
+            <p className="px-4 py-6 text-center text-[11px] text-ink-4">Type at least 2 characters.</p>
           )}
           {searchError && (
-            <p className="px-4 py-6 text-center text-[11px] text-amber-300">{searchError}</p>
+            <p className="px-4 py-6 text-center text-[11px] text-warn">{searchError}</p>
           )}
           {symbolError && (
-            <p className="px-4 py-6 text-center text-[11px] text-amber-300">{symbolError}</p>
+            <p className="px-4 py-6 text-center text-[11px] text-warn">{symbolError}</p>
           )}
           {!searchError && !symbolError &&
             !(panelMode === 'content' && showReplace && (isSearchingReplace || replaceSearchError || replaceSearchTruncated)) &&
             resultCount === 0 && (
-            <p className="px-4 py-6 text-center text-[11px] text-neutral-500">
+            <p className="px-4 py-6 text-center text-[11px] text-ink-4">
               {panelMode === 'commands'
                 ? (query.trim() ? 'No commands match.' : 'No commands available.')
                 : panelMode === 'content'
@@ -813,15 +813,15 @@ export function QuickOpen({
               onMouseEnter={() => setActiveIndex(index)}
               onClick={() => choose(index)}
               className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer ${
-                index === activeIndex ? 'bg-violet-500/[.14] text-white' : 'text-neutral-300 hover:bg-white/[0.04]'
+                index === activeIndex ? 'bg-accent-soft text-ink' : 'text-ink-3 hover:bg-overlay'
               }`}
             >
-              <CommandIcon className="h-3 w-3 shrink-0 text-violet-300/80" />
+              <CommandIcon className="h-3 w-3 shrink-0 text-accent/80" />
               <span className="truncate text-[11px]">{command.title}</span>
               <span className="ml-auto flex shrink-0 items-center gap-2">
-                <span className="text-[10px] text-neutral-600">{command.category}</span>
+                <span className="text-[10px] text-ink-5">{command.category}</span>
                 {command.shortcut && (
-                  <kbd className="rounded border border-white/[0.1] px-1.5 py-0.5 font-mono text-[10px] text-neutral-500">
+                  <kbd className="rounded border border-line-2 px-1.5 py-0.5 font-mono text-[10px] text-ink-4">
                     {command.shortcut}
                   </kbd>
                 )}
@@ -836,13 +836,13 @@ export function QuickOpen({
               onMouseEnter={() => setActiveIndex(index)}
               onClick={() => choose(index)}
               className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer ${
-                index === activeIndex ? 'bg-violet-500/[.14] text-white' : 'text-neutral-300 hover:bg-white/[0.04]'
+                index === activeIndex ? 'bg-accent-soft text-ink' : 'text-ink-3 hover:bg-overlay'
               }`}
             >
-              <FileCode2 className="h-3 w-3 shrink-0 text-neutral-500" />
+              <FileCode2 className="h-3 w-3 shrink-0 text-ink-4" />
               <span className="truncate font-mono text-[11px]">{candidate.path}</span>
               {candidate.index < 0 && (
-                <span className="ml-auto shrink-0 text-[10px] text-amber-300/80">on disk</span>
+                <span className="ml-auto shrink-0 text-[10px] text-warn/80">on disk</span>
               )}
             </button>
           ))}
@@ -854,14 +854,14 @@ export function QuickOpen({
               onMouseEnter={() => setActiveIndex(index)}
               onClick={() => choose(index)}
               className={`flex w-full flex-col gap-0.5 px-3 py-1.5 text-left transition-colors cursor-pointer ${
-                index === activeIndex ? 'bg-violet-500/[.14]' : 'hover:bg-white/[0.04]'
+                index === activeIndex ? 'bg-accent-soft' : 'hover:bg-overlay'
               }`}
             >
-              <span className="flex items-center gap-2 font-mono text-[10px] text-neutral-400">
+              <span className="flex items-center gap-2 font-mono text-[10px] text-ink-3">
                 <span className="truncate">{hit.name}</span>
-                <span className="shrink-0 text-neutral-600">:{hit.line}</span>
+                <span className="shrink-0 text-ink-5">:{hit.line}</span>
               </span>
-              <span className="truncate text-[11px] text-neutral-300">{hit.preview || '(empty line)'}</span>
+              <span className="truncate text-[11px] text-ink-3">{hit.preview || '(empty line)'}</span>
             </button>
           ))}
 
@@ -880,18 +880,18 @@ export function QuickOpen({
                   onMouseEnter={() => setActiveIndex(index)}
                   onClick={() => choose(index)}
                   className={`flex h-9 w-full items-center gap-2 px-3 text-left transition-colors cursor-pointer ${
-                    index === activeIndex ? 'bg-violet-500/[.14]' : 'hover:bg-white/[0.04]'
+                    index === activeIndex ? 'bg-accent-soft' : 'hover:bg-overlay'
                   }`}
                 >
-                  <span className="w-24 shrink-0 truncate font-mono text-[10px] text-neutral-500" title={row.file}>
+                  <span className="w-24 shrink-0 truncate font-mono text-[10px] text-ink-4" title={row.file}>
                     {row.file}
                   </span>
-                  <span className="w-6 shrink-0 text-right font-mono text-[10px] text-neutral-600">
+                  <span className="w-6 shrink-0 text-right font-mono text-[10px] text-ink-5">
                     {row.match.line + 1}
                   </span>
-                  <span className="truncate text-[11px] text-neutral-400">
+                  <span className="truncate text-[11px] text-ink-3">
                     {leading}
-                    <span className="rounded bg-violet-500/30 text-violet-100">{matched || '(empty)'}</span>
+                    <span className="rounded bg-accent-soft text-accent">{matched || '(empty)'}</span>
                     {trailing}
                   </span>
                 </button>
@@ -909,13 +909,13 @@ export function QuickOpen({
               onMouseEnter={() => setActiveIndex(index)}
               onClick={() => choose(index)}
               className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer ${
-                index === activeIndex ? 'bg-violet-500/[.14] text-white' : 'text-neutral-300 hover:bg-white/[0.04]'
+                index === activeIndex ? 'bg-accent-soft text-ink' : 'text-ink-3 hover:bg-overlay'
               }`}
               style={{ paddingLeft: `${12 + Math.max(0, symbol.depth) * 12}px` }}
             >
-              <span className="w-3 shrink-0 font-mono text-[10px] text-violet-300/80">{kindLabel(symbol.kind)}</span>
+              <span className="w-3 shrink-0 font-mono text-[10px] text-accent/80">{kindLabel(symbol.kind)}</span>
               <span className="truncate font-mono text-[11px]">{symbol.name}</span>
-              <span className="ml-auto shrink-0 font-mono text-[10px] text-neutral-600">
+              <span className="ml-auto shrink-0 font-mono text-[10px] text-ink-5">
                 {symbol.kind} · {symbol.line + 1}
               </span>
             </button>
@@ -930,21 +930,21 @@ export function QuickOpen({
                 onMouseEnter={() => setActiveIndex(index)}
                 onClick={() => choose(index)}
                 className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer ${
-                  index === activeIndex ? 'bg-violet-500/[.14] text-white' : 'text-neutral-300 hover:bg-white/[0.04]'
+                  index === activeIndex ? 'bg-accent-soft text-ink' : 'text-ink-3 hover:bg-overlay'
                 }`}
               >
-                <span className="w-3 shrink-0 font-mono text-[10px] text-violet-300/80">{kindLabel(symbol.kind)}</span>
+                <span className="w-3 shrink-0 font-mono text-[10px] text-accent/80">{kindLabel(symbol.kind)}</span>
                 <span className="shrink-0 font-mono text-[11px]">{symbol.name}</span>
                 {symbol.container && (
-                  <span className="truncate text-[10px] text-neutral-500">{symbol.container}</span>
+                  <span className="truncate text-[10px] text-ink-4">{symbol.container}</span>
                 )}
-                <span className="ml-auto truncate font-mono text-[10px] text-neutral-600">{relative}</span>
+                <span className="ml-auto truncate font-mono text-[10px] text-ink-5">{relative}</span>
               </button>
             );
           })}
         </div>
 
-        <div className="flex items-center justify-between border-t border-white/[0.07] px-3 py-1.5 text-[10px] text-neutral-600">
+        <div className="flex items-center justify-between border-t border-line px-3 py-1.5 text-[10px] text-ink-5">
           <span>
             {footerLabel} · ↑↓ to move, Enter to {panelMode === 'commands' ? 'run' : 'open'}
             {mode === 'files' && ' · @ symbols · # workspace'}

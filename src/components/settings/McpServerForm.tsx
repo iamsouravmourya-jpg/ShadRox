@@ -55,17 +55,17 @@ function PairRows({
   return (
     <div className="col-span-2 space-y-1">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] uppercase tracking-wider text-neutral-500">{label}</span>
+        <span className="text-[10px] uppercase tracking-wider text-ink-4">{label}</span>
         <button
           type="button"
           onClick={() => onChange([...rows, { key: '', value: '' }])}
-          className="inline-flex items-center gap-1 text-[10px] text-violet-300 transition-colors hover:text-violet-200"
+          className="inline-flex items-center gap-1 text-[10px] text-accent transition-colors hover:text-ink"
         >
           <Plus className="h-3 w-3" /> Add
         </button>
       </div>
       {rows.length === 0 ? (
-        <p className="text-[10px] text-neutral-600">None configured.</p>
+        <p className="text-[10px] text-ink-5">None configured.</p>
       ) : (
         rows.map((row, index) => (
           <div key={index} className="flex items-center gap-1.5">
@@ -173,7 +173,7 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
     <Card className="space-y-2">
       <SectionTitle>{server ? 'Edit server' : 'New server'}</SectionTitle>
       <div className="grid grid-cols-2 gap-2">
-        <label className="col-span-2 text-[10px] uppercase tracking-wider text-neutral-500">
+        <label className="col-span-2 text-[10px] uppercase tracking-wider text-ink-4">
           Name
           <input
             className={`${inputClass} mt-1`}
@@ -183,7 +183,7 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
             autoComplete="off"
           />
         </label>
-        <label className="text-[10px] uppercase tracking-wider text-neutral-500">
+        <label className="text-[10px] uppercase tracking-wider text-ink-4">
           Transport
           <select
             className={`${inputClass} mt-1 cursor-pointer`}
@@ -196,18 +196,18 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
             <option value="http">http</option>
           </select>
         </label>
-        <label className="flex items-end gap-2 pb-2 text-[11px] text-neutral-300">
+        <label className="flex items-end gap-2 pb-2 text-[11px] text-ink-3">
           <input
             type="checkbox"
             checked={draft.enabled}
             onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })}
-            className="accent-violet-400"
+            className="accent-[var(--accent)]"
           />
           Enabled
         </label>
         {draft.transport === 'stdio' ? (
           <>
-            <label className="col-span-2 text-[10px] uppercase tracking-wider text-neutral-500">
+            <label className="col-span-2 text-[10px] uppercase tracking-wider text-ink-4">
               Command
               <input
                 className={`${inputClass} mt-1`}
@@ -218,7 +218,7 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
                 autoComplete="off"
               />
             </label>
-            <label className="col-span-2 text-[10px] uppercase tracking-wider text-neutral-500">
+            <label className="col-span-2 text-[10px] uppercase tracking-wider text-ink-4">
               Arguments (one per line)
               <textarea
                 rows={3}
@@ -238,7 +238,7 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
           </>
         ) : (
           <>
-            <label className="col-span-2 text-[10px] uppercase tracking-wider text-neutral-500">
+            <label className="col-span-2 text-[10px] uppercase tracking-wider text-ink-4">
               URL
               <input
                 className={`${inputClass} mt-1`}
@@ -258,7 +258,7 @@ export function McpServerForm({ server, onSave, onCancel }: McpServerFormProps) 
           </>
         )}
       </div>
-      <p className="text-[10px] leading-relaxed text-neutral-500">
+      <p className="text-[10px] leading-relaxed text-ink-4">
         Secret values are masked and never shown after saving. Leave a value blank to keep what is already
         stored; remove a row to drop the key.
       </p>

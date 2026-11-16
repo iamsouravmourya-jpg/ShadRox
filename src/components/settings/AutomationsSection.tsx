@@ -183,9 +183,9 @@ export function AutomationsSection({ workspaceId, workspaceRoot }: AutomationsSe
       <section>
         <div className="flex items-center justify-between gap-2">
           <SectionTitle>Automations</SectionTitle>
-          <span className="truncate font-mono text-[10px] text-neutral-500">{AUTOMATIONS_PATH}</span>
+          <span className="truncate font-mono text-[10px] text-ink-4">{AUTOMATIONS_PATH}</span>
         </div>
-        <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">
+        <p className="mt-1 text-[11px] leading-relaxed text-ink-4">
           Edit the JSON directly. Definitions are validated as you type; nothing is written until you click Save.
         </p>
       </section>
@@ -199,11 +199,11 @@ export function AutomationsSection({ workspaceId, workspaceRoot }: AutomationsSe
       {!consented ? (
         <Notice tone="info">
           Automations are paused for this workspace. A repository can ship{' '}
-          <code className="font-mono text-violet-300">.shadrox/automations.json</code>, but nothing runs until you
+          <code className="font-mono text-accent">.shadrox/automations.json</code>, but nothing runs until you
           enable it. Saving also enables it.
           <button
             type="button"
-            className="ml-2 rounded-md border border-violet-300/30 px-2 py-0.5 text-[10px] text-violet-200 transition-colors hover:bg-violet-500/10"
+            className="ml-2 rounded-md border border-accent-line px-2 py-0.5 text-[10px] text-accent transition-colors hover:bg-accent-soft"
             onClick={() => toggleConsent(true)}
             disabled={!workspaceRoot}
           >
@@ -211,11 +211,11 @@ export function AutomationsSection({ workspaceId, workspaceRoot }: AutomationsSe
           </button>
         </Notice>
       ) : (
-        <div className="flex items-center justify-between gap-2 rounded-xl border border-violet-300/20 bg-violet-500/[.06] px-3 py-2">
-          <span className="text-[11px] text-violet-200">Automations are enabled for this workspace.</span>
+        <div className="flex items-center justify-between gap-2 rounded-xl border border-accent-line bg-accent-soft px-3 py-2">
+          <span className="text-[11px] text-accent">Automations are enabled for this workspace.</span>
           <button
             type="button"
-            className="rounded-md border border-white/[0.09] px-2 py-0.5 text-[10px] text-neutral-300 transition-colors hover:border-red-400/40 hover:text-red-300"
+            className="rounded-md border border-line px-2 py-0.5 text-[10px] text-ink-3 transition-colors hover:border-danger/40 hover:text-danger"
             onClick={() => toggleConsent(false)}
           >
             Pause
@@ -224,7 +224,7 @@ export function AutomationsSection({ workspaceId, workspaceRoot }: AutomationsSe
       )}
 
       {loading ? (
-        <div className="flex items-center gap-2 text-[11px] text-neutral-500">
+        <div className="flex items-center gap-2 text-[11px] text-ink-4">
           <Loader2 className="h-3.5 w-3.5 animate-spin" /> Reading automations...
         </div>
       ) : (
@@ -232,22 +232,22 @@ export function AutomationsSection({ workspaceId, workspaceRoot }: AutomationsSe
           <Card className="space-y-2">
             <SectionTitle>Parsed automations ({parsed.definitions.length})</SectionTitle>
             {parsed.definitions.length === 0 ? (
-              <p className="text-[11px] text-neutral-500">No valid automations yet.</p>
+              <p className="text-[11px] text-ink-4">No valid automations yet.</p>
             ) : (
               <div className="space-y-2">
                 {parsed.definitions.map((definition) => (
                   <div
                     key={definition.id}
-                    className={`rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 ${
+                    className={`rounded-xl border border-line bg-overlay px-3 py-2 ${
                       definition.enabled ? '' : 'opacity-60'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-xs text-neutral-200">{definition.name}</span>
+                      <span className="truncate text-xs text-ink-2">{definition.name}</span>
                       <StatusBadge enabled={definition.enabled} />
                     </div>
-                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-500">
-                      <span className="text-violet-300">{triggerSummary(definition.trigger)}</span>
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-ink-4">
+                      <span className="text-accent">{triggerSummary(definition.trigger)}</span>
                       <span className="break-all">{actionSummary(definition.action)}</span>
                       <span
                         title={`One run may not spend more than ${definition.creditsPerRun} units of work on your own key (1 ≈ one edit-sized turn). ShadRox bills nothing; this only stops a runaway run.`}
@@ -277,11 +277,11 @@ export function AutomationsSection({ workspaceId, workspaceRoot }: AutomationsSe
               className={`${inputClass} resize-y leading-relaxed`}
             />
             {parsed.errors.length > 0 && (
-              <div className="space-y-0.5 rounded-lg border border-red-900/60 bg-red-950/20 px-3 py-2">
+              <div className="space-y-0.5 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2">
                 {parsed.errors.map((message, index) => (
                   <p
                     key={`${index}-${message}`}
-                    className="whitespace-pre-wrap break-words font-mono text-[10px] text-red-400"
+                    className="whitespace-pre-wrap break-words font-mono text-[10px] text-danger"
                   >
                     {message}
                   </p>
@@ -289,11 +289,11 @@ export function AutomationsSection({ workspaceId, workspaceRoot }: AutomationsSe
               </div>
             )}
             {warnings.length > 0 && (
-              <div className="space-y-0.5 rounded-lg border border-amber-500/25 bg-amber-500/[.06] px-3 py-2">
+              <div className="space-y-0.5 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2">
                 {warnings.map((warning) => (
                   <p
                     key={warning}
-                    className="whitespace-pre-wrap break-words text-[10px] leading-relaxed text-amber-300"
+                    className="whitespace-pre-wrap break-words text-[10px] leading-relaxed text-warn"
                   >
                     {warning}
                   </p>
@@ -306,7 +306,7 @@ export function AutomationsSection({ workspaceId, workspaceRoot }: AutomationsSe
             <div className="flex items-center justify-between gap-2">
               <span
                 className={`text-[10px] ${
-                  parsed.errors.length > 0 ? 'text-red-400' : 'text-violet-300'
+                  parsed.errors.length > 0 ? 'text-danger' : 'text-accent'
                 }`}
               >
                 {parsed.errors.length > 0

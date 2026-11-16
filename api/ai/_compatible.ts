@@ -13,7 +13,7 @@ import {
   type RenderedContent
 } from './_promptCache.js';
 import { UpstreamError, mergeOpenAiUsage, usageFields, type StreamRequest, type StreamResult, type StreamSink, type TokenUsage } from './_types.js';
-import { OpenAiToolCallCollector, rejectsNativeTools } from './_toolCalls.js';
+import { OpenAiToolCallCollector, rejectsNativeTools, rejectsToolCall } from './_toolCalls.js';
 import { AttemptCounter, fetchUpstream, type MeteredStreamResult } from './_upstream.js';
 
 /**
@@ -160,7 +160,7 @@ export async function streamCustomEndpoint(
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 
-  if (!response.ok && withTools && rejectsNativeTools(payload)) {
+  if (!response.ok && withTools && (rejectsNativeTools(payload) || rejectsToolCall(payload))) {
     withTools = false;
     droppedFeatures.push('tools');
     response = await send(true, 1, withTools, withMarkers);

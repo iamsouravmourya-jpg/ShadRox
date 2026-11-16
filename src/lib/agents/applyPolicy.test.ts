@@ -65,6 +65,55 @@ test('the review policy holds everything back, new files included', () => {
   assert.equal(partition.reviewNotes.length, 2);
 });
 
+test('a checkpoint-backed run may edit a file it never read', () => {
+  const decision = decideApply('auto', searchReplace('src/a.ts', 'const a = 1;', 'const a = 2;'), UNREAD_FILE, { checkpointBacked: true });
+  assert.equal(decision.action, 'auto-apply');
+  assert.match(decision.reason, /checkpoint/);
+});
+
+test('a checkpoint-backed run may rewrite destructively: the checkpoint is the floor', () => {
+  const big = Array.from({ length: 40 }, (_, index) => `export const v${index} = ${index};`).join('\n');
+  const decision = decideApply('auto', rewrite('src/a.ts', 'export const v0 = 0;'), { ...READ_FILE, content: big }, { checkpointBacked: true });
+  assert.equal(decision.action, 'auto-apply');
+  assert.match(decision.reason, /checkpoint/);
+});
+
+test('a checkpoint-backed run may delete a matched block it read', () => {
+  const decision = decideApply('auto', searchReplace('src/a.ts', 'const b = 2;\n', ''), READ_FILE, { checkpointBacked: true });
+  assert.equal(decision.action, 'auto-apply');
+  assert.match(decision.reason, /checkpoint/);
+});
+
+test('checkpoint backing never relaxes an explicit review policy', () => {
+  const partition = partitionPatches(
+    'review',
+    [rewrite('src/new.ts', 'x'), searchReplace('src/a.ts', 'const a = 1;', 'const a = 2;')],
+    (patch) => (patch.path === 'src/new.ts' ? NEW_FILE : UNREAD_FILE),
+    { checkpointBacked: true }
+  );
+  assert.equal(partition.auto.length, 0);
+  assert.equal(partition.review.length, 2);
+});
+
+test('checkpoint backing only relaxes the read floor, not the create rule', () => {
+  const decision = decideApply('auto', rewrite('src/new.ts', 'x'), NEW_FILE, { checkpointBacked: true });
+  assert.equal(decision.action, 'auto-apply');
+  assert.match(decision.reason, /new file/);
+});
+
+test('partition hands the checkpoint option through to every decision', () => {
+  const partition = partitionPatches(
+    'auto',
+    [searchReplace('src/a.ts', 'const a = 1;', 'const a = 2;'), searchReplace('src/b.ts', 'b', 'c')],
+    () => UNREAD_FILE,
+    { checkpointBacked: true }
+  );
+  assert.equal(partition.auto.length, 2);
+  assert.equal(partition.review.length, 0);
+  const withoutCheckpoint = partitionPatches('auto', [searchReplace('src/a.ts', 'const a = 1;', 'const a = 2;')], () => UNREAD_FILE);
+  assert.equal(withoutCheckpoint.review.length, 1);
+});
+
 test('partition keeps input order inside each half so a set is reproducible', () => {
   const patches = [
     rewrite('src/1.ts', 'new'),

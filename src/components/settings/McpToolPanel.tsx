@@ -47,8 +47,8 @@ export function McpToolPanel({ tools, initialTool = '', onCall }: McpToolPanelPr
   };
 
   return (
-    <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
-      <label className="block text-[10px] uppercase tracking-wider text-neutral-500">
+    <div className="rounded-xl border border-line bg-overlay p-3">
+      <label className="block text-[10px] uppercase tracking-wider text-ink-4">
         Tool
         <select
           className={`${inputClass} mt-1 cursor-pointer`}
@@ -67,7 +67,7 @@ export function McpToolPanel({ tools, initialTool = '', onCall }: McpToolPanelPr
           ))}
         </select>
       </label>
-      <label className="mt-2 block text-[10px] uppercase tracking-wider text-neutral-500">
+      <label className="mt-2 block text-[10px] uppercase tracking-wider text-ink-4">
         Arguments (JSON)
         <textarea
           rows={3}
@@ -78,7 +78,7 @@ export function McpToolPanel({ tools, initialTool = '', onCall }: McpToolPanelPr
         />
       </label>
       <div className="mt-2 flex items-center justify-between gap-2">
-        <span className="text-[10px] text-neutral-500">The main process asks for approval before the call.</span>
+        <span className="text-[10px] text-ink-4">The main process asks for approval before the call.</span>
         <button
           type="button"
           className={primaryButtonClass}
@@ -94,8 +94,8 @@ export function McpToolPanel({ tools, initialTool = '', onCall }: McpToolPanelPr
         <div
           className={`mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border px-3 py-2 font-mono text-[10px] ${
             result.isError
-              ? 'border-red-900/60 bg-red-950/20 text-red-400'
-              : 'border-violet-300/25 bg-violet-500/[.07] text-violet-200'
+              ? 'border-danger/30 bg-danger/10 text-danger'
+              : 'border-accent-line bg-accent-soft text-accent'
           }`}
         >
           {result.text || JSON.stringify(result.content ?? null)}

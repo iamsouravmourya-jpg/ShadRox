@@ -3,7 +3,7 @@ import { DEFAULT_MAX_OUTPUT, resolveBudgetCapabilities } from '../../src/lib/mod
 import { estimateTokens, readErrorPayload, sanitizeErrorMessage } from '../_http.js';
 import { promptCacheReport, shapeStablePrefix } from './_promptCache.js';
 import { UpstreamError, mergeGeminiUsage, usageFields, type ChatMessage, type StreamRequest, type StreamResult, type StreamSink, type TokenUsage, type ToolCallEntry } from './_types.js';
-import { rejectsNativeTools } from './_toolCalls.js';
+import { rejectsNativeTools, rejectsToolCall, geminiFunctionParameters } from './_toolCalls.js';
 import { AttemptCounter, fetchUpstream, type MeteredStreamResult } from './_upstream.js';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -83,11 +83,17 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
           ...(withTools && request.toolDefinitions?.length
             ? {
                 tools: [{
-                  functionDeclarations: request.toolDefinitions.map((tool) => ({
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: tool.parameters
-                  }))
+                  functionDeclarations: request.toolDefinitions.map((tool) => {
+                    // Gemini only accepts its OpenAPI schema subset; the raw
+                    // JSON-Schema ShadRox sends OpenAI-family providers carries
+                    // keys (additionalProperties, empty properties) Gemini 400s.
+                    const parameters = geminiFunctionParameters(tool.parameters);
+                    return {
+                      name: tool.name,
+                      description: tool.description,
+                      ...(parameters ? { parameters } : {})
+                    };
+                  })
                 }],
                 toolConfig: { functionCallingConfig: { mode: 'AUTO' } }
               }
@@ -106,27 +112,42 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
     baseConfig.thinkingConfig = { thinkingBudget: thinking === 'high' ? 8192 : 0 };
   }
 
+  // Gemini reports schema and feature mismatches as a bare 400 "Request
+  // contains an invalid argument" with no field name. Tools and thinking are
+  // the two optional features this route adds, so a generic 400 drops them one
+  // at a time instead of killing a turn over a capability the model never had.
+  // Auth-shaped 400s are excluded: dropping features cannot fix a bad key.
+  const isGenericInvalidArgument = (status: number, body: string) =>
+    status === 400 &&
+    /invalid argument|invalid json|unknown name|unsupported|not supported|validation/i.test(body) &&
+    !/api.?key|permission|unauthenticated|credential/i.test(body);
+
   let withTools = Boolean(request.toolDefinitions?.length);
   let response = await send(baseConfig, withTools);
   let payload = response.ok ? '' : await readErrorPayload(response);
 
-  if (!response.ok && withTools && rejectsNativeTools(payload)) {
+  if (!response.ok && withTools &&
+    (rejectsNativeTools(payload) || rejectsToolCall(payload) || isGenericInvalidArgument(response.status, payload))) {
     withTools = false;
     droppedFeatures.push('tools');
     response = await send(baseConfig, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 
-  if (!response.ok && thinking) {
-    if (!/thinking|generation_config|Unknown name/i.test(payload)) {
-      throw new UpstreamError(payload, response.status);
-    }
+  if (!response.ok && thinking &&
+    (/thinking|generation_config|Unknown name/i.test(payload) || isGenericInvalidArgument(response.status, payload))) {
     droppedFeatures.push('thinking');
     response = await send({ temperature, maxOutputTokens }, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 
   if (!response.ok) {
+    if (isGenericInvalidArgument(response.status, payload)) {
+      throw new UpstreamError(
+        `${payload} Gemini kept rejecting the request after optional features were dropped — try a different Gemini model; some accept neither tools nor thinking budgets.`,
+        response.status
+      );
+    }
     throw new UpstreamError(payload, response.status);
   }
 

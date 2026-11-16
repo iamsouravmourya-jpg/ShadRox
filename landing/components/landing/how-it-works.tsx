@@ -32,16 +32,16 @@ const steps = [
 
 export function HowItWorks() {
   return (
-    <section id="flow" className="border-t border-[var(--line)] bg-[var(--bg2)] px-5 py-20 lg:px-8 lg:py-28">
-      <div className="mx-auto max-w-[1180px]">
-        <div className="grid gap-16 lg:grid-cols-[.7fr_1.3fr] lg:gap-28">
+    <section id="flow" className="border-t border-[var(--line)] bg-[var(--bg2)] py-20 lg:py-28">
+      <div className="container-page">
+        <div className="grid gap-12 lg:grid-cols-[.75fr_1.25fr] lg:gap-20">
           {/* Left heading */}
           <Reveal>
-            <div>
-              <p className="mb-4 text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--ac)]">
+            <div className="lg:sticky lg:top-32">
+              <p className="eyebrow mb-4">
                 The flow
               </p>
-              <h2 className="max-w-xs text-[clamp(28px,3.5vw,42px)] font-bold tracking-[-0.04em] leading-[1.12] text-[var(--ink)]">
+              <h2 className="max-w-xs text-[clamp(1.75rem,3.2vw,2.75rem)] font-bold leading-[1.12] tracking-[-0.04em] text-[var(--ink)]">
                 Open a project and{' '}
                 <em className="font-normal italic text-[var(--ac)]">get into the flow.</em>
               </h2>
@@ -55,29 +55,30 @@ export function HowItWorks() {
           <div className="relative">
             {/* vertical connecting line */}
             <div
-              className="absolute left-[15px] top-3 bottom-3 w-px"
+              aria-hidden
+              className="absolute bottom-6 left-[17px] top-3 w-px"
               style={{
-                background: 'linear-gradient(to bottom, var(--ac), rgba(109,74,255,0.15), transparent)',
+                background: 'linear-gradient(to bottom, color-mix(in srgb, var(--ac) 55%, transparent), color-mix(in srgb, var(--ac) 12%, transparent), transparent)',
               }}
             />
-            <div className="divide-y divide-[var(--line)]">
+            <ol className="divide-y divide-[var(--line)]">
               {steps.map(({ icon: Icon, num, title, text }, i) => (
-                <Reveal key={title} delay={i * 100}>
-                  <div className="group relative flex gap-5 py-7 first:pt-0">
-                    <span className="relative z-10 grid size-8 shrink-0 place-items-center rounded-full border border-[var(--line)] bg-[var(--card)] font-mono text-xs font-bold text-[var(--ac)] transition-all duration-300 group-hover:border-[var(--ac)] group-hover:bg-[var(--acsoft,rgba(109,74,255,0.10))] group-hover:shadow-[0_0_16px_var(--glow)]">
+                <Reveal as="li" key={title} delay={i * 100}>
+                  <div className={`group relative flex gap-5 pb-7 ${i > 0 ? 'pt-7' : ''}`}>
+                    <span className="relative z-10 grid size-9 shrink-0 place-items-center rounded-full border border-[var(--line)] bg-[var(--card)] font-mono text-[11px] font-bold text-[var(--ac)] transition-colors duration-300 group-hover:border-[var(--ac)] group-hover:bg-[var(--bg3)]">
                       {num}
                     </span>
                     <div className="pt-0.5">
                       <div className="mb-2 flex items-center gap-2">
-                        <Icon className="size-4 text-[var(--ac)] opacity-80" strokeWidth={1.75} />
-                        <h3 className="font-bold text-[var(--ink)]">{title}</h3>
+                        <Icon className="size-4 shrink-0 text-[var(--ac)]" strokeWidth={1.75} aria-hidden />
+                        <h3 className="text-[15px] font-bold tracking-[-0.01em] text-[var(--ink)]">{title}</h3>
                       </div>
-                      <p className="max-w-md text-sm leading-6 text-[var(--mut)]">{text}</p>
+                      <p className="max-w-md text-[13.5px] leading-6 text-[var(--mut)]">{text}</p>
                     </div>
                   </div>
                 </Reveal>
               ))}
-            </div>
+            </ol>
           </div>
         </div>
       </div>

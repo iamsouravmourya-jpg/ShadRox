@@ -9,6 +9,7 @@ import { AgentSection } from '@/components/landing/agent-section'
 import { WhyNot } from '@/components/landing/why-not'
 import { PreviewSupport } from '@/components/landing/preview-support'
 import { Privacy } from '@/components/landing/privacy'
+import { FeedbackNote } from '@/components/landing/feedback-note'
 import { BetaHonesty } from '@/components/landing/beta-honesty'
 import { Faq } from '@/components/landing/faq'
 import { BetaCta } from '@/components/landing/beta-cta'
@@ -16,7 +17,7 @@ import { Footer } from '@/components/landing/footer'
 
 export default function Page() {
   return (
-    <main id="top" className="relative">
+    <main id="top" className="relative" tabIndex={-1}>
       <Navbar />
       <Hero />
       <Stats />
@@ -28,6 +29,7 @@ export default function Page() {
       <WhyNot />
       <PreviewSupport />
       <Privacy />
+      <FeedbackNote />
       <BetaHonesty />
       <Faq limit={10} />
       <BetaCta />

@@ -166,8 +166,7 @@ export function PreviewPane({
   const displayedLogs = localPreviewAvailable
     ? localPreviewLogs.map((entry) => ({
         type: entry.type === 'stderr' || entry.type === 'error' ? 'error' as const
-          : entry.type === 'status' ? 'warn' as const
-            : 'log' as const,
+          : 'log' as const,
         message: entry.message,
         timestamp: new Date().toLocaleTimeString('en-US', { hour12: false })
       }))
@@ -321,15 +320,15 @@ export function PreviewPane({
   );
 
   const previewSurface = (
-    <div className="@container flex-1 min-h-0 flex flex-col bg-ink-950">
+    <div className="@container flex-1 min-h-0 flex flex-col bg-base">
       {/* Top Navigation & Controls Toolbar */}
-      <div className="h-10 shrink-0 flex items-center justify-between px-3 border-b border-white/[0.07] bg-ink-950/50 gap-2">
+      <div className="h-10 shrink-0 flex items-center justify-between px-3 border-b border-line bg-base/50 gap-2">
         {/* Left: Stack info and live address bar */}
         <div className="flex items-center gap-2 min-w-0 flex-1 max-w-lg">
-          <span className="flex items-center gap-1.5 text-[11px] font-mono text-neutral-400 truncate shrink-0">
-            {isBundling && <Loader2 className="w-3 h-3 animate-spin text-violet-300 shrink-0" />}
+          <span className="flex items-center gap-1.5 text-[11px] font-mono text-ink-3 truncate shrink-0">
+            {isBundling && <Loader2 className="w-3 h-3 animate-spin text-accent shrink-0" />}
             {document?.stackType && (
-              <span className="hidden sm:inline rounded border border-violet-300/25 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-violet-300">
+              <span className="hidden sm:inline rounded border border-accent-line bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase text-accent">
                 {document.stackType}
               </span>
             )}
@@ -338,10 +337,10 @@ export function PreviewPane({
                 title="Structured preview check after load"
                 className={`rounded-full border px-2 py-0.5 text-[10px] font-mono shrink-0 ${
                   previewAssert === 'ok'
-                    ? 'border-emerald-500/25 bg-emerald-500/[.08] text-emerald-300'
+                    ? 'border-ok/30 bg-ok/[.08] text-ok'
                     : previewAssert === 'fatal'
-                      ? 'border-rose-500/25 bg-rose-500/[.08] text-rose-300'
-                      : 'border-amber-500/25 bg-amber-500/[.08] text-amber-200'
+                      ? 'border-danger/30 bg-danger/[.08] text-danger'
+                      : 'border-warn/30 bg-warn/[.08] text-warn'
                 }`}
               >
                 check {previewAssert}
@@ -351,9 +350,9 @@ export function PreviewPane({
               localPreviewState.mode === 'dev' && localPreviewState.hmr !== false ? (
                 <span
                   title="The dev server provides hot module replacement"
-                  className="flex items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/[.08] px-2 py-0.5 text-[10px] font-mono text-emerald-300 shrink-0"
+                  className="flex items-center gap-1 rounded-full border border-ok/30 bg-ok/[.08] px-2 py-0.5 text-[10px] font-mono text-ok shrink-0"
                 >
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-ok animate-pulse" />
                   HMR
                 </span>
               ) : null
@@ -363,7 +362,7 @@ export function PreviewPane({
               return port === null ? null : (
                 <span
                   title={`The local server is listening on port ${port}`}
-                  className="rounded-full border border-white/[0.09] bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-mono text-neutral-400 shrink-0"
+                  className="rounded-full border border-line bg-overlay px-1.5 py-0.5 text-[10px] font-mono text-ink-3 shrink-0"
                 >
                   :{port}
                 </span>
@@ -373,11 +372,11 @@ export function PreviewPane({
 
           {/* Sandbox indicator. There is no server to navigate to, so this shows
               what is currently mounted instead of pretending to be a URL bar. */}
-          <div className="hidden @md:flex items-center flex-1 min-w-0 rounded-lg border border-white/[0.09] bg-white/[0.04] px-2.5 py-1 text-[11px] font-mono text-neutral-400">
-            <span className="text-neutral-600 mr-1 select-none whitespace-nowrap">
+          <div className="hidden @md:flex items-center flex-1 min-w-0 rounded-lg border border-line bg-overlay px-2.5 py-1 text-[11px] font-mono text-ink-3">
+            <span className="text-ink-5 mr-1 select-none whitespace-nowrap">
               {previewAddress?.protocol ?? 'shadrox://'}
             </span>
-            <span className="truncate text-neutral-300">
+            <span className="truncate text-ink-3">
               {previewAddress?.path ?? document?.source ?? 'no-workspace'}
             </span>
           </div>
@@ -391,19 +390,19 @@ export function PreviewPane({
             title="Toggle Console DevTools"
             className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-mono transition-colors cursor-pointer ${
               isConsoleOpen
-                ? 'border-violet-300/30 bg-violet-500/10 text-violet-200'
-                : 'border-white/[0.09] text-neutral-400 hover:border-white/[0.15] hover:text-white'
+                ? 'border-accent-line bg-accent-soft text-accent'
+                : 'border-line text-ink-3 hover:border-line-2 hover:text-ink'
             }`}
           >
             <Terminal className="w-3.5 h-3.5" />
             <span className="hidden @sm:inline">Console</span>
             {displayedLogs.length > 0 && (
-              <span className="ml-0.5 text-[10px] text-neutral-400">({displayedLogs.length})</span>
+              <span className="ml-0.5 text-[10px] text-ink-3">({displayedLogs.length})</span>
             )}
           </button>
 
           {/* Viewport size buttons */}
-          <div className="hidden @sm:flex items-center gap-0.5 rounded-lg border border-white/[0.09] bg-white/[0.02] p-0.5">
+          <div className="hidden @sm:flex items-center gap-0.5 rounded-lg border border-line bg-overlay p-0.5">
             {VIEWPORT_SIZES.map((size) => {
               const Icon = VIEWPORT_ICONS[size];
               const isActive = size === viewport;
@@ -414,7 +413,7 @@ export function PreviewPane({
                   onClick={() => onViewportChange(size)}
                   title={`${size.charAt(0).toUpperCase() + size.slice(1)} Viewport`}
                   className={`rounded-md p-1.5 transition-colors cursor-pointer ${
-                    isActive ? 'bg-violet-300 text-[#16121f]' : 'text-neutral-500 hover:text-white'
+                    isActive ? 'bg-accent-strong text-white' : 'text-ink-4 hover:text-ink'
                   }`}
                 >
                   <Icon className="w-3.5 h-3.5" />
@@ -437,7 +436,7 @@ export function PreviewPane({
             }}
             title={!localPreviewAvailable || localPreviewState.status === 'ready' ? 'Reload Preview' : 'Run Local Project'}
             disabled={localPreviewAvailable && localPreviewState.status === 'starting'}
-            className="rounded-lg border border-white/[0.09] p-1.5 text-neutral-500 transition-colors hover:border-white/[0.15] hover:text-white cursor-pointer"
+            className="rounded-lg border border-line p-1.5 text-ink-4 transition-colors hover:border-line-2 hover:text-ink cursor-pointer"
           >
             {!localPreviewAvailable || localPreviewState.status === 'ready'
               ? <RefreshCw className="w-3.5 h-3.5" />
@@ -449,7 +448,7 @@ export function PreviewPane({
               onClick={onStopLocalPreview}
               title={localPreviewState.status === 'starting' ? 'Cancel project startup' : 'Stop Local Project'}
               aria-label={localPreviewState.status === 'starting' ? 'Cancel project startup' : 'Stop local project'}
-              className="rounded-lg border border-white/[0.09] p-1.5 text-neutral-500 transition-colors hover:border-red-500/40 hover:text-red-400 cursor-pointer"
+              className="rounded-lg border border-line p-1.5 text-ink-4 transition-colors hover:border-danger/40 hover:text-danger cursor-pointer"
             >
               <Square className="w-3.5 h-3.5" />
             </button>
@@ -460,7 +459,7 @@ export function PreviewPane({
             onClick={onToggleFullscreen}
             title={fullscreen ? 'Exit full screen (Esc)' : 'Full screen preview'}
             aria-pressed={fullscreen}
-            className="rounded-lg border border-white/[0.09] p-1.5 text-neutral-500 transition-colors hover:border-white/[0.15] hover:text-white cursor-pointer"
+            className="rounded-lg border border-line p-1.5 text-ink-4 transition-colors hover:border-line-2 hover:text-ink cursor-pointer"
           >
             {fullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
           </button>
@@ -471,7 +470,7 @@ export function PreviewPane({
               onClick={onClose}
               title="Close preview"
               aria-label="Close preview"
-              className="rounded-lg border border-white/[0.09] p-1.5 text-neutral-500 transition-colors hover:border-white/[0.15] hover:text-white cursor-pointer"
+              className="rounded-lg border border-line p-1.5 text-ink-4 transition-colors hover:border-line-2 hover:text-ink cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -481,13 +480,13 @@ export function PreviewPane({
 
       {/* Runtime Error Bar */}
       {runtimeError && (
-        <div className="shrink-0 flex items-start gap-2 border-b border-red-500/25 bg-red-500/[.08] px-3 py-2">
-          <AlertTriangle className="w-3.5 h-3.5 text-red-400 mt-0.5 shrink-0" />
-          <code className="flex-1 text-[11px] text-red-300 font-mono break-all">{runtimeError}</code>
+        <div className="shrink-0 flex items-start gap-2 border-b border-danger/30 bg-danger/[.08] px-3 py-2">
+          <AlertTriangle className="w-3.5 h-3.5 text-danger mt-0.5 shrink-0" />
+          <code className="flex-1 text-[11px] text-danger font-mono break-all">{runtimeError}</code>
           <button
             type="button"
             onClick={onDismissError}
-            className="text-red-400 hover:text-red-200 cursor-pointer"
+            className="text-danger hover:text-danger cursor-pointer"
             aria-label="Dismiss error"
           >
             <X className="w-3.5 h-3.5" />
@@ -498,7 +497,7 @@ export function PreviewPane({
       {/* Main Preview Container */}
       <div
         ref={previewStageRef}
-        className="relative flex-1 min-h-0 min-w-0 overflow-hidden flex justify-center bg-[repeating-linear-gradient(45deg,#0a0a0a_0,#0a0a0a_10px,#0d0d0d_10px,#0d0d0d_20px)]"
+        className="relative flex-1 min-h-0 min-w-0 overflow-hidden flex justify-center bg-[repeating-linear-gradient(45deg,var(--bg)_0,var(--bg)_10px,var(--bg-2)_10px,var(--bg-2)_20px)]"
       >
         {localPreviewAvailable && localPreviewState.status === 'ready' ? (
           // `allow-same-origin` stays for the dev server: dropping it makes the frame an
@@ -512,7 +511,7 @@ export function PreviewPane({
             title="ShadRox Local Project Preview"
             src={localPreviewState.url}
             sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
-            className="block shrink-0 border-0 bg-ink-950 shadow-2xl"
+            className="block shrink-0 border-0 bg-base shadow-2xl"
             style={{ width: '100%', height: '100%' }}
             onLoad={() => {
               // The box is reported with the paint so an acceptance grab crops
@@ -528,11 +527,11 @@ export function PreviewPane({
           />
         ) : localPreviewAvailable && previewProjects.length > 0 ? (
           <div className="w-full max-w-xl self-center px-6 py-8">
-            <div className="flex items-center gap-2 text-sm text-neutral-100 font-medium">
-              <FolderOpen className="w-4 h-4 text-violet-300" />
+            <div className="flex items-center gap-2 text-sm text-ink font-medium">
+              <FolderOpen className="w-4 h-4 text-accent" />
               Choose a folder to preview
             </div>
-            <p className="mt-2 text-xs text-neutral-500">
+            <p className="mt-2 text-xs text-ink-4">
               {previewProjects[0]?.kind === 'static'
                 ? 'Choose the nested static website folder to serve through ShadRox.'
                 : 'More than one runnable app was found in this workspace.'}
@@ -543,56 +542,56 @@ export function PreviewPane({
                   key={`${project.kind}:${project.projectPath}`}
                   type="button"
                   onClick={() => onChoosePreviewProject?.(project)}
-                  className="w-full rounded-xl border border-white/[0.09] bg-white/[0.03] p-3 text-left transition-colors hover:border-violet-300/45 hover:bg-white/[0.05] cursor-pointer"
+                  className="w-full rounded-xl border border-line bg-overlay p-3 text-left transition-colors hover:border-accent-line hover:bg-overlay cursor-pointer"
                 >
-                  <span className="block text-xs text-neutral-100 font-mono">{project.projectPath}</span>
+                  <span className="block text-xs text-ink font-mono">{project.projectPath}</span>
                   {project.kind === 'node' ? (
                     <>
-                      <span className="mt-1 block text-[11px] text-neutral-400">
+                      <span className="mt-1 block text-[11px] text-ink-3">
                         {project.packageManager} run {project.scriptName} · {project.scriptCommand}
                       </span>
-                      <span className="mt-1 block text-[10px] text-neutral-500">
+                      <span className="mt-1 block text-[10px] text-ink-4">
                         {project.missingDependencies.length > 0
                           ? `${project.missingDependencies.length} dependency package(s) will be installed when it starts`
                           : 'Dependencies appear to be installed'}
                       </span>
                     </>
                   ) : (
-                    <span className="mt-1 block text-[11px] text-neutral-400">Static website · served locally without running a project script</span>
+                    <span className="mt-1 block text-[11px] text-ink-3">Static website · served locally without running a project script</span>
                   )}
                 </button>
               ))}
             </div>
-            <button type="button" onClick={onCancelProjectSelection} className="mt-3 text-[11px] text-neutral-500 hover:text-white">Cancel</button>
+            <button type="button" onClick={onCancelProjectSelection} className="mt-3 text-[11px] text-ink-4 hover:text-ink">Cancel</button>
           </div>
         ) : localPreviewAvailable && localPreviewState.status === 'starting' ? (
           <div className="self-center px-6 py-8 text-center">
-            <Loader2 className="w-6 h-6 text-violet-300 mx-auto animate-spin" />
-            <p className="mt-3 text-xs text-neutral-300 font-medium">Starting project inside ShadRox...</p>
-            <p className="mt-1 max-w-xl text-[11px] text-neutral-500">
+            <Loader2 className="w-6 h-6 text-accent mx-auto animate-spin" />
+            <p className="mt-3 text-xs text-ink-3 font-medium">Starting project inside ShadRox...</p>
+            <p className="mt-1 max-w-xl text-[11px] text-ink-4">
               {previewStartMessage || 'Installing dependencies if needed, then launching its local server'}
             </p>
           </div>
         ) : localPreviewAvailable ? (
           <div className="max-w-md self-center px-6 py-8 text-center">
-            <Play className="w-5 h-5 text-violet-300 mx-auto" />
-            <p className="mt-3 text-xs text-neutral-200 font-medium">
+            <Play className="w-5 h-5 text-accent mx-auto" />
+            <p className="mt-3 text-xs text-ink-2 font-medium">
               {localPreviewState.status === 'error' ? 'Preview failed to start' : 'Run this project locally in ShadRox'}
             </p>
-            <p className="mt-2 text-[11px] text-neutral-500">
+            <p className="mt-2 text-[11px] text-ink-4">
               {localPreviewState.status === 'error'
                 ? 'The project server reported the error below. Fix it in the code and run the preview again.'
                 : 'ShadRox starts the project server automatically and installs any missing dependencies before it runs.'}
             </p>
             {localPreviewState.status === 'error' && (
-              <pre className="mt-3 rounded-xl border border-red-500/25 bg-red-500/[.06] p-3 text-left font-mono text-[11px] leading-relaxed text-red-300 whitespace-pre-wrap break-words">
+              <pre className="mt-3 rounded-xl border border-danger/30 bg-danger/[.06] p-3 text-left font-mono text-[11px] leading-relaxed text-danger whitespace-pre-wrap break-words">
                 {localPreviewState.message}
               </pre>
             )}
             <button
               type="button"
               onClick={onStartLocalPreview}
-              className="mt-4 inline-flex items-center gap-2 rounded-xl border border-violet-300/30 bg-violet-500/10 px-3 py-2 text-xs text-violet-200 transition-colors hover:bg-violet-500/20 cursor-pointer"
+              className="mt-4 inline-flex items-center gap-2 rounded-xl border border-accent-line bg-accent-soft px-3 py-2 text-xs text-accent transition-colors hover:bg-accent-soft cursor-pointer"
             >
               <Play className="w-3.5 h-3.5" />
               Run project
@@ -600,14 +599,14 @@ export function PreviewPane({
           </div>
         ) : bundleError ? (
           <div className="w-full max-w-2xl self-center px-6 py-8">
-            <div className="flex items-center gap-2 text-red-400">
+            <div className="flex items-center gap-2 text-danger">
               <AlertTriangle className="w-4 h-4" />
               <span className="text-xs font-semibold">Build Error</span>
             </div>
-            <pre className="mt-3 rounded-xl border border-red-500/25 bg-red-500/[.06] p-3 font-mono text-[11px] leading-relaxed text-red-300 whitespace-pre-wrap break-words">
+            <pre className="mt-3 rounded-xl border border-danger/30 bg-danger/[.06] p-3 font-mono text-[11px] leading-relaxed text-danger whitespace-pre-wrap break-words">
               {bundleError}
             </pre>
-            <p className="mt-3 text-[11px] text-neutral-500">
+            <p className="mt-3 text-[11px] text-ink-4">
               Fix the reported build issue in the code editor, then retry the preview.
             </p>
           </div>
@@ -618,29 +617,29 @@ export function PreviewPane({
             srcDoc={document.html}
             ref={setDocumentFrameRef}
             sandbox="allow-scripts allow-forms allow-modals allow-popups"
-            className="block shrink-0 border-0 bg-ink-950 shadow-2xl"
+            className="block shrink-0 border-0 bg-base shadow-2xl"
             style={{ width: '100%', height: '100%' }}
           />
         ) : isBundling ? (
           <div className="self-center px-6 py-8 text-center">
-            <Loader2 className="w-6 h-6 text-violet-300 mx-auto animate-spin" />
-            <p className="mt-3 text-xs text-neutral-300 font-medium">Preparing one-click preview...</p>
-            <p className="mt-1 text-[11px] text-neutral-500">Compiling project & resolving browser dependencies</p>
+            <Loader2 className="w-6 h-6 text-accent mx-auto animate-spin" />
+            <p className="mt-3 text-xs text-ink-3 font-medium">Preparing one-click preview...</p>
+            <p className="mt-1 text-[11px] text-ink-4">Compiling project & resolving browser dependencies</p>
           </div>
         ) : (
           <div className="max-w-sm self-center px-6 py-8 text-center">
-            <AlertTriangle className="w-5 h-5 text-neutral-600 mx-auto" />
-            <p className="mt-3 text-xs text-neutral-400 leading-relaxed">{capabilityMessage}</p>
+            <AlertTriangle className="w-5 h-5 text-ink-5 mx-auto" />
+            <p className="mt-3 text-xs text-ink-3 leading-relaxed">{capabilityMessage}</p>
           </div>
         )}
       </div>
 
       {/* Dockable Console Drawer */}
       {isConsoleOpen && (
-        <div className="h-44 shrink-0 border-t border-white/[0.07] bg-ink-950 flex flex-col font-mono text-xs">
-          <div className="h-7 shrink-0 px-3 bg-ink-950 border-b border-white/[0.07] flex items-center justify-between">
-            <span className="text-[10px] uppercase tracking-wider text-neutral-500 flex items-center gap-1.5">
-              <Terminal className="w-3 h-3 text-neutral-400" />
+        <div className="h-44 shrink-0 border-t border-line bg-base flex flex-col font-mono text-xs">
+          <div className="h-7 shrink-0 px-3 bg-base border-b border-line flex items-center justify-between">
+            <span className="text-[10px] uppercase tracking-wider text-ink-4 flex items-center gap-1.5">
+              <Terminal className="w-3 h-3 text-ink-3" />
               Console Logs ({displayedLogs.length})
             </span>
             <div className="flex items-center gap-2">
@@ -648,7 +647,7 @@ export function PreviewPane({
                 type="button"
                 onClick={() => localPreviewAvailable ? onClearLocalPreviewLogs?.() : setLogs([])}
                 title="Clear console"
-                className="text-neutral-500 hover:text-white transition-colors cursor-pointer"
+                className="text-ink-4 hover:text-ink transition-colors cursor-pointer"
               >
                 <Trash2 className="w-3 h-3" />
               </button>
@@ -656,7 +655,7 @@ export function PreviewPane({
                 type="button"
                 onClick={() => setIsConsoleOpen(false)}
                 title="Close console"
-                className="text-neutral-500 hover:text-white transition-colors cursor-pointer"
+                className="text-ink-4 hover:text-ink transition-colors cursor-pointer"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -664,20 +663,20 @@ export function PreviewPane({
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
             {displayedLogs.length === 0 ? (
-              <div className="text-[11px] text-neutral-600 italic px-2 py-1">No console output yet.</div>
+              <div className="text-[11px] text-ink-5 italic px-2 py-1">No console output yet.</div>
             ) : (
               displayedLogs.map((log, idx) => (
                 <div
                   key={idx}
                   className={`px-2 py-0.5 text-[11px] flex items-start gap-2 ${
                     log.type === 'error'
-                      ? 'text-red-400 bg-red-950/20'
+                      ? 'text-danger bg-danger/10'
                       : log.type === 'warn'
-                        ? 'text-amber-400 bg-amber-950/20'
-                        : 'text-neutral-300 hover:bg-white/[0.04]'
+                        ? 'text-warn bg-warn/10'
+                        : 'text-ink-3 hover:bg-overlay'
                   }`}
                 >
-                  <span className="text-neutral-600 text-[10px] shrink-0">{log.timestamp}</span>
+                  <span className="text-ink-5 text-[10px] shrink-0">{log.timestamp}</span>
                   <span className="font-mono break-all">{log.message}</span>
                 </div>
               ))
@@ -696,7 +695,7 @@ export function PreviewPane({
 
   return (
     <div
-      className={`flex-1 min-h-0 bg-ink-950 ${
+      className={`flex-1 min-h-0 bg-base ${
         backendAvailable
           ? 'grid grid-cols-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-2 lg:grid-rows-1'
           : 'flex flex-col'
@@ -704,7 +703,7 @@ export function PreviewPane({
     >
       <div className="flex-1 min-h-0 min-w-0 flex flex-col">
         {backendAvailable && (
-          <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-white/[0.06] bg-ink-950 px-3 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+          <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-line bg-base px-3 text-[10px] font-semibold uppercase tracking-wider text-ink-4">
             <Laptop className="w-3 h-3" aria-hidden="true" />
             Frontend
           </div>
@@ -716,7 +715,7 @@ export function PreviewPane({
       <div
         className={`min-w-0 ${
           backendAvailable
-            ? 'min-h-0 flex flex-col border-t border-white/[0.06] lg:border-l lg:border-t-0'
+            ? 'min-h-0 flex flex-col border-t border-line lg:border-l lg:border-t-0'
             : 'hidden'
         }`}
       >

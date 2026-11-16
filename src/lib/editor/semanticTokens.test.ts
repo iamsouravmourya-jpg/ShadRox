@@ -14,7 +14,7 @@ const token = (
 test('resolveSemanticRanges turns line/character spans into offsets with a colour', () => {
   const text = 'export interface Point {\n  x: number;\n}\n';
   const ranges = resolveSemanticRanges([token('interface', 0, 17, 0, 22)], text);
-  assert.deepEqual(ranges, [{ from: 17, to: 22, color: '#7dd3fc' }]);
+  assert.deepEqual(ranges, [{ from: 17, to: 22, color: 'var(--syn-interface)' }]);
 });
 
 test('types the syntax highlighter already handles are left alone', () => {

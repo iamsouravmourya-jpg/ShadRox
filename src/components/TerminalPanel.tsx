@@ -6,6 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { ChevronDown, ChevronUp, Columns, Eraser, Plus, RotateCcw, Rows, Search, X } from 'lucide-react';
 import type { ShadRoxDesktopAPI, TerminalOutput } from '../lib/desktop';
+import { subscribeTheme, terminalPalette } from '../lib/theme';
 import {
   MAX_TERMINAL_SESSIONS,
   activeTerminalSession,
@@ -114,12 +115,7 @@ function TerminalSurface({
       fontFamily: '"JetBrains Mono", Consolas, monospace',
       fontSize: 12,
       scrollback: 5000,
-      theme: {
-        background: '#050505',
-        foreground: '#d4d4d4',
-        cursor: '#34d399',
-        selectionBackground: '#065f46'
-      }
+      theme: terminalPalette()
     });
     const fit = new FitAddon();
     const search = new SearchAddon({ highlightLimit: 500 });
@@ -133,6 +129,12 @@ function TerminalSurface({
       });
     }));
     terminal.open(host);
+
+    // xterm cannot read CSS variables, so theme changes push a concrete palette
+    // into the live instance instead of recreating it (which would drop the pty).
+    const unsubscribeTheme = subscribeTheme(() => {
+      terminal.options.theme = terminalPalette();
+    });
 
     const restored = takeTerminalTranscript(transcriptKey);
     if (restored) {
@@ -311,6 +313,7 @@ function TerminalSurface({
       cancelAnimationFrame(resizeFrame);
       observer.disconnect();
       unsubscribe();
+      unsubscribeTheme();
       input.dispose();
       host.removeEventListener('contextmenu', onContextMenu);
       // The shell itself stays alive while only the dock is hidden, so switching
@@ -356,10 +359,10 @@ function createTabKey(): string {
 }
 
 const STATUS_TONE: Record<TerminalSessionStatus, string> = {
-  starting: 'bg-amber-400',
-  connected: 'bg-emerald-400',
-  exited: 'bg-neutral-600',
-  failed: 'bg-rose-500'
+  starting: 'bg-warn',
+  connected: 'bg-ok',
+  exited: 'bg-ink-5',
+  failed: 'bg-danger'
 };
 
 const STATUS_LABEL: Record<TerminalSessionStatus, string> = {
@@ -645,7 +648,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
       return (
         <div
           key={node.sessionKey}
-          className={`relative min-w-0 min-h-0 flex-1 ${isActive ? '' : 'opacity-90'} ${paneCount(paneLayout!.root) > 1 ? 'border-r border-white/[0.04] last:border-r-0' : ''}`}
+          className={`relative min-w-0 min-h-0 flex-1 ${isActive ? '' : 'opacity-90'} ${paneCount(paneLayout!.root) > 1 ? 'border-r border-line last:border-r-0' : ''}`}
           onMouseDown={() => { if (!isActive) focusPane(node.sessionKey); }}
         >
           <TerminalSurface
@@ -663,7 +666,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); closeSession(node.sessionKey); }}
-              className="absolute right-1 top-1 z-10 rounded bg-black/60 p-0.5 text-neutral-500 hover:text-white"
+              className="absolute right-1 top-1 z-10 rounded bg-base/60 p-0.5 text-ink-4 hover:text-ink"
               title="Close this pane"
               aria-label="Close pane"
             >
@@ -683,7 +686,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
           {renderPaneNode(node.first, activeKey)}
         </div>
         <div
-          className="shrink-0 bg-white/[0.04] hover:bg-emerald-500/30 transition-colors"
+          className="shrink-0 bg-overlay hover:bg-ok/30 transition-colors"
           style={node.orientation === 'horizontal' ? { width: 3, cursor: 'col-resize' } : { height: 3, cursor: 'row-resize' }}
           onPointerDown={(e) => {
             e.preventDefault();
@@ -715,7 +718,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
 
   return (
     <section
-      className="flex min-h-0 shrink-0 flex-col border-white/[0.07] bg-[#07080b]"
+      className="flex min-h-0 shrink-0 flex-col border-line bg-base"
       style={{ height }}
       aria-label="Terminal"
     >
@@ -736,15 +739,15 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
           setHeight(terminalHeightFromKey(heightRef.current, event.key, window.innerHeight));
           writeTerminalHeight(getStorage(), heightRef.current);
         }}
-        className="group h-1.5 shrink-0 cursor-row-resize bg-white/[0.06] hover:bg-emerald-500/40 focus:bg-emerald-500/60 focus:outline-none"
+        className="group h-1.5 shrink-0 cursor-row-resize bg-overlay-2 hover:bg-ok/40 focus:bg-ok/60 focus:outline-none"
         title="Drag to resize the terminal"
       >
         <div className="flex h-full items-center justify-center opacity-0 group-hover:opacity-100">
-          <ChevronUp className="h-2.5 w-2.5 text-emerald-200" />
+          <ChevronUp className="h-2.5 w-2.5 text-ok" />
         </div>
       </div>
 
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/[0.07] bg-ink-950 px-2">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-base px-2">
         <div role="tablist" aria-label="Terminal sessions" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {sessionsState.sessions.map((session) => {
             const isActive = session.key === sessionsState.activeKey;
@@ -754,7 +757,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
                 role="tab"
                 aria-selected={isActive}
                 className={`flex h-6 shrink-0 items-center gap-1 rounded border px-1.5 text-[10px] font-mono ${
-                  isActive ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-white/[0.06] bg-white/[0.02] text-neutral-500 hover:text-neutral-300'
+                  isActive ? 'border-ok/30 bg-ok/10 text-ok' : 'border-line bg-overlay text-ink-4 hover:text-ink-3'
                 }`}
                 tabIndex={isActive ? 0 : -1}
                 onKeyDown={(event) => {
@@ -774,7 +777,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
                     defaultValue={session.name}
                     maxLength={40}
                     aria-label="Terminal tab name"
-                    className="w-24 rounded bg-black/50 px-1 text-[10px] text-white outline outline-emerald-500/40"
+                    className="w-24 rounded bg-base/50 px-1 text-[10px] text-ink outline outline-ok/40"
                     onClick={(event) => event.stopPropagation()}
                     onBlur={(event) => {
                       dispatch({ type: 'rename', key: session.key, name: event.currentTarget.value });
@@ -796,7 +799,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
                     event.stopPropagation();
                     closeSession(session.key);
                   }}
-                  className="shrink-0 rounded p-0.5 text-neutral-600 hover:text-white"
+                  className="shrink-0 rounded p-0.5 text-ink-5 hover:text-ink"
                 >
                   <X className="h-2.5 w-2.5" />
                 </button>
@@ -809,7 +812,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
             title={sessionsState.sessions.length >= MAX_TERMINAL_SESSIONS ? 'Terminal tab limit reached' : 'New terminal'}
             disabled={sessionsState.sessions.length >= MAX_TERMINAL_SESSIONS}
             onClick={() => dispatch({ type: 'add', key: createTabKey(), mode: 'system' })}
-            className="flex h-6 shrink-0 items-center gap-1 rounded border border-white/[0.06] px-1.5 text-[10px] text-neutral-500 hover:text-white disabled:opacity-40"
+            className="flex h-6 shrink-0 items-center gap-1 rounded border border-line px-1.5 text-[10px] text-ink-4 hover:text-ink disabled:opacity-40"
           >
             <Plus className="h-3 w-3" />
           </button>
@@ -817,18 +820,18 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
 
         <div className="flex shrink-0 items-center gap-2">
           {active && terminalStateManager.getSessionState(active.key)?.cwd && (
-            <span className="hidden truncate text-[10px] font-mono text-neutral-400 sm:inline max-w-[14rem]" title={terminalStateManager.getSessionState(active.key)?.cwd}>
+            <span className="hidden truncate text-[10px] font-mono text-ink-3 sm:inline max-w-[14rem]" title={terminalStateManager.getSessionState(active.key)?.cwd}>
               {terminalStateManager.getSessionState(active.key)?.cwd}
             </span>
           )}
           {active && terminalStateManager.getSessionState(active.key)?.lastCommand?.exitCode !== null && terminalStateManager.getSessionState(active.key)?.lastCommand?.exitCode !== undefined && (
-            <span className={`text-[10px] font-mono ${terminalStateManager.getSessionState(active.key)?.lastCommand?.exitCode === 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+            <span className={`text-[10px] font-mono ${terminalStateManager.getSessionState(active.key)?.lastCommand?.exitCode === 0 ? 'text-ok' : 'text-danger'}`}>
               exit {terminalStateManager.getSessionState(active.key)?.lastCommand?.exitCode}
             </span>
           )}
           {summary.isExecuting && summary.isHung && (
             <span
-              className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-mono text-amber-300"
+              className="shrink-0 rounded border border-warn/40 bg-warn/10 px-1 text-[10px] font-mono text-warn"
               title={`Nothing printed for ${summary.hungSeconds}s (hung after ${summary.hungThresholdSeconds}s of silence)`}
             >
               quiet {summary.hungSeconds}s
@@ -836,19 +839,19 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
           )}
           {summary.isExecuting && !summary.isHung && summary.hungSeconds >= 2 && (
             <span
-              className="shrink-0 text-[10px] font-mono text-neutral-500"
+              className="shrink-0 text-[10px] font-mono text-ink-4"
               title={`${summary.secondsToHung}s of silence before ShadRox calls this hung`}
             >
               {summary.hungSeconds}s
             </span>
           )}
           {summary.isExecuting && summary.awaitingInput && !summary.isHung && (
-            <span className="shrink-0 rounded border border-emerald-500/30 px-1 text-[10px] font-mono text-emerald-300" title="The running command has gone quiet; it may be waiting for an answer">
+            <span className="shrink-0 rounded border border-ok/30 px-1 text-[10px] font-mono text-ok" title="The running command has gone quiet; it may be waiting for an answer">
               awaiting input
             </span>
           )}
           <label
-            className="hidden shrink-0 items-center gap-1 text-[10px] font-mono text-neutral-500 lg:flex"
+            className="hidden shrink-0 items-center gap-1 text-[10px] font-mono text-ink-4 lg:flex"
             title="Seconds of silence before a running command is called hung"
           >
             hung&gt;
@@ -856,7 +859,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
               aria-label="Hung detection threshold in seconds"
               value={hungThresholdSeconds}
               onChange={(event) => setHungThresholdSeconds(Number(event.target.value))}
-              className="h-5 rounded border border-white/[0.07] bg-black/40 px-1 text-[10px] text-neutral-300 outline-none focus:border-emerald-500/40"
+              className="h-5 rounded border border-line bg-base/40 px-1 text-[10px] text-ink-3 outline-none focus:border-ok/40"
             >
               {thresholdOptions.map((seconds) => (
                 <option key={seconds} value={seconds}>
@@ -865,9 +868,9 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
               ))}
             </select>
           </label>
-          <span className="hidden truncate text-[10px] font-mono text-neutral-600 sm:inline" title={workspaceName}>{workspaceName}</span>
+          <span className="hidden truncate text-[10px] font-mono text-ink-5 sm:inline" title={workspaceName}>{workspaceName}</span>
           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_TONE[statusKey]}`} />
-          <span className="shrink-0 text-[10px] font-mono uppercase tracking-wider text-neutral-500">
+          <span className="shrink-0 text-[10px] font-mono uppercase tracking-wider text-ink-4">
             {active ? STATUS_LABEL[active.status] : 'No session'}
           </span>
           <button
@@ -876,7 +879,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
               activeHandle?.terminal.clear();
               activeHandle?.focus();
             }}
-            className="flex items-center gap-1 rounded p-1 text-[10px] text-neutral-500 hover:text-white"
+            className="flex items-center gap-1 rounded p-1 text-[10px] text-ink-4 hover:text-ink"
             title="Clear terminal scrollback"
             aria-label="Clear terminal"
           >
@@ -886,7 +889,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
           <button
             type="button"
             onClick={() => activeHandle?.restart()}
-            className="flex items-center gap-1 rounded p-1 text-[10px] text-neutral-500 hover:text-white"
+            className="flex items-center gap-1 rounded p-1 text-[10px] text-ink-4 hover:text-ink"
             title="Restart the active terminal session"
             aria-label="Restart terminal"
           >
@@ -898,7 +901,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
             onClick={() => setIsFindOpen((open) => !open)}
             aria-label="Search in terminal"
             title="Search in terminal (Ctrl+F)"
-            className={`rounded p-1 hover:text-white ${isFindOpen ? 'text-emerald-300' : 'text-neutral-500'}`}
+            className={`rounded p-1 hover:text-ink ${isFindOpen ? 'text-ok' : 'text-ink-4'}`}
           >
             <Search className="h-3.5 w-3.5" />
           </button>
@@ -908,7 +911,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
             title="Split terminal vertically (side by side)"
             aria-label="Split terminal vertically"
             disabled={sessionsState.sessions.length >= MAX_TERMINAL_SESSIONS}
-            className="rounded p-1 text-neutral-500 hover:text-white disabled:opacity-30"
+            className="rounded p-1 text-ink-4 hover:text-ink disabled:opacity-30"
           >
             <Columns className="h-3.5 w-3.5" />
           </button>
@@ -918,11 +921,11 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
             title="Split terminal horizontally (stacked)"
             aria-label="Split terminal horizontally"
             disabled={sessionsState.sessions.length >= MAX_TERMINAL_SESSIONS}
-            className="rounded p-1 text-neutral-500 hover:text-white disabled:opacity-30"
+            className="rounded p-1 text-ink-4 hover:text-ink disabled:opacity-30"
           >
             <Rows className="h-3.5 w-3.5" />
           </button>
-          <button type="button" onClick={onClose} className="p-1 text-neutral-500 hover:text-white" title="Close terminal" aria-label="Close terminal">
+          <button type="button" onClick={onClose} className="p-1 text-ink-4 hover:text-ink" title="Close terminal" aria-label="Close terminal">
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -931,16 +934,16 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
       {/* One status row: the hung notice, why the last command failed, and the only
           way to answer an interactive prompt from here — always through the gate. */}
       {(hungNotice || failure || summary.isExecuting) && (
-        <div className="flex h-7 shrink-0 items-center gap-3 overflow-hidden border-b border-white/[0.07] bg-[#090a0e] px-2 text-[10px] font-mono">
+        <div className="flex h-7 shrink-0 items-center gap-3 overflow-hidden border-b border-line bg-base-2 px-2 text-[10px] font-mono">
           {hungNotice && (
-            <span className="flex shrink-0 items-center gap-1 text-amber-300" role="status">
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+            <span className="flex shrink-0 items-center gap-1 text-warn" role="status">
+              <span className="h-1.5 w-1.5 rounded-full bg-warn" />
               {hungNotice}
             </span>
           )}
           {failure && (
             <span
-              className="truncate text-rose-300"
+              className="truncate text-danger"
               title={`${failure.explanation}\n\nTell the repair prompt:\n- ${failure.repairHints.join('\n- ')}`}
             >
               why: {formatCommandFailureLine(failure)}
@@ -964,13 +967,13 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
                       activeHandle?.focus();
                     }
                   }}
-                  className="h-5 w-52 rounded border border-white/[0.07] bg-black/50 px-1 text-[10px] text-neutral-200 outline-none focus:border-emerald-500/40"
+                  className="h-5 w-52 rounded border border-line bg-base/50 px-1 text-[10px] text-ink-2 outline-none focus:border-ok/40"
                 />
                 <button
                   type="button"
                   disabled={!answerDraft.trim()}
                   onClick={() => void sendPromptAnswer()}
-                  className="rounded border border-emerald-500/30 px-1.5 py-0.5 text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-40"
+                  className="rounded border border-ok/30 px-1.5 py-0.5 text-ok hover:bg-ok/10 disabled:opacity-40"
                 >
                   Send
                 </button>
@@ -981,7 +984,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
                     setAnswerDraft('');
                     activeHandle?.focus();
                   }}
-                  className="rounded px-1.5 py-0.5 text-neutral-400 hover:text-white"
+                  className="rounded px-1.5 py-0.5 text-ink-3 hover:text-ink"
                 >
                   Cancel
                 </button>
@@ -993,7 +996,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
                   setIsAnswerOpen(true);
                   requestAnimationFrame(() => answerInputRef.current?.focus());
                 }}
-                className="ml-auto shrink-0 rounded border border-white/[0.08] px-1.5 py-0.5 text-neutral-400 hover:border-emerald-500/30 hover:text-emerald-200"
+                className="ml-auto shrink-0 rounded border border-line px-1.5 py-0.5 text-ink-3 hover:border-ok/30 hover:text-ok"
                 title="Type an answer into the running command. ShadRox shows the exact bytes and asks first."
               >
                 Send to prompt
@@ -1004,7 +1007,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
       )}
 
       {isFindOpen && (
-        <div className="flex h-8 shrink-0 items-center gap-1 border-b border-white/[0.07] bg-ink-950 px-2">
+        <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line bg-base px-2">
           <input
             ref={findInputRef}
             value={query}
@@ -1022,16 +1025,16 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
             }}
             placeholder="Find in terminal"
             aria-label="Find in terminal"
-            className="h-6 min-w-0 flex-1 rounded border border-white/[0.07] bg-black/40 px-2 text-[11px] font-mono text-neutral-200 outline-none focus:border-emerald-500/40"
+            className="h-6 min-w-0 flex-1 rounded border border-line bg-base/40 px-2 text-[11px] font-mono text-ink-2 outline-none focus:border-ok/40"
           />
-          <span className="shrink-0 text-[10px] font-mono text-neutral-500" aria-live="polite">
+          <span className="shrink-0 text-[10px] font-mono text-ink-4" aria-live="polite">
             {query ? (findResult.count ? `${findResult.index + 1 || findResult.count} of ${findResult.count}` : 'no results') : ''}
           </span>
           <button
             type="button"
             disabled={!query}
             onClick={() => activeHandle?.search.findPrevious(query, SEARCH_OPTIONS)}
-            className="rounded p-1 text-neutral-500 hover:text-white disabled:opacity-40"
+            className="rounded p-1 text-ink-4 hover:text-ink disabled:opacity-40"
             aria-label="Previous match"
           >
             <ChevronUp className="h-3.5 w-3.5" />
@@ -1040,7 +1043,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
             type="button"
             disabled={!query}
             onClick={() => activeHandle?.search.findNext(query, SEARCH_OPTIONS)}
-            className="rounded p-1 text-neutral-500 hover:text-white disabled:opacity-40"
+            className="rounded p-1 text-ink-4 hover:text-ink disabled:opacity-40"
             aria-label="Next match"
           >
             <ChevronDown className="h-3.5 w-3.5" />
@@ -1052,7 +1055,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
               setQuery('');
               activeHandle?.focus();
             }}
-            className="rounded p-1 text-neutral-500 hover:text-white"
+            className="rounded p-1 text-ink-4 hover:text-ink"
             aria-label="Close find"
           >
             <X className="h-3.5 w-3.5" />
@@ -1080,12 +1083,12 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
           </>
         )}
         {sessionsState.sessions.length === 0 && (
-          <div className="flex h-full items-center justify-center gap-2 text-[11px] font-mono text-neutral-600">
+          <div className="flex h-full items-center justify-center gap-2 text-[11px] font-mono text-ink-5">
             No terminal session.
             <button
               type="button"
               onClick={() => dispatch({ type: 'add', key: createTabKey(), mode: 'system' })}
-              className="rounded border border-white/[0.08] px-2 py-0.5 text-neutral-400 hover:text-white"
+              className="rounded border border-line px-2 py-0.5 text-ink-3 hover:text-ink"
             >
               New terminal
             </button>

@@ -1,8 +1,16 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
+import { Plus_Jakarta_Sans } from 'next/font/google'
 import { ThemeProvider } from '@/components/landing/theme-provider'
 import { APP_VERSION, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import './globals.css'
+
+const jakarta = Plus_Jakarta_Sans({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-jakarta',
+  fallback: ['Segoe UI', 'system-ui', 'sans-serif'],
+})
 
 const SITE_URL = 'https://www.shadrox.cyou'
 
@@ -97,8 +105,14 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning className={jakarta.variable}>
       <body className="antialiased">
+        <a
+          href="#top"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:rounded-full focus:bg-[var(--card)] focus:px-4 focus:py-2.5 focus:text-sm focus:font-semibold focus:text-[var(--ink)] focus:shadow-lg focus:ring-2 focus:ring-[var(--ac)]"
+        >
+          Skip to content
+        </a>
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
         <ThemeProvider>
           {children}

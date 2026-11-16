@@ -2,9 +2,11 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { AlertCircle, ArrowLeft, Bug, FolderOpen, FolderTree, GitBranch, History, Loader2, LogOut, MonitorPlay, Search, Settings, Terminal, UserRound, X } from 'lucide-react';
 import { ShadRoxLogo } from './components/Logo';
 import { Stage2Hub } from './components/Stage2Hub';
+import { ThemeToggle } from './components/ThemeToggle';
 import { CodeEditor, PathPromptDialog, type DefinitionNavigation, type EditorQuickFixActions, type EditorSymbolActions, type PathPromptRequest, type RenameOutcome } from './components/CodeEditor';
 import { PreviewPane } from './components/PreviewPane';
-import { ChatPanel, type PinnedSymbol } from './components/ChatPanel';
+import { ChatPanel, type PastedText, type PinnedSymbol } from './components/ChatPanel';
+import { FeedbackPanel } from './components/FeedbackPanel';
 import { QuickOpen } from './components/QuickOpen';
 import { ScmPanel } from './components/ScmPanel';
 import type { Command } from './lib/commands';
@@ -260,6 +262,8 @@ type OrchestrationStatus = NonNullable<ChatMessage['orchestration']>['status'];
 interface QueuedChatDraft extends QueuedChatItem {
   attachedFiles: string[];
   attachedImage: string | null;
+  /** Long clipboard pastes kept out of the message body, sent as text context. */
+  pastedTexts: PastedText[];
   pinnedSymbols: PinnedSymbol[];
   pendingRefine: RefinedPromptMeta | null;
   refineMode: RefineMode;
@@ -564,6 +568,7 @@ export default function App() {
   } | null>(null);
   const [viewport, setViewport] = useState<ViewportSize>('desktop');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('CHAT');
   const [secrets, setSecrets] = useState<SecretItem[]>([]);
 
@@ -3548,6 +3553,7 @@ export default function App() {
     const requestRefineMode = submission?.refineMode ?? refineMode;
     const requestPendingRefine = submission ? submission.pendingRefine : pendingRefine;
     const requestImage = submission?.attachedImage ?? attachedImage;
+    const requestPastes = submission?.pastedTexts ?? [];
     if (requestImage && !modelSupportsVision(byok.activeProvider, byok.selectedModel)) {
       setToast('This model does not advertise photo support. Choose a vision-capable model or remove the photo.');
       window.setTimeout(() => setToast(null), 5000);
@@ -3608,8 +3614,12 @@ export default function App() {
       attachedImage: requestImage ?? undefined,
       envelope: requestEnvelope,
       attachments:
-        requestFiles.length > 0 || requestSymbols.length > 0
-          ? [...requestFiles, ...requestSymbols.map((symbol) => `${symbol.name} (${symbol.file})`)]
+        requestFiles.length > 0 || requestPastes.length > 0 || requestSymbols.length > 0
+          ? [
+              ...requestFiles,
+              ...requestPastes.map((paste) => `${paste.name} · pasted text`),
+              ...requestSymbols.map((symbol) => `${symbol.name} (${symbol.file})`)
+            ]
           : undefined
     };
 
@@ -3787,13 +3797,22 @@ export default function App() {
 
     const markInterrupted = (error: string) => {
       if (!reply.trim()) {
+        // The hint must match the failure: a rate limit or a model-side tool
+        // error is not a key problem, and saying "check your key" for those
+        // sent users to re-enter a key that was never wrong.
+        const lower = error.toLowerCase();
+        const hint = /api key|authenticate|unauthorized|invalid.*key|permission denied|\b401\b|\b403\b/.test(lower)
+          ? 'Check your key or model selection in Settings.'
+          : /rate.?limit|quota|too many requests|\b429\b/.test(lower)
+            ? 'Limits are usually per model — switch models in Settings or retry in a minute.'
+            : 'Retry, or switch the model in Settings if it keeps happening.';
         setMessages((previous) =>
           previous.map((message) =>
             message.id === modelMessage.id
               ? {
                   ...message,
                   streaming: false,
-                  content: `**Generation Error:** ${error}\n\nCheck your key or model selection in Settings.`
+                  content: `**Generation Error:** ${error}\n\n${hint}`
                 }
               : message
           )
@@ -4328,6 +4347,11 @@ export default function App() {
           instruction,
           expectedFiles: request.milestone.expectedFiles,
           applyPolicy: request.applyPolicy,
+          // The engine checkpoints the workspace before the run and this turn
+          // marks its own machine checkpoint, so the auto policy may land the
+          // turn's edits on disk — otherwise milestone verification judges a
+          // review queue instead of real bytes and every run rolls itself back.
+          checkpointBacked: true,
           signal: request.signal,
           systemInstruction: fit.systemInstruction,
           maxToolRounds: DEFAULT_MAX_TOOL_ROUNDS,
@@ -4672,9 +4696,18 @@ export default function App() {
     patchOrchestration
   ]);
 
-  const handleChatSend = useCallback((queuedSubmission?: QueuedChatDraft) => {
-    const draftText = (queuedSubmission?.text ?? input).trim();
+  const handleChatSend = useCallback((queuedSubmission?: QueuedChatDraft, pastedTextsOverride?: PastedText[]) => {
+    // A long clipboard paste travels as a named text block, not as message body,
+    // so the visible chat stays short while the model still gets every line.
+    const draftPastes = queuedSubmission?.pastedTexts ?? pastedTextsOverride ?? [];
+    const draftText = (queuedSubmission?.text ?? input).trim()
+      || (draftPastes.length > 0 ? 'Use the pasted text.' : '');
     if (!draftText) return;
+    const modelText = draftPastes.length === 0
+      ? draftText
+      : `${draftText}\n\n${draftPastes
+        .map((paste) => `<pasted-text name="${paste.name}">\n${paste.content}\n</pasted-text>`)
+        .join('\n\n')}`;
     const draftFiles = [...(queuedSubmission?.attachedFiles ?? attachedFiles)];
     const draftImage = queuedSubmission?.attachedImage ?? attachedImage;
     const draftSymbols = [...(queuedSubmission?.pinnedSymbols ?? pinnedSymbols)];
@@ -4688,6 +4721,7 @@ export default function App() {
       text: draftText,
       attachedFiles: draftFiles,
       attachedImage: draftImage,
+      pastedTexts: draftPastes,
       pinnedSymbols: draftSymbols,
       pendingRefine: draftPendingRefine,
       refineMode: draftRefineMode,
@@ -4736,7 +4770,7 @@ export default function App() {
     }
 
     const decision = decideOrchestration({
-      prompt: text,
+      prompt: modelText,
       mode: submission.refineMode,
       workspaceFileCount: workspace.workspace?.diskFileTree?.length ?? workspace.files.length,
       hasKey: Boolean(byok.activeKey),
@@ -4750,7 +4784,7 @@ export default function App() {
     }
 
     if (decision.kind === 'chat') {
-      void handleSend(text, undefined, frozen).finally(() => {
+      void handleSend(modelText, undefined, frozen).finally(() => {
         chatDispatchLockRef.current = false;
       }).catch((error: unknown) => {
         const reason = error instanceof Error ? error.message : String(error);
@@ -4773,8 +4807,14 @@ export default function App() {
         : undefined,
       envelope: submission.envelope,
       attachments:
-        submission.attachedFiles.length > 0 || submission.pinnedSymbols.length > 0
-          ? [...submission.attachedFiles, ...submission.pinnedSymbols.map((symbol) => `${symbol.name} (${symbol.file})`)]
+        submission.attachedFiles.length > 0
+        || submission.pastedTexts.length > 0
+        || submission.pinnedSymbols.length > 0
+          ? [
+              ...submission.attachedFiles,
+              ...submission.pastedTexts.map((paste) => `${paste.name} · pasted text`),
+              ...submission.pinnedSymbols.map((symbol) => `${symbol.name} (${symbol.file})`)
+            ]
           : undefined
     };
     const modelMessage: ChatMessage = {
@@ -4819,16 +4859,16 @@ export default function App() {
     setIsGenerating(true);
     orchestrationRef.current = {
       messageId: modelMessage.id,
-      goal: text,
+      goal: modelText,
       startedAt: Date.now(),
       kind,
       budgetCredits,
       seenRunning: false
     };
-    trackedRunRef.current = { kind, goal: text };
+    trackedRunRef.current = { kind, goal: modelText };
 
-    if (kind === 'team') team.start(text);
-    else autonomy.start(text);
+    if (kind === 'team') team.start(modelText);
+    else autonomy.start(modelText);
   }, [
     input,
     isGenerating,
@@ -5644,20 +5684,6 @@ export default function App() {
     });
   }, [workspace]);
 
-  const handleBugReport = useCallback(() => {
-    const report = {
-      timestamp: new Date().toISOString(),
-      provider: byok.activeProvider,
-      model: byok.selectedModel,
-      filesCount: workspace.files.length,
-      dirtyCount: workspace.dirtyFiles.length,
-      platform: navigator.userAgent
-    };
-    navigator.clipboard?.writeText(JSON.stringify(report, null, 2));
-    setToast('Diagnostics copied — share them in the beta WhatsApp group');
-    window.setTimeout(() => setToast(null), 2500);
-  }, [byok.activeProvider, byok.selectedModel, workspace.files.length, workspace.dirtyFiles.length]);
-
   /**
    * Command palette entries. Each one just calls the same handler the visible
    * UI already uses — the palette never invents behaviour. It is built after
@@ -5915,6 +5941,8 @@ export default function App() {
           onOpenSettings={() => openSettings('CHAT')}
           onOpenFolder={workspace.openFolder}
           onOpenFiles={workspace.openFiles}
+          onNewFile={() => void workspace.newFile()}
+          onNewProject={(name) => void workspace.newProject(name)}
           onDroppedFiles={workspace.openDropped}
           onReopen={handleReopenRecent}
           onRemoveRecent={workspace.removeRecent}
@@ -5928,41 +5956,41 @@ export default function App() {
 
 
   return (
-    <div className="w-full h-screen flex flex-col bg-ink-950 text-white overflow-hidden border-b border-white/[0.09]">
+    <div className="w-full h-screen flex flex-col bg-base text-ink overflow-hidden border-b border-line">
       {/* Top Header */}
-      <header className="titlebar window-controls-inset h-12 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-white/[0.07] bg-ink-950/80 backdrop-blur-xl">
+      <header className="titlebar window-controls-inset h-12 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-line bg-base/80 backdrop-blur-xl">
         <div className="flex items-center gap-2.5 min-w-0">
           <button
             type="button"
             onClick={handleBackToHub}
             title="Back to Workspace Hub"
-            className="p-1.5 rounded-md text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
+            className="p-1.5 rounded-md text-ink-4 hover:text-ink hover:bg-overlay-2 transition-colors cursor-pointer"
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
           <span className="flex items-center gap-2 min-w-0">
-            <ShadRoxLogo className="w-4 h-4 shrink-0 text-violet-300" />
-            <span className="text-xs font-semibold tracking-[-0.02em] text-white truncate">
+            <ShadRoxLogo className="w-4 h-4 shrink-0 text-accent" />
+            <span className="text-xs font-semibold tracking-[-0.02em] text-ink truncate">
               {workspace.workspace?.name ?? 'ShadRox'}
             </span>
           </span>
           <span
-            className="hidden sm:inline text-[10px] font-mono uppercase tracking-wider text-zinc-500"
+            className="hidden sm:inline text-[10px] font-mono uppercase tracking-wider text-ink-4"
             title={workspace.workspace?.kind === 'folder' ? 'Files in the opened folder' : 'Files in this workspace'}
           >
             {headerFileLabel}
           </span>
           {workspace.dirtyFiles.length > 0 && (
             <span
-              className="hidden sm:inline rounded-full border border-amber-300/25 bg-amber-400/10 px-2 py-0.5 text-[10px] font-mono text-amber-300"
+              className="hidden sm:inline rounded-full border border-warn/30 bg-warn/10 px-2 py-0.5 text-[10px] font-mono text-warn"
               title="Unsaved changes"
             >
               {workspace.dirtyFiles.length} unsaved
             </span>
           )}
-          {workspace.isBusy && <Loader2 className="w-3 h-3 animate-spin text-violet-300" />}
+          {workspace.isBusy && <Loader2 className="w-3 h-3 animate-spin text-accent" />}
           {(updaterStatus?.state === 'available' || updaterStatus?.state === 'ready') && (
-            <span className="hidden sm:inline rounded-full border border-cyan-300/25 bg-cyan-400/10 px-2 py-0.5 text-[10px] text-cyan-200">
+            <span className="hidden sm:inline rounded-full border border-cool/30 bg-cool-soft px-2 py-0.5 text-[10px] text-cool">
               Update {updaterStatus.state === 'ready' ? 'ready' : 'available'}
             </span>
           )}
@@ -5976,8 +6004,8 @@ export default function App() {
               title="Auto-save to disk on edit"
               className={`rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-wide transition-colors cursor-pointer ${
                 workspace.autoSave
-                  ? 'border-violet-300/30 bg-violet-500/15 text-violet-200'
-                  : 'border-white/10 text-zinc-500 hover:text-white'
+                  ? 'border-accent-line bg-accent-soft text-accent'
+                  : 'border-line-2 text-ink-4 hover:text-ink'
               }`}
             >
               Auto-save {workspace.autoSave ? 'on' : 'off'}
@@ -5991,8 +6019,8 @@ export default function App() {
               aria-pressed={isTerminalOpen}
               className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${
                 isTerminalOpen
-                  ? 'border-violet-300/30 bg-violet-500/15 text-violet-200'
-                  : 'border-white/10 text-zinc-500 hover:text-white'
+                  ? 'border-accent-line bg-accent-soft text-accent'
+                  : 'border-line-2 text-ink-4 hover:text-ink'
               }`}
               title={isTerminalOpen ? 'Close interactive terminal' : 'Open interactive terminal'}
             >
@@ -6000,19 +6028,21 @@ export default function App() {
               Terminal
             </button>
           )}
+          <ThemeToggle />
           <button
             type="button"
-            onClick={handleBugReport}
-            title="Copy system diagnostics"
-            className="p-1.5 rounded-md text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
+            onClick={() => setIsFeedbackOpen(true)}
+            title="Report a bug or request a feature"
+            className="flex items-center gap-1.5 rounded-full border border-line-2 px-2.5 py-1 text-[11px] text-ink-4 transition-colors hover:border-accent-line hover:text-accent cursor-pointer"
           >
-            <Bug className="w-4 h-4" />
+            <Bug className="w-3 h-3" />
+            Feedback
           </button>
           <button
             type="button"
             onClick={() => setIsSettingsOpen((open) => !open)}
             title={isSettingsOpen ? 'Close settings (Esc)' : 'Settings'}
-            className="p-1.5 rounded-md text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
+            className="p-1.5 rounded-md text-ink-4 hover:text-ink hover:bg-overlay-2 transition-colors cursor-pointer"
           >
             <Settings className="w-4 h-4" />
           </button>
@@ -6022,7 +6052,7 @@ export default function App() {
       {diskToast && (
         <div
           role="status"
-          className="pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full border border-white/[0.12] bg-ink-900/95 px-4 py-1.5 text-[11px] text-neutral-200 shadow-2xl backdrop-blur-xl"
+          className="pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full border border-line-2 bg-base-2/95 px-4 py-1.5 text-[11px] text-ink-2 shadow-2xl backdrop-blur-xl"
         >
           {diskToast}
         </div>
@@ -6030,21 +6060,21 @@ export default function App() {
 
       {showTaskInspector && (
         <div
-          className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex justify-end bg-[var(--scrim)] backdrop-blur-sm"
           onClick={() => setShowTaskInspector(false)}
         >
           <div
-            className="h-full w-full max-w-md overflow-y-auto border-l border-white/10 bg-ink-950 p-3 shadow-2xl"
+            className="h-full w-full max-w-md overflow-y-auto border-l border-line-2 bg-base p-3 shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="mb-2 flex items-center justify-between">
-              <span className="font-mono text-[11px] uppercase tracking-wider text-neutral-400">Task Inspector</span>
+              <span className="font-mono text-[11px] uppercase tracking-wider text-ink-3">Task Inspector</span>
               <button
                 type="button"
                 onClick={() => setShowTaskInspector(false)}
                 title="Close task inspector"
                 aria-label="Close task inspector"
-                className="rounded p-1 text-zinc-500 transition-colors hover:text-white cursor-pointer"
+                className="rounded p-1 text-ink-4 transition-colors hover:text-ink cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -6092,7 +6122,7 @@ export default function App() {
         className="flex-1 min-h-0 flex flex-col md:grid"
         style={{ gridTemplateColumns: '48px minmax(0, 1fr) clamp(320px, 26vw, 376px)' }}
       >
-        <nav className="relative order-first flex w-full shrink-0 items-center gap-1 border-b border-white/[0.07] bg-ink-950 px-2 py-1.5 md:h-auto md:w-12 md:flex-col md:border-b-0 md:border-r md:px-0 md:py-2">
+        <nav className="relative order-first flex w-full shrink-0 items-center gap-1 border-b border-line bg-base px-2 py-1.5 md:h-auto md:w-12 md:flex-col md:border-b-0 md:border-r md:px-0 md:py-2">
           <button
             type="button"
             onClick={() => {
@@ -6105,8 +6135,8 @@ export default function App() {
             title="Open the code workspace"
             className={`flex h-9 w-9 items-center justify-center rounded-xl transition-colors cursor-pointer ${
               !isPreviewOpen
-                ? 'bg-violet-500/15 text-violet-200'
-                : 'text-zinc-500 hover:bg-white/[0.06] hover:text-white'
+                ? 'bg-accent-soft text-accent'
+                : 'text-ink-4 hover:bg-overlay-2 hover:text-ink'
             }`}
           >
             <FolderTree className="h-[18px] w-[18px]" />
@@ -6123,8 +6153,8 @@ export default function App() {
             title="Show preview"
             className={`flex h-9 w-9 items-center justify-center rounded-xl transition-colors cursor-pointer ${
               isPreviewOpen
-                ? 'bg-violet-500/15 text-violet-200'
-                : 'text-zinc-500 hover:bg-white/[0.06] hover:text-white'
+                ? 'bg-accent-soft text-accent'
+                : 'text-ink-4 hover:bg-overlay-2 hover:text-ink'
             }`}
           >
             <MonitorPlay className="h-[18px] w-[18px]" />
@@ -6141,8 +6171,8 @@ export default function App() {
             title={isSearchPanelOpen ? 'Close search' : 'Search in files'}
             className={`flex h-9 w-9 items-center justify-center rounded-xl transition-colors cursor-pointer ${
               isSearchPanelOpen
-                ? 'bg-violet-500/15 text-violet-200'
-                : 'text-zinc-500 hover:bg-white/[0.06] hover:text-white'
+                ? 'bg-accent-soft text-accent'
+                : 'text-ink-4 hover:bg-overlay-2 hover:text-ink'
             }`}
           >
             <Search className="h-[18px] w-[18px]" />
@@ -6159,8 +6189,8 @@ export default function App() {
             title={isScmPanelOpen ? 'Close source control' : 'Source control'}
             className={`flex h-9 w-9 items-center justify-center rounded-xl transition-colors cursor-pointer ${
               isScmPanelOpen
-                ? 'bg-violet-500/15 text-violet-200'
-                : 'text-zinc-500 hover:bg-white/[0.06] hover:text-white'
+                ? 'bg-accent-soft text-accent'
+                : 'text-ink-4 hover:bg-overlay-2 hover:text-ink'
             }`}
           >
             <GitBranch className="h-[18px] w-[18px]" />
@@ -6173,8 +6203,8 @@ export default function App() {
             title={isDebugPanelOpen ? 'Close debugger' : 'Debugger'}
             className={`flex h-9 w-9 items-center justify-center rounded-xl transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 ${
               isDebugPanelOpen
-                ? 'bg-violet-500/15 text-violet-200'
-                : 'text-zinc-500 hover:bg-white/[0.06] hover:text-white'
+                ? 'bg-accent-soft text-accent'
+                : 'text-ink-4 hover:bg-overlay-2 hover:text-ink'
             }`}
           >
             <Bug className="h-[18px] w-[18px]" />
@@ -6186,8 +6216,8 @@ export default function App() {
             title={showTaskInspector ? 'Close change capsules' : 'Change capsules'}
             className={`flex h-9 w-9 items-center justify-center rounded-xl transition-colors cursor-pointer ${
               showTaskInspector
-                ? 'bg-violet-500/15 text-violet-200'
-                : 'text-zinc-500 hover:bg-white/[0.06] hover:text-white'
+                ? 'bg-accent-soft text-accent'
+                : 'text-ink-4 hover:bg-overlay-2 hover:text-ink'
             }`}
           >
             <History className="h-[18px] w-[18px]" />
@@ -6201,18 +6231,18 @@ export default function App() {
               title={auth.user?.email ?? 'Account'}
               className={`flex h-9 w-9 items-center justify-center overflow-hidden rounded-full border transition-colors cursor-pointer ${
                 isAccountMenuOpen
-                  ? 'border-violet-300/40'
-                  : 'border-white/[0.09] hover:border-white/20'
+                  ? 'border-accent-line'
+                  : 'border-line hover:border-line-2'
               }`}
             >
               {auth.user?.avatarUrl ? (
                 <img src={auth.user.avatarUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
               ) : auth.user?.email ? (
-                <span className="text-xs font-semibold text-violet-200">
+                <span className="text-xs font-semibold text-accent">
                   {auth.user.email.slice(0, 1).toUpperCase()}
                 </span>
               ) : (
-                <UserRound className="h-[18px] w-[18px] text-zinc-400" />
+                <UserRound className="h-[18px] w-[18px] text-ink-3" />
               )}
             </button>
 
@@ -6223,24 +6253,24 @@ export default function App() {
                   onClick={() => setIsAccountMenuOpen(false)}
                   aria-hidden="true"
                 />
-                <div className="absolute bottom-full left-0 z-50 mb-2 w-64 overflow-hidden rounded-xl border border-white/[0.1] bg-ink-900 shadow-2xl md:bottom-0 md:left-full md:mb-0 md:ml-2">
-                  <div className="flex items-center gap-2.5 border-b border-white/[0.07] px-3 py-3">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.09] bg-white/[0.04]">
+                <div className="absolute bottom-full left-0 z-50 mb-2 w-64 overflow-hidden rounded-xl border border-line-2 bg-base-2 shadow-2xl md:bottom-0 md:left-full md:mb-0 md:ml-2">
+                  <div className="flex items-center gap-2.5 border-b border-line px-3 py-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-line bg-overlay">
                       {auth.user?.avatarUrl ? (
                         <img src={auth.user.avatarUrl} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
                       ) : auth.user?.email ? (
-                        <span className="text-xs font-semibold text-violet-200">
+                        <span className="text-xs font-semibold text-accent">
                           {auth.user.email.slice(0, 1).toUpperCase()}
                         </span>
                       ) : (
-                        <UserRound className="h-4 w-4 text-zinc-400" />
+                        <UserRound className="h-4 w-4 text-ink-3" />
                       )}
                     </div>
                     <div className="min-w-0">
-                      <p className="truncate text-xs font-medium text-neutral-100">
+                      <p className="truncate text-xs font-medium text-ink">
                         {auth.user?.email ?? 'Not signed in'}
                       </p>
-                      <p className="mt-0.5 text-[10px] uppercase tracking-wider text-neutral-500">
+                      <p className="mt-0.5 text-[10px] uppercase tracking-wider text-ink-4">
                         Free · bring your own key
                       </p>
                     </div>
@@ -6252,7 +6282,7 @@ export default function App() {
                         setIsAccountMenuOpen(false);
                         void auth.signOut();
                       }}
-                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-xs text-neutral-300 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
+                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-xs text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
                     >
                       <LogOut className="h-3.5 w-3.5" />
                       Log out
@@ -6264,12 +6294,12 @@ export default function App() {
           </div>
         </nav>
 
-        <div className="order-last w-full md:w-auto md:min-w-0 h-1/2 md:h-full min-h-0 border-t border-white/[0.07] md:border-t-0 md:border-l">
+        <div className="order-last w-full md:w-auto md:min-w-0 h-1/2 md:h-full min-h-0 border-t border-line md:border-t-0 md:border-l">
           <ChatPanel
             messages={messages}
             input={input}
             onInputChange={setInput}
-            onSend={handleChatSend}
+            onSend={(pastedTexts) => handleChatSend(undefined, pastedTexts)}
             queuedMessages={queuedChatItems}
             onCancelQueuedMessage={handleCancelQueuedChat}
             onStop={handleStopAll}
@@ -6374,14 +6404,14 @@ export default function App() {
             <div className="flex-1 min-w-0 min-h-0 flex flex-col">
               {workspace.files.length === 0 && workspace.workspace?.kind !== 'folder' ? (
                 <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
-                  <div className="grid size-12 place-items-center rounded-2xl border border-white/10 bg-white/[0.03]">
-                    <FolderOpen className="w-5 h-5 text-violet-300" />
+                  <div className="grid size-12 place-items-center rounded-2xl border border-line-2 bg-overlay">
+                    <FolderOpen className="w-5 h-5 text-accent" />
                   </div>
-                  <p className="mt-3 text-xs text-zinc-400">No files open in workspace.</p>
+                  <p className="mt-3 text-xs text-ink-3">No files open in workspace.</p>
                   <button
                     type="button"
                     onClick={handleBackToHub}
-                    className="mt-3 text-[11px] text-violet-300 hover:text-violet-200 cursor-pointer"
+                    className="mt-3 text-[11px] text-accent hover:text-accent cursor-pointer"
                   >
                     Open folder or files
                   </button>
@@ -6389,7 +6419,7 @@ export default function App() {
               ) : (
                 <>
                   {conflictHunks.length > 0 && (
-                    <div className="shrink-0 flex flex-wrap items-center gap-2 border-b border-amber-900/50 bg-amber-950/30 px-3 py-1.5 text-[11px] text-amber-200">
+                    <div className="shrink-0 flex flex-wrap items-center gap-2 border-b border-warn/30 bg-warn/10 px-3 py-1.5 text-[11px] text-warn">
                       <AlertCircle className="w-3.5 h-3.5 shrink-0" />
                       <span>
                         {conflictHunks.length} merge conflict{conflictHunks.length === 1 ? '' : 's'} in{' '}
@@ -6402,7 +6432,7 @@ export default function App() {
                             key={choice}
                             type="button"
                             onClick={() => resolveConflicts(choice)}
-                            className="rounded border border-amber-700/50 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-200 transition-colors hover:bg-amber-900/40 cursor-pointer"
+                            className="rounded border border-warn/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-warn transition-colors hover:bg-warn/20 cursor-pointer"
                           >
                             {choice === 'both' ? 'Both' : choice === 'ours' ? 'Ours' : 'Theirs'}
                           </button>
@@ -6497,7 +6527,7 @@ export default function App() {
             </div>
           )}
           {isDebugPanelOpen && desktop && nativeWorkspaceId && (
-            <div className="h-64 shrink-0 border-t border-white/[0.09]">
+            <div className="h-64 shrink-0 border-t border-line">
               <DebugPanel
                 desktop={desktop}
                 workspaceId={nativeWorkspaceId}
@@ -6508,8 +6538,8 @@ export default function App() {
             </div>
           )}
           {isTerminalOpen && terminalAvailable && desktop && nativeWorkspaceId && (
-            <div className="h-56 shrink-0 border-t border-white/[0.09]">
-              <Suspense fallback={<div className="h-full bg-ink-950 px-3 py-2 text-xs text-neutral-500">Loading terminal…</div>}>
+            <div className="h-56 shrink-0 border-t border-line">
+              <Suspense fallback={<div className="h-full bg-base px-3 py-2 text-xs text-ink-4">Loading terminal…</div>}>
                 <TerminalPanel
                   key={nativeWorkspaceId}
                   desktop={desktop}
@@ -6525,12 +6555,14 @@ export default function App() {
 
       {/* Full screen is the only overlay: inline preview already owns the main area. */}
       {isPreviewFullscreen && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-ink-950">
+        <div className="fixed inset-0 z-50 flex flex-col bg-base">
           {previewPane}
         </div>
       )}
 
       {settingsDrawer}
+
+      <FeedbackPanel isOpen={isFeedbackOpen} onClose={() => setIsFeedbackOpen(false)} />
 
       {quickOpenMode && (
         <QuickOpen
@@ -6555,7 +6587,7 @@ export default function App() {
       )}
 
       {toast && (
-        <div className="fixed bottom-14 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-violet-300/20 bg-ink-800/95 px-4 py-2 text-xs text-zinc-100 shadow-2xl backdrop-blur">
+        <div className="fixed bottom-14 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-accent-line bg-surface/95 px-4 py-2 text-xs text-ink shadow-2xl backdrop-blur">
           {toast}
         </div>
       )}

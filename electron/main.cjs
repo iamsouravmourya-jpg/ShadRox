@@ -18,6 +18,7 @@ const {
   resolveFileReopen,
   resolveFolderReopen
 } = require('./workspace-consent.cjs');
+const { sanitizeProjectName } = require('./project-scaffold.cjs');
 const {
   buildGitArgv,
   buildIsolatedGitEnv,
@@ -77,7 +78,9 @@ const APP_BACKGROUND = '#090a0d';
 const TITLE_BAR_HEIGHT = 48;
 
 app.setAppUserModelId('com.shadrox.desktop');
-nativeTheme.themeSource = 'dark';
+// The renderer owns the persisted choice and syncs it via app:set-theme at
+// boot; until then the OS preference is the least surprising native default.
+nativeTheme.themeSource = 'system';
 
 // AMD drivers on Windows can terminate Electron's GPU process with E_INVALIDARG
 // (0x80070057). Software compositing keeps the preview surface stable.
@@ -1888,6 +1891,26 @@ async function openFolderWorkspace(rootPath) {
   return opened;
 }
 
+/** The file-picker, recent-reopen and new-file paths all settle a workspace the same way. */
+async function openFilesWorkspace(filePaths) {
+  const previousWorkspaceId = activeWorkspaceId;
+  const opened = await workspaceAccess.openFiles(filePaths);
+  if (!opened) return null;
+  try {
+    await workspaceConsent.grantFiles(opened.filePaths);
+    await previewRuntime.stopAll();
+  } catch (error) {
+    workspaceAccess.closeWorkspace(opened.workspaceId);
+    throw error;
+  }
+  if (previousWorkspaceId) {
+    stopWorkspaceServices(previousWorkspaceId);
+    workspaceAccess.closeWorkspace(previousWorkspaceId);
+  }
+  activeWorkspaceId = opened.workspaceId;
+  return opened;
+}
+
 let machineSensitiveOperations = 0;
 function handleMachineSensitive(channel, handler) {
   ipcMain.handle(channel, async (...args) => {
@@ -1917,22 +1940,39 @@ function registerIpcHandlers() {
       filters: [{ name: 'Code and text files', extensions: ['*'] }]
     });
     if (result.canceled || result.filePaths.length === 0) return null;
-    const previousWorkspaceId = activeWorkspaceId;
-    const opened = await workspaceAccess.openFiles(result.filePaths);
-    if (!opened) return null;
-    try {
-      await workspaceConsent.grantFiles(opened.filePaths);
-      await previewRuntime.stopAll();
-    } catch (error) {
-      workspaceAccess.closeWorkspace(opened.workspaceId);
-      throw error;
+    return openFilesWorkspace(result.filePaths);
+  });
+
+  handleMachineSensitive('workspace:new-file', async (event) => {
+    assertTrustedRenderer(event);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Create a new file',
+      defaultPath: 'untitled.md',
+      filters: [{ name: 'All files', extensions: ['*'] }]
+    });
+    if (result.canceled || !result.filePath) return null;
+    // The save dialog already asked before overwriting an existing file.
+    await fs.promises.mkdir(path.dirname(result.filePath), { recursive: true });
+    await fs.promises.writeFile(result.filePath, '', 'utf8');
+    return openFilesWorkspace([result.filePath]);
+  });
+
+  handleMachineSensitive('workspace:new-project', async (event, rawName) => {
+    assertTrustedRenderer(event);
+    const name = sanitizeProjectName(rawName);
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: `Choose where to create "${name}"`,
+      buttonLabel: 'Create project here',
+      properties: ['openDirectory', 'createDirectory']
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const root = path.join(result.filePaths[0], name);
+    const existing = await fs.promises.readdir(root).catch(() => null);
+    if (existing && existing.length > 0) {
+      throw new Error(`"${name}" already exists at that location and is not empty. Choose another location or name — nothing was overwritten.`);
     }
-    if (previousWorkspaceId) {
-      stopWorkspaceServices(previousWorkspaceId);
-      workspaceAccess.closeWorkspace(previousWorkspaceId);
-    }
-    activeWorkspaceId = opened.workspaceId;
-    return opened;
+    await fs.promises.mkdir(root, { recursive: true });
+    return openFolderWorkspace(root);
   });
 
   handleMachineSensitive('workspace:reopen', async (event, target) => {
@@ -1970,21 +2010,8 @@ function registerIpcHandlers() {
         const stat = await fs.promises.stat(filePath).catch(() => null);
         if (!stat?.isFile()) throw new Error(`${path.basename(filePath)} no longer exists.`);
       }
-      const previousWorkspaceId = activeWorkspaceId;
-      const opened = await workspaceAccess.openFiles(selectedPaths);
+      const opened = await openFilesWorkspace(selectedPaths);
       if (!opened) throw new Error('Those files could not be reopened.');
-      try {
-        await workspaceConsent.grantFiles(opened.filePaths);
-        await previewRuntime.stopAll();
-      } catch (error) {
-        workspaceAccess.closeWorkspace(opened.workspaceId);
-        throw error;
-      }
-      if (previousWorkspaceId) {
-        stopWorkspaceServices(previousWorkspaceId);
-        workspaceAccess.closeWorkspace(previousWorkspaceId);
-      }
-      activeWorkspaceId = opened.workspaceId;
       return opened;
     }
 
@@ -2040,6 +2067,22 @@ function registerIpcHandlers() {
   ipcMain.handle('app:set-dirty', (event, dirty) => {
     assertTrustedRenderer(event);
     rendererDirty = Boolean(dirty);
+  });
+
+  ipcMain.handle('app:set-theme', (event, mode) => {
+    assertTrustedRenderer(event);
+    if (mode !== 'light' && mode !== 'dark' && mode !== 'system') return;
+    nativeTheme.themeSource = mode;
+    // The Windows window-buttons overlay is painted by the OS, not CSS, so it
+    // has to be re-tinted by hand whenever the resolved theme flips.
+    if (mainWindow && process.platform !== 'darwin' && !mainWindow.isDestroyed()) {
+      const light = nativeTheme.shouldUseDarkColors === false;
+      mainWindow.setTitleBarOverlay({
+        color: light ? '#f6f7fb' : '#090a0d',
+        symbolColor: light ? '#33353d' : '#d4d4d8',
+        height: TITLE_BAR_HEIGHT
+      });
+    }
   });
 
   handleMachineSensitive('workspace:list-directory', async (event, workspaceId, relativePath, cursor) => {

@@ -57,30 +57,28 @@ function CountUp({ target }: { target: number }) {
 
 export function Stats() {
   return (
-    <section aria-label="ShadRox by the numbers" className="mx-auto max-w-[1180px] px-5 pb-16 lg:px-8">
+    <section aria-label="ShadRox by the numbers" className="container-page pb-16 lg:pb-20">
       <Reveal variant="scale">
-        <div className="grid overflow-hidden rounded-3xl border border-[var(--line)] bg-[var(--card)] sm:grid-cols-2 lg:grid-cols-4">
-          {stats.map(({ value, label, lead }, i) => (
+        <div className="grid gap-px overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--line)] sm:grid-cols-2 lg:grid-cols-4">
+          {stats.map(({ value, label, lead }) => (
             <div
               key={label}
               className={cn(
-                'flex flex-col gap-2 p-6 sm:p-7',
-                i > 0 && 'border-t border-[var(--line)] sm:border-t-0 sm:border-l',
-                i === 2 && 'sm:border-t lg:border-t-0',
+                'flex flex-col gap-2 bg-[var(--card)] p-6 sm:p-7',
                 lead
-                  ? 'bg-[linear-gradient(135deg,var(--ac),var(--pink))] text-white sm:rounded-l-3xl'
+                  ? 'bg-[linear-gradient(135deg,var(--cta-1),var(--cta-2))] text-white'
                   : 'text-[var(--ink)]',
               )}
             >
               <b
                 className={cn(
-                  'font-mono text-4xl font-bold tracking-tight lg:text-[44px]',
+                  'text-[clamp(2rem,3.4vw,2.75rem)] font-bold leading-none tracking-[-0.04em] tabular-nums',
                   lead ? 'text-white' : 'text-gradient',
                 )}
               >
                 <CountUp target={value} />
               </b>
-              <span className={cn('text-[12px] leading-5', lead ? 'text-white/85' : 'text-[var(--mut)]')}>
+              <span className={cn('text-[12px] leading-5', lead ? 'text-white' : 'text-[var(--mut)]')}>
                 {label}
               </span>
             </div>
