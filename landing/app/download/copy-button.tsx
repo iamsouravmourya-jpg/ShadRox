@@ -57,9 +57,9 @@ export function CopyButton({ value, label = 'Copy' }: CopyButtonProps) {
       type="button"
       onClick={handleCopy}
       aria-label={copied ? `${label} — copied` : label}
-      className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--bg2)] px-3 py-1.5 text-[11px] font-semibold text-[var(--ink2)] transition hover:border-[var(--ac)] hover:text-[var(--ac)]"
+      className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--bg2)] px-3 py-1.5 text-[11px] font-semibold text-[var(--ink2)] transition-colors hover:border-[var(--ac)] hover:text-[var(--ac)]"
     >
-      {copied ? <Check className="size-3.5 text-[var(--ac)]" /> : <Copy className="size-3.5" />}
+      {copied ? <Check className="size-3.5 text-[var(--ac)]" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
       {copied ? 'Copied' : label}
     </button>
   )

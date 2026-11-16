@@ -288,11 +288,19 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
       // team composes it here, where it alone knows who is speaking and what the
       // others have already reported.
       const unit: TurnUnit = { ...next, instruction: buildTaskInstruction(next, sharedContext(state)) };
+      // Held changes are not on disk; a repair turn that assumes they are
+      // "fixes" imports against content only the review queue has seen.
+      const heldBefore = next.pendingReview ?? [];
+      const heldNote = heldBefore.length > 0
+        ? `Files with changes held for user review (NOT on disk): ${heldBefore.join(', ')}. Their pending content is not applied — work with what is actually on disk, and do not re-propose those same edits.`
+        : '';
+      const baseFeedback = prior ? buildRepairBrief(unit, prior, next.patchFailures, attempt - 1) : '';
+      const feedbackText = [baseFeedback, heldNote].filter(Boolean).join('\n\n') || undefined;
       const turn = await deps.ports.runTurn({
         goal,
         milestone: unit,
         feedback: prior ?? undefined,
-        feedbackText: prior ? buildRepairBrief(unit, prior, next.patchFailures, attempt - 1) : undefined,
+        feedbackText,
         // Without this the Stop button only lands between tasks, so a teammate's
         // paid turn keeps streaming after the user asked for it to end.
         signal: deps.turnSignal?.()
@@ -355,6 +363,23 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
           type: 'team:log',
           text: `"${next.title}" was not verified (${report.notes.join('; ') || 'no checker could run'}).`
         });
+        break;
+      }
+
+      // A failed check whose cause sits in the review queue cannot be repaired
+      // by another paid turn: only the user can accept those bytes. Pause with
+      // the work intact instead of burning attempts and failing the team.
+      const held = next.pendingReview ?? [];
+      if (held.length > 0 && reviewExplainsFailure(next, report, held)) {
+        next.status = 'stopped';
+        outcome = 'stopped';
+        state.status = 'paused';
+        state.error = `"${next.title}" is waiting for your review: ${held.join(', ')}. Accept the held changes, then resume the team.`;
+        deps.ports.onEvent({
+          type: 'team:log',
+          text: `"${next.title}" paused — ${held.length} file(s) await review before its check can pass.`
+        });
+        deps.ports.onEvent({ type: 'task:done', id: next.id, status: 'stopped' });
         break;
       }
 
@@ -657,6 +682,25 @@ function mergeLine(report: TeamMergeReport): string {
 /** The last check's report, but only when it is what the next attempt must repair. */
 function previousFailure(task: TeamTask): VerificationReport | null {
   return task.lastReport?.verdict === 'failed' ? task.lastReport : null;
+}
+
+/**
+ * True when the failed check plausibly judges files whose changes are held:
+ * the task expected a file sitting in review, or a checker error points at one.
+ * Without this link a genuine type error would pause the team for an unrelated
+ * held file.
+ */
+function reviewExplainsFailure(
+  unit: { expectedFiles: string[] },
+  report: VerificationReport,
+  held: string[]
+): boolean {
+  const normalize = (path: string) => path.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  const heldSet = new Set(held.map(normalize));
+  return (
+    unit.expectedFiles.some((file) => heldSet.has(normalize(file))) ||
+    report.diagnostics.some((line) => heldSet.has(normalize(line.path)))
+  );
 }
 
 /**

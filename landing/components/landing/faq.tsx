@@ -59,6 +59,10 @@ const faqs = [
     q: 'Who is behind ShadRox?',
     a: 'ShadRox is a solo project built by Sourav Maurya, a 19-year-old full-stack developer and AI engineer based in Delhi, India. There is no company behind it — the app, the website, and the GitHub repo are all maintained by one person.',
   },
+  {
+    q: 'Where does feedback go?',
+    a: 'The Feedback button in the app sends only the message you type — tagged as a bug or a feature — plus the date, into the maker\'s private Google Sheet in three columns: date, bug and feature. Nothing else is attached — no email, account details, app version, platform, code, file names or diagnostics — and no ShadRox server sits in this path.',
+  },
 ]
 
 export function Faq({ limit }: { limit?: number }) {
@@ -66,42 +70,54 @@ export function Faq({ limit }: { limit?: number }) {
   const items = limit ? faqs.slice(0, limit) : faqs
 
   return (
-    <section id="faq" className="border-t border-[var(--line)] bg-[var(--bg2)] px-5 py-20 lg:px-8 lg:py-28">
-      <div className="mx-auto max-w-3xl">
+    <section id="faq" className="border-t border-[var(--line)] bg-[var(--bg2)] py-20 lg:py-28">
+      <div className="container-page max-w-3xl">
         <Reveal className="mb-12 text-center">
-          <p className="mb-4 text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--ac)]">
+          <p className="eyebrow mb-4">
             Good to know
           </p>
-          <h2 className="text-[clamp(28px,3.8vw,46px)] font-bold tracking-[-0.04em] leading-[1.1] text-[var(--ink)]">
+          <h2 className="text-[clamp(1.75rem,3.4vw,2.875rem)] font-bold leading-[1.1] tracking-[-0.04em] text-[var(--ink)]">
             Questions, <em className="font-normal italic text-[var(--ac)]">answered.</em>
           </h2>
         </Reveal>
 
-        <div className="divide-y divide-[var(--line)] rounded-3xl border border-[var(--line)] bg-[var(--card)] overflow-hidden">
+        <div className="divide-y divide-[var(--line)] overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--card)]">
           {items.map((item, i) => {
             const isOpen = open === i
             return (
               <Reveal key={item.q} delay={i * 50}>
                 <div className={cn(
-                  'px-6 py-5 transition-colors duration-200',
+                  'px-5 py-1.5 transition-colors duration-200 sm:px-6',
                   isOpen && 'bg-[var(--bg2)]',
                 )}>
-                  <button
-                    onClick={() => setOpen(isOpen ? null : i)}
-                    className="flex w-full cursor-pointer items-center justify-between gap-4 text-left text-sm font-semibold text-[var(--ink)] transition hover:text-[var(--ac)]"
-                    aria-expanded={isOpen}
+                  <h3>
+                    <button
+                      type="button"
+                      id={`faq-q-${i}`}
+                      onClick={() => setOpen(isOpen ? null : i)}
+                      className="flex min-h-[52px] w-full cursor-pointer items-center justify-between gap-4 py-3 text-left text-[15px] font-semibold leading-snug tracking-[-0.01em] text-[var(--ink)] transition-colors hover:text-[var(--ac)]"
+                      aria-expanded={isOpen}
+                      aria-controls={`faq-a-${i}`}
+                    >
+                      <span>{item.q}</span>
+                      <ChevronDown
+                        className={cn(
+                          'size-4 shrink-0 text-[var(--mut)] transition-transform duration-300',
+                          isOpen && 'rotate-180 text-[var(--ac)]',
+                        )}
+                        aria-hidden
+                      />
+                    </button>
+                  </h3>
+                  <div
+                    id={`faq-a-${i}`}
+                    role="region"
+                    aria-labelledby={`faq-q-${i}`}
+                    aria-hidden={!isOpen}
+                    className={cn('faq-panel', isOpen && 'open')}
                   >
-                    <span>{item.q}</span>
-                    <ChevronDown
-                      className={cn(
-                        'size-4 shrink-0 text-[var(--mut)] transition-transform duration-300',
-                        isOpen && 'rotate-180 text-[var(--ac)]',
-                      )}
-                    />
-                  </button>
-                  <div className={cn('faq-panel mt-1', isOpen && 'open')}>
                     <div className="faq-inner">
-                      <p className="max-w-2xl pt-3 pr-8 text-sm leading-6 text-[var(--mut)]">
+                      <p className="max-w-2xl pb-4 pr-8 text-[13.5px] leading-6 text-[var(--mut)]">
                         {item.a}
                       </p>
                     </div>

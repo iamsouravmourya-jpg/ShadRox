@@ -26,7 +26,9 @@ export function WorkspaceMockup() {
       ref={shellRef}
       onMouseMove={handleMove}
       onMouseLeave={handleLeave}
-      className="workspace-shell relative overflow-hidden rounded-2xl border border-white/10 bg-[#0b0d12] transition-transform duration-300 ease-out"
+      role="img"
+      aria-label="The ShadRox desktop workspace, illustrated: file explorer, code editor with an inline AI suggestion, live preview, and AI chat beside an integrated terminal."
+      className="workspace-shell relative overflow-hidden rounded-2xl border border-white/10 bg-[#0b0d12] transition-transform duration-500 ease-out"
       style={{ transformStyle: 'preserve-3d' }}
     >
       {/* Title bar */}

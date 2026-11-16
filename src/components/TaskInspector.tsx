@@ -77,17 +77,17 @@ type TabId = (typeof TABS)[number]['id'];
 const CALIBRATED_TASK_TYPES: CalibratedTaskType[] = ['chat', 'bugfix', 'refactor', 'feature', 'test'];
 
 const STATUS_TONE: Record<CapsuleStatus, string> = {
-  captured: 'border-sky-400/30 bg-sky-500/10 text-sky-300',
-  applied: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300',
-  reverted: 'border-amber-400/30 bg-amber-500/10 text-amber-200',
-  replayed: 'border-violet-400/30 bg-violet-500/10 text-violet-300',
-  conflicted: 'border-rose-400/30 bg-rose-500/10 text-rose-300'
+  captured: 'border-cool/30 bg-cool-soft text-cool',
+  applied: 'border-ok/30 bg-ok/10 text-ok',
+  reverted: 'border-warn/30 bg-warn/10 text-warn',
+  replayed: 'border-accent-line bg-accent-soft text-accent',
+  conflicted: 'border-danger/30 bg-danger/10 text-danger'
 };
 
 const KIND_GLYPH: Record<CapsuleFileDiff['kind'], { mark: string; tone: string; badge: string }> = {
-  created: { mark: '+', tone: 'text-emerald-300', badge: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300' },
-  deleted: { mark: '−', tone: 'text-rose-300', badge: 'border-rose-400/30 bg-rose-500/10 text-rose-300' },
-  edited: { mark: '~', tone: 'text-amber-300', badge: 'border-amber-400/30 bg-amber-500/10 text-amber-200' }
+  created: { mark: '+', tone: 'text-ok', badge: 'border-ok/30 bg-ok/10 text-ok' },
+  deleted: { mark: '−', tone: 'text-danger', badge: 'border-danger/30 bg-danger/10 text-danger' },
+  edited: { mark: '~', tone: 'text-warn', badge: 'border-warn/30 bg-warn/10 text-warn' }
 };
 
 /**
@@ -96,23 +96,23 @@ const KIND_GLYPH: Record<CapsuleFileDiff['kind'], { mark: string; tone: string; 
  * needs reviewing.
  */
 const DECISION_TONE: Record<DecisionStatus, string> = {
-  fresh: 'border-emerald-400/30 text-emerald-300',
-  stale: 'border-amber-400/30 text-amber-200',
-  unknown: 'border-white/15 text-neutral-500'
+  fresh: 'border-ok/30 text-ok',
+  stale: 'border-warn/30 text-warn',
+  unknown: 'border-line-2 text-ink-4'
 };
 
 /** Grey for `unverified` on purpose: nothing ran, so nothing is claimed. */
 const CHECK_TONE: Record<AcceptanceResult, string> = {
-  passed: 'border-emerald-400/30 text-emerald-300',
-  failed: 'border-rose-400/30 text-rose-200',
-  unverified: 'border-white/15 text-neutral-500'
+  passed: 'border-ok/30 text-ok',
+  failed: 'border-danger/30 text-danger',
+  unverified: 'border-line-2 text-ink-4'
 };
 
 const OUTCOME_TONE: Record<AcceptanceOutcome, string> = {
-  fixed: 'text-emerald-300',
-  'still-broken': 'text-rose-300',
-  regressed: 'text-rose-300',
-  unverified: 'text-neutral-500'
+  fixed: 'text-ok',
+  'still-broken': 'text-danger',
+  regressed: 'text-danger',
+  unverified: 'text-ink-4'
 };
 
 /**
@@ -134,22 +134,22 @@ function AcceptancePhaseRow({
   onRun: () => void;
 }): ReactElement {
   return (
-    <div className="rounded border border-white/[0.08] bg-neutral-950/40 p-1.5">
+    <div className="rounded border border-line bg-base/40 p-1.5">
       <div className="flex items-center gap-1.5">
         <span className={`rounded border px-1 py-px font-mono text-[9px] uppercase ${CHECK_TONE[phase.result]}`}>{phase.result}</span>
-        <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-400">{label}</span>
+        <span className="font-mono text-[9px] uppercase tracking-wider text-ink-3">{label}</span>
         <button
           type="button"
           onClick={onRun}
           disabled={disabled || running}
           title={disabled ? 'Start the local preview to run this check' : 'Run this check against the live preview'}
-          className="ml-auto flex items-center gap-1 rounded border border-cyan-400/30 px-1.5 py-0.5 text-[9px] text-cyan-200 hover:bg-cyan-500/10 disabled:opacity-40 cursor-pointer"
+          className="ml-auto flex items-center gap-1 rounded border border-cool/30 px-1.5 py-0.5 text-[9px] text-cool hover:bg-cool-soft disabled:opacity-40 cursor-pointer"
         >
           {running ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Play className="h-2.5 w-2.5" />}
           {running ? 'Running' : 'Run check'}
         </button>
       </div>
-      <p className="mt-1 font-mono text-[9px] leading-snug text-neutral-500">{describeEvidence(phase.evidence)}</p>
+      <p className="mt-1 font-mono text-[9px] leading-snug text-ink-4">{describeEvidence(phase.evidence)}</p>
     </div>
   );
 }
@@ -174,15 +174,15 @@ function spendLabel(capsule: ChangeCapsule): string {
 function DependencyRows({ title, rows }: { title: string; rows: DependencyEvidence[] }): ReactElement {
   return (
     <div>
-      <p className="font-mono text-[9px] uppercase tracking-wider text-neutral-600">{title} · {rows.length}</p>
+      <p className="font-mono text-[9px] uppercase tracking-wider text-ink-5">{title} · {rows.length}</p>
       {rows.length === 0 ? (
-        <p className="text-[9px] text-neutral-600">none seen by the index</p>
+        <p className="text-[9px] text-ink-5">none seen by the index</p>
       ) : (
         <ul className="mt-0.5 space-y-0.5">
           {rows.map((row) => (
             <li key={`${title}-${row.path}`} className="flex items-center gap-1 font-mono text-[9px]">
-              <span className={row.indexed ? 'text-neutral-300' : 'text-neutral-600'}>{row.path}</span>
-              <span className="ml-auto text-neutral-600">w{row.weight}</span>
+              <span className={row.indexed ? 'text-ink-3' : 'text-ink-5'}>{row.path}</span>
+              <span className="ml-auto text-ink-5">w{row.weight}</span>
             </li>
           ))}
         </ul>
@@ -262,12 +262,12 @@ export function TaskInspector({
   return (
     <section
       aria-label="Task inspector"
-      className="flex max-h-[480px] w-full min-w-0 flex-col overflow-hidden rounded-xl border border-white/10 bg-neutral-900/90 text-neutral-200"
+      className="flex max-h-[480px] w-full min-w-0 flex-col overflow-hidden rounded-xl border border-line-2 bg-base-2/90 text-ink-2"
     >
       <div
         role="tablist"
         aria-label="Inspector sections"
-        className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-white/[0.07] px-2 py-1.5"
+        className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2 py-1.5"
       >
         {TABS.map((tab) => {
           const isActive = tab.id === activeTab;
@@ -283,8 +283,8 @@ export function TaskInspector({
               title={tab.label}
               className={`flex h-6 shrink-0 items-center rounded border px-1.5 font-mono text-[10px] transition-colors cursor-pointer ${
                 isActive
-                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
-                  : 'border-white/[0.06] bg-white/[0.02] text-neutral-500 hover:text-neutral-300'
+                  ? 'border-ok/30 bg-ok/10 text-ok'
+                  : 'border-line bg-overlay text-ink-4 hover:text-ink-3'
               }`}
             >
               {tab.label}
@@ -295,16 +295,16 @@ export function TaskInspector({
 
       {activeTab === 'intent' ? (
         <div role="tabpanel" aria-label="Intent Graph" className="flex min-h-0 flex-1 flex-col">
-          <header className="flex shrink-0 items-center justify-between border-b border-white/[0.07] px-3 py-1.5">
-            <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-neutral-400">
-              <span className="text-emerald-300">Intent Graph</span>
-              <span className="text-neutral-600">{intentGraph?.symbols.length ?? 0} symbols · {intentDecisions.length} decisions · {indexedFiles} files indexed</span>
-              {intentLoading && <Loader2 className="h-3 w-3 animate-spin text-emerald-300" />}
+          <header className="flex shrink-0 items-center justify-between border-b border-line px-3 py-1.5">
+            <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-ink-3">
+              <span className="text-ok">Intent Graph</span>
+              <span className="text-ink-5">{intentGraph?.symbols.length ?? 0} symbols · {intentDecisions.length} decisions · {indexedFiles} files indexed</span>
+              {intentLoading && <Loader2 className="h-3 w-3 animate-spin text-ok" />}
             </div>
             <div className="flex items-center gap-1">
-              <button type="button" onClick={onIntentRefresh} title="Refresh intent graph" className="rounded p-1 text-neutral-500 hover:text-white cursor-pointer"><RefreshCw className="h-3.5 w-3.5" /></button>
-              <button type="button" onClick={onIntentExport} disabled={!workspaceRoot} title="Export intent graph" className="rounded border border-white/15 px-1.5 py-1 text-[9px] text-neutral-300 hover:text-white cursor-pointer disabled:opacity-40"><Download className="h-3 w-3" /></button>
-              <button type="button" onClick={() => intentFileRef.current?.click()} disabled={!workspaceRoot} title="Import intent graph" className="rounded border border-white/15 px-1.5 py-1 text-[9px] text-neutral-300 hover:text-white cursor-pointer disabled:opacity-40"><Upload className="h-3 w-3" /></button>
+              <button type="button" onClick={onIntentRefresh} title="Refresh intent graph" className="rounded p-1 text-ink-4 hover:text-ink cursor-pointer"><RefreshCw className="h-3.5 w-3.5" /></button>
+              <button type="button" onClick={onIntentExport} disabled={!workspaceRoot} title="Export intent graph" className="rounded border border-line-2 px-1.5 py-1 text-[9px] text-ink-3 hover:text-ink cursor-pointer disabled:opacity-40"><Download className="h-3 w-3" /></button>
+              <button type="button" onClick={() => intentFileRef.current?.click()} disabled={!workspaceRoot} title="Import intent graph" className="rounded border border-line-2 px-1.5 py-1 text-[9px] text-ink-3 hover:text-ink cursor-pointer disabled:opacity-40"><Upload className="h-3 w-3" /></button>
               <input ref={intentFileRef} type="file" accept="application/json" className="hidden" tabIndex={-1} aria-label="Intent graph JSON file" onChange={async (event) => {
                 const file = event.target.files?.[0]; event.target.value = '';
                 if (!file) return;
@@ -313,7 +313,7 @@ export function TaskInspector({
             </div>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-            <form className="mb-2 rounded-lg border border-emerald-400/20 bg-emerald-500/5 p-2" onSubmit={(event) => {
+            <form className="mb-2 rounded-lg border border-ok/20 bg-ok/5 p-2" onSubmit={(event) => {
               event.preventDefault();
               if (!workspaceRoot || !intentTitle.trim() || !intentBody.trim() || !intentPath.trim()) return;
               // Pin only the files this decision governs. Pinning the whole
@@ -322,53 +322,53 @@ export function TaskInspector({
               onAddDecision({ workspaceRoot, kind: 'rationale', title: intentTitle, body: intentBody, targets, baseHashes: hashesForTargets(intentGraph?.fileHashes ?? {}, targets) });
               setIntentTitle(''); setIntentBody(''); setIntentPath('');
             }}>
-              <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-emerald-300">Add approved decision</div>
-              <input value={intentTitle} onChange={(event) => setIntentTitle(event.target.value)} placeholder="Why does this exist?" className="mb-1 w-full rounded border border-white/10 bg-neutral-950 px-2 py-1 text-[10px] text-neutral-200 outline-none" />
-              <textarea value={intentBody} onChange={(event) => setIntentBody(event.target.value)} placeholder="Rationale or invariant" rows={2} className="mb-1 w-full resize-none rounded border border-white/10 bg-neutral-950 px-2 py-1 text-[10px] text-neutral-200 outline-none" />
+              <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-ok">Add approved decision</div>
+              <input value={intentTitle} onChange={(event) => setIntentTitle(event.target.value)} placeholder="Why does this exist?" className="mb-1 w-full rounded border border-line-2 bg-base px-2 py-1 text-[10px] text-ink-2 outline-none" />
+              <textarea value={intentBody} onChange={(event) => setIntentBody(event.target.value)} placeholder="Rationale or invariant" rows={2} className="mb-1 w-full resize-none rounded border border-line-2 bg-base px-2 py-1 text-[10px] text-ink-2 outline-none" />
               <div className="flex gap-1">
-                <input value={intentPath} onChange={(event) => setIntentPath(event.target.value)} placeholder="src/file.tsx" className="min-w-0 flex-1 rounded border border-white/10 bg-neutral-950 px-2 py-1 text-[10px] text-neutral-200 outline-none" />
-                <button type="submit" className="flex items-center gap-1 rounded border border-emerald-400/30 px-2 py-1 text-[10px] text-emerald-200 hover:bg-emerald-500/10 cursor-pointer"><Plus className="h-3 w-3" />Add</button>
+                <input value={intentPath} onChange={(event) => setIntentPath(event.target.value)} placeholder="src/file.tsx" className="min-w-0 flex-1 rounded border border-line-2 bg-base px-2 py-1 text-[10px] text-ink-2 outline-none" />
+                <button type="submit" className="flex items-center gap-1 rounded border border-ok/30 px-2 py-1 text-[10px] text-ok hover:bg-ok/10 cursor-pointer"><Plus className="h-3 w-3" />Add</button>
               </div>
             </form>
-            {intentDecisions.length === 0 ? <p className="py-5 text-center text-[10px] text-neutral-500">No decisions yet. Add the first rationale above.</p> : (
+            {intentDecisions.length === 0 ? <p className="py-5 text-center text-[10px] text-ink-4">No decisions yet. Add the first rationale above.</p> : (
               <ul className="space-y-1.5">
                 {intentDecisions.map((decision) => (
-                  <li key={decision.id} className="rounded-lg border border-white/[0.08] bg-neutral-950/50 p-2">
+                  <li key={decision.id} className="rounded-lg border border-line bg-base/50 p-2">
                     <div className="flex items-center gap-1.5">
                       <span className={`rounded border px-1 py-px font-mono text-[9px] uppercase ${DECISION_TONE[decision.status]}`}>{decision.status}</span>
-                      <span className="truncate text-[11px] text-neutral-200">{decision.title}</span>
-                      <button type="button" onClick={() => onDeleteDecision(decision.id)} title="Delete decision" className="ml-auto rounded p-1 text-neutral-600 hover:text-rose-300 cursor-pointer"><Trash2 className="h-3 w-3" /></button>
+                      <span className="truncate text-[11px] text-ink-2">{decision.title}</span>
+                      <button type="button" onClick={() => onDeleteDecision(decision.id)} title="Delete decision" className="ml-auto rounded p-1 text-ink-5 hover:text-danger cursor-pointer"><Trash2 className="h-3 w-3" /></button>
                     </div>
-                    <p className="mt-1 text-[10px] leading-snug text-neutral-400">{decision.body}</p>
-                    <p className="mt-1 font-mono text-[9px] text-neutral-600">{decision.targets.map((target) => target.symbol ? `${target.path}#${target.symbol}` : target.path).join(', ')}</p>
+                    <p className="mt-1 text-[10px] leading-snug text-ink-3">{decision.body}</p>
+                    <p className="mt-1 font-mono text-[9px] text-ink-5">{decision.targets.map((target) => target.symbol ? `${target.path}#${target.symbol}` : target.path).join(', ')}</p>
                   </li>
                 ))}
               </ul>
             )}
-            <form className="mt-2 rounded-lg border border-white/[0.08] bg-neutral-950/50 p-2" onSubmit={(event) => {
+            <form className="mt-2 rounded-lg border border-line bg-base/50 p-2" onSubmit={(event) => {
               event.preventDefault();
               const question = dependencyQuestion.trim();
               setDependencyAnswer(question ? onAskDependencies(question) : null);
             }}>
-              <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-neutral-400">Dependency question</div>
+              <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-ink-3">Dependency question</div>
               <div className="flex gap-1">
-                <input value={dependencyQuestion} onChange={(event) => setDependencyQuestion(event.target.value)} placeholder="what depends on src/a.ts?" className="min-w-0 flex-1 rounded border border-white/10 bg-neutral-950 px-2 py-1 text-[10px] text-neutral-200 outline-none" />
-                <button type="submit" className="flex items-center gap-1 rounded border border-white/15 px-2 py-1 text-[10px] text-neutral-300 hover:text-white cursor-pointer"><FileCode className="h-3 w-3" />Ask</button>
+                <input value={dependencyQuestion} onChange={(event) => setDependencyQuestion(event.target.value)} placeholder="what depends on src/a.ts?" className="min-w-0 flex-1 rounded border border-line-2 bg-base px-2 py-1 text-[10px] text-ink-2 outline-none" />
+                <button type="submit" className="flex items-center gap-1 rounded border border-line-2 px-2 py-1 text-[10px] text-ink-3 hover:text-ink cursor-pointer"><FileCode className="h-3 w-3" />Ask</button>
               </div>
               {dependencyAnswer && (dependencyAnswer.resolved ? (
                 <div className="mt-2 space-y-1.5">
-                  <p className="font-mono text-[9px] text-neutral-500">
+                  <p className="font-mono text-[9px] text-ink-4">
                     {dependencyAnswer.subject} · confidence {Math.round(dependencyAnswer.confidence * 100)}%
                     {dependencyAnswer.truncated ? ' · list capped' : ''}
                   </p>
                   <DependencyRows title="depends on" rows={dependencyAnswer.dependsOn} />
                   <DependencyRows title="depended by" rows={dependencyAnswer.dependedBy} />
                   <ul className="space-y-0.5">
-                    {dependencyAnswer.reasons.map((reason) => <li key={reason} className="text-[9px] leading-snug text-neutral-500">{reason}</li>)}
+                    {dependencyAnswer.reasons.map((reason) => <li key={reason} className="text-[9px] leading-snug text-ink-4">{reason}</li>)}
                   </ul>
                 </div>
               ) : (
-                <p className="mt-2 text-[9px] leading-snug text-neutral-500">
+                <p className="mt-2 text-[9px] leading-snug text-ink-4">
                   {dependencyAnswer.reasons[0] ?? 'Nothing in the index matches this question.'}
                 </p>
               ))}
@@ -377,20 +377,20 @@ export function TaskInspector({
         </div>
       ) : activeTab === 'behavior' ? (
         <div role="tabpanel" aria-label="Behavior Studio" className="flex min-h-0 flex-1 flex-col">
-          <header className="flex items-center justify-between border-b border-white/[0.07] px-3 py-1.5">
-            <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-neutral-400"><Activity className="h-3 w-3 text-cyan-300" />Behavior Recorder <span className="text-neutral-600">{behaviorEvents.length} events</span></span>
+          <header className="flex items-center justify-between border-b border-line px-3 py-1.5">
+            <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-ink-3"><Activity className="h-3 w-3 text-cool" />Behavior Recorder <span className="text-ink-5">{behaviorEvents.length} events</span></span>
             <div className="flex gap-1">
-              <button type="button" onClick={onGenerateContract} disabled={behaviorEvents.length === 0} className="rounded border border-cyan-400/30 px-2 py-1 text-[9px] text-cyan-200 hover:bg-cyan-500/10 disabled:opacity-40 cursor-pointer">Generate Contract</button>
-              <button type="button" onClick={onClearBehavior} className="rounded border border-white/10 px-2 py-1 text-[9px] text-neutral-400 hover:text-white cursor-pointer">Clear</button>
+              <button type="button" onClick={onGenerateContract} disabled={behaviorEvents.length === 0} className="rounded border border-cool/30 px-2 py-1 text-[9px] text-cool hover:bg-cool-soft disabled:opacity-40 cursor-pointer">Generate Contract</button>
+              <button type="button" onClick={onClearBehavior} className="rounded border border-line-2 px-2 py-1 text-[9px] text-ink-3 hover:text-ink cursor-pointer">Clear</button>
             </div>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-            {contract && <div className="mb-2 rounded-lg border border-cyan-400/20 bg-cyan-500/5 p-2">
-              <div className="font-mono text-[9px] uppercase tracking-wider text-cyan-200">Acceptance Contract</div>
-              <p className="mt-1 text-[10px] text-neutral-300">{contract.observedFailure}</p>
-              <p className="mt-1 text-[10px] text-neutral-400">Expected: {contract.expectedBehavior}</p>
-              <p className="mt-1 font-mono text-[9px] text-neutral-500">{contract.target.path ?? 'unmapped'}{contract.target.line ? `:${contract.target.line}` : ''}</p>
-              <p className="mt-1 font-mono text-[9px] text-neutral-500">
+            {contract && <div className="mb-2 rounded-lg border border-cool/20 bg-cool/5 p-2">
+              <div className="font-mono text-[9px] uppercase tracking-wider text-cool">Acceptance Contract</div>
+              <p className="mt-1 text-[10px] text-ink-3">{contract.observedFailure}</p>
+              <p className="mt-1 text-[10px] text-ink-3">Expected: {contract.expectedBehavior}</p>
+              <p className="mt-1 font-mono text-[9px] text-ink-4">{contract.target.path ?? 'unmapped'}{contract.target.line ? `:${contract.target.line}` : ''}</p>
+              <p className="mt-1 font-mono text-[9px] text-ink-4">
                 probe: {contract.probe.selectors.length > 0 ? contract.probe.selectors.join(', ') : 'derived from the served HTML on the first run'}
               </p>
               <div className="mt-2 space-y-1">
@@ -413,19 +413,19 @@ export function TaskInspector({
                 {acceptanceOutcome(contract).summary}
               </p>
               {!previewReady && (
-                <p className="mt-1 text-[9px] leading-snug text-neutral-500">
+                <p className="mt-1 text-[9px] leading-snug text-ink-4">
                   Neither phase can be decided until the local preview is running.
                 </p>
               )}
             </div>}
-            {behaviorEvents.length === 0 ? <p className="py-5 text-center text-[10px] text-neutral-500">Use Pick mode or interact with the preview to record clicks and runtime errors.</p> : (
-              <ul className="space-y-1">{behaviorEvents.map((event) => <li key={event.id} className="rounded border border-white/[0.08] bg-neutral-950/50 p-1.5 text-[10px] text-neutral-300"><span className="mr-1 font-mono uppercase text-cyan-300">{event.type}</span>{event.target}{event.path ? ` · ${event.path}` : ''}{event.message ? ` · ${event.message}` : ''}</li>)}</ul>
+            {behaviorEvents.length === 0 ? <p className="py-5 text-center text-[10px] text-ink-4">Use Pick mode or interact with the preview to record clicks and runtime errors.</p> : (
+              <ul className="space-y-1">{behaviorEvents.map((event) => <li key={event.id} className="rounded border border-line bg-base/50 p-1.5 text-[10px] text-ink-3"><span className="mr-1 font-mono uppercase text-cool">{event.type}</span>{event.target}{event.path ? ` · ${event.path}` : ''}{event.message ? ` · ${event.message}` : ''}</li>)}</ul>
             )}
           </div>
         </div>
       ) : activeTab === 'calibrated' ? (
         <div role="tabpanel" aria-label="Calibrated Auto" className="flex min-h-0 flex-1 flex-col">
-          <header className="flex items-center gap-1.5 border-b border-white/[0.07] px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-neutral-400"><Activity className="h-3 w-3 text-violet-300" />Outcome-Calibrated Auto <span className="text-neutral-600">{outcomes.filter((outcome) => outcome.verified).length} checked of {outcomes.length}</span></header>
+          <header className="flex items-center gap-1.5 border-b border-line px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-ink-3"><Activity className="h-3 w-3 text-accent" />Outcome-Calibrated Auto <span className="text-ink-5">{outcomes.filter((outcome) => outcome.verified).length} checked of {outcomes.length}</span></header>
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
             <div className="mb-1.5 flex flex-wrap gap-1">
               {CALIBRATED_TASK_TYPES.map((taskType) => (
@@ -433,34 +433,34 @@ export function TaskInspector({
                   key={taskType}
                   type="button"
                   onClick={() => onCalibratedTaskType(taskType)}
-                  className={`rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase transition-colors ${taskType === calibratedTaskType ? 'border-violet-400/40 bg-violet-500/15 text-violet-200' : 'border-white/[0.08] text-neutral-400 hover:text-neutral-200'}`}
+                  className={`rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase transition-colors ${taskType === calibratedTaskType ? 'border-accent-line bg-accent-soft text-accent' : 'border-line text-ink-3 hover:text-ink-2'}`}
                 >
                   {taskType}
                 </button>
               ))}
             </div>
-            <p className="mb-2 text-[9px] leading-snug text-neutral-500">
+            <p className="mb-2 text-[9px] leading-snug text-ink-4">
               Ranked only on {calibratedTaskType} turns something outside the model checked. Rates are shrunk toward the pool average, and a model under {MIN_VERIFIED_RUNS} checked runs sits behind every proven one. Pinning puts your choice above the record.
             </p>
-            <ul className="space-y-1.5">{routeProfiles.map((profile) => <li key={profile.route} className="rounded-lg border border-white/[0.08] bg-neutral-950/50 p-2"><div className="flex justify-between text-[10px] text-neutral-200"><span className="uppercase">{profile.route}</span><span>{profile.passRate === null ? 'no verified run' : `${Math.round(profile.passRate * 100)}% checked`}</span></div><div className="mt-1 text-[9px] text-neutral-500">{profile.verifiedAttempts} verified of {profile.attempts} run(s){profile.unverifiedAttempts > 0 ? ` · ${profile.unverifiedAttempts} unchecked, not counted` : ''} · {profile.averageRepairs.toFixed(1)} repairs · {Math.round(profile.averageTokens)} tokens</div></li>)}</ul>
+            <ul className="space-y-1.5">{routeProfiles.map((profile) => <li key={profile.route} className="rounded-lg border border-line bg-base/50 p-2"><div className="flex justify-between text-[10px] text-ink-2"><span className="uppercase">{profile.route}</span><span>{profile.passRate === null ? 'no verified run' : `${Math.round(profile.passRate * 100)}% checked`}</span></div><div className="mt-1 text-[9px] text-ink-4">{profile.verifiedAttempts} verified of {profile.attempts} run(s){profile.unverifiedAttempts > 0 ? ` · ${profile.unverifiedAttempts} unchecked, not counted` : ''} · {profile.averageRepairs.toFixed(1)} repairs · {Math.round(profile.averageTokens)} tokens</div></li>)}</ul>
             {modelRanking.length > 0 && <ul className="mt-2 space-y-1">
               {modelRanking.map((entry) => (
-                <li key={entry.model} className="rounded-lg border border-white/[0.08] bg-neutral-950/50 p-2">
+                <li key={entry.model} className="rounded-lg border border-line bg-base/50 p-2">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 truncate font-mono text-[9px] text-neutral-200">#{entry.rank + 1} {entry.model}</span>
+                    <span className="min-w-0 truncate font-mono text-[9px] text-ink-2">#{entry.rank + 1} {entry.model}</span>
                     <button
                       type="button"
                       onClick={() => onPinModel(calibratedTaskType, entry.pinned ? null : entry.model)}
-                      className={`shrink-0 rounded border px-1.5 py-0.5 text-[9px] transition-colors ${entry.pinned ? 'border-amber-400/40 bg-amber-500/10 text-amber-200' : 'border-white/[0.08] text-neutral-400 hover:text-neutral-200'}`}
+                      className={`shrink-0 rounded border px-1.5 py-0.5 text-[9px] transition-colors ${entry.pinned ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line text-ink-3 hover:text-ink-2'}`}
                     >
                       {entry.pinned ? 'Unpin' : 'Pin'}
                     </button>
                   </div>
-                  <p className={`mt-1 text-[9px] leading-snug ${entry.pinned ? 'text-amber-200/80' : entry.proven ? 'text-emerald-300/80' : 'text-neutral-500'}`}>{entry.reason}</p>
+                  <p className={`mt-1 text-[9px] leading-snug ${entry.pinned ? 'text-warn/80' : entry.proven ? 'text-ok/80' : 'text-ink-4'}`}>{entry.reason}</p>
                 </li>
               ))}
             </ul>}
-            {outcomes.length === 0 && <p className="py-5 text-center text-[10px] text-neutral-500">Nothing has been verified yet — the first checked turn is what starts the record.</p>}
+            {outcomes.length === 0 && <p className="py-5 text-center text-[10px] text-ink-4">Nothing has been verified yet — the first checked turn is what starts the record.</p>}
           </div>
         </div>
       ) : activeTab !== 'capsules' ? (
@@ -469,20 +469,20 @@ export function TaskInspector({
           aria-label={TABS[activeIndex].label}
           className="flex flex-1 flex-col items-center justify-center gap-1.5 px-4 py-8 text-center"
         >
-          <Construction className="h-4 w-4 text-neutral-600" />
-          <p className="text-[11px] font-medium text-neutral-400">Not built yet</p>
-          <p className="text-[10px] leading-snug text-neutral-600">{TABS[activeIndex].deferred}</p>
+          <Construction className="h-4 w-4 text-ink-5" />
+          <p className="text-[11px] font-medium text-ink-3">Not built yet</p>
+          <p className="text-[10px] leading-snug text-ink-5">{TABS[activeIndex].deferred}</p>
         </div>
       ) : (
         <div role="tabpanel" aria-label="Capsules" className="flex min-h-0 flex-1 flex-col">
-          <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.07] px-3 py-1.5">
-            <div className="flex min-w-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-neutral-400">
-              <History className="h-3 w-3 shrink-0 text-emerald-400/80" />
+          <header className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-3 py-1.5">
+            <div className="flex min-w-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-ink-3">
+              <History className="h-3 w-3 shrink-0 text-ok/80" />
               <span className="truncate">Change Capsules</span>
-              <span className="shrink-0 text-neutral-600">{capsules.length}</span>
+              <span className="shrink-0 text-ink-5">{capsules.length}</span>
               {loading && (
-                <span className="flex shrink-0 items-center gap-1 text-neutral-500" role="status">
-                  <Loader2 className="h-3 w-3 animate-spin text-emerald-300" />
+                <span className="flex shrink-0 items-center gap-1 text-ink-4" role="status">
+                  <Loader2 className="h-3 w-3 animate-spin text-ok" />
                   Loading…
                 </span>
               )}
@@ -494,7 +494,7 @@ export function TaskInspector({
                 disabled={loading}
                 title="Refresh capsules"
                 aria-label="Refresh capsules"
-                className="rounded p-1 text-neutral-500 transition-colors hover:text-white cursor-pointer disabled:pointer-events-none disabled:opacity-25"
+                className="rounded p-1 text-ink-4 transition-colors hover:text-ink cursor-pointer disabled:pointer-events-none disabled:opacity-25"
               >
                 <RefreshCw className="h-3.5 w-3.5" />
               </button>
@@ -504,7 +504,7 @@ export function TaskInspector({
                 disabled={!workspaceRoot}
                 title="Export capsules as JSON"
                 aria-label="Export capsules as JSON"
-                className="flex items-center gap-1 rounded-lg border border-white/15 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-neutral-300 transition-colors hover:border-emerald-400/40 hover:text-emerald-200 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex items-center gap-1 rounded-lg border border-line-2 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-ink-3 transition-colors hover:border-ok/40 hover:text-ok cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Download className="h-3 w-3" />
                 Export
@@ -515,7 +515,7 @@ export function TaskInspector({
                 disabled={!workspaceRoot}
                 title="Import capsules from JSON"
                 aria-label="Import capsules from JSON"
-                className="flex items-center gap-1 rounded-lg border border-white/15 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-neutral-300 transition-colors hover:border-emerald-400/40 hover:text-emerald-200 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex items-center gap-1 rounded-lg border border-line-2 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-ink-3 transition-colors hover:border-ok/40 hover:text-ok cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Upload className="h-3 w-3" />
                 Import
@@ -533,21 +533,21 @@ export function TaskInspector({
           </header>
 
           {importError && (
-            <p role="alert" className="shrink-0 border-b border-white/[0.07] px-3 py-1 text-[10px] text-rose-300">
+            <p role="alert" className="shrink-0 border-b border-line px-3 py-1 text-[10px] text-danger">
               {importError}
             </p>
           )}
 
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
             {loading && capsules.length === 0 ? (
-              <p className="flex items-center justify-center gap-1.5 py-5 font-mono text-[10px] text-neutral-500" role="status">
+              <p className="flex items-center justify-center gap-1.5 py-5 font-mono text-[10px] text-ink-4" role="status">
                 <Loader2 className="h-3 w-3 animate-spin" />
                 Loading…
               </p>
             ) : capsules.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-5 text-center">
-                <FileCode className="h-4 w-4 text-neutral-600" />
-                <p className="text-[11px] leading-snug text-neutral-500">
+                <FileCode className="h-4 w-4 text-ink-5" />
+                <p className="text-[11px] leading-snug text-ink-4">
                   No change capsules yet — they appear after an AI task runs.
                 </p>
               </div>
@@ -565,12 +565,12 @@ export function TaskInspector({
                           title={capsule.promptIntent}
                           className={`w-full rounded-lg border px-2 py-1.5 text-left transition-colors cursor-pointer ${
                             isSelected
-                              ? 'border-emerald-400/30 bg-emerald-500/10'
-                              : 'border-white/[0.07] bg-neutral-950/40 hover:border-white/15'
+                              ? 'border-ok/30 bg-ok/10'
+                              : 'border-line bg-base/40 hover:border-line-2'
                           }`}
                         >
                           <div className="flex items-center gap-1.5">
-                            <span className="truncate font-mono text-[10px] text-neutral-400">
+                            <span className="truncate font-mono text-[10px] text-ink-3">
                               {new Date(capsule.createdAt).toLocaleString()}
                             </span>
                             <span
@@ -579,8 +579,8 @@ export function TaskInspector({
                               {capsule.status}
                             </span>
                           </div>
-                          <p className="mt-0.5 truncate text-[11px] text-neutral-200">{snippet(capsule.promptIntent)}</p>
-                          <div className="mt-0.5 flex items-center gap-2 font-mono text-[9px] text-neutral-500">
+                          <p className="mt-0.5 truncate text-[11px] text-ink-2">{snippet(capsule.promptIntent)}</p>
+                          <div className="mt-0.5 flex items-center gap-2 font-mono text-[9px] text-ink-4">
                             <span className="flex shrink-0 items-center gap-1">
                               <FileCode className="h-2.5 w-2.5" />
                               {capsule.diffs.length} file{capsule.diffs.length === 1 ? '' : 's'}
@@ -596,11 +596,11 @@ export function TaskInspector({
                 {selected && (
                   <div
                     aria-label="Capsule diff inspector"
-                    className="mt-2 rounded-lg border border-white/[0.07] bg-neutral-950/50 p-2"
+                    className="mt-2 rounded-lg border border-line bg-base/50 p-2"
                   >
                     <div className="flex items-center gap-1.5">
-                      <FileCode className="h-3 w-3 shrink-0 text-emerald-400/80" />
-                      <span className="truncate font-mono text-[10px] text-neutral-300" title={selected.id}>
+                      <FileCode className="h-3 w-3 shrink-0 text-ok/80" />
+                      <span className="truncate font-mono text-[10px] text-ink-3" title={selected.id}>
                         {selected.id}
                       </span>
                       <button
@@ -608,30 +608,30 @@ export function TaskInspector({
                         onClick={() => setSelectedId(null)}
                         title="Close diff inspector"
                         aria-label="Close diff inspector"
-                        className="ml-auto shrink-0 rounded p-1 text-neutral-500 transition-colors hover:text-white cursor-pointer"
+                        className="ml-auto shrink-0 rounded p-1 text-ink-4 transition-colors hover:text-ink cursor-pointer"
                       >
                         <X className="h-3 w-3" />
                       </button>
                     </div>
 
                     {selected.redaction.redacted && (
-                      <p className="mt-1 flex items-center gap-1 text-[10px] text-amber-200" role="status">
+                      <p className="mt-1 flex items-center gap-1 text-[10px] text-warn" role="status">
                         <ShieldCheck className="h-3 w-3 shrink-0" />
                         Secrets removed ({selected.redaction.count})
                       </p>
                     )}
 
                     {selected.diffs.length === 0 ? (
-                      <p className="mt-1 text-[10px] text-neutral-600">No file changes in this capsule.</p>
+                      <p className="mt-1 text-[10px] text-ink-5">No file changes in this capsule.</p>
                     ) : (
                       <ul className="mt-1.5 space-y-1.5">
                         {selected.diffs.map((diff) => {
                           const glyph = KIND_GLYPH[diff.kind];
                           return (
-                            <li key={diff.path} className="rounded border border-white/[0.07] bg-neutral-900/60 p-1.5">
+                            <li key={diff.path} className="rounded border border-line bg-base-2/60 p-1.5">
                               <div className="flex items-center gap-1.5 font-mono text-[10px]">
                                 <span className={`w-2 shrink-0 ${glyph.tone}`}>{glyph.mark}</span>
-                                <span className="truncate text-neutral-300" title={diff.path}>{diff.path}</span>
+                                <span className="truncate text-ink-3" title={diff.path}>{diff.path}</span>
                                 <span
                                   className={`ml-auto shrink-0 rounded-full border px-1.5 py-px font-mono text-[9px] uppercase tracking-wider ${glyph.badge}`}
                                 >
@@ -640,16 +640,16 @@ export function TaskInspector({
                               </div>
                               {diff.before !== null && (
                                 <>
-                                  <p className="mt-1 font-mono text-[9px] uppercase tracking-wider text-neutral-600">Before</p>
-                                  <pre className="mt-0.5 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded border border-white/[0.07] bg-neutral-950/80 p-1.5 font-mono text-[10px] leading-relaxed text-neutral-300">
+                                  <p className="mt-1 font-mono text-[9px] uppercase tracking-wider text-ink-5">Before</p>
+                                  <pre className="mt-0.5 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded border border-line bg-base/80 p-1.5 font-mono text-[10px] leading-relaxed text-ink-3">
                                     {diff.before}
                                   </pre>
                                 </>
                               )}
                               {diff.after !== null && (
                                 <>
-                                  <p className="mt-1 font-mono text-[9px] uppercase tracking-wider text-neutral-600">After</p>
-                                  <pre className="mt-0.5 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded border border-white/[0.07] bg-neutral-950/80 p-1.5 font-mono text-[10px] leading-relaxed text-neutral-300">
+                                  <p className="mt-1 font-mono text-[9px] uppercase tracking-wider text-ink-5">After</p>
+                                  <pre className="mt-0.5 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded border border-line bg-base/80 p-1.5 font-mono text-[10px] leading-relaxed text-ink-3">
                                     {diff.after}
                                   </pre>
                                 </>
@@ -660,13 +660,13 @@ export function TaskInspector({
                       </ul>
                     )}
 
-                    <div className="mt-2 flex items-center gap-1.5 border-t border-white/[0.07] pt-2">
+                    <div className="mt-2 flex items-center gap-1.5 border-t border-line pt-2">
                       <button
                         type="button"
                         onClick={() => onReplay(selected.id)}
                         title="Plan a replay of this capsule"
                         aria-label={`Replay capsule ${selected.id}`}
-                        className="flex items-center gap-1.5 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/20 cursor-pointer"
+                        className="flex items-center gap-1.5 rounded-lg border border-ok/30 bg-ok/10 px-2.5 py-1 text-[10px] font-medium text-ok transition-colors hover:bg-ok/20 cursor-pointer"
                       >
                         <Play className="h-3 w-3" />
                         Replay
@@ -676,7 +676,7 @@ export function TaskInspector({
                         onClick={() => onRevert(selected.id)}
                         title="Plan a revert of this capsule"
                         aria-label={`Revert capsule ${selected.id}`}
-                        className="flex items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-200 transition-colors hover:bg-amber-500/20 cursor-pointer"
+                        className="flex items-center gap-1.5 rounded-lg border border-warn/30 bg-warn/10 px-2.5 py-1 text-[10px] font-medium text-warn transition-colors hover:bg-warn/20 cursor-pointer"
                       >
                         <Undo2 className="h-3 w-3" />
                         Revert
@@ -686,7 +686,7 @@ export function TaskInspector({
                         onClick={() => { setSelectedId(null); onDelete(selected.id); }}
                         title="Delete this capsule"
                         aria-label={`Delete capsule ${selected.id}`}
-                        className="ml-auto flex items-center gap-1.5 rounded-lg border border-rose-400/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-medium text-rose-300 transition-colors hover:bg-rose-500/20 cursor-pointer"
+                        className="ml-auto flex items-center gap-1.5 rounded-lg border border-danger/30 bg-danger/10 px-2.5 py-1 text-[10px] font-medium text-danger transition-colors hover:bg-danger/20 cursor-pointer"
                       >
                         <Trash2 className="h-3 w-3" />
                         Delete

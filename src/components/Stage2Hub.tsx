@@ -1,6 +1,9 @@
-import { Clock, FileCode, FolderOpen, KeyRound, Loader2, LogOut, X } from 'lucide-react';
+import { ArrowRight, Clock, FileCode, FilePlus2, FolderOpen, FolderPlus, KeyRound, Loader2, LogOut, X } from 'lucide-react';
+import { useRef, useState } from 'react';
+import type { DragEvent } from 'react';
 import type { RecentEntry } from '../lib/types';
 import { ShadRoxLogo } from './Logo';
+import { ThemeToggle } from './ThemeToggle';
 
 interface Stage2HubProps {
   recents: RecentEntry[];
@@ -10,6 +13,8 @@ interface Stage2HubProps {
   onOpenSettings: () => void;
   onOpenFolder: () => void;
   onOpenFiles: () => void;
+  onNewFile: () => void;
+  onNewProject: (name: string) => void;
   onDroppedFiles: (files: FileList) => void;
   onReopen: (entry: RecentEntry) => void;
   onRemoveRecent: (id: string) => void;
@@ -30,10 +35,18 @@ function ShadRoxWordmark() {
   return (
     <div className="flex items-center gap-2.5">
       <ShadRoxLogo className="size-7 shrink-0" />
-      <span className="text-[15px] font-semibold tracking-[-0.03em] text-white">ShadRox</span>
+      <span className="text-[15px] font-semibold tracking-[-0.03em] text-ink">ShadRox</span>
     </div>
   );
 }
+
+/* One surface language for the secondary actions: compact ghost tiles that
+   lift a hair on hover. The primary action gets its own accent variant. */
+const SECONDARY_ACTION =
+  'hub-action group flex h-14 items-center gap-2.5 rounded-xl px-3 text-left cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed';
+
+const SECONDARY_ICON =
+  'flex size-8 shrink-0 items-center justify-center rounded-lg border border-line bg-overlay-2 text-ink-3 transition-colors duration-150 group-hover:border-accent-line group-hover:text-accent';
 
 export function Stage2Hub({
   recents,
@@ -43,26 +56,53 @@ export function Stage2Hub({
   onOpenSettings,
   onOpenFolder,
   onOpenFiles,
+  onNewFile,
+  onNewProject,
   onDroppedFiles,
   onReopen,
   onRemoveRecent,
   account,
   onSignOut,
 }: Stage2HubProps) {
+  const [naming, setNaming] = useState(false);
+  const [projectName, setProjectName] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
+  // dragenter/dragleave fire for every child element, so count depth instead
+  // of toggling a boolean or the highlight flickers while moving inside.
+  const dragDepth = useRef(0);
+
+  const submitProject = () => {
+    const name = projectName.trim();
+    if (!name) return;
+    setNaming(false);
+    setProjectName('');
+    onNewProject(name);
+  };
+
+  const primaryDropProps = {
+    onDragEnter: (e: DragEvent<HTMLElement>) => {
+      e.preventDefault();
+      dragDepth.current += 1;
+      setIsDragging(true);
+    },
+    onDragOver: (e: DragEvent<HTMLElement>) => e.preventDefault(),
+    onDragLeave: (e: DragEvent<HTMLElement>) => {
+      e.preventDefault();
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setIsDragging(false);
+    },
+    onDrop: (e: DragEvent<HTMLElement>) => {
+      e.preventDefault();
+      dragDepth.current = 0;
+      setIsDragging(false);
+      if (e.dataTransfer?.files?.length) onDroppedFiles(e.dataTransfer.files);
+    },
+  };
+
   return (
-    <div
-      className="relative w-full h-screen overflow-hidden flex flex-col text-white"
-      style={{ background: '#090a0d' }}
-    >
+    <div className="relative w-full h-screen overflow-hidden flex flex-col text-ink bg-base">
       {/* Grid background */}
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{
-          backgroundImage:
-            'linear-gradient(rgb(255 255 255 / .018) 1px, transparent 1px), linear-gradient(90deg, rgb(255 255 255 / .018) 1px, transparent 1px)',
-          backgroundSize: '72px 72px',
-        }}
-      />
+      <div className="grid-bg pointer-events-none absolute inset-0" />
 
       {/* Aurora glow blobs */}
       <div
@@ -74,7 +114,7 @@ export function Stage2Hub({
           width: '700px',
           height: '500px',
           background:
-            'radial-gradient(circle at 50% 30%, rgb(124 58 237 / .22), transparent 55%), radial-gradient(circle at 20% 60%, rgb(14 165 233 / .12), transparent 40%)',
+            'radial-gradient(circle at 50% 30%, var(--glow), transparent 55%), radial-gradient(circle at 20% 60%, var(--cool-soft), transparent 40%)',
           filter: 'blur(12px)',
         }}
       />
@@ -85,36 +125,28 @@ export function Stage2Hub({
           right: '-100px',
           width: '500px',
           height: '400px',
-          background: 'radial-gradient(circle at 70% 70%, rgb(124 58 237 / .12), transparent 50%)',
+          background: 'radial-gradient(circle at 70% 70%, var(--glow), transparent 50%)',
           filter: 'blur(24px)',
         }}
       />
 
       {/* Header */}
-      <header
-        className="titlebar window-controls-inset relative shrink-0 z-10 flex h-12 items-center justify-between px-6"
-        style={{ borderBottom: '1px solid rgb(255 255 255 / .07)' }}
-      >
+      <header className="titlebar window-controls-inset relative shrink-0 z-10 flex h-12 items-center justify-between px-6 border-b border-line">
         <ShadRoxWordmark />
 
         <div className="flex items-center gap-2">
-          <div
-            className="hidden md:flex items-center gap-2 rounded-full px-3 py-1.5 text-[11px] text-zinc-400"
-            style={{
-              border: '1px solid rgb(255 255 255 / .1)',
-              background: 'rgb(255 255 255 / .03)',
-              backdropFilter: 'blur(12px)',
-            }}
-          >
+          <div className="hidden md:flex items-center gap-2 rounded-full px-3 py-1.5 text-[11px] text-ink-3 border border-line bg-overlay backdrop-blur-xl">
             <span
-              className="inline-block w-1.5 h-1.5 rounded-full bg-violet-300"
-              style={{ boxShadow: '0 0 6px #c4b5fd' }}
+              className="inline-block w-1.5 h-1.5 rounded-full bg-accent"
+              style={{ boxShadow: '0 0 6px var(--accent)' }}
             />
             Local — runs on this device
           </div>
 
+          <ThemeToggle />
+
           {account && (
-            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] py-1 pl-1 pr-1.5">
+            <div className="flex items-center gap-2 rounded-full border border-line bg-overlay py-1 pl-1 pr-1.5">
               {account.avatarUrl ? (
                 <img
                   src={account.avatarUrl}
@@ -123,17 +155,17 @@ export function Stage2Hub({
                   className="h-6 w-6 rounded-full object-cover"
                 />
               ) : (
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-violet-500/15 text-[10px] font-semibold text-violet-300">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-accent-soft text-[10px] font-semibold text-accent">
                   {account.email.slice(0, 1).toUpperCase()}
                 </span>
               )}
-              <span className="max-w-[170px] truncate text-[11px] text-zinc-300">{account.email}</span>
+              <span className="max-w-[170px] truncate text-[11px] text-ink-2">{account.email}</span>
               <button
                 type="button"
                 onClick={onSignOut}
                 title="Sign out"
                 aria-label="Sign out"
-                className="rounded-full p-1 text-zinc-500 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
+                className="rounded-full p-1 text-ink-4 transition-colors hover:bg-overlay-2 hover:text-ink active:scale-[0.96] cursor-pointer"
               >
                 <LogOut className="w-3.5 h-3.5" />
               </button>
@@ -143,111 +175,102 @@ export function Stage2Hub({
       </header>
 
       {/* Main */}
-      <main className="relative z-10 flex-1 flex items-center justify-center px-6 overflow-y-auto">
-        <div className="w-full max-w-md flex flex-col items-center text-center py-12">
+      <main className="relative z-10 flex-1 flex px-6 overflow-y-auto">
+        {/* m-auto centers when there is spare room but collapses to 0 when the
+            content overflows, keeping the heading reachable by scroll. */}
+        <div className="m-auto w-full max-w-xl flex flex-col items-center text-center py-10">
 
           {/* Pill badge */}
-          <div
-            className="mb-8 inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.18em]"
-            style={{
-              border: '1px solid rgb(196 181 253 / .2)',
-              background: 'rgb(196 181 253 / .06)',
-              color: '#c4b5fd',
-            }}
-          >
+          <div className="mb-6 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.16em] border border-accent-line bg-accent-soft text-accent">
             <span className="relative flex size-1.5">
               <span
-                className="absolute inline-flex size-full rounded-full opacity-75"
-                style={{
-                  background: '#c4b5fd',
-                  animation: 'ping 1.4s cubic-bezier(0,0,0.2,1) infinite',
-                }}
+                className="absolute inline-flex size-full rounded-full opacity-75 bg-accent"
+                style={{ animation: 'app-ping 1.4s cubic-bezier(0,0,0.2,1) infinite' }}
               />
               <span
-                className="relative inline-flex size-1.5 rounded-full"
-                style={{ background: '#c4b5fd', boxShadow: '0 0 8px #c4b5fd' }}
+                className="relative inline-flex size-1.5 rounded-full bg-accent"
+                style={{ boxShadow: '0 0 8px var(--accent)' }}
               />
             </span>
             Desktop beta · Windows &amp; browser
           </div>
 
           {/* Heading */}
-          <h1
-            className="text-4xl sm:text-5xl font-semibold tracking-[-0.05em] leading-[1.1] text-white"
-          >
-            Open a project.{' '}
-            <span
-              style={{
-                background: 'linear-gradient(120deg, #c4b5fd, #a78bfa 40%, #7dd3fc 75%, #c4b5fd)',
-                backgroundSize: '220% 220%',
-                WebkitBackgroundClip: 'text',
-                backgroundClip: 'text',
-                color: 'transparent',
-                animation: 'gradient-pan 6s ease infinite',
-              }}
-            >
-              Start building.
-            </span>
+          <h1 className="text-3xl sm:text-4xl font-semibold tracking-[-0.045em] leading-[1.1] text-ink">
+            Open a project. <span className="text-gradient">Start building.</span>
           </h1>
 
-          <p className="mt-4 max-w-sm text-sm leading-relaxed" style={{ color: '#a1a1aa' }}>
+          <p className="mt-3 max-w-sm text-[13px] leading-relaxed text-ink-3">
             Your project stays on this device. AI chat sends only the prompt and code context you choose to your selected provider.
           </p>
 
           <button
             type="button"
             onClick={onOpenSettings}
-            className="mt-5 inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-[11px] transition-colors cursor-pointer"
-            style={{
-              border: `1px solid ${hasKey ? 'rgb(52 211 153 / .25)' : 'rgb(196 181 253 / .3)'}`,
-              background: hasKey ? 'rgb(16 185 129 / .08)' : 'rgb(124 58 237 / .12)',
-              color: hasKey ? '#6ee7b7' : '#ddd6fe',
-            }}
+            className={`mt-4 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] transition-all duration-150 cursor-pointer border hover:brightness-110 active:scale-[0.98] ${
+              hasKey
+                ? 'border-ok/30 bg-ok/10 text-ok'
+                : 'border-accent-line bg-accent-soft text-accent'
+            }`}
           >
             <KeyRound className="w-3.5 h-3.5" />
             {hasKey ? 'API key saved — manage keys' : 'Add your API key to start chatting'}
           </button>
 
-          {/* Action cards */}
-          <div className="mt-10 grid grid-cols-2 gap-3 w-full">
-            <button
-              type="button"
-              onClick={onOpenFolder}
-              onDrop={(e) => {
-                e.preventDefault();
-                if (e.dataTransfer?.files?.length) onDroppedFiles(e.dataTransfer.files);
-              }}
-              onDragOver={(e) => e.preventDefault()}
-              disabled={isBusy}
-              className="group flex flex-col items-center justify-center gap-3 p-6 rounded-2xl text-center disabled:opacity-40 cursor-pointer transition-all duration-300"
-              style={{
-                border: '1px solid rgb(255 255 255 / .09)',
-                background: 'rgb(255 255 255 / .04)',
-                backdropFilter: 'blur(12px)',
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgb(196 181 253 / .35)';
-                (e.currentTarget as HTMLButtonElement).style.background = 'rgb(196 181 253 / .07)';
-                (e.currentTarget as HTMLButtonElement).style.transform = 'translateY(-4px)';
-                (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 16px 40px rgb(0 0 0 / .25), 0 0 24px rgb(124 58 237 / .12)';
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgb(255 255 255 / .09)';
-                (e.currentTarget as HTMLButtonElement).style.background = 'rgb(255 255 255 / .04)';
-                (e.currentTarget as HTMLButtonElement).style.transform = 'none';
-                (e.currentTarget as HTMLButtonElement).style.boxShadow = 'none';
-              }}
+          {/* Primary action — the whole card is the button and the drop target */}
+          <button
+            type="button"
+            onClick={onOpenFolder}
+            disabled={isBusy}
+            {...primaryDropProps}
+            className={`hub-primary group mt-6 flex h-20 w-full items-center gap-4 rounded-2xl px-5 text-left cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+              isDragging ? 'border-accent-line bg-accent-soft' : ''
+            }`}
+          >
+            <span
+              className={`flex size-11 shrink-0 items-center justify-center rounded-xl border transition-colors duration-150 ${
+                isDragging
+                  ? 'border-accent-line bg-accent text-white'
+                  : 'border-accent-line bg-accent-soft text-accent'
+              }`}
             >
-              <div
-                className="flex items-center justify-center w-10 h-10 rounded-xl"
-                style={{ background: 'rgb(124 58 237 / .15)', border: '1px solid rgb(196 181 253 / .2)' }}
-              >
-                <FolderOpen className="w-5 h-5" style={{ color: '#c4b5fd' }} />
-              </div>
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wider text-white">Open Folder</div>
-                <div className="mt-0.5 text-[11px]" style={{ color: '#71717a' }}>Mount workspace folder</div>
-              </div>
+              <FolderOpen className="size-5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold tracking-[-0.01em] text-ink">
+                {isDragging ? 'Drop to open this folder' : 'Open a folder'}
+              </span>
+              <span className="mt-0.5 block text-[11px] leading-4 text-ink-4">
+                Your project files live here — drag a folder in or click to browse
+              </span>
+            </span>
+            <ArrowRight
+              className={`size-4 shrink-0 transition-all duration-200 ${
+                isDragging ? 'translate-x-0 text-accent' : 'text-ink-5 group-hover:translate-x-0.5 group-hover:text-accent'
+              }`}
+            />
+          </button>
+
+          {/* Secondary actions — one compact row, not a grid of chunky cards */}
+          <div className="mt-2.5 grid w-full grid-cols-3 gap-2.5">
+            <button type="button" onClick={onNewFile} disabled={isBusy} className={SECONDARY_ACTION}>
+              <span className={SECONDARY_ICON}>
+                <FilePlus2 className="size-4" />
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate text-xs font-medium text-ink">New file</span>
+                <span className="block truncate text-[10px] text-ink-5">Blank file</span>
+              </span>
+            </button>
+
+            <button type="button" onClick={() => setNaming(true)} disabled={isBusy} className={SECONDARY_ACTION}>
+              <span className={SECONDARY_ICON}>
+                <FolderPlus className="size-4" />
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate text-xs font-medium text-ink">New project</span>
+                <span className="block truncate text-[10px] text-ink-5">Empty folder</span>
+              </span>
             </button>
 
             <button
@@ -259,111 +282,119 @@ export function Stage2Hub({
               }}
               onDragOver={(e) => e.preventDefault()}
               disabled={isBusy}
-              className="group flex flex-col items-center justify-center gap-3 p-6 rounded-2xl text-center disabled:opacity-40 cursor-pointer transition-all duration-300"
-              style={{
-                border: '1px solid rgb(255 255 255 / .09)',
-                background: 'rgb(255 255 255 / .04)',
-                backdropFilter: 'blur(12px)',
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgb(125 211 252 / .35)';
-                (e.currentTarget as HTMLButtonElement).style.background = 'rgb(125 211 252 / .06)';
-                (e.currentTarget as HTMLButtonElement).style.transform = 'translateY(-4px)';
-                (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 16px 40px rgb(0 0 0 / .25), 0 0 24px rgb(14 165 233 / .1)';
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgb(255 255 255 / .09)';
-                (e.currentTarget as HTMLButtonElement).style.background = 'rgb(255 255 255 / .04)';
-                (e.currentTarget as HTMLButtonElement).style.transform = 'none';
-                (e.currentTarget as HTMLButtonElement).style.boxShadow = 'none';
-              }}
+              className={SECONDARY_ACTION}
             >
-              <div
-                className="flex items-center justify-center w-10 h-10 rounded-xl"
-                style={{ background: 'rgb(14 165 233 / .12)', border: '1px solid rgb(125 211 252 / .2)' }}
-              >
-                <FileCode className="w-5 h-5" style={{ color: '#7dd3fc' }} />
-              </div>
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wider text-white">Open Files</div>
-                <div className="mt-0.5 text-[11px]" style={{ color: '#71717a' }}>Select any file formats</div>
-              </div>
+              <span className={SECONDARY_ICON}>
+                <FileCode className="size-4" />
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate text-xs font-medium text-ink">Open files</span>
+                <span className="block truncate text-[10px] text-ink-5">Any format</span>
+              </span>
             </button>
           </div>
 
-          {/* Status message */}
-          {statusMessage && (
-            <div
-              className="mt-4 flex w-full items-center gap-2 rounded-xl px-4 py-3 text-xs text-left"
-              style={{
-                border: '1px solid rgb(196 181 253 / .15)',
-                background: 'rgb(196 181 253 / .05)',
-                color: '#d4d4d8',
+          {/* Inline project naming — docked under the actions, never a modal */}
+          {naming && (
+            <form
+              className="mt-2.5 w-full rounded-xl border border-accent-line bg-surface p-3.5 text-left shadow-[var(--shadow-panel)]"
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitProject();
               }}
             >
-              {isBusy && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-violet-300" />}
+              <label htmlFor="new-project-name" className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-ink-4">
+                Name your project
+              </label>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  id="new-project-name"
+                  autoFocus
+                  value={projectName}
+                  onChange={(e) => setProjectName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') setNaming(false);
+                  }}
+                  placeholder="my-project"
+                  maxLength={64}
+                  className="min-w-0 flex-1 rounded-lg border border-line bg-base-2 px-3 py-1.5 text-[13px] text-ink placeholder:text-ink-5 outline-none transition-colors focus:border-accent-line"
+                />
+                <button
+                  type="submit"
+                  disabled={!projectName.trim() || isBusy}
+                  className="shrink-0 rounded-full bg-accent-strong px-4 py-1.5 text-xs font-semibold text-white shadow-[0_8px_20px_-12px_var(--glow)] transition-all duration-150 hover:brightness-110 active:scale-[0.98] disabled:opacity-40 disabled:hover:brightness-100 cursor-pointer"
+                >
+                  Create
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNaming(false)}
+                  className="shrink-0 rounded-full px-3 py-1.5 text-xs text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink active:scale-[0.98] cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+              <p className="mt-2 text-[11px] leading-4 text-ink-4">
+                ShadRox creates an empty folder here and opens it. Nothing is added, nothing is overwritten.
+              </p>
+            </form>
+          )}
+
+          {/* Status message */}
+          {statusMessage && (
+            <div className="mt-3 flex w-full items-center gap-2 rounded-lg px-3.5 py-2.5 text-[11px] text-left border border-accent-line bg-accent-soft text-ink-2">
+              {isBusy && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />}
               {statusMessage}
             </div>
           )}
 
           {/* Recents */}
           {recents.length > 0 && (
-            <div className="mt-10 w-full text-left">
-              <div
-                className="flex items-center justify-between mb-3 text-[10px] uppercase tracking-widest"
-                style={{ color: '#52525b' }}
-              >
-                <span className="flex items-center gap-2">
+            <div className="mt-6 w-full text-left">
+              <div className="flex items-center justify-between mb-2 text-[10px] uppercase tracking-widest text-ink-5">
+                <span className="flex items-center gap-1.5">
                   <Clock className="w-3 h-3" />
                   Recently opened
                 </span>
-                <span className="normal-case tracking-normal" style={{ color: '#3f3f46' }}>
+                <span className="normal-case tracking-normal text-ink-5">
                   Click to reopen
                 </span>
               </div>
 
-              <div
-                className="overflow-hidden rounded-2xl"
-                style={{
-                  border: '1px solid rgb(255 255 255 / .07)',
-                  background: 'rgb(255 255 255 / .025)',
-                }}
-              >
+              <div className="overflow-hidden rounded-xl border border-line bg-overlay">
                 {recents.map((entry) => (
                   <div
                     key={entry.id}
-                    className="group flex items-center gap-1 pr-2"
-                    style={{ borderBottom: '1px solid rgb(255 255 255 / .05)' }}
+                    className="group flex items-center gap-1 pr-2 border-b border-line last:border-b-0"
                   >
                     <button
                       type="button"
                       onClick={() => onReopen(entry)}
                       disabled={isBusy}
-                      className="flex flex-1 min-w-0 items-center justify-between px-4 py-3 text-left transition-colors hover:bg-white/[0.04] disabled:opacity-50 cursor-pointer"
+                      className="flex flex-1 min-w-0 items-center justify-between px-3.5 py-2 text-left transition-colors hover:bg-overlay-2 disabled:opacity-50 cursor-pointer"
                     >
                       <span className="flex items-center gap-2.5 min-w-0">
                         {entry.kind === 'folder' ? (
-                          <FolderOpen className="w-3.5 h-3.5 shrink-0" style={{ color: '#a78bfa' }} />
+                          <FolderOpen className="w-3.5 h-3.5 shrink-0 text-accent" />
                         ) : (
-                          <FileCode className="w-3.5 h-3.5 shrink-0" style={{ color: '#7dd3fc' }} />
+                          <FileCode className="w-3.5 h-3.5 shrink-0 text-cool" />
                         )}
                         <span className="min-w-0">
-                          <span className="block text-xs text-zinc-200 truncate">{entry.name}</span>
+                          <span className="block text-xs text-ink-2 truncate">{entry.name}</span>
                           <span
-                            className="block text-[10px] font-mono truncate"
-                            style={{ color: '#52525b' }}
+                            className="block text-[10px] font-mono truncate text-ink-5"
                             title={entry.path}
                           >
                             {/[\\/]/.test(entry.path) ? entry.path : 'Location saved in an older version — reopen once to refresh'}
                           </span>
                         </span>
-                        <span className="text-[11px] shrink-0" style={{ color: '#3f3f46' }}>
+                        <span className="text-[11px] shrink-0 text-ink-5">
                           {entry.kind === 'folder'
                             ? entry.fileCount > 0 ? `${entry.fileCount} files` : 'Folder'
                             : `${entry.fileCount} file${entry.fileCount === 1 ? '' : 's'}`}
                         </span>
                       </span>
-                      <span className="text-[11px] shrink-0 ml-4" style={{ color: '#3f3f46' }}>
+                      <span className="text-[11px] shrink-0 ml-4 text-ink-5">
                         {formatRelativeTime(entry.openedAt)}
                       </span>
                     </button>
@@ -371,7 +402,7 @@ export function Stage2Hub({
                       type="button"
                       onClick={() => onRemoveRecent(entry.id)}
                       title="Remove from history"
-                      className="shrink-0 rounded-md p-1 text-neutral-600 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100 cursor-pointer"
+                      className="shrink-0 rounded-md p-1 text-ink-5 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 cursor-pointer"
                     >
                       <X className="w-3 h-3" />
                     </button>
@@ -382,23 +413,12 @@ export function Stage2Hub({
           )}
 
           {/* Bottom tagline */}
-          <p className="mt-10 text-[11px]" style={{ color: '#3f3f46' }}>
+          <p className="mt-6 text-[11px] leading-5 text-ink-5">
             Free &amp; BYOK — no plan, no cap, nothing billed by ShadRox. Your files stay on this machine;
             only the prompt and the context you attach go to the provider key you choose.
           </p>
         </div>
       </main>
-
-      {/* Keyframes injected once */}
-      <style>{`
-        @keyframes ping {
-          75%, 100% { transform: scale(2); opacity: 0; }
-        }
-        @keyframes gradient-pan {
-          0%, 100% { background-position: 0% 50%; }
-          50% { background-position: 100% 50%; }
-        }
-      `}</style>
     </div>
   );
 }

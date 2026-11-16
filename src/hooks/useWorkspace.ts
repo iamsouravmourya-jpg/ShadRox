@@ -23,6 +23,7 @@ import {
   type HandleEntry
 } from '../lib/workspace';
 import type { RecentEntry, WorkspaceFile, WorkspaceFileEntry, WorkspaceFolder } from '../lib/types';
+import { sanitizeProjectName } from '../../electron/project-scaffold.cjs';
 
 /** What happened to each file the assistant tried to write. */
 export interface ApplyPatchesResult {
@@ -114,6 +115,10 @@ interface UseWorkspaceResult {
   statusMessage: string | null;
   openFolder: () => Promise<void>;
   openFiles: () => Promise<void>;
+  /** Creates a file through the OS save dialog and opens it (desktop); a scratch buffer in the browser. */
+  newFile: () => Promise<void>;
+  /** Scaffolds a starter project at a location the user picks and opens it. */
+  newProject: (name: string) => Promise<void>;
   openDropped: (list: FileList) => Promise<void>;
   /** Reopens a remembered workspace straight from its local snapshot. */
   openRecent: (entry: RecentEntry) => Promise<void>;
@@ -1387,6 +1392,85 @@ export function useWorkspace(): UseWorkspaceResult {
     }
   }, [saveFilesAtomic, noteCheckpointCreated, loadDirectory]);
 
+  const newFile = useCallback(async () => {
+    const desktop = getDesktopBridge();
+    if (desktop?.newFile) {
+      setIsBusy(true);
+      try {
+        const opened = await desktop.newFile();
+        if (!opened) return;
+        mount(opened.name, opened.rootPath, 'file', opened.files.map((file) => ({
+          ...file,
+          language: detectLanguage(file.name)
+        })), {
+          assets: opened.assets,
+          nativeWorkspaceId: opened.workspaceId,
+          filePaths: opened.filePaths
+        });
+        if (opened.warnings.length > 0) setStatusMessage(opened.warnings.join(' '));
+      } catch (error) {
+        setStatusMessage(error instanceof Error ? `Could not create the file: ${error.message}` : 'Could not create the file.');
+      } finally {
+        setIsBusy(false);
+      }
+      return;
+    }
+    // Browser mode has no save dialog worth wiring here: an in-memory scratch
+    // buffer opens immediately, and the read-only banner says it is not on disk.
+    createFile('untitled.md');
+  }, [mount, createFile]);
+
+  const newProject = useCallback(async (rawName: string) => {
+    let name: string;
+    try {
+      name = sanitizeProjectName(rawName);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : 'That project name is not usable.');
+      return;
+    }
+    const desktop = getDesktopBridge();
+    if (desktop?.createProject) {
+      setIsBusy(true);
+      setStatusMessage(`Creating ${name}…`);
+      try {
+        const opened = await desktop.createProject(name);
+        if (!opened) {
+          setStatusMessage(null);
+          return;
+        }
+        mount(opened.name, opened.rootPath, 'folder', opened.files.map((file) => ({
+          ...file,
+          language: detectLanguage(file.name)
+        })), {
+          assets: opened.assets,
+          nativeWorkspaceId: opened.workspaceId,
+          filePaths: opened.filePaths,
+          diskFileCount: opened.fileCount,
+          diskFileCountTruncated: opened.fileCountTruncated,
+          diskFileTree: opened.fileTree
+        });
+        setStatusMessage(
+          opened.warnings.length > 0
+            ? opened.warnings.join(' ')
+            : `Created ${opened.name} — an empty folder, ready for your files.`
+        );
+      } catch (error) {
+        setStatusMessage(error instanceof Error ? `Could not create the project: ${error.message}` : 'Could not create the project.');
+      } finally {
+        setIsBusy(false);
+      }
+      return;
+    }
+    // Browser fallback: an empty in-memory project, honest about disk.
+    mount(name, `project:${name}`, 'folder', [{
+      name: 'untitled.md',
+      content: '',
+      language: detectLanguage('untitled.md')
+    }]);
+    setDiskMessage('This project lives in memory only — browser mode cannot write it to disk. Open a folder to keep work on disk.');
+    setStatusMessage(`Created ${name} — add your first file.`);
+  }, [mount]);
+
   const deleteFile = useCallback((index: number) => {
     const current = filesRef.current;
     if (current.length <= 1 || !current[index]) return;
@@ -1903,6 +1987,8 @@ export function useWorkspace(): UseWorkspaceResult {
       statusMessage,
       openFolder,
       openFiles,
+      newFile,
+      newProject,
       openDropped,
       openRecent,
       removeRecent,
@@ -1968,6 +2054,8 @@ export function useWorkspace(): UseWorkspaceResult {
       statusMessage,
       openFolder,
       openFiles,
+      newFile,
+      newProject,
       openDropped,
       openRecent,
       removeRecent,

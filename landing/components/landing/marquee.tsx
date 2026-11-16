@@ -25,7 +25,7 @@ export function Marquee() {
   const track = [...items, ...items]
 
   return (
-    <section aria-hidden className="relative overflow-hidden border-y border-[var(--line)] py-6 bg-[var(--bg2)]">
+    <section aria-hidden className="relative overflow-hidden border-y border-[var(--line)] bg-[var(--bg2)] py-5">
       <div
         className="pointer-events-none absolute inset-y-0 left-0 z-10 w-24"
         style={{ background: 'linear-gradient(to right, var(--bg2), transparent)' }}
@@ -38,11 +38,11 @@ export function Marquee() {
         {track.map(({ icon: Icon, label }, i) => (
           <div
             key={`${label}-${i}`}
-            className="flex shrink-0 items-center gap-2.5 text-sm text-[var(--mut)]"
+            className="flex shrink-0 items-center gap-2.5 text-[13px] text-[var(--mut)]"
           >
-            <Icon className="size-4 text-[var(--ac)]" strokeWidth={1.75} />
-            <span className="whitespace-nowrap font-medium tracking-tight">{label}</span>
-            <span className="ml-3 text-[var(--line)]">/</span>
+            <Icon className="size-4 text-[var(--ac)]" strokeWidth={1.75} aria-hidden />
+            <span className="whitespace-nowrap font-medium tracking-[-0.01em]">{label}</span>
+            <span className="ml-3 text-[var(--line)]" aria-hidden>/</span>
           </div>
         ))}
       </div>

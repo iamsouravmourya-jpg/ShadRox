@@ -13,12 +13,12 @@ import { offsetFromPosition } from './edits';
  * service's own vocabulary (electron/ts-service.cjs).
  */
 const SEMANTIC_COLORS: Record<string, string | null> = {
-  class: '#c4b5fd',
-  enum: '#a5f3fc',
-  interface: '#7dd3fc',
-  namespace: '#f0abfc',
-  typeParameter: '#fda4af',
-  type: '#67e8f9',
+  class: 'var(--syn-class)',
+  enum: 'var(--syn-enum)',
+  interface: 'var(--syn-interface)',
+  namespace: 'var(--syn-namespace)',
+  typeParameter: 'var(--syn-type-param)',
+  type: 'var(--syn-type)',
   parameter: null,
   variable: null,
   enumMember: null,

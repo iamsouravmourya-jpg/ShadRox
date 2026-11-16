@@ -247,11 +247,19 @@ export async function runAutonomous(
       const startedAt = deps.now();
       deps.ports.onEvent({ type: 'milestone:attempt', id: next.id, attempt });
       const prior = previousFeedback(next);
+      // Held changes are not on disk. A repair turn must know that, or it
+      // "fixes" imports against content only the review queue has seen.
+      const heldBefore = next.pendingReview ?? [];
+      const heldNote = heldBefore.length > 0
+        ? `Files with changes held for user review (NOT on disk): ${heldBefore.join(', ')}. Their pending content is not applied — work with what is actually on disk, and do not re-propose those same edits.`
+        : '';
+      const baseFeedback = prior ? deps.feedbackFor(next, prior, lastFailures(next), next.attempts.length) : '';
+      const feedbackText = [baseFeedback, heldNote].filter(Boolean).join('\n\n') || undefined;
       const turn = await deps.ports.runTurn({
         goal,
         milestone: next,
         feedback: prior,
-        feedbackText: prior ? deps.feedbackFor(next, prior, lastFailures(next), next.attempts.length) : undefined,
+        feedbackText,
         // Without this the Stop button only lands between units, so a paid turn
         // keeps streaming after the user asked for it to end.
         signal: deps.turnSignal?.()
@@ -316,6 +324,24 @@ export async function runAutonomous(
           type: 'log',
           text: `"${next.title}" was not verified (${report.notes.join('; ') || 'no checker could run'}).`
         });
+        break;
+      }
+
+      // A failed check whose cause sits in the review queue cannot be repaired
+      // by another paid turn: the bytes are not on disk and only the user can
+      // accept them. Pause with the work intact instead of burning the attempt
+      // budget and then rolling back everything the run already landed.
+      const held = next.pendingReview ?? [];
+      if (held.length > 0 && reviewExplainsFailure(next, report, held)) {
+        next.status = 'stopped';
+        outcome = 'stopped';
+        state.status = 'paused';
+        state.error = `"${next.title}" is waiting for your review: ${held.join(', ')}. Accept the held changes, then resume the run.`;
+        deps.ports.onEvent({
+          type: 'log',
+          text: `"${next.title}" paused — ${held.length} file(s) await review before its check can pass.`
+        });
+        deps.ports.onEvent({ type: 'milestone:done', id: next.id, status: 'stopped' });
         break;
       }
 
@@ -430,4 +456,19 @@ function previousFeedback(milestone: Milestone): VerificationReport | undefined 
 function lastFailures(milestone: Milestone): string[] {
   const last = milestone.attempts[milestone.attempts.length - 1];
   return last ? last.patchFailures : [];
+}
+
+/**
+ * True when the failed check plausibly judges files whose changes are held:
+ * either the milestone expected a file that is sitting in review, or a checker
+ * error points straight at one. Without this link a genuine type error would
+ * pause the run for an unrelated held file.
+ */
+function reviewExplainsFailure(milestone: Milestone, report: VerificationReport, held: string[]): boolean {
+  const normalize = (path: string) => path.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  const heldSet = new Set(held.map(normalize));
+  return (
+    milestone.expectedFiles.some((file) => heldSet.has(normalize(file))) ||
+    report.diagnostics.some((line) => heldSet.has(normalize(line.path)))
+  );
 }

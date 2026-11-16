@@ -4,6 +4,7 @@ import {
   aiderRetryMessage,
   DEFAULT_RETRY_SETTINGS,
   planRetry,
+  RATE_LIMIT_MAX_ELAPSED_MS,
   REAL_RETRY_DEPS,
   type RetryClockDeps,
   type RetrySettings
@@ -272,6 +273,17 @@ export function createPrefixStripper(prefix: string): (text: string) => string {
   };
 }
 
+/** What to tell the user when even the extended rate-limit budget ran out. */
+function rateLimitExhaustedHint(provider: ProviderId | undefined): string {
+  if (provider === 'groq') {
+    return ' Groq limits are per model and reset every minute — switching models in Settings usually continues immediately.';
+  }
+  if (provider === 'gemini') {
+    return ' Gemini quotas reset per minute — wait a moment and retry, or switch models in Settings.';
+  }
+  return ' The endpoint rate-limited this key — wait a moment and retry, or switch the model or endpoint in Settings.';
+}
+
 /**
  * Streams a chat completion as normalised SSE events from /api/ai/chat.
  *
@@ -319,18 +331,25 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
     const failure = await runStreamAttempt(options, handlers, deps, settings, attempt);
     if (!failure) return;
 
+    // A rate limit is a promise about when to come back, not a suggestion: it
+    // gets the longer wall-clock budget so a provider-requested ~30-60 s wait
+    // is actually served instead of dying on the default 30 s deadline.
+    const attemptSettings: RetrySettings = failure.exInfo.name === 'RateLimitError'
+      ? { ...settings, maxElapsedMs: Math.max(settings.maxElapsedMs, RATE_LIMIT_MAX_ELAPSED_MS) }
+      : settings;
     const plan = planRetry({
       previousDelayMs,
       failedAttempt: attempt,
       elapsedMs: deps.now() - startedAt,
       retryAfterSeconds: failure.retryAfterSeconds,
-      settings,
+      settings: attemptSettings,
       rng: deps.rng
     });
     if (plan.kind === 'exhausted') {
       const description = failure.exInfo.description ? ` ${failure.exInfo.description}` : '';
       const gaveUp = attempt > 1 ? ` Giving up after ${attempt} attempts.` : '';
-      handlers.onError(`${failure.message}${description}${gaveUp}`);
+      const hint = failure.exInfo.name === 'RateLimitError' ? rateLimitExhaustedHint(options.provider) : '';
+      handlers.onError(`${failure.message}${description}${gaveUp}${hint}`);
       return;
     }
 

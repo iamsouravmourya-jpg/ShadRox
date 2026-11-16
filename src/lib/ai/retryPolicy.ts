@@ -248,8 +248,10 @@ export function classifyFailure(status: number | null | undefined, message?: str
 /**
  * ADAPTATION (ShadRox): respect the provider/operator's explicit rate-limit
  * header. litellm honours `Retry-After` the same way; the parse lives here
- * because over fetch we see the raw header value. Accepts delta-seconds and
- * HTTP-date forms, clamped to [0, 3600]; returns null when absent/unparseable.
+ * because over fetch we see the raw header value. Accepts delta-seconds
+ * (integer or fractional — Groq sends "0.42"), Go-style durations ("27.36s",
+ * "1m30s" — Groq's x-ratelimit-reset-* format) and HTTP-date forms, clamped to
+ * [0, 3600]; returns null when absent/unparseable.
  */
 export function parseRetryAfterSeconds(
   headerValue: string | null | undefined,
@@ -258,8 +260,17 @@ export function parseRetryAfterSeconds(
   if (!headerValue) return null;
   const trimmed = headerValue.trim();
   if (!trimmed) return null;
-  if (/^\d+$/.test(trimmed)) {
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
     return Math.min(Number(trimmed), 3600);
+  }
+  if (/^(?:\d+(?:\.\d+)?(?:h|ms|m|s))+$/.test(trimmed)) {
+    let total = 0;
+    for (const match of trimmed.matchAll(/(\d+(?:\.\d+)?)(h|ms|m|s)/g)) {
+      const value = Number(match[1]);
+      const unit = match[2];
+      total += unit === 'h' ? value * 3600 : unit === 'm' ? value * 60 : unit === 'ms' ? value / 1000 : value;
+    }
+    return Math.min(total, 3600);
   }
   const at = Date.parse(trimmed);
   if (Number.isNaN(at)) return null;

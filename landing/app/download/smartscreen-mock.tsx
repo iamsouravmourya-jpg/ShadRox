@@ -27,25 +27,25 @@ export function SmartScreenMock({ installerName }: { installerName: string }) {
   const [stage, setStage] = useState<Stage>('initial')
 
   return (
-    <figure className="relative mx-auto w-full max-w-[460px]">
+    <figure className="relative mx-auto w-full max-w-[440px]">
       <div
         aria-hidden
-        className="pointer-events-none absolute -inset-3 rounded-[30px] blur-2xl"
-        style={{ background: 'color-mix(in srgb, var(--ac) 13%, transparent)' }}
+        className="pointer-events-none absolute -inset-4 rounded-[32px] opacity-70 blur-2xl"
+        style={{ background: 'color-mix(in srgb, var(--ac) 10%, transparent)' }}
       />
 
       <div
         role="group"
         aria-label="Illustrative SmartScreen dialog — try the click-through"
-        className="relative overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--card)] shadow-[0_24px_60px_var(--shadow)]"
+        className="relative overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--card)] shadow-[0_2px_4px_var(--shadow),0_28px_64px_-24px_var(--shadow)]"
       >
         {/* Title bar */}
         <div
           className="flex items-center justify-between gap-3 border-b border-[var(--line)] px-4 py-2.5"
-          style={{ background: 'color-mix(in srgb, var(--ac) 9%, var(--card))' }}
+          style={{ background: 'color-mix(in srgb, var(--ac) 8%, var(--card))' }}
         >
           <span className="inline-flex items-center gap-2 text-[11px] font-semibold text-[var(--ink2)]">
-            <ShieldAlert className="size-3.5 text-[var(--ac)]" strokeWidth={2} />
+            <ShieldAlert className="size-3.5 text-[var(--ac)]" strokeWidth={2} aria-hidden />
             Windows Defender SmartScreen
           </span>
           <span aria-hidden className="flex items-center gap-2.5 text-[var(--mut)]">
@@ -59,10 +59,10 @@ export function SmartScreenMock({ installerName }: { installerName: string }) {
           {stage === 'done' ? (
             <div key="done" style={{ animation: 'slide-down 0.35s ease' }}>
               <span
-                className="mb-4 grid size-11 place-items-center rounded-full"
+                className="mb-4 grid size-10 place-items-center rounded-full"
                 style={{ background: 'color-mix(in srgb, var(--ac) 14%, transparent)' }}
               >
-                <CircleCheck className="size-5 text-[var(--ac)]" strokeWidth={1.75} />
+                <CircleCheck className="size-5 text-[var(--ac)]" strokeWidth={1.75} aria-hidden />
               </span>
               <h3 className="text-[16px] font-bold tracking-[-0.01em] text-[var(--ink)]">
                 That&apos;s the whole flow.
@@ -74,9 +74,9 @@ export function SmartScreenMock({ installerName }: { installerName: string }) {
               <button
                 type="button"
                 onClick={() => setStage('initial')}
-                className="mt-4 inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--bg2)] px-4 py-2 text-xs font-semibold text-[var(--ink2)] transition hover:border-[var(--ac)] hover:text-[var(--ac)]"
+                className="mt-4 inline-flex min-h-9 items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--bg2)] px-4 py-2 text-xs font-semibold text-[var(--ink2)] transition-colors hover:border-[var(--ac)] hover:text-[var(--ac)]"
               >
-                <RotateCcw className="size-3.5" />
+                <RotateCcw className="size-3.5" aria-hidden />
                 Replay the dialog
               </button>
             </div>
@@ -94,7 +94,7 @@ export function SmartScreenMock({ installerName }: { installerName: string }) {
                 <button
                   type="button"
                   onClick={() => setStage('expanded')}
-                  className="relative mt-4 inline-flex items-center text-[13px] font-semibold text-[var(--ac)] underline underline-offset-4 transition hover:opacity-80"
+                  className="relative mt-4 inline-flex min-h-9 items-center text-[13px] font-semibold text-[var(--ac)] underline underline-offset-4 transition-colors hover:text-[var(--ink)]"
                 >
                   More info
                   <span className="absolute -right-7 -top-2.5">
@@ -103,7 +103,7 @@ export function SmartScreenMock({ installerName }: { installerName: string }) {
                 </button>
               ) : (
                 <>
-                  <div className="mt-4 space-y-1 rounded-xl border border-[var(--line)] bg-[var(--bg2)] p-3.5 font-mono text-[12px] leading-5 text-[var(--ink2)]">
+                  <div className="mt-4 space-y-1 rounded-lg border border-[var(--line)] bg-[var(--bg2)] p-3.5 font-mono text-[12px] leading-5 text-[var(--ink2)]">
                     <p className="break-all">App: {installerName}</p>
                     <p className="flex flex-wrap items-center gap-2">
                       Publisher: <b className="font-bold text-[var(--ink)]">Unknown</b>
@@ -115,7 +115,7 @@ export function SmartScreenMock({ installerName }: { installerName: string }) {
                     <button
                       type="button"
                       onClick={() => setStage('done')}
-                      className="relative inline-flex items-center rounded-lg bg-[linear-gradient(110deg,var(--ac),var(--pink))] px-4 py-2 text-[13px] font-bold text-white shadow-[0_8px_20px_var(--glow)] transition hover:-translate-y-0.5 hover:shadow-[0_12px_26px_var(--glow)]"
+                      className="relative inline-flex min-h-9 items-center rounded-lg bg-[linear-gradient(108deg,var(--cta-1),var(--cta-2))] px-4 py-2 text-[13px] font-bold text-white shadow-[0_8px_20px_-8px_var(--glow)] transition-transform hover:-translate-y-0.5"
                     >
                       Run anyway
                       <span className="absolute -right-2.5 -top-2.5">
@@ -125,7 +125,7 @@ export function SmartScreenMock({ installerName }: { installerName: string }) {
                     <button
                       type="button"
                       onClick={() => setStage('initial')}
-                      className="rounded-lg border border-[var(--line)] bg-[var(--bg2)] px-4 py-2 text-[13px] font-semibold text-[var(--ink2)] transition hover:border-[var(--ac)] hover:text-[var(--ac)]"
+                      className="min-h-9 rounded-lg border border-[var(--line)] bg-[var(--bg2)] px-4 py-2 text-[13px] font-semibold text-[var(--ink2)] transition-colors hover:border-[var(--ac)] hover:text-[var(--ac)]"
                     >
                       Don&apos;t run
                     </button>

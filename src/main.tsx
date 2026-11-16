@@ -3,10 +3,13 @@ import App from './App.tsx';
 import { ConfirmHost } from './components/ConfirmHost';
 import { hydrateSecureStore } from './lib/secureStore';
 import { purgeLegacyEntitlements } from './lib/storage';
+import { initTheme } from './lib/theme';
 import './index.css';
 
 const platform = window.shadroxDesktop?.platform;
 if (platform) document.documentElement.dataset.platform = platform;
+// Theme lands before the first paint so a light-mode user never sees a dark flash.
+initTheme();
 
 async function boot() {
   // A build before this one could save a paid plan and a shared-key preference.

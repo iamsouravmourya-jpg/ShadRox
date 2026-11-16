@@ -6,9 +6,9 @@ import {
   ArrowUpRight,
   Sparkles,
   CalendarDays,
-  History,
-  Camera,
-  KeyRound,
+  LayoutDashboard,
+  SunMedium,
+  MessageSquare,
   RefreshCw,
   BellRing,
   Archive,
@@ -20,7 +20,7 @@ import { APP_VERSION, WINDOWS_DOWNLOAD_URL, GITHUB_REPO, RELEASES_URL } from '@/
 export const metadata: Metadata = {
   title: 'Releases — ShadRox',
   description:
-    'What is new in ShadRox v0.0.9: durable autonomous runs that survive restarts, evidence-backed acceptance checks, and a free + BYOK-only product. See how updates work and where older installers went.',
+    'What is new in ShadRox v0.1.0: a rebuilt workspace hub, three clear run modes, day and night themes, and feedback that goes straight to the maker. See how updates work and where older installers went.',
   alternates: { canonical: '/releases' },
 }
 
@@ -28,19 +28,19 @@ const RELEASE_TAG_URL = `${GITHUB_REPO}/releases/tag/v${APP_VERSION}`
 
 const highlights = [
   {
-    icon: History,
-    title: 'Runs that survive a restart',
-    text: 'Autonomous runs keep a durable journal. Pause, cancel or resume them — with token and time budgets that stop a run before it runs away.',
+    icon: LayoutDashboard,
+    title: 'A hub that stays out of the way',
+    text: 'Open a folder, a single file, or start an empty project from one small hub. The composer keeps three run modes — Ask, Plan and Agent — so the next turn never does more than you can see.',
   },
   {
-    icon: Camera,
-    title: 'Proof, not promises',
-    text: 'Acceptance checks capture screenshot, DOM and console evidence: a baseline before the change and a verified state after, so "it works" has receipts.',
+    icon: SunMedium,
+    title: 'Day and night, one toggle',
+    text: 'Light and dark themes only — no hidden third mode. ShadRox follows your OS until you pick a side, then remembers your choice.',
   },
   {
-    icon: KeyRound,
-    title: 'Free + BYOK, nothing hidden',
-    text: 'No plans, no checkout, no meter. Bring your own provider key — and every shell command still asks you first, with a plain-language risk notice.',
+    icon: MessageSquare,
+    title: 'Feedback with nothing attached',
+    text: 'The Feedback button sends only your message and a server-side date to a private Google Sheet, filed under Bug or Feature. No email, no account id, no diagnostics.',
   },
 ]
 
@@ -145,13 +145,13 @@ export default function ReleasesPage() {
                 </div>
 
                 <h2 className="mt-6 max-w-[700px] text-balance text-[clamp(26px,3.6vw,42px)] font-bold tracking-[-0.04em] leading-[1.1] text-[var(--ink)]">
-                  Durable runs,{' '}
-                  <em className="font-normal italic text-[var(--ac)]">proof you can see.</em>
+                  A calmer workspace,{' '}
+                  <em className="font-normal italic text-[var(--ac)]">a clearer run.</em>
                 </h2>
                 <p className="mt-4 max-w-[660px] text-sm leading-7 text-[var(--mut)]">
-                  v{APP_VERSION} makes long agent runs trustworthy: they survive restarts, carry
-                  evidence, and stay inside budgets you set. And ShadRox is now free + BYOK only —
-                  no plans, no checkout.
+                  v{APP_VERSION} rebuilds the hub around three run modes, adds day and night themes,
+                  and gives feedback a direct path to the maker — still free, still BYOK, with no
+                  plans and no checkout.
                 </p>
 
                 {/* Highlights */}

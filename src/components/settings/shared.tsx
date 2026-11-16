@@ -3,36 +3,36 @@ import { AlertCircle, CheckCircle } from 'lucide-react';
 
 /** Reused drawer tokens so every new settings section looks native. */
 export const inputClass =
-  'w-full rounded-xl border border-white/[0.09] bg-white/[0.03] px-3 py-2 text-xs font-mono text-neutral-100 outline-none transition-colors placeholder:text-neutral-700 focus:border-violet-300/40';
+  'w-full rounded-xl border border-line bg-overlay px-3 py-2 text-xs font-mono text-ink outline-none transition-colors placeholder:text-ink-5 focus:border-accent-line';
 
 export const primaryButtonClass =
-  'inline-flex items-center justify-center gap-1.5 rounded-xl bg-violet-300 px-3 py-2 text-xs font-semibold text-[#16121f] transition-colors hover:bg-violet-200 disabled:cursor-not-allowed disabled:opacity-40';
+  'inline-flex items-center justify-center gap-1.5 rounded-xl bg-accent-strong px-3 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40';
 
 export const secondaryButtonClass =
-  'inline-flex items-center justify-center gap-1.5 rounded-xl border border-violet-300/25 bg-violet-500/[.08] px-3 py-2 text-xs text-violet-100 transition-colors hover:bg-violet-500/[.14] disabled:cursor-not-allowed disabled:opacity-40';
+  'inline-flex items-center justify-center gap-1.5 rounded-xl border border-accent-line bg-accent-soft px-3 py-2 text-xs text-accent transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-40';
 
 export const ghostButtonClass =
-  'inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/[0.09] px-3 py-2 text-xs text-neutral-300 transition-colors hover:border-white/[0.15] hover:text-white disabled:cursor-not-allowed disabled:opacity-40';
+  'inline-flex items-center justify-center gap-1.5 rounded-xl border border-line px-3 py-2 text-xs text-ink-3 transition-colors hover:border-line-2 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40';
 
 export const dangerIconButtonClass =
-  'inline-flex items-center justify-center rounded-lg border border-white/[0.09] p-1.5 text-neutral-500 transition-colors hover:border-red-500/40 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-40';
+  'inline-flex items-center justify-center rounded-lg border border-line p-1.5 text-ink-4 transition-colors hover:border-danger/40 hover:text-danger disabled:cursor-not-allowed disabled:opacity-40';
 
 export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
   return (
-    <section className={`rounded-2xl border border-white/[0.07] bg-white/[0.03] p-4 ${className}`}>
+    <section className={`rounded-2xl border border-line bg-overlay p-4 ${className}`}>
       {children}
     </section>
   );
 }
 
 export function SectionTitle({ children }: { children: ReactNode }) {
-  return <h3 className="text-[11px] uppercase tracking-wider text-neutral-500">{children}</h3>;
+  return <h3 className="text-[11px] uppercase tracking-wider text-ink-4">{children}</h3>;
 }
 
 const NOTICE_TONE = {
-  ok: 'border-violet-300/25 bg-violet-500/[.07] text-violet-300',
-  error: 'border-red-900/60 bg-red-950/20 text-red-400',
-  info: 'border-white/[0.09] bg-white/[0.02] text-neutral-400'
+  ok: 'border-accent-line bg-accent-soft text-accent',
+  error: 'border-danger/30 bg-danger/10 text-danger',
+  info: 'border-line bg-overlay text-ink-3'
 } as const;
 
 export function Notice({
@@ -56,9 +56,9 @@ export function Notice({
 
 export function EmptyState({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="rounded-2xl border border-dashed border-white/[0.09] bg-white/[0.02] p-4">
-      <p className="text-xs font-medium text-neutral-200">{title}</p>
-      <div className="mt-1 text-[11px] leading-relaxed text-neutral-500">{children}</div>
+    <div className="rounded-2xl border border-dashed border-line bg-overlay p-4">
+      <p className="text-xs font-medium text-ink-2">{title}</p>
+      <div className="mt-1 text-[11px] leading-relaxed text-ink-4">{children}</div>
     </div>
   );
 }
@@ -68,8 +68,8 @@ export function StatusBadge({ enabled }: { enabled: boolean }) {
     <span
       className={`shrink-0 rounded border px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${
         enabled
-          ? 'border-violet-300/25 bg-violet-500/10 text-violet-300'
-          : 'border-white/[0.09] bg-white/[0.03] text-neutral-500'
+          ? 'border-accent-line bg-accent-soft text-accent'
+          : 'border-line bg-overlay text-ink-4'
       }`}
     >
       {enabled ? 'enabled' : 'disabled'}

@@ -599,6 +599,10 @@ export interface ShadRoxDesktopAPI {
   platform: string;
   openFolder: () => Promise<DesktopWorkspace | null>;
   openFiles: () => Promise<DesktopWorkspace | null>;
+  /** Save-dialog a brand-new file into existence and open it. Desktop only. */
+  newFile?: () => Promise<DesktopWorkspace | null>;
+  /** Pick a location, scaffold a starter project under `name`, and open it. Desktop only. */
+  createProject?: (name: string) => Promise<DesktopWorkspace | null>;
   reopenWorkspace: (target: { kind: 'folder' | 'file'; path: string; filePaths?: string[] }) => Promise<DesktopWorkspace | null>;
   closeWorkspace: (workspaceId: string) => Promise<void>;
   listDirectory: (workspaceId: string, path?: string, cursor?: number) => Promise<DirectoryPage>;
@@ -619,6 +623,8 @@ export interface ShadRoxDesktopAPI {
   searchFiles: (workspaceId: string, query: string, limit?: number) => Promise<WorkspaceSearchHit[]>;
   searchContent: (workspaceId: string, options: ContentSearchOptions) => Promise<ContentSearchResult>;
   setDirty: (dirty: boolean) => Promise<void>;
+  /** Syncs the native window chrome (title-bar overlay, dialogs) with the app theme. */
+  setTheme?: (mode: 'light' | 'dark') => Promise<void>;
   onWorkspaceChange: (listener: (event: WorkspaceChange) => void) => () => void;
   saveFiles: (workspaceId: string, files: DesktopWrite[]) => Promise<DesktopSaveResult>;
   stageFiles: (workspaceId: string, files: DesktopWrite[]) => Promise<StagedTransaction>;

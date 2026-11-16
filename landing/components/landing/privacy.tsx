@@ -37,17 +37,17 @@ const guarantees: {
 
 export function Privacy() {
   return (
-    <section id="privacy" className="border-y border-[var(--line)] bg-[var(--bg)] px-5 py-20 lg:px-8 lg:py-28">
-      <div className="mx-auto max-w-[1180px]">
-        <div className="grid gap-12 lg:grid-cols-2 lg:gap-20 items-start">
+    <section id="privacy" className="border-y border-[var(--line)] bg-[var(--bg)] py-20 lg:py-28">
+      <div className="container-page">
+        <div className="grid items-start gap-12 lg:grid-cols-2 lg:gap-20">
 
           {/* Left — copy + data flow */}
           <Reveal>
             <div>
-              <p className="mb-4 text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--ac)]">
+              <p className="eyebrow mb-4">
                 Privacy
               </p>
-              <h2 className="max-w-lg text-[clamp(28px,3.8vw,46px)] font-bold tracking-[-0.04em] leading-[1.1] text-[var(--ink)]">
+              <h2 className="max-w-lg text-[clamp(1.75rem,3.4vw,2.75rem)] font-bold leading-[1.1] tracking-[-0.04em] text-[var(--ink)]">
                 Local project workflow,{' '}
                 <em className="font-normal italic text-[var(--ac)]">clear AI data flow.</em>
               </h2>
@@ -58,30 +58,30 @@ export function Privacy() {
               </p>
 
               {/* Data flow diagram */}
-              <div className="mt-8 flex items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-5">
-                <div className="flex flex-col items-center gap-1.5 text-center text-xs min-w-[80px]">
+              <div className="mt-8 flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--card)] p-5">
+                <div className="flex min-w-[80px] flex-col items-center gap-1.5 text-center">
                   <div className="grid size-12 place-items-center rounded-xl border border-[var(--line)] bg-[var(--bg2)]">
-                    <FolderTree className="size-5 text-[var(--ac)]" />
+                    <FolderTree className="size-5 text-[var(--ac)]" aria-hidden />
                   </div>
-                  <p className="font-semibold text-[var(--ink)] text-[11px]">Your computer</p>
-                  <p className="text-[10px] text-[var(--mut)] leading-3">files · key · rules</p>
+                  <p className="text-[11px] font-semibold text-[var(--ink)]">Your computer</p>
+                  <p className="text-[10px] leading-3 text-[var(--mut)]">files · key · rules</p>
                 </div>
 
                 {/* Animated arrow */}
-                <div className="flex flex-1 flex-col items-center gap-1 px-2">
-                  <svg width="100%" height="20" viewBox="0 0 80 20" fill="none" className="text-[var(--ac)] overflow-visible">
+                <div className="flex flex-1 flex-col items-center gap-1 px-1">
+                  <svg width="100%" height="20" viewBox="0 0 80 20" fill="none" className="overflow-visible text-[var(--ac)]" aria-hidden>
                     <line x1="2" y1="10" x2="72" y2="10" stroke="currentColor" strokeWidth="1.5" className="flow-line" strokeDasharray="6 6" />
                     <path d="M66 5L74 10L66 15" fill="none" stroke="currentColor" strokeWidth="1.5" />
                   </svg>
-                  <span className="text-[9px] font-mono text-[var(--mut)] whitespace-nowrap">prompt + context</span>
+                  <span className="whitespace-nowrap font-mono text-[10px] text-[var(--mut)]">prompt + context</span>
                 </div>
 
-                <div className="flex flex-col items-center gap-1.5 text-center text-xs min-w-[80px]">
+                <div className="flex min-w-[80px] flex-col items-center gap-1.5 text-center">
                   <div className="grid size-12 place-items-center rounded-xl border border-[var(--line)] bg-[var(--bg2)]">
-                    <Cloud className="size-5 text-[var(--ac2)]" />
+                    <Cloud className="size-5 text-[var(--ac2)]" aria-hidden />
                   </div>
-                  <p className="font-semibold text-[var(--ink)] text-[11px]">AI provider</p>
-                  <p className="text-[10px] text-[var(--mut)] leading-3">Gemini · Groq · custom</p>
+                  <p className="text-[11px] font-semibold text-[var(--ink)]">AI provider</p>
+                  <p className="text-[10px] leading-3 text-[var(--mut)]">Gemini · Groq · custom</p>
                 </div>
               </div>
             </div>
@@ -89,24 +89,23 @@ export function Privacy() {
 
           {/* Right — guarantee cards */}
           <Reveal variant="scale" delay={120}>
-            <div className="grid gap-4">
-              {guarantees.map(({ icon: Icon, title, text }, i) => (
+            <div className="grid gap-3">
+              {guarantees.map(({ icon: Icon, title, text }) => (
                 <div
                   key={title}
-                  className="flex gap-4 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-5 transition-all duration-300 hover:translate-x-1.5 hover:border-[var(--ac)] hover:shadow-[4px_0_20px_var(--glow)]"
-                  style={{ transitionDelay: `${i * 60}ms` }}
+                  className="flex gap-4 rounded-xl border border-[var(--line)] bg-[var(--card)] p-5 transition-colors duration-300 hover:border-[var(--ac)]"
                 >
-                  <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[var(--bg2)]">
-                    <Icon className="size-4 text-[var(--ac)]" strokeWidth={1.75} />
+                  <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--bg2)]">
+                    <Icon className="size-4 text-[var(--ac)]" strokeWidth={1.75} aria-hidden />
                   </div>
                   <div>
-                    <h4 className="mb-1 text-sm font-bold text-[var(--ink)]">{title}</h4>
+                    <h3 className="mb-1 text-sm font-bold text-[var(--ink)]">{title}</h3>
                     <p className="text-[13px] leading-5 text-[var(--mut)]">{text}</p>
                   </div>
                 </div>
               ))}
-              <div className="flex items-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--bg2)] px-5 py-3.5 text-sm font-semibold text-[var(--ink)]">
-                <Check className="size-4 text-emerald-500 shrink-0" />
+              <div className="flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--bg2)] px-5 py-3.5 text-sm font-semibold text-[var(--ink)]">
+                <Check className="size-4 shrink-0 text-emerald-500" aria-hidden />
                 Local files · Provider-powered AI · Guarded commands
               </div>
             </div>

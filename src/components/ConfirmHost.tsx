@@ -35,7 +35,7 @@ export function ConfirmHost() {
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-[var(--scrim)] px-4 backdrop-blur-sm"
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) dismiss(false);
@@ -45,7 +45,7 @@ export function ConfirmHost() {
         role="dialog"
         aria-modal="true"
         aria-label={request.title}
-        className="w-full max-w-sm rounded-panel border border-white/10 bg-ink-900 p-4 shadow-sheet"
+        className="w-full max-w-sm rounded-panel border border-line-2 bg-base-2 p-4 shadow-sheet"
         onMouseDown={(event) => event.stopPropagation()}
         onKeyDown={(event) => {
           event.stopPropagation();
@@ -55,16 +55,16 @@ export function ConfirmHost() {
           }
         }}
       >
-        <h2 className="text-sm font-semibold text-neutral-100">{request.title}</h2>
+        <h2 className="text-sm font-semibold text-ink">{request.title}</h2>
         {request.body && (
-          <p className="mt-1.5 text-xs leading-relaxed text-neutral-400">{request.body}</p>
+          <p className="mt-1.5 text-xs leading-relaxed text-ink-3">{request.body}</p>
         )}
         <div className="mt-4 flex justify-end gap-2">
           <button
             ref={cancelRef}
             type="button"
             onClick={() => dismiss(false)}
-            className="rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-neutral-300 transition-colors hover:bg-white/[0.08] hover:text-white cursor-pointer"
+            className="rounded-xl border border-line-2 bg-overlay px-3.5 py-2 text-xs font-medium text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
           >
             {request.cancelLabel ?? 'Cancel'}
           </button>
@@ -72,8 +72,8 @@ export function ConfirmHost() {
             ref={confirmRef}
             type="button"
             onClick={() => dismiss(true)}
-            className={`rounded-xl px-3.5 py-2 text-xs font-semibold text-white transition-colors cursor-pointer ${
-              danger ? 'bg-rose-500 hover:bg-rose-400' : 'bg-violet-500 hover:bg-violet-400'
+            className={`rounded-xl px-3.5 py-2 text-xs font-semibold text-white transition-opacity cursor-pointer ${
+              danger ? 'bg-danger hover:opacity-90' : 'bg-accent-strong hover:opacity-90'
             }`}
           >
             {request.confirmLabel ?? 'Confirm'}

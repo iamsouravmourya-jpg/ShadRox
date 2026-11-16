@@ -13,16 +13,16 @@ type PageShellProps = {
 
 export function PageShell({ eyebrow, title, accent, sub, children }: PageShellProps) {
   return (
-    <main id="top" className="relative">
+    <main id="top" className="relative" tabIndex={-1}>
       <Navbar />
-      <header className="mx-auto max-w-[1180px] px-5 pb-6 pt-32 lg:px-8 lg:pt-40">
+      <header className="container-page pb-8 pt-32 lg:pt-40">
         <Reveal>
-          <p className="mb-4 text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--ac)]">
+          <p className="eyebrow mb-4">
             {eyebrow}
           </p>
         </Reveal>
         <Reveal delay={80}>
-          <h1 className="max-w-[860px] text-balance text-[clamp(34px,5vw,60px)] font-bold tracking-[-0.045em] leading-[1.06] text-[var(--ink)]">
+          <h1 className="max-w-[860px] text-[clamp(2.125rem,5vw,3.75rem)] font-bold leading-[1.06] tracking-[-0.045em] text-[var(--ink)]">
             {title}
             {accent && (
               <>

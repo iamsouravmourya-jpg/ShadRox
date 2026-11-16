@@ -66,6 +66,7 @@ interface TurnOptions {
   files?: Record<string, string>;
   expectedFiles?: string[];
   applyPolicy?: ApplyPolicyKind;
+  checkpointBacked?: boolean;
   policy?: RunPolicy;
   signal?: AbortSignal;
   writer?: boolean;
@@ -120,6 +121,7 @@ async function turn(options: TurnOptions) {
     expectedFiles: options.expectedFiles ?? ['src/a.ts'],
     ports,
     applyPolicy: options.applyPolicy,
+    checkpointBacked: options.checkpointBacked,
     policy: options.policy,
     signal: options.signal,
     maxToolRounds: options.maxToolRounds,
@@ -194,6 +196,55 @@ test('the review policy holds every change back, new files included', async () =
   assert.deepEqual(result.pendingReview, ['src/new.ts']);
   assert.equal(written.length, 0);
   assert.equal(result.reviewPatches.length, 1);
+});
+
+test('a checkpoint-backed turn writes an edit to a file it never read', async () => {
+  const { result, store, written } = await turn({
+    responses: [`Edited it.\n${edits([EDIT_ONE])}`],
+    files: { 'src/a.ts': 'const a = 1;\n' },
+    checkpointBacked: true
+  });
+  assert.deepEqual(result.applied, ['src/a.ts']);
+  assert.deepEqual(result.pendingReview, []);
+  assert.equal(written.length, 1);
+  assert.equal(store.store.get('src/a.ts'), 'const a = 2;\n', 'the run verifies real bytes, not a review queue');
+});
+
+test('a checkpoint-backed turn writes a gutting rewrite the turn read', async () => {
+  const big = Array.from({ length: 30 }, (_, index) => `export const v${index} = ${index};`).join('\n');
+  await withBridge({ readFile: async (_id: string, path: string) => ({ name: path, content: big, version: 'v1' }) }, async () => {
+    const { result, store } = await turn({
+      responses: [toolBlock([readCall]), `Rewrote it.\n${edits([{ path: 'src/a.ts', kind: 'rewrite', content: 'export const v0 = 0;' }])}`],
+      files: { 'src/a.ts': big },
+      checkpointBacked: true
+    });
+    assert.deepEqual(result.applied, ['src/a.ts']);
+    assert.deepEqual(result.pendingReview, []);
+    assert.equal(store.store.get('src/a.ts'), 'export const v0 = 0;');
+  });
+});
+
+test('checkpoint backing never overrides an explicit review policy', async () => {
+  const { result, written } = await turn({
+    responses: [`Edited it.\n${edits([EDIT_ONE])}`],
+    files: { 'src/a.ts': 'const a = 1;\n' },
+    applyPolicy: 'review',
+    checkpointBacked: true
+  });
+  assert.deepEqual(result.pendingReview, ['src/a.ts']);
+  assert.equal(written.length, 0);
+});
+
+test('checkpoint backing never lets Ask mode write', async () => {
+  const { result, written, store } = await turn({
+    responses: [`Edited it.\n${edits([EDIT_ONE])}`],
+    files: { 'src/a.ts': 'const a = 1;\n' },
+    checkpointBacked: true,
+    policy: { mode: 'ask' }
+  });
+  assert.deepEqual(result.pendingReview, ['src/a.ts']);
+  assert.equal(written.length, 0);
+  assert.equal(store.store.get('src/a.ts'), 'const a = 1;\n');
 });
 
 test('without a writer the cleared patches come back for the caller to route', async () => {

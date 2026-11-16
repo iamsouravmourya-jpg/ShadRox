@@ -31,15 +31,15 @@ const HOVER_THEME = EditorView.baseTheme({
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
     fontSize: '11px',
     lineHeight: '1.5',
-    color: '#e5e7eb',
-    backgroundColor: '#18181b',
-    border: '1px solid rgba(255, 255, 255, 0.12)',
+    color: 'var(--text-2)',
+    backgroundColor: 'var(--surface-2)',
+    border: '1px solid var(--line-2)',
     borderRadius: '6px',
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word'
   },
-  '.cm-debug-hover .cm-debug-hover-name': { color: '#93c5fd' },
-  '.cm-debug-hover .cm-debug-hover-value': { color: '#fbbf24' }
+  '.cm-debug-hover .cm-debug-hover-name': { color: 'var(--cool)' },
+  '.cm-debug-hover .cm-debug-hover-value': { color: 'var(--warn)' }
 });
 
 function render(dom: HTMLElement, name: string, value: string, pending: boolean): void {

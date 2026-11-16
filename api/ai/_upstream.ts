@@ -1,3 +1,4 @@
+import { parseRetryAfterSeconds } from '../../src/lib/ai/retryPolicy.js';
 import type { PromptCacheReport } from './_promptCache.js';
 import type { StreamResult } from './_types.js';
 
@@ -69,10 +70,26 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * How long to wait before the next provider hit. An explicit wait request wins:
+ * `Retry-After`, then Groq's `x-ratelimit-reset-*` durations — capped at 20 s so
+ * one logical call cannot park a Vercel function for a whole minute, but long
+ * enough that a per-minute quota actually recovers between attempts (the old
+ * 2 s cap retried straight back into the same limit and burned the budget).
+ * Without a header, 429s back off in seconds, everything else in milliseconds.
+ */
 function retryDelayMs(response: Response | null, attempt: number): number {
-  const header = response?.headers.get('retry-after');
-  const seconds = header ? Number(header) : Number.NaN;
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(2_000, Math.round(seconds * 1_000));
+  const headers = response?.headers;
+  const asked =
+    parseRetryAfterSeconds(headers?.get('retry-after')) ??
+    (response?.status === 429
+      ? parseRetryAfterSeconds(headers?.get('x-ratelimit-reset-requests')) ??
+        parseRetryAfterSeconds(headers?.get('x-ratelimit-reset-tokens'))
+      : null);
+  if (asked != null && asked >= 0) return Math.min(20_000, Math.round(asked * 1_000));
+  if (response?.status === 429) {
+    return Math.min(6_000, 1_500 * (attempt + 1) + Math.round(Math.random() * 250));
+  }
   return Math.min(800, 250 * (attempt + 1) + Math.round(Math.random() * 100));
 }
 

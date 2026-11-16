@@ -101,7 +101,7 @@ export function AutomationWebhookCard({ workspaceId, definitions, enabled = fals
           type="button"
           onClick={() => void refresh()}
           title="Refresh webhook status"
-          className="rounded-md p-1 text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-white"
+          className="rounded-md p-1 text-ink-4 transition-colors hover:bg-overlay-2 hover:text-ink"
         >
           <RefreshCw className="h-3.5 w-3.5" />
         </button>
@@ -112,13 +112,13 @@ export function AutomationWebhookCard({ workspaceId, definitions, enabled = fals
       <div className="flex flex-wrap items-center gap-2 text-[11px]">
         <span
           className={`h-1.5 w-1.5 rounded-full ${
-            status?.running ? 'bg-violet-300 shadow-[0_0_8px_#c4b5fd]' : 'bg-neutral-600'
+            status?.running ? 'bg-accent shadow-[0_0_8px_var(--accent)]' : 'bg-ink-5'
           }`}
         />
-        <span className="text-neutral-300">
+        <span className="text-ink-3">
           {status?.running ? `Running on port ${status.port}` : 'Stopped'}
         </span>
-        {status?.error && <span className="min-w-0 truncate text-red-400">{status.error}</span>}
+        {status?.error && <span className="min-w-0 truncate text-danger">{status.error}</span>}
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -139,7 +139,7 @@ export function AutomationWebhookCard({ workspaceId, definitions, enabled = fals
             Start
           </button>
         )}
-        <span className="text-[10px] text-neutral-500">
+        <span className="text-[10px] text-ink-4">
           {enabled ? 'Loopback only — binds 127.0.0.1.' : 'Paused until automations are enabled.'}
         </span>
       </div>
@@ -147,7 +147,7 @@ export function AutomationWebhookCard({ workspaceId, definitions, enabled = fals
       {status?.running && (
         <div className="space-y-1">
           {webhookDefs.length === 0 ? (
-            <p className="text-[10px] text-neutral-500">
+            <p className="text-[10px] text-ink-4">
               No enabled webhook automations — add a trigger with type "webhook" and a path.
             </p>
           ) : (
@@ -156,13 +156,13 @@ export function AutomationWebhookCard({ workspaceId, definitions, enabled = fals
               const url = `http://127.0.0.1:${status.port ?? ''}${path}`;
               return (
                 <div key={definition.id} className="flex items-center gap-2">
-                  <code className="min-w-0 flex-1 truncate rounded-lg border border-white/[0.07] bg-white/[0.02] px-2 py-1 font-mono text-[10px] text-violet-200">
+                  <code className="min-w-0 flex-1 truncate rounded-lg border border-line bg-overlay px-2 py-1 font-mono text-[10px] text-accent">
                     {url}
                   </code>
                   <button
                     type="button"
                     onClick={() => void copy(url)}
-                    className="shrink-0 rounded-md border border-white/[0.09] px-2 py-0.5 text-[10px] text-neutral-400 transition-colors hover:border-violet-300/30 hover:text-violet-200"
+                    className="shrink-0 rounded-md border border-line px-2 py-0.5 text-[10px] text-ink-3 transition-colors hover:border-accent-line hover:text-accent"
                   >
                     Copy
                   </button>
@@ -170,9 +170,9 @@ export function AutomationWebhookCard({ workspaceId, definitions, enabled = fals
               );
             })
           )}
-          <p className="text-[10px] leading-relaxed text-neutral-500">
+          <p className="text-[10px] leading-relaxed text-ink-4">
             POST only. The request must carry the automation's{' '}
-            <code className="font-mono text-violet-300">secret</code> in the request header; the listener checks
+            <code className="font-mono text-accent">secret</code> in the request header; the listener checks
             it before running anything.
           </p>
         </div>

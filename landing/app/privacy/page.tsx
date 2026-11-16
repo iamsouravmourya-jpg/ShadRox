@@ -217,6 +217,15 @@ export default function PrivacyPage() {
               </Reveal>
             ))}
           </div>
+
+          <Reveal delay={120}>
+            <p className="mt-10 max-w-[760px] border-t border-[var(--line)] pt-8 text-sm leading-7 text-[var(--mut)]">
+              Feedback is the one thing you send on purpose. The Feedback button sends only the
+              message you type — marked as a bug or a feature — plus the date, into the maker's
+              private Google Sheet in three columns: date, bug and feature. Nothing else is
+              attached, and no ShadRox server or third-party analytics receives it.
+            </p>
+          </Reveal>
         </div>
       </section>
 

@@ -77,6 +77,43 @@ import { formatDiagnosticMessage } from '../lib/diagnostics';
 import { OutlinePanel } from './OutlinePanel';
 import { ReferencesPanel } from './ReferencesPanel';
 import { renderMarkdownContent } from '../lib/markdown';
+import { getResolvedTheme, subscribeTheme } from '../lib/theme';
+
+// Editor chrome reads the live CSS tokens so a theme switch repaints it without
+// rebuilding extensions; syntax colors come from the light/dark theme prop.
+// CM substitutes only the first '&' with the generated theme class, so '&.cm-editor'
+// raises specificity (two classes) to outrank the bundled palette regardless of
+// extension order — '&&' would leave a literal ampersand and never match.
+const SURFACE_THEME = EditorView.theme({
+  '&.cm-editor': { backgroundColor: 'var(--editor-bg)', color: 'var(--text)' },
+  '&.cm-editor .cm-scroller': { backgroundColor: 'var(--editor-bg)' },
+  '&.cm-editor .cm-gutters': { backgroundColor: 'var(--editor-bg)', color: 'var(--text-5)', borderRight: '1px solid var(--line)' },
+  '&.cm-editor .cm-activeLineGutter': { backgroundColor: 'var(--overlay-2)', color: 'var(--text-3)' },
+  '&.cm-editor .cm-activeLine': { backgroundColor: 'var(--overlay)' },
+  '&.cm-editor .cm-cursor, &.cm-editor .cm-dropCursor': { borderLeftColor: 'var(--accent)' },
+  '&.cm-editor.cm-focused .cm-selectionBackground, &.cm-editor .cm-selectionBackground, &.cm-editor .cm-content ::selection': {
+    backgroundColor: 'var(--accent-line) !important'
+  },
+  '&.cm-editor .cm-selectionMatch': { backgroundColor: 'var(--cool-soft)' },
+  '&.cm-editor.cm-focused .cm-matchingBracket, &.cm-editor.cm-focused .cm-nonmatchingBracket': {
+    backgroundColor: 'var(--overlay-2)',
+    outline: '1px solid var(--line-2)'
+  },
+  '&.cm-editor .cm-panels': { backgroundColor: 'var(--surface)', color: 'var(--text-2)' },
+  '&.cm-editor .cm-panels.cm-panels-top': { borderBottom: '1px solid var(--line)' },
+  '&.cm-editor .cm-panels.cm-panels-bottom': { borderTop: '1px solid var(--line)' },
+  '&.cm-editor .cm-panel input, &.cm-editor .cm-panel button': { color: 'inherit' },
+  '&.cm-editor .cm-searchMatch': { backgroundColor: 'var(--cool-soft)', outline: '1px solid var(--line-2)' },
+  '&.cm-editor .cm-searchMatch.cm-searchMatch-selected': { backgroundColor: 'var(--accent-soft)' },
+  '&.cm-editor .cm-tooltip': {
+    backgroundColor: 'var(--surface)',
+    border: '1px solid var(--line-2)',
+    color: 'var(--text-2)'
+  },
+  '&.cm-editor .cm-tooltip .cm-tooltip-arrow::before, &.cm-editor .cm-tooltip .cm-tooltip-arrow::after': { borderTopColor: 'var(--line-2)', borderBottomColor: 'var(--line-2)' },
+  '&.cm-editor .cm-tooltip-autocomplete ul li[aria-selected]': { backgroundColor: 'var(--accent-soft)', color: 'var(--text)' },
+  '&.cm-editor .cm-foldPlaceholder': { backgroundColor: 'var(--overlay-2)', border: '1px solid var(--line)', color: 'var(--text-4)' }
+});
 
 interface CodeEditorProps {
   files: WorkspaceFile[];
@@ -394,7 +431,7 @@ export function PathPromptDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-[var(--scrim)] px-4 backdrop-blur-sm"
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onCancel();
@@ -404,7 +441,7 @@ export function PathPromptDialog({
         role="dialog"
         aria-modal="true"
         aria-label={request.title}
-        className="w-full max-w-sm rounded-panel border border-white/10 bg-ink-900 p-4 shadow-sheet"
+        className="w-full max-w-sm rounded-panel border border-line-2 bg-base-2 p-4 shadow-sheet"
         onMouseDown={(event) => event.stopPropagation()}
         onKeyDown={(event) => {
           event.stopPropagation();
@@ -414,8 +451,8 @@ export function PathPromptDialog({
           }
         }}
       >
-        <h2 className="text-sm font-semibold text-neutral-100">{request.title}</h2>
-        <p className="mt-1.5 text-xs leading-relaxed text-neutral-400">{request.description}</p>
+        <h2 className="text-sm font-semibold text-ink">{request.title}</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-ink-3">{request.description}</p>
         <input
           ref={inputRef}
           value={value}
@@ -430,13 +467,13 @@ export function PathPromptDialog({
           spellCheck={false}
           autoComplete="off"
           aria-label={request.title}
-          className="mt-3 w-full rounded-xl border border-white/[0.09] bg-ink-950 px-3 py-2 font-mono text-xs text-neutral-100 outline-none transition-colors placeholder:text-neutral-600 focus:border-violet-300/40"
+          className="mt-3 w-full rounded-xl border border-line bg-base px-3 py-2 font-mono text-xs text-ink outline-none transition-colors placeholder:text-ink-5 focus:border-accent-line"
         />
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-neutral-300 transition-colors hover:bg-white/[0.08] hover:text-white cursor-pointer"
+            className="rounded-xl border border-line-2 bg-overlay px-3.5 py-2 text-xs font-medium text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
           >
             Cancel
           </button>
@@ -444,7 +481,7 @@ export function PathPromptDialog({
             type="button"
             onClick={submit}
             disabled={!value.trim()}
-            className="rounded-xl bg-violet-500 px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-violet-400 disabled:opacity-40 cursor-pointer"
+            className="rounded-xl bg-accent-strong px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:opacity-90 disabled:opacity-40 cursor-pointer"
           >
             {request.confirmLabel}
           </button>
@@ -928,8 +965,11 @@ export function CodeEditor({
     setExpandedFolders(firstLevel);
   }, [workspaceName, filePathSignature]);
 
+  const resolvedTheme = useSyncExternalStore(subscribeTheme, getResolvedTheme, () => 'dark' as const);
+
   const extensions = useMemo(() => {
     const list: Extension[] = [
+      SURFACE_THEME,
       search({ top: true }),
       ...lintExtensions,
       ...definitionExtensions,
@@ -1404,12 +1444,12 @@ export function CodeEditor({
 
   return (
     <div
-      className="flex-1 min-w-0 min-h-0 flex bg-ink-950 overflow-hidden relative"
+      className="flex-1 min-w-0 min-h-0 flex bg-base overflow-hidden relative"
       onMouseDownCapture={() => onFocusGroup?.(editorGroupIndex)}
     >
       {/* Toast Notification */}
       {toastMsg && (
-        <div className="absolute top-12 right-6 z-30 rounded-lg border border-violet-300/30 bg-violet-500/15 px-3 py-1 font-mono text-xs text-violet-200 shadow-lg transition-opacity">
+        <div className="absolute top-12 right-6 z-30 rounded-lg border border-accent-line bg-accent-soft px-3 py-1 font-mono text-xs text-accent shadow-lg transition-opacity">
           {toastMsg}
         </div>
       )}
@@ -1426,18 +1466,18 @@ export function CodeEditor({
       <div
         className={`${
           hideSidebar ? 'hidden' : sidebarPanel ? 'w-72 sm:w-80' : isSidebarOpen ? 'w-60 sm:w-64' : 'w-0'
-        } shrink-0 border-r border-white/[0.07] bg-ink-950 flex flex-col transition-all duration-200 overflow-hidden select-none`}
+        } shrink-0 border-r border-line bg-base flex flex-col transition-all duration-200 overflow-hidden select-none`}
       >
         {sidebarPanel ? (
           sidebarPanel
         ) : (
           <>
         {/* Explorer Header */}
-        <div className="h-9 shrink-0 flex items-center justify-between px-3 border-b border-white/[0.07]">
-          <span className="text-[10px] uppercase font-bold tracking-wider text-neutral-400 flex items-center gap-1.5">
-            <FolderTree className="w-3.5 h-3.5 text-neutral-500" />
+        <div className="h-9 shrink-0 flex items-center justify-between px-3 border-b border-line">
+          <span className="text-[10px] uppercase font-bold tracking-wider text-ink-3 flex items-center gap-1.5">
+            <FolderTree className="w-3.5 h-3.5 text-ink-4" />
             Explorer
-            <span className="text-neutral-600 font-normal">({diskFileCount ?? files.length}{diskFileCountTruncated ? '+' : ''})</span>
+            <span className="text-ink-5 font-normal">({diskFileCount ?? files.length}{diskFileCountTruncated ? '+' : ''})</span>
           </span>
           <div className="flex items-center gap-1">
             {outlineAvailable && (
@@ -1448,7 +1488,7 @@ export function CodeEditor({
                 title={isOutlineOpen ? 'Hide document outline' : 'Show document outline'}
                 aria-label={isOutlineOpen ? 'Hide document outline' : 'Show document outline'}
                 className={`p-1 transition-colors cursor-pointer ${
-                  isOutlineOpen ? 'text-violet-300' : 'text-neutral-400 hover:text-white'
+                  isOutlineOpen ? 'text-accent' : 'text-ink-3 hover:text-ink'
                 }`}
               >
                 <ListTree className="w-3.5 h-3.5" />
@@ -1459,7 +1499,7 @@ export function CodeEditor({
               onClick={onNewFile}
               title="Create new file"
               aria-label="Create new file"
-              className="p-1 text-neutral-400 hover:text-white transition-colors cursor-pointer"
+              className="p-1 text-ink-3 hover:text-ink transition-colors cursor-pointer"
             >
               <FilePlus className="w-3.5 h-3.5" />
             </button>
@@ -1469,7 +1509,7 @@ export function CodeEditor({
                 onClick={handleNewFolder}
                 title="Create new folder"
                 aria-label="Create new folder"
-                className="p-1 text-neutral-400 hover:text-white transition-colors cursor-pointer"
+                className="p-1 text-ink-3 hover:text-ink transition-colors cursor-pointer"
               >
                 <FolderPlus className="w-3.5 h-3.5" />
               </button>
@@ -1479,7 +1519,7 @@ export function CodeEditor({
               onClick={handleDownloadZip}
               title="Export workspace as ZIP"
               aria-label="Export workspace as ZIP"
-              className="p-1 text-neutral-400 hover:text-white transition-colors cursor-pointer"
+              className="p-1 text-ink-3 hover:text-ink transition-colors cursor-pointer"
             >
               <Archive className="w-3.5 h-3.5" />
             </button>
@@ -1487,15 +1527,15 @@ export function CodeEditor({
         </div>
 
         {/* Quick Filter Input */}
-        <div className="p-2 border-b border-white/[0.05]">
+        <div className="p-2 border-b border-line">
           <div className="relative">
-            <Search className="w-3 h-3 text-neutral-600 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <Search className="w-3 h-3 text-ink-5 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               value={fileFilter}
               onChange={(e) => setFileFilter(e.target.value)}
               placeholder="Search files..."
               spellCheck={false}
-              className="w-full rounded-lg border border-white/[0.09] bg-ink-950 py-1 pl-6 pr-5 text-[11px] text-neutral-200 outline-none transition-colors placeholder:text-neutral-600 focus:border-violet-300/40"
+              className="w-full rounded-lg border border-line bg-base py-1 pl-6 pr-5 text-[11px] text-ink-2 outline-none transition-colors placeholder:text-ink-5 focus:border-accent-line"
             />
             {fileFilter && (
               <button
@@ -1503,7 +1543,7 @@ export function CodeEditor({
                 onClick={() => setFileFilter('')}
                 title="Clear file filter"
                 aria-label="Clear file filter"
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-neutral-600 hover:text-white cursor-pointer"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-ink-5 hover:text-ink cursor-pointer"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -1516,11 +1556,11 @@ export function CodeEditor({
           {nativeDirectoryPages ? (
             renderNativeFolder('', 0, workspaceName || 'Workspace')
           ) : files.length === 0 ? (
-            <div className="p-4 text-center text-[11px] text-neutral-600 italic">
+            <div className="p-4 text-center text-[11px] text-ink-5 italic">
               No files in workspace
             </div>
           ) : explorerTree.files.length + explorerTree.folders.length === 0 ? (
-            <div className="p-4 text-center text-[11px] text-neutral-600 italic">No matching files</div>
+            <div className="p-4 text-center text-[11px] text-ink-5 italic">No matching files</div>
           ) : workspaceKind === 'file' ? (
             renderLooseRootFiles(explorerTree)
           ) : (
@@ -1558,32 +1598,32 @@ export function CodeEditor({
         type="button"
         onClick={() => setIsSidebarOpen((open) => !open)}
         title={isSidebarOpen ? 'Collapse file tree' : 'Expand file tree'}
-        className="w-3.5 hover:w-4 bg-ink-950 border-r border-white/[0.07] flex items-center justify-center text-neutral-600 hover:text-white transition-all cursor-pointer z-10"
+        className="w-3.5 hover:w-4 bg-base border-r border-line flex items-center justify-center text-ink-5 hover:text-ink transition-all cursor-pointer z-10"
       >
         {isSidebarOpen ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
       </button>
       )}
 
       {/* Right Column: Code Editor Beside File List */}
-      <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden bg-ink-950">
+      <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden bg-base">
         {/*
           The toolbar is contained: the column clips at its own width and the
           action row scrolls horizontally instead of spilling over the chat
           column. The scrollbar stays invisible to keep the 36px strip clean.
         */}
-        <div className="h-9 shrink-0 flex min-w-0 items-center justify-between gap-2 overflow-x-auto px-3 border-b border-white/[0.07] bg-ink-900/70 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="h-9 shrink-0 flex min-w-0 items-center justify-between gap-2 overflow-x-auto px-3 border-b border-line bg-base-2/70 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {/* Active file metadata */}
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {activeFile ? (
               <>
-                <FileCode2 className="w-3.5 h-3.5 text-violet-300 shrink-0" />
-                <span className="font-mono text-xs text-neutral-100 truncate font-medium">
+                <FileCode2 className="w-3.5 h-3.5 text-accent shrink-0" />
+                <span className="font-mono text-xs text-ink truncate font-medium">
                   {activeFile.name}
                 </span>
                 {isDirty && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved changes" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-warn shrink-0" title="Unsaved changes" />
                 )}
-                <span className="hidden md:inline text-[10px] text-neutral-500 uppercase font-mono">
+                <span className="hidden md:inline text-[10px] text-ink-4 uppercase font-mono">
                   {activeFile.language}
                 </span>
                 {pausedAt && (
@@ -1591,9 +1631,9 @@ export function CodeEditor({
                     type="button"
                     onClick={() => onOpenPaused?.(pausedAt.file, pausedAt.line, pausedAt.column)}
                     title={`Debugger paused at ${pausedAt.file}:${pausedAt.line}`}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-rose-400/30 bg-rose-500/10 px-1.5 py-0.5 font-mono text-[10px] text-rose-200 transition-colors hover:bg-rose-500/20 cursor-pointer"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-danger/30 bg-danger/10 px-1.5 py-0.5 font-mono text-[10px] text-danger transition-colors hover:bg-danger/20 cursor-pointer"
                   >
-                    <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
+                    <span className="h-1.5 w-1.5 rounded-full bg-danger" />
                     paused at {pausedAt.file.split('/').pop()}:{pausedAt.line}
                   </button>
                 )}
@@ -1605,8 +1645,8 @@ export function CodeEditor({
                     title={isMarkdownPreview ? 'Show Markdown source' : 'Preview Markdown'}
                     className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] transition-colors cursor-pointer ${
                       isMarkdownPreview
-                        ? 'border-violet-300/30 bg-violet-500/10 text-violet-200'
-                        : 'border-white/[0.09] text-neutral-400 hover:border-white/[0.14] hover:text-white'
+                        ? 'border-accent-line bg-accent-soft text-accent'
+                        : 'border-line text-ink-3 hover:border-line-2 hover:text-ink'
                     }`}
                   >
                     {isMarkdownPreview ? <Code2 className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
@@ -1615,7 +1655,7 @@ export function CodeEditor({
                 )}
               </>
             ) : (
-              <span className="text-xs text-neutral-500">No file selected</span>
+              <span className="text-xs text-ink-4">No file selected</span>
             )}
           </div>
 
@@ -1624,7 +1664,7 @@ export function CodeEditor({
             <div className="flex shrink-0 items-center gap-1.5">
               {/* Search in active file */}
               <div className="relative hidden xl:block">
-                <Search className="w-3 h-3 text-neutral-600 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <Search className="w-3 h-3 text-ink-5 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   value={findQuery}
                   onChange={(e) => handleSearchChange(e.target.value)}
@@ -1637,7 +1677,7 @@ export function CodeEditor({
                   }}
                   placeholder="Find in file..."
                   spellCheck={false}
-                  className="w-28 sm:w-36 rounded-lg border border-white/[0.09] bg-ink-950 py-1 pl-6 pr-2 text-[11px] text-neutral-200 outline-none transition-colors placeholder:text-neutral-600 focus:border-violet-300/40"
+                  className="w-28 sm:w-36 rounded-lg border border-line bg-base py-1 pl-6 pr-2 text-[11px] text-ink-2 outline-none transition-colors placeholder:text-ink-5 focus:border-accent-line"
                 />
               </div>
 
@@ -1656,8 +1696,8 @@ export function CodeEditor({
                     title="Code actions — definition, references, rename, quick fix"
                     className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] transition-colors cursor-pointer ${
                       isSymbolMenuOpen
-                        ? 'border-violet-300/30 bg-violet-500/10 text-violet-200'
-                        : 'border-white/[0.09] text-neutral-400 hover:border-white/[0.14] hover:text-white'
+                        ? 'border-accent-line bg-accent-soft text-accent'
+                        : 'border-line text-ink-3 hover:border-line-2 hover:text-ink'
                     }`}
                   >
                     <MoreHorizontal className="w-3.5 h-3.5" />
@@ -1666,7 +1706,7 @@ export function CodeEditor({
                   {isSymbolMenuOpen && (
                     <div
                       role="menu"
-                      className="fixed z-40 w-52 overflow-hidden rounded-lg border border-white/[0.12] bg-ink-900/95 py-1 shadow-2xl backdrop-blur"
+                      className="fixed z-40 w-52 overflow-hidden rounded-lg border border-line-2 bg-base-2/95 py-1 shadow-2xl backdrop-blur"
                       style={{
                         top: symbolMenuAnchor?.top ?? 44,
                         right: symbolMenuAnchor?.right ?? 12
@@ -1677,11 +1717,11 @@ export function CodeEditor({
                           type="button"
                           role="menuitem"
                           onClick={runQuickFixFromMenu}
-                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-neutral-300 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
+                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
                         >
-                          <Lightbulb className="w-3.5 h-3.5 text-amber-300" />
+                          <Lightbulb className="w-3.5 h-3.5 text-warn" />
                           Quick Fix
-                          <span className="ml-auto font-mono text-[9px] text-neutral-600">⌃.</span>
+                          <span className="ml-auto font-mono text-[9px] text-ink-5">⌃.</span>
                         </button>
                       )}
                       {symbols?.available && (
@@ -1689,11 +1729,11 @@ export function CodeEditor({
                           type="button"
                           role="menuitem"
                           onClick={runDefinitionFromMenu}
-                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-neutral-300 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
+                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
                         >
-                          <Navigation className="w-3.5 h-3.5 text-violet-300" />
+                          <Navigation className="w-3.5 h-3.5 text-accent" />
                           Go to Definition
-                          <span className="ml-auto font-mono text-[9px] text-neutral-600">F12</span>
+                          <span className="ml-auto font-mono text-[9px] text-ink-5">F12</span>
                         </button>
                       )}
                       {symbols?.available && (
@@ -1701,11 +1741,11 @@ export function CodeEditor({
                           type="button"
                           role="menuitem"
                           onClick={runFindReferencesFromMenu}
-                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-neutral-300 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
+                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
                         >
-                          <SearchCode className="w-3.5 h-3.5 text-violet-300" />
+                          <SearchCode className="w-3.5 h-3.5 text-accent" />
                           Find All References
-                          <span className="ml-auto font-mono text-[9px] text-neutral-600">⇧F12</span>
+                          <span className="ml-auto font-mono text-[9px] text-ink-5">⇧F12</span>
                         </button>
                       )}
                       {symbols?.available && (
@@ -1713,11 +1753,11 @@ export function CodeEditor({
                           type="button"
                           role="menuitem"
                           onClick={runRenameFromMenu}
-                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-neutral-300 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
+                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
                         >
-                          <Pencil className="w-3.5 h-3.5 text-violet-300" />
+                          <Pencil className="w-3.5 h-3.5 text-accent" />
                           Rename Symbol
-                          <span className="ml-auto font-mono text-[9px] text-neutral-600">F2</span>
+                          <span className="ml-auto font-mono text-[9px] text-ink-5">F2</span>
                         </button>
                       )}
                     </div>
@@ -1730,9 +1770,9 @@ export function CodeEditor({
                 type="button"
                 onClick={handleFormat}
                 title="Format Code"
-                className="flex items-center gap-1 rounded-lg border border-white/[0.09] px-2 py-1 text-[11px] text-neutral-400 transition-colors hover:border-white/[0.14] hover:text-white cursor-pointer"
+                className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-[11px] text-ink-3 transition-colors hover:border-line-2 hover:text-ink cursor-pointer"
               >
-                <Sparkles className="w-3.5 h-3.5 text-violet-300" />
+                <Sparkles className="w-3.5 h-3.5 text-accent" />
                 <span className="hidden lg:inline">Format</span>
               </button>
 
@@ -1747,11 +1787,11 @@ export function CodeEditor({
                   }
                   className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] transition-colors cursor-pointer ${
                     editorAi.completionEnabled
-                      ? 'border-violet-300/30 bg-violet-500/10 text-violet-200 hover:bg-violet-500/20'
-                      : 'border-white/[0.09] text-neutral-500 hover:border-white/[0.14] hover:text-white'
+                      ? 'border-accent-line bg-accent-soft text-accent hover:bg-accent-soft'
+                      : 'border-line text-ink-4 hover:border-line-2 hover:text-ink'
                   }`}
                 >
-                  <Zap className={`w-3.5 h-3.5 ${editorAi.completionEnabled ? 'text-violet-300' : 'text-neutral-600'}`} />
+                  <Zap className={`w-3.5 h-3.5 ${editorAi.completionEnabled ? 'text-accent' : 'text-ink-5'}`} />
                   <span className="hidden lg:inline">Tab complete</span>
                 </button>
               )}
@@ -1762,12 +1802,12 @@ export function CodeEditor({
                 onClick={handleCopy}
                 title="Copy Code"
                 aria-label={hasCopied ? 'Copied to clipboard' : 'Copy file contents'}
-                className="flex items-center gap-1 rounded-lg border border-white/[0.09] px-2 py-1 text-[11px] text-neutral-400 transition-colors hover:border-white/[0.14] hover:text-white cursor-pointer"
+                className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-[11px] text-ink-3 transition-colors hover:border-line-2 hover:text-ink cursor-pointer"
               >
                 {hasCopied ? (
-                  <Check className="w-3.5 h-3.5 text-violet-300" />
+                  <Check className="w-3.5 h-3.5 text-accent" />
                 ) : (
-                  <Copy className="w-3.5 h-3.5 text-neutral-400" />
+                  <Copy className="w-3.5 h-3.5 text-ink-3" />
                 )}
                 <span className="hidden xl:inline">{hasCopied ? 'Copied' : 'Copy'}</span>
               </button>
@@ -1778,7 +1818,7 @@ export function CodeEditor({
                 onClick={handleDownloadFile}
                 title="Download this file"
                 aria-label="Download this file"
-                className="rounded-lg border border-white/[0.09] p-1 text-neutral-400 transition-colors hover:border-white/[0.14] hover:text-white cursor-pointer"
+                className="rounded-lg border border-line p-1 text-ink-3 transition-colors hover:border-line-2 hover:text-ink cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
               </button>
@@ -1790,7 +1830,7 @@ export function CodeEditor({
                     onClick={handleRename}
                     title="Rename file on disk"
                     aria-label="Rename file on disk"
-                    className="rounded-lg border border-white/[0.09] p-1 text-neutral-400 transition-colors hover:border-white/[0.14] hover:text-white cursor-pointer"
+                    className="rounded-lg border border-line p-1 text-ink-3 transition-colors hover:border-line-2 hover:text-ink cursor-pointer"
                   >
                     <Pencil className="w-3.5 h-3.5" />
                   </button>
@@ -1800,7 +1840,7 @@ export function CodeEditor({
                     disabled={!isDirty}
                     title="Discard local edits and reload from disk"
                     aria-label="Discard local edits and reload from disk"
-                    className="rounded-lg border border-white/[0.09] p-1 text-neutral-400 transition-colors hover:border-amber-300/40 hover:text-amber-300 disabled:opacity-30 cursor-pointer"
+                    className="rounded-lg border border-line p-1 text-ink-3 transition-colors hover:border-warn/40 hover:text-warn disabled:opacity-30 cursor-pointer"
                   >
                     <Undo2 className="w-3.5 h-3.5" />
                   </button>
@@ -1814,7 +1854,7 @@ export function CodeEditor({
                   onClick={onSaveAll}
                   disabled={!isDirty || isSaving}
                   title="Save changes to disk (Ctrl+S)"
-                  className="flex items-center gap-1 rounded-lg bg-violet-300 px-2.5 py-1 text-[11px] font-semibold text-[#16121f] transition-colors hover:bg-violet-200 disabled:opacity-30 disabled:hover:bg-violet-300 cursor-pointer"
+                  className="flex items-center gap-1 rounded-lg bg-accent-strong px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:opacity-90 disabled:opacity-30 disabled:hover:bg-accent-strong cursor-pointer"
                 >
                   {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
                   Save
@@ -1826,7 +1866,7 @@ export function CodeEditor({
 
         {/* Open file tabs */}
         {(tabIndices.length > 0 || onSplitEditor || editorGroupCount > 1) && (
-          <div className="flex h-8 shrink-0 items-stretch gap-px overflow-x-auto border-b border-white/[0.07] bg-ink-950">
+          <div className="flex h-8 shrink-0 items-stretch gap-px overflow-x-auto border-b border-line bg-base">
             {tabIndices.map((index) => {
               const file = files[index];
               if (!file) return null;
@@ -1847,8 +1887,8 @@ export function CodeEditor({
                     const fromPath = event.dataTransfer.getData('text/plain');
                     if (fromPath) onReorderTabs?.(editorGroupIndex, fromPath, file.name);
                   }}
-                  className={`group flex shrink-0 items-center gap-1.5 border-r border-white/[0.06] px-2.5 transition-colors ${
-                    isActive ? 'bg-ink-900 text-white' : 'text-neutral-500 hover:bg-white/[0.03] hover:text-neutral-300'
+                  className={`group flex shrink-0 items-center gap-1.5 border-r border-line px-2.5 transition-colors ${
+                    isActive ? 'bg-base-2 text-ink' : 'text-ink-4 hover:bg-overlay hover:text-ink-3'
                   }`}
                 >
                   <button
@@ -1858,10 +1898,10 @@ export function CodeEditor({
                     className="flex min-w-0 max-w-[180px] items-center gap-1.5 font-mono text-[11px] cursor-pointer"
                   >
                     {isPinned
-                      ? <Pin className={`h-3 w-3 shrink-0 ${isActive ? 'text-violet-300' : 'text-neutral-600'}`} />
-                      : <FileCode2 className={`h-3 w-3 shrink-0 ${isActive ? 'text-violet-300' : 'text-neutral-600'}`} />}
+                      ? <Pin className={`h-3 w-3 shrink-0 ${isActive ? 'text-accent' : 'text-ink-5'}`} />
+                      : <FileCode2 className={`h-3 w-3 shrink-0 ${isActive ? 'text-accent' : 'text-ink-5'}`} />}
                     <span className="truncate">{file.name.split('/').pop()}</span>
-                    {hasUnsaved && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" title="Unsaved changes" />}
+                    {hasUnsaved && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn" title="Unsaved changes" />}
                   </button>
                   {onTogglePinnedTab && (
                     <button
@@ -1870,7 +1910,7 @@ export function CodeEditor({
                       title={isPinned ? `Unpin ${file.name}` : `Pin ${file.name}`}
                       aria-label={isPinned ? `Unpin ${file.name}` : `Pin ${file.name}`}
                       aria-pressed={isPinned}
-                      className="rounded p-0.5 text-neutral-600 opacity-0 transition-opacity hover:text-violet-300 group-hover:opacity-100 cursor-pointer"
+                      className="rounded p-0.5 text-ink-5 opacity-0 transition-opacity hover:text-accent group-hover:opacity-100 cursor-pointer"
                     >
                       {isPinned ? <PinOff className="h-3 w-3" /> : <Pin className="h-3 w-3" />}
                     </button>
@@ -1880,7 +1920,7 @@ export function CodeEditor({
                     onClick={() => onCloseTab(index, editorGroupIndex)}
                     title={`Close ${file.name}`}
                     aria-label={`Close ${file.name}`}
-                    className="rounded p-0.5 text-neutral-600 opacity-0 transition-opacity hover:text-white group-hover:opacity-100 cursor-pointer"
+                    className="rounded p-0.5 text-ink-5 opacity-0 transition-opacity hover:text-ink group-hover:opacity-100 cursor-pointer"
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -1894,7 +1934,7 @@ export function CodeEditor({
                   onClick={onSplitEditor}
                   title="Split editor"
                   aria-label="Split editor"
-                  className="rounded p-1 text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
+                  className="rounded p-1 text-ink-4 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
                 >
                   <Columns2 className="h-3.5 w-3.5" />
                 </button>
@@ -1905,7 +1945,7 @@ export function CodeEditor({
                   onClick={() => onCloseEditorGroup(editorGroupIndex)}
                   title="Close editor group"
                   aria-label="Close editor group"
-                  className="rounded p-1 text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
+                  className="rounded p-1 text-ink-4 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -1916,19 +1956,19 @@ export function CodeEditor({
 
         {/* Sticky File Path Breadcrumb Bar */}
         {activeFile && (
-          <div className="flex h-6 shrink-0 items-center gap-1.5 border-b border-white/[0.04] bg-ink-950/70 px-3 text-[10px] font-mono text-neutral-400">
-            <span className="flex items-center gap-1 text-neutral-500">
-              <Folder className="h-3 w-3 text-neutral-500" />
+          <div className="flex h-6 shrink-0 items-center gap-1.5 border-b border-line bg-base/70 px-3 text-[10px] font-mono text-ink-3">
+            <span className="flex items-center gap-1 text-ink-4">
+              <Folder className="h-3 w-3 text-ink-4" />
               {activeFile.name.split('/').slice(0, -1).join(' / ') || '.'}
             </span>
-            <span className="text-neutral-600">/</span>
-            <span className="text-neutral-200 font-semibold flex items-center gap-1">
-              <FileCode2 className="h-3 w-3 text-violet-300" />
+            <span className="text-ink-5">/</span>
+            <span className="text-ink-2 font-semibold flex items-center gap-1">
+              <FileCode2 className="h-3 w-3 text-accent" />
               {activeFile.name.split('/').pop()}
             </span>
             {diagnostics && diagnostics.length > 0 && (
-              <span className="ml-auto text-[9.5px] font-mono text-amber-400 flex items-center gap-1">
-                <span className="size-1.5 rounded-full bg-amber-400" />
+              <span className="ml-auto text-[9.5px] font-mono text-warn flex items-center gap-1">
+                <span className="size-1.5 rounded-full bg-warn" />
                 {diagnostics.length} diagnostic{diagnostics.length === 1 ? '' : 's'}
               </span>
             )}
@@ -1939,7 +1979,7 @@ export function CodeEditor({
         {completionHint && dismissedCompletionHint !== completionHint.id && (
           <div
             role="status"
-            className="flex shrink-0 items-center gap-2 border-b border-amber-300/15 bg-amber-400/[0.07] px-3 py-1 text-[10.5px] text-amber-200/90"
+            className="flex shrink-0 items-center gap-2 border-b border-warn/15 bg-warn/[0.07] px-3 py-1 text-[10.5px] text-warn/90"
           >
             <Zap className="w-3 h-3 shrink-0" />
             <span className="min-w-0 flex-1 truncate" title={completionHint.text}>
@@ -1949,7 +1989,7 @@ export function CodeEditor({
               type="button"
               onClick={dismissCompletionHint}
               aria-label="Dismiss completion hint"
-              className="rounded p-0.5 text-amber-200/60 transition-colors hover:text-white cursor-pointer"
+              className="rounded p-0.5 text-warn/60 transition-colors hover:text-ink cursor-pointer"
             >
               <X className="h-3 w-3" />
             </button>
@@ -1962,15 +2002,15 @@ export function CodeEditor({
             <div
               role="dialog"
               aria-label="Quick edit selection"
-              className="absolute z-30 w-[340px] rounded-xl border border-white/[0.12] bg-ink-900/95 p-2 shadow-2xl backdrop-blur"
+              className="absolute z-30 w-[340px] rounded-xl border border-line-2 bg-base-2/95 p-2 shadow-2xl backdrop-blur"
               style={{ top: quickEdit.top, left: quickEdit.left }}
             >
-              <div className="mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-wider text-neutral-500">
+              <div className="mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-wider text-ink-4">
                 <span className="flex items-center gap-1.5">
                   {quickEditPreview ? (
-                    <FileDiff className="w-3 h-3 text-violet-300" />
+                    <FileDiff className="w-3 h-3 text-accent" />
                   ) : (
-                    <Sparkles className="w-3 h-3 text-violet-300" />
+                    <Sparkles className="w-3 h-3 text-accent" />
                   )}
                   {quickEditPreview ? 'Review change' : 'Quick edit'}
                   {!quickEditPreview && quickEdit.from !== quickEdit.to && (
@@ -1980,7 +2020,7 @@ export function CodeEditor({
                 <button
                   type="button"
                   onClick={closeQuickEdit}
-                  className="text-neutral-600 transition-colors hover:text-white cursor-pointer"
+                  className="text-ink-5 transition-colors hover:text-ink cursor-pointer"
                   aria-label="Close quick edit"
                 >
                   <X className="w-3 h-3" />
@@ -1988,45 +2028,45 @@ export function CodeEditor({
               </div>
               {quickEditPreview && quickEditDiff ? (
                 <div>
-                  <div className="mb-1.5 text-[10px] text-neutral-500">
-                    <span className="text-emerald-300">+{quickEditDiff.stats.added}</span>
-                    <span className="mx-1 text-neutral-700">·</span>
-                    <span className="text-rose-300">−{quickEditDiff.stats.removed}</span>
+                  <div className="mb-1.5 text-[10px] text-ink-4">
+                    <span className="text-ok">+{quickEditDiff.stats.added}</span>
+                    <span className="mx-1 text-ink-5">·</span>
+                    <span className="text-danger">−{quickEditDiff.stats.removed}</span>
                     <span className="ml-1.5">
                       in {quickEditDiff.hunks.length} change{quickEditDiff.hunks.length === 1 ? '' : 's'}
                     </span>
                   </div>
-                  <div className="max-h-60 overflow-auto rounded-lg border border-white/[0.08] bg-ink-950/80 font-mono text-[11px] leading-5">
+                  <div className="max-h-60 overflow-auto rounded-lg border border-line bg-base/80 font-mono text-[11px] leading-5">
                     {quickEditDiff.hunks.map((hunk) => (
-                      <div key={hunk.id} className="border-b border-white/[0.05] last:border-b-0">
+                      <div key={hunk.id} className="border-b border-line last:border-b-0">
                         {quickEditDiff.beforeLines.slice(hunk.beforeStart, hunk.beforeEnd).map((lineText, i) => (
-                          <div key={`rm${i}`} className="flex gap-1.5 bg-rose-500/10 px-2 text-rose-200">
-                            <span className="select-none text-rose-400/70">−</span>
+                          <div key={`rm${i}`} className="flex gap-1.5 bg-danger/10 px-2 text-danger">
+                            <span className="select-none text-danger/70">−</span>
                             <span className="whitespace-pre-wrap break-all">{lineText === '' ? '\u00a0' : lineText}</span>
                           </div>
                         ))}
                         {hunk.afterLines.map((lineText, i) => (
-                          <div key={`ad${i}`} className="flex gap-1.5 bg-emerald-500/10 px-2 text-emerald-200">
-                            <span className="select-none text-emerald-400/70">+</span>
+                          <div key={`ad${i}`} className="flex gap-1.5 bg-ok/10 px-2 text-ok">
+                            <span className="select-none text-ok/70">+</span>
                             <span className="whitespace-pre-wrap break-all">{lineText === '' ? '\u00a0' : lineText}</span>
                           </div>
                         ))}
                       </div>
                     ))}
                   </div>
-                  {quickEditError && <p className="mt-1.5 text-[10px] text-rose-400">{quickEditError}</p>}
+                  {quickEditError && <p className="mt-1.5 text-[10px] text-danger">{quickEditError}</p>}
                   <div className="mt-1.5 flex items-center justify-end gap-2 text-[10px]">
                     <button
                       type="button"
                       onClick={discardQuickEdit}
-                      className="rounded-md border border-white/[0.1] px-2 py-1 text-neutral-300 transition-colors hover:border-white/20 hover:text-white cursor-pointer"
+                      className="rounded-md border border-line-2 px-2 py-1 text-ink-3 transition-colors hover:border-line-2 hover:text-ink cursor-pointer"
                     >
                       Back
                     </button>
                     <button
                       type="button"
                       onClick={commitQuickEdit}
-                      className="flex items-center gap-1 rounded-md bg-violet-300 px-2 py-1 font-semibold text-[#16121f] transition-colors hover:bg-violet-200 cursor-pointer"
+                      className="flex items-center gap-1 rounded-md bg-accent-strong px-2 py-1 font-semibold text-white transition-colors hover:opacity-90 cursor-pointer"
                     >
                       <Check className="w-3 h-3" />
                       Apply
@@ -2051,16 +2091,16 @@ export function CodeEditor({
                     }}
                     placeholder="Describe the change to this code..."
                     spellCheck={false}
-                    className="w-full rounded-lg border border-white/[0.09] bg-ink-950 px-2 py-1.5 text-xs text-neutral-100 outline-none transition-colors placeholder:text-neutral-600 focus:border-violet-300/40"
+                    className="w-full rounded-lg border border-line bg-base px-2 py-1.5 text-xs text-ink outline-none transition-colors placeholder:text-ink-5 focus:border-accent-line"
                   />
-                  {quickEditError && <p className="mt-1.5 text-[10px] text-rose-400">{quickEditError}</p>}
-                  <div className="mt-1.5 flex items-center justify-between text-[10px] text-neutral-600">
+                  {quickEditError && <p className="mt-1.5 text-[10px] text-danger">{quickEditError}</p>}
+                  <div className="mt-1.5 flex items-center justify-between text-[10px] text-ink-5">
                     <span className="font-mono">Enter to review · Esc to cancel</span>
                     <button
                       type="button"
                       onClick={() => void applyQuickEdit()}
                       disabled={!quickEditPrompt.trim() || isQuickEditing}
-                      className="flex items-center gap-1 rounded-md bg-violet-300 px-2 py-1 font-semibold text-[#16121f] transition-colors hover:bg-violet-200 disabled:opacity-40 cursor-pointer"
+                      className="flex items-center gap-1 rounded-md bg-accent-strong px-2 py-1 font-semibold text-white transition-colors hover:opacity-90 disabled:opacity-40 cursor-pointer"
                     >
                       {isQuickEditing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                       {isQuickEditing ? 'Writing' : 'Review'}
@@ -2074,19 +2114,19 @@ export function CodeEditor({
             <div
               role="dialog"
               aria-label="Rename symbol"
-              className="absolute z-30 w-[300px] rounded-xl border border-white/[0.12] bg-ink-900/95 p-2 shadow-2xl backdrop-blur"
+              className="absolute z-30 w-[300px] rounded-xl border border-line-2 bg-base-2/95 p-2 shadow-2xl backdrop-blur"
               style={{ top: renameTarget.top, left: renameTarget.left }}
             >
-              <div className="mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-wider text-neutral-500">
+              <div className="mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-wider text-ink-4">
                 <span className="flex items-center gap-1.5">
-                  <Pencil className="w-3 h-3 text-violet-300" />
+                  <Pencil className="w-3 h-3 text-accent" />
                   Rename symbol
-                  <span className="font-mono normal-case tracking-normal text-violet-300">{renameTarget.original}</span>
+                  <span className="font-mono normal-case tracking-normal text-accent">{renameTarget.original}</span>
                 </span>
                 <button
                   type="button"
                   onClick={closeRename}
-                  className="text-neutral-600 transition-colors hover:text-white cursor-pointer"
+                  className="text-ink-5 transition-colors hover:text-ink cursor-pointer"
                   aria-label="Close rename"
                 >
                   <X className="w-3 h-3" />
@@ -2109,16 +2149,16 @@ export function CodeEditor({
                 }}
                 placeholder="New name"
                 spellCheck={false}
-                className="w-full rounded-lg border border-white/[0.09] bg-ink-950 px-2 py-1.5 font-mono text-xs text-neutral-100 outline-none transition-colors placeholder:text-neutral-600 focus:border-violet-300/40"
+                className="w-full rounded-lg border border-line bg-base px-2 py-1.5 font-mono text-xs text-ink outline-none transition-colors placeholder:text-ink-5 focus:border-accent-line"
               />
-              {renameError && <p className="mt-1.5 text-[10px] text-rose-400">{renameError}</p>}
-              <div className="mt-1.5 flex items-center justify-between text-[10px] text-neutral-600">
+              {renameError && <p className="mt-1.5 text-[10px] text-danger">{renameError}</p>}
+              <div className="mt-1.5 flex items-center justify-between text-[10px] text-ink-5">
                 <span className="font-mono">Enter to rename · Esc to cancel</span>
                 <button
                   type="button"
                   onClick={() => void applyRename()}
                   disabled={!renameValue.trim() || isRenaming}
-                  className="flex items-center gap-1 rounded-md bg-violet-300 px-2 py-1 font-semibold text-[#16121f] transition-colors hover:bg-violet-200 disabled:opacity-40 cursor-pointer"
+                  className="flex items-center gap-1 rounded-md bg-accent-strong px-2 py-1 font-semibold text-white transition-colors hover:opacity-90 disabled:opacity-40 cursor-pointer"
                 >
                   {isRenaming ? <Loader2 className="w-3 h-3 animate-spin" /> : <Pencil className="w-3 h-3" />}
                   {isRenaming ? 'Renaming' : 'Rename'}
@@ -2131,30 +2171,30 @@ export function CodeEditor({
               role="menu"
               aria-label="Quick fixes"
               ref={quickFixMenuRef}
-              className="absolute z-30 w-[320px] overflow-hidden rounded-xl border border-white/[0.12] bg-ink-900/95 shadow-2xl backdrop-blur"
+              className="absolute z-30 w-[320px] overflow-hidden rounded-xl border border-line-2 bg-base-2/95 shadow-2xl backdrop-blur"
               style={{ top: quickFixMenu.top, left: quickFixMenu.left }}
             >
-              <div className="flex items-center justify-between border-b border-white/[0.07] px-2.5 py-1.5 text-[10px] uppercase tracking-wider text-neutral-500">
+              <div className="flex items-center justify-between border-b border-line px-2.5 py-1.5 text-[10px] uppercase tracking-wider text-ink-4">
                 <span className="flex items-center gap-1.5">
-                  <Lightbulb className="w-3 h-3 text-amber-300" />
+                  <Lightbulb className="w-3 h-3 text-warn" />
                   Quick fixes
                 </span>
                 <button
                   type="button"
                   onClick={closeQuickFixes}
-                  className="text-neutral-600 transition-colors hover:text-white cursor-pointer"
+                  className="text-ink-5 transition-colors hover:text-ink cursor-pointer"
                   aria-label="Close quick fixes"
                 >
                   <X className="w-3 h-3" />
                 </button>
               </div>
               {quickFixMenu.loading ? (
-                <div className="flex items-center gap-2 px-3 py-2.5 text-[11px] text-neutral-400">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-300" />
+                <div className="flex items-center gap-2 px-3 py-2.5 text-[11px] text-ink-3">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-warn" />
                   Looking for fixes…
                 </div>
               ) : quickFixMenu.error ? (
-                <p className="px-3 py-2.5 text-[11px] text-rose-400">{quickFixMenu.error}</p>
+                <p className="px-3 py-2.5 text-[11px] text-danger">{quickFixMenu.error}</p>
               ) : (
                 quickFixMenu.actions.map((action, index) => (
                   <button
@@ -2162,9 +2202,9 @@ export function CodeEditor({
                     type="button"
                     role="menuitem"
                     onClick={() => void applyQuickFix(action)}
-                    className="flex w-full items-start gap-2 px-3 py-1.5 text-left text-[11px] text-neutral-300 transition-colors hover:bg-white/[0.06] hover:text-white cursor-pointer"
+                    className="flex w-full items-start gap-2 px-3 py-1.5 text-left text-[11px] text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
                   >
-                    <Lightbulb className="mt-[1px] w-3.5 h-3.5 shrink-0 text-amber-300" />
+                    <Lightbulb className="mt-[1px] w-3.5 h-3.5 shrink-0 text-warn" />
                     <span className="min-w-0 flex-1">{action.description}</span>
                   </button>
                 ))
@@ -2172,8 +2212,8 @@ export function CodeEditor({
             </div>
           )}
           {activeFile && isMarkdownPreview ? (
-            <div className="h-full overflow-auto bg-ink-950 px-5 py-4 sm:px-8">
-              <article className="mx-auto max-w-4xl rounded-xl border border-white/[0.07] bg-ink-900/60 p-5 sm:p-8">
+            <div className="h-full overflow-auto bg-base px-5 py-4 sm:px-8">
+              <article className="mx-auto max-w-4xl rounded-xl border border-line bg-base-2/60 p-5 sm:p-8">
                 {renderMarkdownContent(activeFile.content)}
               </article>
             </div>
@@ -2182,7 +2222,7 @@ export function CodeEditor({
               ref={editorRef}
               value={activeFile.content}
               height="100%"
-              theme="dark"
+              theme={resolvedTheme}
               extensions={extensions}
               onChange={(value) => onChangeContent(value)}
               basicSetup={{
@@ -2204,23 +2244,23 @@ export function CodeEditor({
               className="h-full text-[12px] font-mono leading-relaxed [&_.cm-editor]:h-full [&_.cm-scroller]:h-full"
             />
           ) : (
-            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-neutral-600">
-              <FileCode2 className="w-8 h-8 text-neutral-700 mb-2" />
-              <p className="text-xs text-neutral-400">Select a file from the explorer on the left to edit</p>
+            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-ink-5">
+              <FileCode2 className="w-8 h-8 text-ink-5 mb-2" />
+              <p className="text-xs text-ink-3">Select a file from the explorer on the left to edit</p>
             </div>
           )}
         </div>
 
         {/* Professional IDE Status Bar */}
         {activeFile && (
-          <div className="h-6 shrink-0 border-t border-white/[0.07] bg-ink-950 px-3 flex min-w-0 items-center justify-between gap-2 text-[10px] font-mono text-neutral-500 select-none whitespace-nowrap">
+          <div className="h-6 shrink-0 border-t border-line bg-base px-3 flex min-w-0 items-center justify-between gap-2 text-[10px] font-mono text-ink-4 select-none whitespace-nowrap">
             <div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap">
               <span className="shrink-0">{lineCount} lines</span>
               <span className="hidden shrink-0 lg:inline">{charCount} chars</span>
               <span className="hidden shrink-0 xl:inline">~{tokenEst} tokens</span>
             </div>
             <div className="flex shrink-0 items-center gap-3">
-              <span className="uppercase text-neutral-400">{activeFile.language}</span>
+              <span className="uppercase text-ink-3">{activeFile.language}</span>
               <span>UTF-8</span>
               <span className="hidden lg:inline">Spaces: 2</span>
             </div>
@@ -2260,18 +2300,18 @@ export function CodeEditor({
           onClick={() => onSelectFile(index)}
           title={file.name}
           className={`flex flex-1 min-w-0 items-center gap-1.5 rounded-md py-1 text-left transition-colors cursor-pointer ${
-            isActive ? 'bg-violet-500/[.12] text-white' : 'text-neutral-400 hover:bg-white/[0.04]'
+            isActive ? 'bg-accent-soft text-ink' : 'text-ink-3 hover:bg-overlay'
           }`}
           style={{ paddingLeft: `${8 + (depth + 1) * 14}px` }}
         >
           <FileCode2
             className={`w-3 h-3 shrink-0 ${
-              isActive ? 'text-violet-300' : 'text-neutral-500 group-hover:text-neutral-300'
+              isActive ? 'text-accent' : 'text-ink-4 group-hover:text-ink-3'
             }`}
           />
           <span className="font-mono text-[11px] truncate">{file.name.split('/').pop()}</span>
           {hasUnsaved && (
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved changes" />
+            <span className="w-1.5 h-1.5 rounded-full bg-warn shrink-0" title="Unsaved changes" />
           )}
         </button>
         <div className="flex items-center shrink-0">
@@ -2285,7 +2325,7 @@ export function CodeEditor({
               }}
               title={`Preview ${file.name}`}
               aria-label={`Preview ${file.name}`}
-              className="rounded p-0.5 text-neutral-500 opacity-0 transition-opacity hover:text-violet-200 group-hover:opacity-100 focus:opacity-100 cursor-pointer"
+              className="rounded p-0.5 text-ink-4 opacity-0 transition-opacity hover:text-accent group-hover:opacity-100 focus:opacity-100 cursor-pointer"
             >
               <Eye className="h-3 w-3" />
             </button>
@@ -2297,7 +2337,7 @@ export function CodeEditor({
               void handleDeleteFile(index);
             }}
             title="Delete file"
-            className="opacity-0 group-hover:opacity-100 p-0.5 text-neutral-600 hover:text-red-400 transition-opacity cursor-pointer"
+            className="opacity-0 group-hover:opacity-100 p-0.5 text-ink-5 hover:text-danger transition-opacity cursor-pointer"
           >
             <Trash2 className="w-3 h-3" />
           </button>
@@ -2324,18 +2364,18 @@ export function CodeEditor({
           type="button"
           onClick={() => toggleFolder(folder.path)}
           aria-expanded={isExpanded}
-          className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-neutral-300 hover:bg-white/[0.03] cursor-pointer"
+          className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-ink-3 hover:bg-overlay cursor-pointer"
           style={{
             paddingLeft: `${8 + depth * 14}px`,
             contentVisibility: 'auto',
             containIntrinsicSize: '24px'
           }}
         >
-          <ChevronRight className={`w-3 h-3 shrink-0 text-neutral-600 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+          <ChevronRight className={`w-3 h-3 shrink-0 text-ink-5 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
           {isExpanded ? (
-            <FolderOpen className="w-3.5 h-3.5 shrink-0 text-amber-300" />
+            <FolderOpen className="w-3.5 h-3.5 shrink-0 text-warn" />
           ) : (
-            <Folder className="w-3.5 h-3.5 shrink-0 text-amber-300" />
+            <Folder className="w-3.5 h-3.5 shrink-0 text-warn" />
           )}
           <span className="truncate font-medium">{folderLabel}</span>
         </button>
@@ -2359,17 +2399,17 @@ export function CodeEditor({
               if (!isExpanded && !page) onLoadDirectory?.(path);
             }}
             aria-expanded={isExpanded}
-            className="flex flex-1 min-w-0 items-center gap-1.5 py-1 text-left text-[11px] text-neutral-300 hover:bg-white/[0.03] cursor-pointer"
+            className="flex flex-1 min-w-0 items-center gap-1.5 py-1 text-left text-[11px] text-ink-3 hover:bg-overlay cursor-pointer"
             style={{
               paddingLeft: `${8 + depth * 14}px`,
               contentVisibility: 'auto',
               containIntrinsicSize: '24px'
             }}
           >
-            <ChevronRight className={`w-3 h-3 shrink-0 text-neutral-600 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
-            {isExpanded ? <FolderOpen className="w-3.5 h-3.5 shrink-0 text-amber-300" /> : <Folder className="w-3.5 h-3.5 shrink-0 text-amber-300" />}
+            <ChevronRight className={`w-3 h-3 shrink-0 text-ink-5 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+            {isExpanded ? <FolderOpen className="w-3.5 h-3.5 shrink-0 text-warn" /> : <Folder className="w-3.5 h-3.5 shrink-0 text-warn" />}
             <span className="truncate font-medium">{folderLabel}</span>
-            {isLoading && <Loader2 className="ml-auto w-3 h-3 animate-spin text-neutral-500" />}
+            {isLoading && <Loader2 className="ml-auto w-3 h-3 animate-spin text-ink-4" />}
           </button>
           {canWriteToDisk && onDeleteEntry && path !== '' && (
             <button
@@ -2379,7 +2419,7 @@ export function CodeEditor({
                 void handleDeleteEntry(path, folderLabel, 'folder');
               }}
               title="Delete folder from disk"
-              className="opacity-0 group-hover:opacity-100 shrink-0 p-0.5 text-neutral-600 hover:text-red-400 transition-opacity cursor-pointer"
+              className="opacity-0 group-hover:opacity-100 shrink-0 p-0.5 text-ink-5 hover:text-danger transition-opacity cursor-pointer"
             >
               <Trash2 className="w-3 h-3" />
             </button>
@@ -2399,16 +2439,16 @@ export function CodeEditor({
                 type="button"
                 onClick={() => index >= 0 ? onSelectFile(index) : onOpenPath?.(entry.path)}
                 title={entry.path}
-                className={`flex flex-1 min-w-0 items-center gap-1.5 rounded-md py-1 text-left transition-colors cursor-pointer ${isActive ? 'bg-violet-500/[.12] text-white' : 'text-neutral-400 hover:bg-white/[0.04]'}`}
+                className={`flex flex-1 min-w-0 items-center gap-1.5 rounded-md py-1 text-left transition-colors cursor-pointer ${isActive ? 'bg-accent-soft text-ink' : 'text-ink-3 hover:bg-overlay'}`}
                 style={{
                   paddingLeft: `${22 + depth * 14}px`,
                   contentVisibility: 'auto',
                   containIntrinsicSize: '24px'
                 }}
               >
-                <FileCode2 className={`w-3 h-3 shrink-0 ${isActive ? 'text-violet-300' : 'text-neutral-500'}`} />
+                <FileCode2 className={`w-3 h-3 shrink-0 ${isActive ? 'text-accent' : 'text-ink-4'}`} />
                 <span className="font-mono text-[11px] truncate">{entry.name}</span>
-                {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />}
+                {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-warn shrink-0" />}
               </button>
               {isMarkdown && (
                 <button
@@ -2421,7 +2461,7 @@ export function CodeEditor({
                   }}
                   title={`Preview ${entry.path}`}
                   aria-label={`Preview ${entry.path}`}
-                  className="rounded p-0.5 text-neutral-500 opacity-0 transition-opacity hover:text-violet-200 group-hover:opacity-100 focus:opacity-100 cursor-pointer"
+                  className="rounded p-0.5 text-ink-4 opacity-0 transition-opacity hover:text-accent group-hover:opacity-100 focus:opacity-100 cursor-pointer"
                 >
                   <Eye className="h-3 w-3" />
                 </button>
@@ -2434,7 +2474,7 @@ export function CodeEditor({
                     void handleDeleteEntry(entry.path, entry.name, 'file');
                   }}
                   title="Delete file from disk"
-                  className="opacity-0 group-hover:opacity-100 shrink-0 p-0.5 text-neutral-600 hover:text-red-400 transition-opacity cursor-pointer"
+                  className="opacity-0 group-hover:opacity-100 shrink-0 p-0.5 text-ink-5 hover:text-danger transition-opacity cursor-pointer"
                 >
                   <Trash2 className="w-3 h-3" />
                 </button>
@@ -2443,7 +2483,7 @@ export function CodeEditor({
           );
         })}
         {isExpanded && page?.nextCursor !== null && page?.nextCursor !== undefined && (
-          <button type="button" onClick={() => onLoadDirectory?.(path, page.nextCursor ?? undefined)} className="pl-8 py-1 text-[10px] text-neutral-500 hover:text-white">
+          <button type="button" onClick={() => onLoadDirectory?.(path, page.nextCursor ?? undefined)} className="pl-8 py-1 text-[10px] text-ink-4 hover:text-ink">
             Load more…
           </button>
         )}

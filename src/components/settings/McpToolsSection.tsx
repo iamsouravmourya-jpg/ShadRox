@@ -149,7 +149,7 @@ export function McpToolsSection(_props: McpToolsSectionProps) {
             </button>
           </div>
         </div>
-        <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">
+        <p className="mt-1 text-[11px] leading-relaxed text-ink-4">
           Connect Model Context Protocol servers, list their tools, and call them. Every call goes through the
           desktop main process, which asks for your approval before it runs.
         </p>
@@ -168,12 +168,12 @@ export function McpToolsSection(_props: McpToolsSectionProps) {
       )}
 
       {loading ? (
-        <div className="flex items-center gap-2 text-[11px] text-neutral-500">
+        <div className="flex items-center gap-2 text-[11px] text-ink-4">
           <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading servers...
         </div>
       ) : servers.length === 0 && !editing ? (
         <EmptyState title="No MCP servers yet">
-          Add a stdio command such as <code className="font-mono text-violet-300">npx</code> or an http endpoint.
+          Add a stdio command such as <code className="font-mono text-accent">npx</code> or an http endpoint.
           The list is stored by the desktop app.
         </EmptyState>
       ) : (
@@ -184,8 +184,8 @@ export function McpToolsSection(_props: McpToolsSectionProps) {
               <Card key={server.id} className={`space-y-2 ${server.enabled ? '' : 'opacity-60'}`}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="truncate text-xs font-medium text-neutral-100">{server.name}</div>
-                    <div className="truncate font-mono text-[10px] text-neutral-500">
+                    <div className="truncate text-xs font-medium text-ink">{server.name}</div>
+                    <div className="truncate font-mono text-[10px] text-ink-4">
                       {server.transport === 'stdio'
                         ? `stdio · ${server.command ?? ''}`
                         : `http · ${server.url ?? ''}`}
@@ -233,7 +233,7 @@ export function McpToolsSection(_props: McpToolsSectionProps) {
                 {tools && (
                   <div className="space-y-2">
                     {tools.length === 0 ? (
-                      <p className="text-[11px] text-neutral-500">This server reported no tools.</p>
+                      <p className="text-[11px] text-ink-4">This server reported no tools.</p>
                     ) : (
                       <ul className="space-y-1">
                         {tools.map((tool) => (
@@ -245,12 +245,12 @@ export function McpToolsSection(_props: McpToolsSectionProps) {
                                 setSelectedTool(tool.name);
                                 setConnectErrors((previous) => ({ ...previous, [server.id]: '' }));
                               }}
-                              className="font-mono text-[11px] text-violet-300/80 transition-colors hover:text-violet-200"
+                              className="font-mono text-[11px] text-accent/80 transition-colors hover:text-accent"
                             >
                               {tool.name}
                             </button>
                             {tool.description && (
-                              <span className="ml-2 text-[10px] text-neutral-500">{tool.description}</span>
+                              <span className="ml-2 text-[10px] text-ink-4">{tool.description}</span>
                             )}
                           </li>
                         ))}

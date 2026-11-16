@@ -102,15 +102,15 @@ export function AgentSection() {
   }
 
   return (
-    <section id="agent" className="border-t border-[var(--line)] bg-[var(--bg)] px-5 py-20 lg:px-8 lg:py-28">
-      <div className="mx-auto max-w-[1180px]">
+    <section id="agent" className="border-t border-[var(--line)] bg-[var(--bg)] py-20 lg:py-28">
+      <div className="container-page">
         <Reveal>
-          <p className="mb-3 text-center text-[11px] font-bold uppercase tracking-[0.2em] text-[var(--ac)]">
+          <p className="eyebrow mb-3 text-center">
             The agent
           </p>
         </Reveal>
         <Reveal delay={80}>
-          <h2 className="mx-auto mb-4 max-w-[820px] text-center text-[clamp(30px,4.5vw,52px)] font-bold tracking-[-0.04em] leading-[1.08] text-[var(--ink)]">
+          <h2 className="mx-auto mb-4 max-w-[820px] text-center text-[clamp(1.875rem,3.8vw,3.25rem)] font-bold leading-[1.08] tracking-[-0.04em] text-[var(--ink)]">
             An AI that <em className="font-normal italic text-[var(--ac)]">shows its work.</em>
           </h2>
         </Reveal>
@@ -124,12 +124,13 @@ export function AgentSection() {
           <div
             role="tablist"
             aria-label="Agent capabilities"
-            className="mx-auto mb-10 flex w-fit max-w-full flex-wrap justify-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--card)] p-1.5"
+            className="mx-auto mb-8 grid w-full max-w-xl grid-cols-2 gap-1 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-1.5 sm:flex sm:w-fit sm:max-w-full sm:flex-wrap sm:justify-center sm:rounded-full"
           >
             {panels.map((p, i) => (
               <button
                 key={p.tab}
                 ref={(el) => { tabRefs.current[i] = el }}
+                type="button"
                 role="tab"
                 id={`agent-tab-${i}`}
                 aria-selected={active === i}
@@ -138,9 +139,9 @@ export function AgentSection() {
                 onClick={() => setActive(i)}
                 onKeyDown={(e) => onKeyDown(e, i)}
                 className={cn(
-                  'rounded-full px-4 py-2 text-[13px] font-semibold transition-all duration-300',
+                  'min-h-9 rounded-full px-4 py-2 text-[12.5px] font-semibold transition-colors duration-300',
                   active === i
-                    ? 'bg-[linear-gradient(110deg,var(--ac),var(--pink))] text-white shadow-[0_6px_18px_var(--glow)]'
+                    ? 'bg-[linear-gradient(108deg,var(--cta-1),var(--cta-2))] text-white shadow-[0_6px_18px_-6px_var(--glow)]'
                     : 'text-[var(--mut)] hover:bg-[var(--bg2)] hover:text-[var(--ink)]',
                 )}
               >
@@ -155,18 +156,19 @@ export function AgentSection() {
           role="tabpanel"
           id={`agent-panel-${active}`}
           aria-labelledby={`agent-tab-${active}`}
-          className="grid gap-10 rounded-3xl border border-[var(--line)] bg-[var(--card)] p-7 sm:p-10 lg:grid-cols-2 lg:gap-14"
+          tabIndex={0}
+          className="grid gap-10 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-9 lg:grid-cols-2 lg:gap-14 lg:p-10"
           style={{ animation: 'slide-down .45s cubic-bezier(.22,1,.36,1)' }}
         >
           <div>
-            <h3 className="mb-4 text-[clamp(24px,3vw,34px)] font-bold tracking-[-0.03em] leading-[1.15] text-[var(--ink)]">
+            <h3 className="mb-4 text-[clamp(1.5rem,2.6vw,2.125rem)] font-bold leading-[1.15] tracking-[-0.03em] text-[var(--ink)]">
               {panel.title}{' '}
               <em className="font-normal italic text-[var(--ac)]">{panel.accent}</em>
             </h3>
             <p className="mb-6 text-sm leading-7 text-[var(--mut)]">{panel.text}</p>
             <ul className="space-y-3">
               {panel.bullets.map((b) => (
-                <li key={b} className="flex gap-3 text-sm leading-6 text-[var(--ink2)]">
+                <li key={b} className="flex gap-3 text-[13.5px] leading-6 text-[var(--ink2)]">
                   <span className="mt-[9px] size-1.5 shrink-0 rounded-full bg-[var(--ac)]" aria-hidden />
                   {b}
                 </li>
@@ -178,10 +180,10 @@ export function AgentSection() {
             {panel.steps.map(({ mark, title, sub }, i) => (
               <div
                 key={title}
-                className="flex items-center gap-4 rounded-2xl border border-[var(--line)] bg-[var(--bg2)] px-5 py-4 transition-all duration-300 hover:translate-x-1.5 hover:border-[var(--ac)]"
+                className="flex items-center gap-4 rounded-xl border border-[var(--line)] bg-[var(--bg2)] px-4 py-3.5 transition-colors duration-300 hover:border-[var(--ac)] sm:px-5 sm:py-4"
                 style={{ animation: `slide-down .5s cubic-bezier(.22,1,.36,1) ${i * 90}ms backwards` }}
               >
-                <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[linear-gradient(135deg,var(--ac),var(--pink))] font-mono text-[11px] font-bold text-white">
+                <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[linear-gradient(135deg,var(--cta-1),var(--cta-2))] font-mono text-[11px] font-bold text-white">
                   {mark}
                 </span>
                 <div>

@@ -90,11 +90,11 @@ function portFromUrl(url: string | null): number | null {
 }
 
 const START_BUTTON_CLASS =
-  'inline-flex items-center gap-1 rounded-lg border border-violet-300/30 bg-violet-500/10 px-2 py-1 text-[11px] font-mono text-violet-200 transition-colors hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer';
+  'inline-flex items-center gap-1 rounded-lg border border-accent-line bg-accent-soft px-2 py-1 text-[11px] font-mono text-accent transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer';
 const ICON_BUTTON_CLASS =
-  'rounded-lg border border-white/[0.09] p-1.5 text-neutral-500 transition-colors hover:border-white/[0.15] hover:text-white disabled:opacity-40 cursor-pointer';
+  'rounded-lg border border-line p-1.5 text-ink-4 transition-colors hover:border-line-2 hover:text-ink disabled:opacity-40 cursor-pointer';
 const STOP_BUTTON_CLASS =
-  'inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-500/[.08] px-2 py-1 text-[11px] font-mono text-red-300 transition-colors hover:bg-red-500/[.14] cursor-pointer';
+  'inline-flex items-center gap-1 rounded-lg border border-danger/30 bg-danger/[.08] px-2 py-1 text-[11px] font-mono text-danger transition-colors hover:bg-danger/[.14] cursor-pointer';
 
 export function BackendPreview({ workspaceId, onRevealSource, onAvailabilityChange }: BackendPreviewProps) {
   const [plan, setPlan] = useState<RuntimePreviewPlan | null>(null);
@@ -292,15 +292,15 @@ export function BackendPreview({ workspaceId, onRevealSource, onAvailabilityChan
         aria-label="Backend runtime status"
       >
         {isDetecting ? (
-          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-violet-300" aria-hidden="true" />
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" aria-hidden="true" />
         ) : isFailure ? (
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-red-400" aria-hidden="true" />
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-danger" aria-hidden="true" />
         ) : (
-          <ServerOff className="h-3.5 w-3.5 shrink-0 text-neutral-600" aria-hidden="true" />
+          <ServerOff className="h-3.5 w-3.5 shrink-0 text-ink-5" aria-hidden="true" />
         )}
-        <span className={`truncate ${isFailure ? 'text-red-300' : 'text-neutral-500'}`}>{label}</span>
+        <span className={`truncate ${isFailure ? 'text-danger' : 'text-ink-4'}`}>{label}</span>
         {!isFailure && detectionErrors.length > 0 && (
-          <span className="truncate text-neutral-600" title={detectionErrors[0]}>
+          <span className="truncate text-ink-5" title={detectionErrors[0]}>
             · {detectionErrors[0]}
           </span>
         )}
@@ -314,22 +314,22 @@ export function BackendPreview({ workspaceId, onRevealSource, onAvailabilityChan
   const isStarting = phase === 'starting';
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col bg-ink-950">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-white/[0.06] bg-ink-950/60 px-3">
-        <Server className="h-3.5 w-3.5 shrink-0 text-violet-300" aria-hidden="true" />
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">Backend</span>
-        <span className="shrink-0 truncate rounded border border-violet-300/25 bg-violet-500/10 px-1.5 py-0.5 font-mono text-[10px] text-violet-300">
+    <div className="flex h-full min-h-0 w-full flex-col bg-base">
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line bg-base/60 px-3">
+        <Server className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-4">Backend</span>
+        <span className="shrink-0 truncate rounded border border-accent-line bg-accent-soft px-1.5 py-0.5 font-mono text-[10px] text-accent">
           {plan.adapter}
         </span>
-        <span className="hidden font-mono text-[10px] text-neutral-500 sm:inline">:{displayPort}</span>
+        <span className="hidden font-mono text-[10px] text-ink-4 sm:inline">:{displayPort}</span>
         {phase === 'ready' && (
-          <span className="flex shrink-0 items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/[.08] px-2 py-0.5 font-mono text-[10px] text-emerald-300">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          <span className="flex shrink-0 items-center gap-1 rounded-full border border-ok/30 bg-ok/[.08] px-2 py-0.5 font-mono text-[10px] text-ok">
+            <span className="h-1.5 w-1.5 rounded-full bg-ok animate-pulse" />
             Running
           </span>
         )}
         {isStarting && (
-          <span className="flex shrink-0 items-center gap-1 rounded-full border border-violet-300/25 bg-violet-500/10 px-2 py-0.5 font-mono text-[10px] text-violet-200">
+          <span className="flex shrink-0 items-center gap-1 rounded-full border border-accent-line bg-accent-soft px-2 py-0.5 font-mono text-[10px] text-accent">
             <Loader2 className="h-2.5 w-2.5 animate-spin" />
             Starting
           </span>
@@ -343,12 +343,12 @@ export function BackendPreview({ workspaceId, onRevealSource, onAvailabilityChan
             title="Toggle backend logs"
             className={`flex items-center gap-1 rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors cursor-pointer ${
               isLogsOpen
-                ? 'border-violet-300/30 bg-violet-500/10 text-violet-200'
-                : 'border-white/[0.09] text-neutral-400 hover:border-white/[0.15] hover:text-white'
+                ? 'border-accent-line bg-accent-soft text-accent'
+                : 'border-line text-ink-3 hover:border-line-2 hover:text-ink'
             }`}
           >
             <Terminal className="h-3.5 w-3.5" />
-            {logs.length > 0 && <span className="text-[10px] text-neutral-400">({logs.length})</span>}
+            {logs.length > 0 && <span className="text-[10px] text-ink-3">({logs.length})</span>}
           </button>
           <button
             type="button"
@@ -387,26 +387,26 @@ export function BackendPreview({ workspaceId, onRevealSource, onAvailabilityChan
         </div>
       </div>
 
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/[0.06] px-3 font-mono text-[10px]">
-        <span className="shrink-0 truncate text-neutral-400" title={plan.entry}>{plan.entry}</span>
-        <span className="hidden min-w-0 truncate text-neutral-600 md:inline" title={`${commandLabel} (${plan.cwd})`}>
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-3 font-mono text-[10px]">
+        <span className="shrink-0 truncate text-ink-3" title={plan.entry}>{plan.entry}</span>
+        <span className="hidden min-w-0 truncate text-ink-5 md:inline" title={`${commandLabel} (${plan.cwd})`}>
           {commandLabel}
         </span>
         {effectiveUrl && (
-          <span className="ml-auto min-w-0 truncate text-neutral-300" title={effectiveUrl}>
+          <span className="ml-auto min-w-0 truncate text-ink-3" title={effectiveUrl}>
             {effectiveUrl}
           </span>
         )}
       </div>
 
       {error && (
-        <div className="flex shrink-0 items-start gap-2 border-b border-red-500/25 bg-red-500/[.08] px-3 py-1.5">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" aria-hidden="true" />
-          <code className="flex-1 break-all font-mono text-[11px] text-red-300">{error}</code>
+        <div className="flex shrink-0 items-start gap-2 border-b border-danger/30 bg-danger/[.08] px-3 py-1.5">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-danger" aria-hidden="true" />
+          <code className="flex-1 break-all font-mono text-[11px] text-danger">{error}</code>
         </div>
       )}
 
-      <div className="relative flex min-h-0 flex-1 flex-col bg-ink-950">
+      <div className="relative flex min-h-0 flex-1 flex-col bg-base">
         {effectiveUrl ? (
           <iframe
             key={`${effectiveUrl}:${reloadNonce}`}
@@ -414,25 +414,25 @@ export function BackendPreview({ workspaceId, onRevealSource, onAvailabilityChan
             title="ShadRox Backend Preview"
             src={effectiveUrl}
             sandbox={BACKEND_IFRAME_SANDBOX}
-            className="block h-full w-full border-0 bg-ink-950"
+            className="block h-full w-full border-0 bg-base"
           />
         ) : (
           <div className="max-w-sm flex-1 self-center px-6 py-6 text-center">
             {isStarting ? (
-              <Loader2 className="mx-auto h-5 w-5 animate-spin text-violet-300" aria-hidden="true" />
+              <Loader2 className="mx-auto h-5 w-5 animate-spin text-accent" aria-hidden="true" />
             ) : phase === 'error' ? (
-              <AlertTriangle className="mx-auto h-5 w-5 text-red-400" aria-hidden="true" />
+              <AlertTriangle className="mx-auto h-5 w-5 text-danger" aria-hidden="true" />
             ) : (
-              <Play className="mx-auto h-5 w-5 text-violet-300" aria-hidden="true" />
+              <Play className="mx-auto h-5 w-5 text-accent" aria-hidden="true" />
             )}
-            <p className="mt-2 text-xs font-medium text-neutral-200">
+            <p className="mt-2 text-xs font-medium text-ink-2">
               {isStarting
                 ? 'Starting backend preview...'
                 : phase === 'error'
                   ? 'Backend preview failed'
                   : `${plan.adapter} backend detected`}
             </p>
-            <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">
+            <p className="mt-1 text-[11px] leading-relaxed text-ink-4">
               {isStarting
                 ? `Launching ${plan.entry} on port ${plan.port}.`
                 : phase === 'error'
@@ -455,10 +455,10 @@ export function BackendPreview({ workspaceId, onRevealSource, onAvailabilityChan
       </div>
 
       {isLogsOpen && (
-        <div className="flex h-40 shrink-0 flex-col border-t border-white/[0.06] bg-ink-950 font-mono text-xs">
-          <div className="flex h-7 shrink-0 items-center justify-between border-b border-white/[0.06] px-3">
-            <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-neutral-500">
-              <Terminal className="h-3 w-3 text-neutral-400" aria-hidden="true" />
+        <div className="flex h-40 shrink-0 flex-col border-t border-line bg-base font-mono text-xs">
+          <div className="flex h-7 shrink-0 items-center justify-between border-b border-line px-3">
+            <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-ink-4">
+              <Terminal className="h-3 w-3 text-ink-3" aria-hidden="true" />
               Backend Logs ({logs.length})
             </span>
             <div className="flex items-center gap-2">
@@ -467,7 +467,7 @@ export function BackendPreview({ workspaceId, onRevealSource, onAvailabilityChan
                 onClick={() => setLogs([])}
                 aria-label="Clear backend logs"
                 title="Clear backend logs"
-                className="text-neutral-500 transition-colors hover:text-white cursor-pointer"
+                className="text-ink-4 transition-colors hover:text-ink cursor-pointer"
               >
                 <Trash2 className="h-3 w-3" />
               </button>
@@ -476,7 +476,7 @@ export function BackendPreview({ workspaceId, onRevealSource, onAvailabilityChan
                 onClick={() => setIsLogsOpen(false)}
                 aria-label="Close backend logs"
                 title="Close backend logs"
-                className="text-neutral-500 transition-colors hover:text-white cursor-pointer"
+                className="text-ink-4 transition-colors hover:text-ink cursor-pointer"
               >
                 <X className="h-3 w-3" />
               </button>
@@ -484,20 +484,20 @@ export function BackendPreview({ workspaceId, onRevealSource, onAvailabilityChan
           </div>
           <div ref={logScrollRef} className="flex-1 space-y-0.5 overflow-y-auto p-2">
             {logs.length === 0 ? (
-              <div className="px-2 py-1 text-[11px] italic text-neutral-600">No backend output yet.</div>
+              <div className="px-2 py-1 text-[11px] italic text-ink-5">No backend output yet.</div>
             ) : (
               logs.map((entry, index) => (
                 <div
                   key={`${entry.timestamp}:${index}`}
                   className={`flex items-start gap-2 px-2 py-0.5 text-[11px] ${
                     entry.type === 'stderr' || entry.type === 'error'
-                      ? 'bg-red-950/20 text-red-400'
+                      ? 'bg-danger/10 text-danger'
                       : entry.type === 'status' || entry.type === 'install'
-                        ? 'bg-amber-950/20 text-amber-400'
-                        : 'text-neutral-300 hover:bg-white/[0.04]'
+                        ? 'bg-warn/10 text-warn'
+                        : 'text-ink-3 hover:bg-overlay'
                   }`}
                 >
-                  <span className="shrink-0 text-[10px] text-neutral-600">{entry.timestamp}</span>
+                  <span className="shrink-0 text-[10px] text-ink-5">{entry.timestamp}</span>
                   <span className="break-all">{entry.message}</span>
                 </div>
               ))

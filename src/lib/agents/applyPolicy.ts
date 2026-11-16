@@ -11,9 +11,13 @@
  *   - `auto`   — only changes that cannot lose the user's work: a brand-new file,
  *     or an edit to a file the turn actually opened and did not gut.
  *
- * Deletions and overwrites of files the turn never read always require review,
- * under every policy. The check is deliberately syntactic (line counts, not
- * meaning): it is a floor under the damage, not a substitute for reading the diff.
+ * Deletions and overwrites of files the turn never read always require review
+ * in chat. The one exception is a checkpoint-backed caller (an autonomous run
+ * or team task): it snapshots the workspace before the turn and can roll the
+ * whole run back, so under `auto` its edits land instead of stalling the run's
+ * own disk verification in review. The check is deliberately syntactic (line
+ * counts, not meaning): it is a floor under the damage, not a substitute for
+ * reading the diff.
  */
 
 import type { ApplyPolicyKind } from '../autonomy/types';
@@ -25,6 +29,19 @@ export interface PolicyPatch {
   kind: 'rewrite' | 'searchReplace';
   content?: string;
   blocks?: Array<{ original: string; updated: string }>;
+}
+
+/**
+ * Caller context the syntactic rules cannot see. `checkpointBacked` means the
+ * caller took a restorable checkpoint before this turn — autonomous runs and
+ * team tasks do, per turn and per run. Under `auto`, that checkpoint is what
+ * protects the user's work, so the read-before-write floor relaxes: a run that
+ * stalls every unread-file edit in review can never pass its own disk checks,
+ * which is exactly the failure this option exists to end. `review` is never
+ * relaxed — an explicit review choice always wins.
+ */
+export interface ApplyOptions {
+  checkpointBacked?: boolean;
 }
 
 /** What the workspace says about the target, as of this turn. */
@@ -116,11 +133,13 @@ function isEmptyingSearchReplace(patch: PolicyPatch): boolean {
 export function decideApply<T extends PolicyPatch>(
   policy: ApplyPolicyKind,
   patch: T,
-  state: PolicyFileState
+  state: PolicyFileState,
+  options: ApplyOptions = {}
 ): ApplyDecision<T> {
   const path = normalizePolicyPath(patch.path);
   const isCreate = !state.exists;
   const overwrites = state.content !== undefined ? state.content : '';
+  const checkpointed = options.checkpointBacked === true;
 
   if (policy === 'review') {
     return { patch, action: 'require-review', reason: `${path}: the run sends every change to review` };
@@ -132,6 +151,9 @@ export function decideApply<T extends PolicyPatch>(
   }
 
   if (!state.read) {
+    if (checkpointed) {
+      return { patch, action: 'auto-apply', reason: `${path}: edit under the turn's restorable checkpoint` };
+    }
     return {
       patch,
       action: 'require-review',
@@ -140,6 +162,9 @@ export function decideApply<T extends PolicyPatch>(
   }
 
   if (isEmptyingSearchReplace(patch)) {
+    if (checkpointed) {
+      return { patch, action: 'auto-apply', reason: `${path}: block removal under the turn's restorable checkpoint` };
+    }
     return {
       patch,
       action: 'require-review',
@@ -148,6 +173,9 @@ export function decideApply<T extends PolicyPatch>(
   }
 
   if (patch.kind === 'rewrite' && isDestructiveRewrite(patch.content ?? '', overwrites)) {
+    if (checkpointed) {
+      return { patch, action: 'auto-apply', reason: `${path}: rewrite under the turn's restorable checkpoint` };
+    }
     return {
       patch,
       action: 'require-review',
@@ -166,12 +194,13 @@ export function decideApply<T extends PolicyPatch>(
 export function partitionPatches<T extends PolicyPatch>(
   policy: ApplyPolicyKind,
   patches: T[],
-  stateFor: (patch: T) => PolicyFileState
+  stateFor: (patch: T) => PolicyFileState,
+  options: ApplyOptions = {}
 ): ApplyPartition<T> {
   const auto: T[] = [];
   const review: Array<ApplyDecision<T>> = [];
   for (const patch of patches) {
-    const decision = decideApply(policy, patch, stateFor(patch));
+    const decision = decideApply(policy, patch, stateFor(patch), options);
     if (decision.action === 'auto-apply') auto.push(patch);
     else review.push(decision);
   }
