@@ -138,3 +138,8 @@ The suite refuses a hollow pass: each case must fail its baseline and assert at 
 ## Limits to keep in mind
 
 The loop is an early implementation and can make mistakes. Reads and inspections are unguarded; edits go through the verified pipeline; commands follow the tier table. Agent loops, autonomous runs, teams, plugins, and automations are evolving — verify important work yourself and keep backups or Git.
+
+## Keep reading
+
+- [Features](./features.md) · [BYOK & keys](./byok.md) · [Agent tools](./agent-tools.md) · [Troubleshooting](./troubleshooting.md) · [FAQ](./faq.md)
+- [README](../README.md) · [Website](https://www.shadrox.cyou) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Contributors](https://www.shadrox.cyou/contributors)

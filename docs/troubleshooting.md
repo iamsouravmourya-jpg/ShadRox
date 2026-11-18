@@ -78,3 +78,8 @@ The app checks for a newer release 15 seconds after start and every 6 hours, and
 - In the browser dev build your provider key sits in `localStorage` in plain text — see [byok.md](./byok.md#where-keys-are-stored).
 
 Still stuck? Open an issue at <https://github.com/iamsouravmourya-jpg/ShadRox/issues>. For suspected vulnerabilities, use private reporting per [SECURITY.md](../SECURITY.md) — never a public issue.
+
+## Keep reading
+
+- [Features](./features.md) · [BYOK & keys](./byok.md) · [Agent tools](./agent-tools.md) · [Troubleshooting](./troubleshooting.md) · [FAQ](./faq.md)
+- [README](../README.md) · [Website](https://www.shadrox.cyou) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Contributors](https://www.shadrox.cyou/contributors)

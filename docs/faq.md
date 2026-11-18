@@ -57,3 +57,8 @@ ShadRox is a solo project built by Sourav Maurya, a 19-year-old full-stack devel
 ## Where does feedback go?
 
 The Feedback button in the app sends only the message you type — tagged as Bug or Feature request — plus a server-side date, into the maker's private Google Sheet (columns: date, bug, feature). Nothing else is attached: no email, account details, app version, platform, code, file names, or diagnostics, and no ShadRox server sits in this path. Setup and limits: [byok.md](./byok.md#feedback).
+
+## Keep reading
+
+- [Features](./features.md) · [BYOK & keys](./byok.md) · [Agent tools](./agent-tools.md) · [Troubleshooting](./troubleshooting.md) · [FAQ](./faq.md)
+- [README](../README.md) · [Website](https://www.shadrox.cyou) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Contributors](https://www.shadrox.cyou/contributors)

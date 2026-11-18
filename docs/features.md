@@ -176,3 +176,8 @@ Tests include integration runs that drive the real tool loop and patch pipeline 
 3. Development (`npm run dev`, `npm run dev:desktop`) skips all of this and stays readable.
 
 Obfuscation and bytecode raise the cost of static inspection but cannot make a distributed app impossible to reverse-engineer; keep signing keys, provider secrets, and other confidential material out of the client.
+
+## Keep reading
+
+- [Features](./features.md) · [BYOK & keys](./byok.md) · [Agent tools](./agent-tools.md) · [Troubleshooting](./troubleshooting.md) · [FAQ](./faq.md)
+- [README](../README.md) · [Website](https://www.shadrox.cyou) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Contributors](https://www.shadrox.cyou/contributors)
