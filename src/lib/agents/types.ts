@@ -68,7 +68,6 @@ export interface TeamTask {
   patchesApplied: number;
   /** Paths the engine refused, with the reason already in the string. */
   patchFailures: string[];
-  creditsSpent: number;
   /** Files this task actually changed. Reaches later tasks through the shared context. */
   touchedFiles?: string[];
   /** Files the apply policy held back for the user rather than writing. */
@@ -95,8 +94,6 @@ export interface TeamMessage {
 }
 
 export interface TeamBudget {
-  /** Hard ceiling for one team run, in the same spend units the run budget counts. */
-  maxCredits: number;
   /** Members the coordinator may create before the plan is rejected. */
   maxTasks: number;
   maxAttemptsPerTask: number;
@@ -110,19 +107,25 @@ export interface TeamBudget {
 
 /**
  * A team is several agents, so it is allowed more room than a single run — but
- * still a small, fixed amount: four tasks of a couple of attempts each is the
- * shape this number was chosen for, not an open tab.
+ * still a small, fixed amount: six tasks of a couple of attempts each is the
+ * shape this number was chosen for, not an open tab. The tool-call ceiling is
+ * the same four-full-turns headroom as a single run (60 rounds x 16 calls = 960
+ * per tool-heavy turn, x4 = 3840); team turns are usually lighter, so this is a
+ * runaway guard, not a target. It is a work ceiling, never a spend limit.
  */
 export const DEFAULT_TEAM_BUDGET: TeamBudget = {
-  maxCredits: 24,
   maxTasks: 6,
   maxAttemptsPerTask: 2,
   maxTurns: 18,
-  maxToolCalls: 90,
+  maxToolCalls: 3840,
   maxWallClockMs: 20 * 60 * 1000
 };
 
-export type TeamStatus = 'planning' | 'running' | 'done' | 'failed' | 'paused' | 'cancelled' | 'stopped-budget';
+/**
+ * `stopped` means a work ceiling (turns, tool calls, wall clock) ended the team
+ * with tasks still pending — not a failure of the work, and not the user's Stop.
+ */
+export type TeamStatus = 'planning' | 'running' | 'done' | 'failed' | 'paused' | 'cancelled' | 'stopped';
 
 /** ─── The closing integration turn ─────────────────────────────────────────
  *
@@ -168,7 +171,7 @@ export interface TeamMergeReport {
   /** The role that carried the closing turn. */
   role: AgentRole;
   verdict: MergeVerdict;
-  /** False when the turn was skipped (cancel, or no credits left) but judged anyway. */
+  /** False when the turn was skipped (the user stopped the team) but judged anyway. */
   ran: boolean;
   /** Union of every file the team changed, in first-write order. */
   files: string[];
@@ -184,7 +187,6 @@ export interface TeamMergeReport {
   notes: string[];
   /** The closing turn's own reply, trimmed for the view. */
   reply: string;
-  creditsSpent: number;
   at: number;
 }
 
@@ -194,7 +196,6 @@ export interface TeamState {
   status: TeamStatus;
   tasks: TeamTask[];
   messages: TeamMessage[];
-  creditsSpent: number;
   startedAt: number;
   /** Shown verbatim in the panel; the reason a team is not working. */
   error?: string;
@@ -235,7 +236,6 @@ export type TeamEvent =
   /** Changes the apply policy refused to write without the user: they await review. */
   | { type: 'task:review'; id: string; paths: string[] }
   | { type: 'message'; message: TeamMessage }
-  | { type: 'credit'; spent: number; total: number }
   | { type: 'team:log'; text: string }
   /** The closing integration turn's structured merge report, before `team:done`. */
   | { type: 'team:integration'; report: TeamMergeReport }

@@ -19,10 +19,8 @@ function envelope(overrides: Partial<Parameters<typeof createRequestEnvelope>[0]
     targets: ['src/parser.ts'],
     permissionMode: 'ask',
     refineMode: 'code',
-    payer: 'shared',
     provider: 'gateway',
     model: 'glm-4.7-flash',
-    budgetCredits: 12,
     ...overrides
   });
 }
@@ -32,13 +30,6 @@ describe('retryCheck (S17)', () => {
     const check = retryCheck(envelope(), envelope());
     assert.equal(check.ok, true);
     assert.deepEqual(check.drift, []);
-  });
-
-  it('a retry that would switch the paying key is reported, not applied (S17)', () => {
-    const check = retryCheck(envelope(), envelope({ payer: 'byok' }));
-    assert.equal(check.ok, false);
-    assert.ok(check.drift.includes('payer'));
-    assert.match(check.reason, /paying key/);
   });
 
   it('a retry after the workspace or mode changed is reported (S17)', () => {

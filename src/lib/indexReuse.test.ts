@@ -99,7 +99,6 @@ describe('admitRemoteIndex (S19)', () => {
   it('fails closed when remote indexing is not approved (S19)', () => {
     const decision = admitRemoteIndex({
       approved: false,
-      payer: 'shared',
       files: ['src/a.ts'],
       estimatedRupees: 0.5
     });
@@ -111,7 +110,6 @@ describe('admitRemoteIndex (S19)', () => {
   it('fails closed on an empty scope or an unpriced request (S19)', () => {
     const empty = admitRemoteIndex({
       approved: true,
-      payer: 'shared',
       files: [],
       estimatedRupees: 0.5
     });
@@ -119,7 +117,6 @@ describe('admitRemoteIndex (S19)', () => {
 
     const unpriced = admitRemoteIndex({
       approved: true,
-      payer: 'shared',
       files: ['src/a.ts'],
       estimatedRupees: 0
     });
@@ -127,27 +124,15 @@ describe('admitRemoteIndex (S19)', () => {
     assert.match(unpriced.reason, /unpriced/i);
   });
 
-  it('admits an approved scope and reserves its cost against the shared budget (S19)', () => {
+  it('admits an approved scope on the user’s own key and charges nothing (S19)', () => {
     const decision = admitRemoteIndex({
       approved: true,
-      payer: 'shared',
       files: ['src/a.ts', 'src/b.ts'],
       estimatedRupees: 0.7
     });
     assert.equal(decision.admitted, true);
     assert.deepEqual(decision.scope, ['src/a.ts', 'src/b.ts']);
     assert.equal(decision.estimatedRupees, 0.7);
-    assert.match(decision.reason, /reserved/);
-  });
-
-  it('admits on the user’s own key without charging anything (S19)', () => {
-    const decision = admitRemoteIndex({
-      approved: true,
-      payer: 'byok',
-      files: ['src/a.ts'],
-      estimatedRupees: 0.4
-    });
-    assert.equal(decision.admitted, true);
     assert.match(decision.reason, /charges nothing/);
   });
 });

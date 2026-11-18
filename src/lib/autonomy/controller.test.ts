@@ -5,7 +5,7 @@ import { createRunController, type RunExecutorHelpers } from './controller';
 import type { RunState } from './types';
 
 function state(status: RunState['status'] = 'done'): RunState {
-  return { id: 'run-1', goal: 'g', status, milestones: [], creditsSpent: 0, startedAt: 1 };
+  return { id: 'run-1', goal: 'g', status, milestones: [], startedAt: 1 };
 }
 
 test('start runs the executor, exposes the final state, persists it and notifies', async () => {

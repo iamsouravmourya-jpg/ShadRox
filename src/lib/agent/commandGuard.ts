@@ -2,28 +2,35 @@
  * Ported from Cline (https://github.com/cline/cline), Apache-2.0 licensed.
  * Source: sdk/packages/core/src/extensions/tools/command-guard.ts
  *
- * Command blacklist for agent-requested shell runs.
+ * Lightweight renderer-side notice for agent-requested shell runs. This is
+ * NOT the execution gate: the main process parses every command with the
+ * shared risk classifier (electron/command-risk.cjs) and decides the tier —
+ * READ/BUILD_TEST/INSTALL run automatically, MUTATE/NETWORK open a native
+ * approval dialog, DANGEROUS always asks. This module only produces the
+ * human-readable heads-up ("what about this command can modify files") that
+ * travels with the request as display text. It deliberately stays a small
+ * self-contained blacklist so the renderer bundle never imports main-process
+ * code, and so a notice can inform a decision but never replace one.
  *
  * The autonomous engine and the agent team ask the app to run proof commands
  * (`autonomyHost.runCommand` in App.tsx). Models — especially weaker ones —
- * use that channel to touch files the turn should never touch. ShadRox shows
- * an explicit extra-approval dialog before running any command that matches
- * this blacklist, and the detected reason travels with the request — that text
- * comes from `commandApprovalNotice`, which every caller of
+ * use that channel to touch files the turn should never touch. The detected
+ * reason comes from `commandApprovalNotice`, which every caller of
  * `desktop.runCommand` hands to the main process.
  *
  * This is a simple blacklist, not a shell interpreter. Commands are lightly
- * preprocessed (quoted text, heredoc bodies, escapes, and comments are masked
- * so they cannot false-positive), split on shell separators, and the leading
+ * preprocessed (quoted text and heredoc bodies are masked so they cannot
+ * false-positive; backslashes and `#` are NOT escapes/comments because
+ * cmd.exe treats them literally), split on shell separators, and the leading
  * command word of each part is compared against the lists below; output
- * redirection to files is also rejected. It will not catch every possible
+ * redirection to files is also flagged. It will not catch every possible
  * mutation (e.g. `python -c "open(..., 'w')"` or commands hidden inside a
- * quoted `bash -c` string) — it exists to stop the common ways models edit
- * files from the shell, and entries are easy to add.
+ * quoted `bash -c` string) — the main-process tier gate fails closed on
+ * anything it cannot parse, and entries here are easy to add.
  *
  * The port keeps Cline's lists and checks intact so upstream updates can be
- * diffed by eye; only the plan-mode wording of the formatter was adapted to
- * ShadRox's approval flow.
+ * diffed by eye; only the formatter wording was adapted to ShadRox's
+ * risk-tiered approval flow.
  */
 
 /** Commands that create, modify, or delete files. */
@@ -224,29 +231,19 @@ const RESERVED_WORDS = new Set([
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 
 /**
- * Redirect targets that never persist data to a file. Temp locations are
- * also allowed: the run-commands guidance tells models to capture
- * long-running output in a tmp file, and that never touches the workspace.
- * `..` segments are rejected so a temp prefix cannot smuggle a path back
- * into the workspace (`/tmp/../home/user/project/x`).
+ * Redirect targets that never persist data to a file: /dev sinks, Windows
+ * NUL, and fd-duplication numbers (`2>&1`, `>&2`). Everything else flags —
+ * including /tmp capture and unresolvable expansions ($TMPDIR, %TEMP%):
+ * owner decisions 2026-11-18 treat any write outside the workspace root as
+ * something the tier gate must ask about, and this notice says so.
  */
 function isAllowedRedirectTarget(rawTarget: string): boolean {
   const target = rawTarget.replace(/["']/g, '');
   if (/^(\/dev\/(null|stdout|stderr|tty)|nul:?)$/i.test(target)) {
     return true;
   }
-  if (target.includes('..')) {
-    return false;
-  }
-  return (
-    target.startsWith('/tmp/') ||
-    target.startsWith('/var/tmp/') ||
-    target.startsWith('$TMPDIR') ||
-    target.startsWith('${TMPDIR') ||
-    // Windows temp locations (cmd and PowerShell forms)
-    /^%te?mp%/i.test(target) ||
-    /^\$env:te?mp/i.test(target)
-  );
+  // A bare number is a file descriptor, not a file name.
+  return /^\d+$/.test(target);
 }
 
 /** Basename, lowercased, quotes and a trailing .exe stripped. */
@@ -258,8 +255,11 @@ function normalizeCommandName(word: string): string {
 /**
  * Mask the parts of a command string that are data rather than commands, so
  * the blacklist scan below cannot false-positive on them: heredoc bodies are
- * dropped, and special characters inside quotes / behind backslash escapes /
- * after a comment marker are replaced with "_".
+ * dropped, and special characters inside quotes are replaced with "_".
+ *
+ * Windows reality: cmd.exe treats backslash as a path character (not an
+ * escape) and has no `#` comments, so neither is masked — `echo a \> b` and
+ * `ls # > notes.txt` both carry a real redirect and must flag.
  */
 function maskNonCommandText(command: string): string {
   // Drop heredoc bodies (everything between `<<DELIM` and the DELIM line).
@@ -287,15 +287,11 @@ function maskNonCommandText(command: string): string {
       // Arithmetic expansion ($((3 > 2))) holds comparisons, not
       // commands or redirections.
       .replace(/\$\(\([\s\S]*?\)\)/g, '_')
-      // Backslash-escaped characters are literal text.
-      .replace(/\\./g, '_')
       // Special characters inside quotes are literal text; spaces are
       // masked too so a quoted span stays a single token.
       .replace(/"[^"]*"|'[^']*'/g, (span) =>
         span.replace(/[\s<>|;&$()`#\\]/g, '_')
       )
-      // Comments.
-      .replace(/(?:^|\s)#.*$/gm, ' ')
   );
 }
 
@@ -331,8 +327,8 @@ function checkTokens(tokens: string[]): string | undefined {
   const name = normalizeCommandName(tokens[index]);
   const args = tokens.slice(index + 1);
 
-  // `| tee /tmp/log` is the documented way to capture output; only file
-  // arguments outside tmp are a mutation.
+  // `tee` writes every file argument; only /dev sinks and fd numbers are
+  // harmless, so `tee /tmp/log` flags like any other out-of-workspace write.
   if (name === 'tee') {
     const fileArgs = args.filter((arg) => !arg.startsWith('-'));
     return fileArgs.some((arg) => !isAllowedRedirectTarget(arg))
@@ -375,7 +371,8 @@ function checkTokens(tokens: string[]): string | undefined {
     return undefined;
   }
 
-  // `python -m pip install ...` is pip.
+  // `python -m pip install ...` is pip; a bare interpreter (no script file,
+  // e.g. a heredoc fed to stdin) is arbitrary execution the gate must ask for.
   if (/^python[\d.]*$/.test(name)) {
     const moduleIndex = args.indexOf('-m');
     const module =
@@ -388,6 +385,12 @@ function checkTokens(tokens: string[]): string | undefined {
       if (subcommand && PIP_SUBCOMMANDS.has(subcommand)) {
         return `\`pip ${subcommand}\``;
       }
+    }
+    const scriptArgs = args.filter(
+      (arg) => !arg.startsWith('-') && !/[<>]/.test(arg)
+    );
+    if (scriptArgs.length === 0) {
+      return `\`${name}\` (interactive interpreter)`;
     }
     return undefined;
   }
@@ -473,7 +476,9 @@ function checkTokens(tokens: string[]): string | undefined {
 /**
  * Inspect an agent-requested command and return a short description of the
  * first file-modifying construct found, or undefined when the command looks
- * read-only.
+ * read-only. Pure network activity (e.g. `git fetch`, `curl` without `-o`)
+ * carries no file-modifying reason and stays unflagged here; the main-process
+ * tier gate still requires approval for it.
  */
 export function findFileEditingCommand(command: string): string | undefined {
   const masked = maskNonCommandText(command);
@@ -500,27 +505,28 @@ export function findFileEditingCommand(command: string): string | undefined {
 }
 
 /**
- * Approval text shown before an agent-requested command that the blacklist
- * flags may run. Names the offending construct and the command so the user
- * can decide with the real argv in front of them.
+ * Human notice shown with an agent-requested command that can modify files.
+ * Names the offending construct and the command so the user can decide with
+ * the real argv in front of them. The main process decides the tier and
+ * whether a dialog opens; this text only explains what was detected.
  */
 export function formatCommandRiskNotice(command: string, reason: string): string {
   return (
-    `Blocked from running silently: ${reason} can modify files, and file modifications need explicit approval for assistant-requested commands. ` +
-    'Review the command below before allowing it to run once — this is an extra gate on top of the normal run action, ' +
-    `so if the change is needed, approve here or let the turn continue with read-only commands. \n\n` +
+    `Heads-up: ${reason} can modify files. File-modifying commands from the assistant open an approval dialog before they run; ` +
+    'this notice explains what was detected so the decision is an informed one. ' +
+    `Review the exact command below — approving runs it once, and blocking runs nothing. \n\n` +
     `Command: ${command}`
   );
 }
 
 /**
- * What the approval dialog should say about this command, or undefined when the
- * blacklist has nothing to flag.
+ * What the approval dialog should say about this command, or undefined when
+ * the blacklist has nothing file-modifying to flag.
  *
- * Callers hand the result to `terminal:run-command` as display text: main still
- * shows its own fail-closed dialog either way, so a notice can inform a decision
- * but never replace one — and a command nobody flagged is still a command the
- * user has to allow.
+ * Callers hand the result to `terminal:run-command` as display text: main
+ * applies its own risk-tier gate either way, so a notice can inform a decision
+ * but never replace one — and a command nobody flagged is still subject to the
+ * tier rules (MUTATE/NETWORK ask, DANGEROUS always asks).
  */
 export function commandApprovalNotice(command: string): string | undefined {
   const reason = findFileEditingCommand(command);

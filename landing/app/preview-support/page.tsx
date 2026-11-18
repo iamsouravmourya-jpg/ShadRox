@@ -12,7 +12,7 @@ import { APP_VERSION, GITHUB_REPO, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import { MarkdownToggleDemo } from './markdown-toggle-demo'
 
 export const metadata: Metadata = {
-  title: 'Preview support — ShadRox',
+  title: 'ShadRox — Preview support',
   description:
     'What ShadRox can preview: Markdown files, static sites, detected Node web projects (Vite, Next.js, Nuxt, Astro, Angular, SvelteKit, webpack, Parcel) and Python, Go, PHP, Java and .NET backends — with approval before anything installs or launches.',
   alternates: { canonical: '/preview-support' },

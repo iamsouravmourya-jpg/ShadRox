@@ -18,9 +18,9 @@ import { Reveal } from '@/components/landing/reveal'
 import { APP_VERSION, WINDOWS_DOWNLOAD_URL, GITHUB_REPO, RELEASES_URL } from '@/lib/download'
 
 export const metadata: Metadata = {
-  title: 'Releases — ShadRox',
+  title: 'ShadRox — Releases',
   description:
-    'What is new in ShadRox v0.1.0: a rebuilt workspace hub, three clear run modes, day and night themes, and feedback that goes straight to the maker. See how updates work and where older installers went.',
+    'What is new in ShadRox v0.1.2: a rebuilt workspace hub, three clear run modes, day and night themes, and feedback that goes straight to the maker. See how updates work and where older installers went.',
   alternates: { canonical: '/releases' },
 }
 

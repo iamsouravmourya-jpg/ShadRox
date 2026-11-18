@@ -439,6 +439,10 @@ function languageMatchesFence(info: string, fileName: string): boolean {
  */
 export function resolveTarget(info: string, context: string, body: string, files: KnownFile[]): string | null {
   // 1. The model declared the path itself: ```tsx path=src/App.tsx
+  // A quoted value may contain spaces — capture up to the matching closing
+  // quote; unquoted values keep the no-space behavior.
+  const quotedPath = info.match(/(?:path|file|filename|filepath)\s*[:=]\s*(["'`])([^"'`]+)\1/i);
+  if (quotedPath) return quotedPath[2];
   const declared = info.match(/(?:path|file|filename|filepath)\s*[:=]\s*["'`]?([^\s"'`]+)/i);
   if (declared) return declared[1];
 

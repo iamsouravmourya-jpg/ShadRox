@@ -28,8 +28,6 @@ function runSource(overrides: Partial<BackgroundRunSource> = {}): BackgroundRunS
     status: 'running',
     startedAt: 1_000,
     updatedAt: 2_000,
-    creditsSpent: 3.4,
-    budgetCredits: 24,
     milestones: [
       { id: 'm1', title: 'Add the parser', status: 'passed', attempts: [{ index: 1 }, { index: 2 }] },
       { id: 'm2', title: 'Wire the UI', status: 'pending', attempts: 0 },
@@ -67,8 +65,6 @@ test('a snapshot is version 1 with the run summarized and nothing else', () => {
   assert.equal(result.status, 'running');
   assert.equal(result.startedAt, 1_000);
   assert.equal(result.updatedAt, 2_000);
-  assert.equal(result.creditsSpent, 3.4);
-  assert.equal(result.budgetCredits, 24);
   assert.equal(result.interrupted, false);
   assert.deepEqual(result.tasks.map((task) => task.status), ['passed', 'pending', 'running']);
   assert.deepEqual(result.tasks.map((task) => task.attempts), [2, 0, 1]);
@@ -200,12 +196,20 @@ test('unknown mode and status values are rejected', () => {
   assert.ok(status.errors.some((error) => error.includes('status')));
 });
 
-test('negative or non-finite credits are rejected', () => {
-  assert.equal(parseBackgroundSnapshot(rawWith({ creditsSpent: -1 })).snapshot, null);
-  assert.equal(parseBackgroundSnapshot(rawWith({ budgetCredits: 0 })).snapshot, null);
-  assert.equal(parseBackgroundSnapshot(rawWith({ creditsSpent: 'many' })).snapshot, null);
-  const infinite = rawWith({}).replace(/"creditsSpent":[\d.]+/, '"creditsSpent":1e999');
-  assert.equal(parseBackgroundSnapshot(infinite).snapshot, null);
+test('a legacy blob with spend fields and a stopped-budget status still loads', () => {
+  const legacy = parseBackgroundSnapshot(rawWith({ creditsSpent: 3.4, budgetCredits: 24, status: 'stopped-budget' }));
+  assert.deepEqual(legacy.errors, []);
+  assert.ok(legacy.snapshot);
+  assert.equal(legacy.snapshot.status, 'stopped');
+  assert.equal('creditsSpent' in legacy.snapshot, false, 'spend fields are not read back');
+  assert.equal('budgetCredits' in legacy.snapshot, false);
+
+  const odd = parseBackgroundSnapshot(rawWith({ creditsSpent: 'many', budgetCredits: 0 }));
+  assert.deepEqual(odd.errors, [], 'old spend values are ignored, never validated');
+  assert.ok(odd.snapshot);
+
+  const infinite = rawWith({}).replace(/"startedAt":\d+/, '"startedAt":1000,"creditsSpent":1e999');
+  assert.ok(parseBackgroundSnapshot(infinite).snapshot, 'a non-finite legacy spend does not sink the load');
 });
 
 test('a relative or traversal workspace root is rejected', () => {
@@ -312,18 +316,34 @@ test('a running snapshot cannot resume before it is settled', () => {
   assert.ok(check.reason?.includes('running'));
 });
 
-test('an exhausted budget blocks the resume', () => {
-  const check = canResume(paused({ creditsSpent: 24 }), ROOT);
+test('a paused run whose unfinished tasks are all at the attempt ceiling cannot resume', () => {
+  const capped = paused({
+    milestones: [
+      { id: 'm1', title: 'done', status: 'passed', attempts: 1 },
+      { id: 'm2', title: 'stuck', status: 'pending', attempts: 3 },
+      { id: 'm3', title: 'stuck too', status: 'running', attempts: 3 }
+    ]
+  });
+  const check = canResume(capped, ROOT);
   assert.equal(check.ok, false);
-  assert.ok(check.reason?.includes('budget'));
+  assert.ok(check.reason?.includes('attempts'));
 
-  const overspent = canResume(paused({ creditsSpent: 30 }), ROOT);
-  assert.equal(overspent.ok, false);
+  const teamCapped = paused({
+    mode: 'team',
+    tasks: [{ id: 't1', title: 'stuck', status: 'pending', attempts: 2 }],
+    milestones: undefined
+  });
+  assert.equal(canResume(teamCapped, ROOT).ok, false, 'a team task ceiling is 2 attempts');
 });
 
-test('fewer than 0.1 credits left blocks the resume, 0.1 is enough', () => {
-  assert.equal(canResume(paused({ creditsSpent: 19.96, budgetCredits: 20 }), ROOT).ok, false);
-  assert.deepEqual(canResume(paused({ creditsSpent: 19.9, budgetCredits: 20 }), ROOT), { ok: true });
+test('a paused run with an unfinished task under the ceiling resumes', () => {
+  const room = paused({
+    milestones: [
+      { id: 'm1', title: 'stuck', status: 'pending', attempts: 3 },
+      { id: 'm2', title: 'fresh', status: 'pending', attempts: 2 }
+    ]
+  });
+  assert.deepEqual(canResume(room, ROOT), { ok: true });
 });
 
 test('the resume summary counts pending and running tasks and pluralizes', () => {
@@ -335,12 +355,12 @@ test('the resume summary counts pending and running tasks and pluralizes', () =>
     { id: 't5', title: 'e', status: 'running', attempts: 1 }
   ];
   assert.equal(
-    resumeSummary(snapshot({ milestones: five, creditsSpent: 3.4, budgetCredits: 24 })),
-    'Resume: 2 of 5 tasks left, 3.4 spent of the 24 budget.'
+    resumeSummary(snapshot({ milestones: five })),
+    'Resume: 2 of 5 tasks left.'
   );
   assert.equal(
-    resumeSummary(snapshot({ milestones: [five[3]], creditsSpent: 1, budgetCredits: 20 })),
-    'Resume: 1 of 1 task left, 1 spent of the 20 budget.'
+    resumeSummary(snapshot({ milestones: [five[3]] })),
+    'Resume: 1 of 1 task left.'
   );
 });
 
@@ -348,11 +368,11 @@ test('the memory store saves, upserts, loads and removes by run id', () => {
   const store = createMemoryStore();
   store.save(snapshot());
   assert.equal(store.load().length, 1);
-  assert.equal(parseBackgroundSnapshot(store.load()[0]).snapshot?.creditsSpent, 3.4);
+  assert.equal(parseBackgroundSnapshot(store.load()[0]).snapshot?.goal, 'Ship the release');
 
-  store.save(snapshot({ creditsSpent: 4.2 }));
+  store.save(snapshot({ goal: 'Ship the release, take two' }));
   assert.equal(store.load().length, 1, 'the same run id is replaced, not duplicated');
-  assert.equal(parseBackgroundSnapshot(store.load()[0]).snapshot?.creditsSpent, 4.2);
+  assert.equal(parseBackgroundSnapshot(store.load()[0]).snapshot?.goal, 'Ship the release, take two');
 
   store.save(snapshot({ id: 'run-2', goal: 'Second run' }));
   store.remove('run-1');

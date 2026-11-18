@@ -15,8 +15,6 @@
  * machine and what they cost, and it never uploads the repository by default.
  */
 
-import type { ResolvedPayer } from './sharedKeyPolicy';
-
 export interface IndexedFile {
   path: string;
   /** Content identity (e.g. a hash). Two files with the same id are identical. */
@@ -125,12 +123,11 @@ export interface RemoteIndexAdmission {
 /**
  * The optional remote embedding route. It is admitted only on an explicit
  * approval, with a named non-empty scope and a finite positive cost — so it can
- * never become a default full-repo upload, and a shared-key run can reserve its
- * cost before sending. On the user's own key it is never charged by ShadRox.
+ * never become a default full-repo upload. It runs on the user's own key and is
+ * never charged by ShadRox.
  */
 export function admitRemoteIndex(input: {
   approved: boolean;
-  payer: ResolvedPayer;
   files: readonly string[];
   estimatedRupees: number;
 }): RemoteIndexAdmission {
@@ -145,10 +142,7 @@ export function admitRemoteIndex(input: {
   }
   return {
     admitted: true,
-    reason:
-      input.payer === 'shared'
-        ? 'Remote indexing approved; its cost is reserved against the shared budget.'
-        : 'Remote indexing approved on the user’s own key; ShadRox charges nothing.',
+    reason: 'Remote indexing approved on the user’s own key; ShadRox charges nothing.',
     scope: [...input.files],
     estimatedRupees: input.estimatedRupees
   };

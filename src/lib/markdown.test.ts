@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { maskFileWrites, parseInline, parseMarkdownBlocks } from './markdown';
+import { maskFileWrites, parseInline, parseMarkdownBlocks, resolveTarget } from './markdown';
 
 test('bold, inline code and links become runs instead of literal markers', () => {
   const tokens = parseInline('**Sabse bada risk:** `credits.ts` dekh [docs](https://example.com/a)');
@@ -124,4 +124,42 @@ test('restored history without an outcome record claims neither success nor fail
   assert.match(masked, /- src\/a\.ts — change from an earlier session/);
   assert.doesNotMatch(masked, /not applied/);
   assert.doesNotMatch(masked, /change applied/);
+});
+
+/* -------------------------------------------------------------------------- *
+ * BUG-13: a quoted path= declaration may contain spaces; the old regex
+ * truncated it at the first space and pointed the write at the wrong file.
+ * -------------------------------------------------------------------------- */
+
+test('BUG-13: a double-quoted path with spaces is captured whole', () => {
+  assert.equal(
+    resolveTarget('tsx path="src/components/My Component.tsx"', '', '', []),
+    'src/components/My Component.tsx'
+  );
+});
+
+test('BUG-13: a single-quoted path with spaces is captured whole', () => {
+  assert.equal(
+    resolveTarget("tsx path='src/components/My Component.tsx'", '', '', []),
+    'src/components/My Component.tsx'
+  );
+});
+
+test('BUG-13: a backtick-quoted path with spaces is captured whole', () => {
+  assert.equal(
+    resolveTarget('tsx path=`src/components/My Component.tsx`', '', '', []),
+    'src/components/My Component.tsx'
+  );
+});
+
+test('BUG-13: file:/filename= declarations honor quotes too', () => {
+  assert.equal(resolveTarget('ts file: "docs/My Notes.md"', '', '', []), 'docs/My Notes.md');
+  assert.equal(resolveTarget('ts filename=`a b/c.txt`', '', '', []), 'a b/c.txt');
+});
+
+test('BUG-13: unquoted paths keep the no-space behavior', () => {
+  assert.equal(resolveTarget('tsx path=src/App.tsx', '', '', []), 'src/App.tsx');
+  assert.equal(resolveTarget('tsx path="src/App.tsx"', '', '', []), 'src/App.tsx');
+  // Unquoted values still stop at the first space, exactly as before.
+  assert.equal(resolveTarget('tsx path=src/My File.tsx', '', '', []), 'src/My');
 });

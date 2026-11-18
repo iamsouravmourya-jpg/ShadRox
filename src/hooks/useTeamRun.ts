@@ -9,7 +9,6 @@
  */
 
 import { useCallback, useRef, useState } from 'react';
-import { createCreditTracker } from '../lib/autonomy/budget';
 import { MAX_LOG_LINES } from '../lib/autonomy/events';
 import type { AutonomyHost } from '../lib/autonomy/ports';
 import { describeTeamEvent } from '../lib/agents/events';
@@ -37,8 +36,8 @@ export interface TeamRun {
   start: (goal: string) => void;
   stop: () => void;
   /**
-   * Halts the in-flight team at the next task boundary and ends the turn it is
-   * paying for. The run is not resumed — a team plans once — but it leaves an
+   * Halts the in-flight team at the next task boundary and ends the turn in
+   * flight. The run is not resumed — a team plans once — but it leaves an
    * honest `paused` state instead of a `running` one nobody is driving.
    */
   pause: () => void;
@@ -100,7 +99,6 @@ export function useTeamRun(options: UseTeamRunOptions): TeamRun {
       budget,
       planTeam: createTeamPlan((prompt) => hostRef.current.askPlan(prompt)),
       validate: validateTeamPlan,
-      tracker: createCreditTracker({ maxCredits: budget.maxCredits }),
       checkpoint: (goalText) => checkpointRef.current(goalText),
       // Snapshotted after every verdict so the panel always shows the live plan.
       persist: (live) => setState(structuredClone(live)),
@@ -115,8 +113,7 @@ export function useTeamRun(options: UseTeamRunOptions): TeamRun {
 
   const stop = useCallback(() => {
     cancelled.current = true;
-    // Stop means the same thing to the driver and to the request in flight, but
-    // only the second one is still costing the user.
+    // Stop means the same thing to the driver and to the request in flight.
     turnAbort.current?.abort();
   }, []);
 

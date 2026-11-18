@@ -25,8 +25,6 @@ export function describeTeamEvent(event: TeamEvent): string | null {
       return `"${event.id}": ${event.paths.length} file(s) await review.`;
     case 'message':
       return `${event.message.from} → ${event.message.to}: ${event.message.text}`;
-    case 'credit':
-      return `Spent ${event.spent} of the team budget (total ${event.total}).`;
     case 'team:log':
       return event.text;
     case 'team:integration':

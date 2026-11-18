@@ -291,6 +291,7 @@ test('an external call the user has not allowed never reaches the server', async
   const outcome = await handle.call({ name: 'mcp__db__query', args: { sql: 'DROP TABLE users' } });
 
   assert.equal(outcome.ok, false);
+  assert.equal(outcome.refused, true, 'a user "no" is a held refusal, not a failed operation');
   assert.equal(fake.calls.length, 0, 'a refusal sends nothing to the server');
   assert.match(outcome.error as string, /did not allow/);
   assert.match(outcome.error as string, /Do not retry/);

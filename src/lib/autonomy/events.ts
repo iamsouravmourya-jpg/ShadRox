@@ -26,8 +26,6 @@ export function describeEvent(event: AutonomyEvent): string | null {
       return `"${event.id}": ${event.status}.`;
     case 'milestone:review':
       return `"${event.id}": ${event.paths.length} file(s) await review.`;
-    case 'credit':
-      return `Spent ${event.spent} of the run budget (total ${event.total}).`;
     case 'log':
       return event.text;
     case 'run:done':

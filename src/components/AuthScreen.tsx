@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { AlertCircle, Check, Loader2, ShieldCheck } from 'lucide-react';
 import { ShadRoxLogo } from './Logo';
 
@@ -22,6 +22,20 @@ function GoogleMark() {
 
 export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
   const [accepted, setAccepted] = useState(false);
+  const [termsHint, setTermsHint] = useState(false);
+  const termsRef = useRef<HTMLInputElement>(null);
+
+  const handleSignIn = () => {
+    if (busy) return;
+    // A disabled button swallows the click, so a user who missed the checkbox
+    // sees nothing happen. Explain the gate and put the focus on it instead.
+    if (!accepted) {
+      setTermsHint(true);
+      termsRef.current?.focus();
+      return;
+    }
+    onSignIn();
+  };
 
   if (status === 'loading') {
     return (
@@ -72,8 +86,8 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
             <>
               <button
                 type="button"
-                onClick={onSignIn}
-                disabled={busy || !accepted}
+                onClick={handleSignIn}
+                aria-disabled={busy || !accepted}
                 className={`flex w-full items-center justify-center gap-3 rounded-xl bg-[var(--text)] px-4 py-3 text-sm font-semibold text-[var(--bg)] shadow-[0_1px_2px_rgba(0,0,0,0.25),inset_0_1px_0_rgba(255,255,255,0.08)] transition-[opacity,transform] duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
                   busy
                     ? 'cursor-wait opacity-70'
@@ -86,6 +100,12 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
                 {busy ? 'Waiting for your browser…' : 'Continue with Google'}
               </button>
 
+              {termsHint && !accepted && (
+                <p role="status" className="mt-2 text-center text-[11px] text-warn">
+                  Tick the box below to continue.
+                </p>
+              )}
+
               <label
                 htmlFor="auth-terms"
                 className="mt-3 flex w-full cursor-pointer select-none items-start gap-2.5 rounded-lg px-0.5 py-1"
@@ -93,14 +113,20 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
                 <span className="mt-px flex h-4 w-4 shrink-0 items-center justify-center">
                   <input
                     id="auth-terms"
+                    ref={termsRef}
                     type="checkbox"
                     checked={accepted}
-                    onChange={(event) => setAccepted(event.target.checked)}
+                    onChange={(event) => {
+                      setAccepted(event.target.checked);
+                      if (event.target.checked) setTermsHint(false);
+                    }}
                     className="peer sr-only"
                   />
                   <span
                     aria-hidden="true"
-                    className="flex h-4 w-4 items-center justify-center rounded-[5px] border border-line-2 bg-base-2 transition-colors peer-checked:border-accent peer-checked:bg-accent peer-focus-visible:ring-2 peer-focus-visible:ring-accent/40"
+                    className={`flex h-4 w-4 items-center justify-center rounded-[5px] border border-line-2 bg-base-2 transition-[colors,box-shadow] peer-checked:border-accent peer-checked:bg-accent peer-focus-visible:ring-2 peer-focus-visible:ring-accent/40 ${
+                      termsHint && !accepted ? 'ring-2 ring-warn/40' : ''
+                    }`}
                   >
                     <Check
                       className={`h-3 w-3 text-white transition-colors ${accepted ? 'opacity-100' : 'opacity-0'}`}

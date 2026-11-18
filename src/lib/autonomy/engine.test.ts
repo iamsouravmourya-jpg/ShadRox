@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createCreditTracker, estimateTurn } from './budget';
 import { createDriverDeps, runGoal } from './engine';
 import { buildRepairBrief } from './feedback';
-import { CREDIT_RATES } from '../plans';
 import {
   DEFAULT_RUN_BUDGET,
   type AutonomyEvent,
@@ -60,34 +58,7 @@ function harness(planJson: string, reply: (m: TurnUnit) => TurnResult, verify: (
   return { ports, events, states, turns, run: (goal) => runGoal(goal, options) };
 }
 
-const OK_TURN = (): TurnResult => ({ reply: 'ok', patchesApplied: 1, patchFailures: [], creditsSpent: 1, aborted: false });
-
-/** Two extra files add half an edit each — one whole code-edit rate. */
-const TWO_EXTRA_FILES = CREDIT_RATES.codeEdit;
-
-test('estimateTurn is the base edit rate and grows with touched files, up to the premium ceiling', () => {
-  assert.equal(estimateTurn(milestone({ expectedFiles: [] })), CREDIT_RATES.codeEdit, 'a single file is the base rate');
-  assert.equal(
-    estimateTurn(milestone({ expectedFiles: ['a.ts', 'b.ts', 'c.ts'] })),
-    CREDIT_RATES.codeEdit + TWO_EXTRA_FILES,
-    'two extra files add one edit'
-  );
-  assert.equal(
-    estimateTurn(milestone({ expectedFiles: Array.from({ length: 40 }, (_, i) => `f${i}.ts`) })),
-    CREDIT_RATES.premiumRefactor,
-    'the estimate never exceeds the premium ceiling'
-  );
-});
-
-test('createCreditTracker accumulates, clamps negatives, and reports exhaustion', () => {
-  const tracker = createCreditTracker({ maxCredits: 2 });
-  assert.equal(tracker.spent(), 0);
-  assert.equal(tracker.credit(-5).spent, 0, 'a negative cost cannot refund the run');
-  assert.equal(tracker.credit(1.5).spent, 1.5);
-  assert.equal(tracker.exhausted(), false);
-  assert.deepEqual(tracker.credit(0.5), { allowed: true, spent: 2 });
-  assert.equal(tracker.exhausted(), true);
-});
+const OK_TURN = (): TurnResult => ({ reply: 'ok', patchesApplied: 1, patchFailures: [], aborted: false });
 
 test('buildRepairBrief hands the model the diagnostics verbatim and the refused patches', () => {
   const brief = buildRepairBrief(milestone(), FAILED, ['src/a.ts: search block not found'], 1);
@@ -108,7 +79,6 @@ test('runGoal plans, runs every milestone through the ports, and finishes', asyn
   assert.equal(state.status, 'done');
   assert.deepEqual(state.milestones.map((m) => m.status), ['passed', 'passed']);
   assert.deepEqual(h.turns, ['m1', 'm2'], 'dependencies gate the execution order');
-  assert.equal(state.creditsSpent, 2);
   assert.ok(h.events.some((event) => event.type === 'plan:created'));
   assert.ok(h.events.some((event) => event.type === 'run:done'));
 });
@@ -207,5 +177,4 @@ test('createDriverDeps wires the pure deps and keeps the caller ports', () => {
   assert.equal(typeof deps.nextRunnable, 'function');
   assert.equal(typeof deps.findBlocked, 'function');
   assert.equal(deps.budget, DEFAULT_RUN_BUDGET);
-  assert.equal(typeof deps.tracker.spent, 'function');
 });

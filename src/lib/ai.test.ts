@@ -29,6 +29,7 @@ import {
 } from './streamSnapshot';
 import { getApiKey, setActiveProvider, getActiveProvider, setApiKey } from './storage';
 import { hydrateSecureStore, resetSecretStoreForTests } from './secureStore';
+import { flightRecorder } from './observability/flightRecorder';
 import type { ChatMessage } from './types';
 
 test('drops a fully echoed partial reply across chunk boundaries', () => {
@@ -1207,4 +1208,158 @@ test('refine drops malformed usage rather than reporting it as measured', async 
   assert.equal('inputTokens' in refined, false);
   assert.equal('servedModel' in refined, false);
   assert.equal('tokens' in refined, false);
+});
+
+/* ------------------------------------------------------------------ *
+ * Truncation honesty: a done event reporting an output-limit cut must
+ * reach the caller as incomplete, and droppedFeatures must not be lost.
+ * ------------------------------------------------------------------ */
+
+test('a length-truncated done event is surfaced as incomplete, not a clean stop', async () => {
+  const out = await runTurn(
+    [() => streamResponse([
+      sseDelta('Partial answer'),
+      sseEvent({ type: 'done', tokens: 9, provider: 'groq', model: 'test', tier: 'byok', finishReason: 'length' })
+    ])],
+    fakeClock().retry
+  );
+  assert.equal(out.error, null);
+  assert.equal(out.text, 'Partial answer');
+  assert.equal(out.doneInfo?.finishReason, 'length');
+  assert.equal(out.doneInfo?.incomplete, true);
+});
+
+test('a Gemini MAX_TOKENS done event is incomplete too', async () => {
+  const out = await runTurn(
+    [() => streamResponse([
+      sseDelta('x'),
+      sseEvent({ type: 'done', tokens: 1, provider: 'gemini', model: 'test', tier: 'byok', finishReason: 'MAX_TOKENS' })
+    ])],
+    fakeClock().retry
+  );
+  assert.equal(out.doneInfo?.finishReason, 'MAX_TOKENS');
+  assert.equal(out.doneInfo?.incomplete, true);
+});
+
+test('droppedFeatures from the done event reach the caller', async () => {
+  const out = await runTurn(
+    [() => streamResponse([
+      sseDelta('ok'),
+      sseEvent({
+        type: 'done',
+        tokens: 2,
+        provider: 'groq',
+        model: 'test',
+        tier: 'byok',
+        finishReason: 'stop',
+        droppedFeatures: ['tools', 'reasoning_effort']
+      })
+    ])],
+    fakeClock().retry
+  );
+  assert.deepEqual(out.doneInfo?.droppedFeatures, ['tools', 'reasoning_effort']);
+  assert.equal(out.doneInfo?.incomplete, undefined);
+});
+
+test('a normal stop reports no dropped features and stays complete', async () => {
+  const out = await runTurn([() => streamResponse([sseDelta('ok'), sseDone])], fakeClock().retry);
+  assert.equal(out.doneInfo?.droppedFeatures, undefined);
+  assert.equal(out.doneInfo?.incomplete, undefined);
+});
+
+test('malformed droppedFeatures are dropped instead of forwarded', async () => {
+  const out = await runTurn(
+    [() => streamResponse([
+      sseDelta('ok'),
+      sseEvent({ type: 'done', tokens: 2, provider: 'groq', model: 'test', tier: 'byok', droppedFeatures: 'tools' })
+    ])],
+    fakeClock().retry
+  );
+  assert.equal(out.doneInfo?.droppedFeatures, undefined);
+});
+
+/* ------------------------------------------------------------------ *
+ * Flight recorder: the stream layer's boundaries land in the trace,
+ * without changing what the handlers see.
+ * ------------------------------------------------------------------ */
+
+test('the recorder traces a healthy stream end to end and closes its own run', async () => {
+  flightRecorder.reset();
+  const out = await runTurn([() => streamResponse([sseDelta('Hello'), sseDone])], fakeClock().retry);
+  assert.equal(out.error, null);
+  const runs = flightRecorder.listRuns();
+  assert.equal(runs.length, 1, 'a standalone stream opens one run of its own');
+  assert.equal(runs[0].kind, 'stream');
+  assert.equal(runs[0].stopReason, 'complete');
+  const events = flightRecorder.readEvents(runs[0].runId);
+  const types = events.map((event) => event.type);
+  assert.deepEqual(types, ['turn_started', 'model_request', 'stream_start', 'stream_first_token', 'usage', 'stream_end', 'stop']);
+  const request = events[1];
+  assert.equal(request.data.model, 'test');
+  assert.equal(request.data.provider, 'groq');
+  assert.ok(Number(request.data.tokens_in) > 0);
+  assert.equal(request.data.tokens_in_estimated, true);
+  const usage = events.find((event) => event.type === 'usage')!;
+  assert.equal(usage.data.tokens, 3);
+  const end = events.find((event) => event.type === 'stream_end')!;
+  assert.equal(end.data.sawDone, true);
+  assert.equal(end.data.receivedOutput, true);
+  assert.ok(!events.some((event) => event.type === 'failure_tag'));
+  flightRecorder.reset();
+});
+
+test('retries and retryable provider errors are recorded without changing the retry behaviour', async () => {
+  flightRecorder.reset();
+  const clock = fakeClock();
+  const out = await runTurn(
+    [
+      () => errorResponse(429, 'Too many requests from this key.', { 'Retry-After': '2' }),
+      () => streamResponse([sseDelta('Hello'), sseDone])
+    ],
+    clock.retry
+  );
+  assert.equal(out.calls, 2);
+  assert.deepEqual(clock.sleeps, [2000], 'the retry discipline is untouched');
+  const events = flightRecorder.readEvents(flightRecorder.listRuns()[0].runId);
+  const providerErrors = events.filter((event) => event.type === 'provider_error');
+  assert.equal(providerErrors.length, 1);
+  assert.equal(providerErrors[0].data.status, 429);
+  assert.equal(providerErrors[0].data.retryable, true);
+  const retries = events.filter((event) => event.type === 'retry');
+  assert.equal(retries.length, 1);
+  assert.equal(retries[0].data.reason, 'RateLimitError');
+  assert.equal(retries[0].data.delayMs, 2000);
+  assert.equal(events.filter((event) => event.type === 'model_request').length, 2, 'one request event per attempt');
+  assert.equal(events.at(-1)!.data.reason, 'complete');
+  flightRecorder.reset();
+});
+
+test('a terminal provider error closes the run as F09 and never logs the raw key', async () => {
+  flightRecorder.reset();
+  const secret = 'sk-abcdefghijklmnopqrstuvwx123456';
+  const out = await runTurn([() => errorResponse(400, `Invalid API key provided: ${secret}`)], fakeClock().retry);
+  assert.ok(out.error);
+  const run = flightRecorder.listRuns()[0];
+  assert.equal(run.stopReason, 'provider_error');
+  assert.equal(run.failure?.code, 'F09');
+  const events = flightRecorder.readEvents(run.runId);
+  const serialized = JSON.stringify(events);
+  assert.ok(!serialized.includes(secret), 'the credential never reaches the trace');
+  assert.ok(events.some((event) => event.type === 'failure_tag' && event.data.code === 'F09'));
+  flightRecorder.reset();
+});
+
+test('a stream inside an open tool-loop run joins that run and leaves the stop to the loop', async () => {
+  flightRecorder.reset();
+  const runId = flightRecorder.startRun({ kind: 'tool-loop', workspaceId: 'ws' });
+  const out = await runTurn([() => streamResponse([sseDelta('Hello'), sseDone])], fakeClock().retry);
+  assert.equal(out.error, null);
+  assert.equal(flightRecorder.activeRunId(), runId, 'the stream did not steal or close the loop run');
+  assert.equal(flightRecorder.listRuns().length, 1, 'no second run was opened');
+  const events = flightRecorder.readEvents(runId);
+  assert.ok(events.some((event) => event.type === 'model_request'));
+  assert.ok(!events.some((event) => event.type === 'stop'), 'the loop owns the stop event');
+  flightRecorder.stopRun('complete', {}, runId);
+  assert.equal(flightRecorder.readEvents(runId).at(-1)!.type, 'stop');
+  flightRecorder.reset();
 });

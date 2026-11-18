@@ -3,8 +3,10 @@ import test from 'node:test';
 import { markUntrustedData } from './untrustedData';
 import {
   MIN_BUDGET_CHARS,
+  MAX_MESSAGE_CHARS,
   MAX_SYSTEM_INSTRUCTION_CHARS,
   SYSTEM_INSTRUCTION_RATIO,
+  capMessageContent,
   capSystemInstruction,
   contextFitNotice,
   estimateTokens,
@@ -432,4 +434,59 @@ test('a truncated system instruction still balances its wrappers', () => {
   const begins = (fit.text.match(/\[\[SHADROX_UNTRUSTED_DATA_BEGIN\]\]/g) ?? []).length;
   const ends = (fit.text.match(/\[\[SHADROX_UNTRUSTED_DATA_END\]\]/g) ?? []).length;
   assert.equal(begins, ends);
+});
+
+/* ------------------------------------------------------------------ *
+ * Per-message hard cap: the server 413s any single history message over
+ * 60k chars regardless of the window, so the trimmer must cut it even
+ * when the total history fits the budget.
+ * ------------------------------------------------------------------ */
+
+test('a message over the server per-message cap is trimmed even when the window fits', () => {
+  const content = 'H'.repeat(30_000) + 'M'.repeat(40_000) + 'TAIL_MARKER';
+  const result = trimMessagesToBudget([{ role: 'assistant', content }], 4_000_000);
+  const capped = result.messages[0].content;
+  assert.ok(capped.length <= MAX_MESSAGE_CHARS, `capped to ${capped.length}`);
+  assert.ok(capped.includes('[...trimmed...]'), 'the cut is explicit');
+  assert.ok(capped.startsWith('H'), 'the head survives');
+  assert.ok(capped.includes('TAIL_MARKER'), 'the tail survives');
+  assert.equal(result.trimmed, 1);
+  assert.ok(result.trimmedChars > 0);
+  assert.equal(result.overflow, false);
+});
+
+test('every oversized message is capped, not just the heaviest', () => {
+  const result = trimMessagesToBudget([
+    { role: 'assistant', content: 'a'.repeat(70_000) },
+    { role: 'user', content: 'b'.repeat(70_000) }
+  ], 4_000_000);
+  for (const message of result.messages) {
+    assert.ok(message.content.length <= MAX_MESSAGE_CHARS);
+  }
+  assert.equal(result.trimmed, 2);
+});
+
+test('the per-message cap keeps untrusted wrappers balanced', () => {
+  const wrapped = markUntrustedData('x'.repeat(70_000), 'workspace chunk');
+  const capped = capMessageContent(wrapped, MAX_MESSAGE_CHARS);
+  assert.ok(capped.length <= MAX_MESSAGE_CHARS);
+  const begins = (capped.match(/\[\[SHADROX_UNTRUSTED_DATA_BEGIN\]\]/g) ?? []).length;
+  const ends = (capped.match(/\[\[SHADROX_UNTRUSTED_DATA_END\]\]/g) ?? []).length;
+  assert.equal(begins, ends, 'every opened wrapper is closed');
+  assert.match(capped, /\[\.\.\.trimmed\.\.\.\]/);
+});
+
+test('fitChatRequest never ships a message the server would 413', () => {
+  const fit = fitChatRequest({
+    contextWindow: 1_000_000,
+    messages: [
+      { role: 'assistant', content: 'e'.repeat(80_000) },
+      { role: 'user', content: 'continue' }
+    ]
+  });
+  for (const message of fit.messages) {
+    assert.ok(message.content.length <= MAX_MESSAGE_CHARS);
+  }
+  assert.equal(fit.overflow, false);
+  assert.equal(fit.messages[1].content, 'continue');
 });

@@ -3,15 +3,29 @@ import test from 'node:test';
 
 import {
   ceilingReached,
-  createCreditTracker,
-  estimateTurn,
   toolCallsReported,
   workUsageOf
 } from './budget';
+import { DEFAULT_MAX_TOOL_ROUNDS, MAX_CALLS_PER_ROUND } from '../agent/toolLoop';
 import { DEFAULT_RUN_BUDGET, type RunBudget } from './types';
 
 const CEILINGS: RunBudget = { ...DEFAULT_RUN_BUDGET };
 const FRESH = { turns: 0, toolCalls: 0, elapsedMs: 0 };
+
+test('the default tool-call ceiling survives four full tool-heavy turns', () => {
+  // The loop runs DEFAULT_MAX_TOOL_ROUNDS rounds of up to MAX_CALLS_PER_ROUND
+  // calls; the run cap must still afford four such turns, as it did when the
+  // loop was smaller. 60 rounds x 16 calls = 960 per turn, four turns = 3840.
+  assert.equal(DEFAULT_RUN_BUDGET.maxToolCalls, 3840);
+  assert.ok(
+    DEFAULT_RUN_BUDGET.maxToolCalls >= 4 * DEFAULT_MAX_TOOL_ROUNDS * MAX_CALLS_PER_ROUND,
+    'two tool-heavy turns must not exhaust the run cap'
+  );
+  assert.equal(DEFAULT_RUN_BUDGET.maxTurns, 24);
+  assert.equal(DEFAULT_RUN_BUDGET.maxAttemptsPerMilestone, 3);
+  assert.equal(DEFAULT_RUN_BUDGET.maxMilestones, 8);
+  assert.equal(DEFAULT_RUN_BUDGET.maxWallClockMs, 20 * 60 * 1000);
+});
 
 test('a run that has used none of its ceilings is free to take another turn', () => {
   assert.equal(ceilingReached(CEILINGS, FRESH), null);
@@ -66,18 +80,4 @@ test('the turn cap is checked before the clock cap, so a stall still reports the
     { turns: 2, toolCalls: null, elapsedMs: 10_000 }
   );
   assert.equal(stop?.kind, 'turns');
-});
-
-test('the credit tracker says when a real cost has gone past the cap', () => {
-  const tracker = createCreditTracker({ maxCredits: 5 });
-  assert.equal(tracker.credit(3).allowed, true);
-  const over = tracker.credit(3);
-  assert.equal(over.allowed, false);
-  assert.equal(over.spent, 6);
-  assert.equal(tracker.exhausted(), true);
-});
-
-test('estimates still price a milestone by the files it owns', () => {
-  assert.equal(estimateTurn({ expectedFiles: ['a.ts'] }), 1.2);
-  assert.ok(estimateTurn({ expectedFiles: ['a.ts', 'b.ts', 'c.ts'] }) > estimateTurn({ expectedFiles: ['a.ts'] }));
 });

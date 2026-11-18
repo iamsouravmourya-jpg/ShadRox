@@ -1,8 +1,5 @@
-import { classifyTier } from '../../src/lib/providers.js';
 import { RequestRejectedError } from '../_validate.js';
-import { sharedKeyFor } from '../_sharedKey.js';
 import { streamCustomEndpoint } from './_compatible.js';
-import { runsOnTheUsersMachine } from './_endpoint.js';
 import { streamGemini } from './_gemini.js';
 import { streamGroq } from './_openai.js';
 import type { ProviderAdapter, ProviderId } from './_types.js';
@@ -40,62 +37,19 @@ export function parseProviderId(raw: Record<string, unknown>): ProviderId {
 export interface KeyAccess {
   /** The key the request will spend. */
   apiKey: string;
-  /** True when the user's own key pays for the call. */
+  /** Always true: every request spends the caller's own key. */
   byok: boolean;
 }
 
-/**
- * Master switch for ShadRox's own key. The beta runs BYOK-only, so an unkeyed
- * request — including one hand-crafted in devtools — is refused before the
- * shared key is ever looked up. Re-enable with SHADROX_ALLOW_SHARED_KEY=1.
- */
-export function sharedKeyPathEnabled(): boolean {
-  return process.env.SHADROX_ALLOW_SHARED_KEY === '1';
-}
-
-const SHARED_KEY_OFF_ERROR =
-  'ShadRox ka shared key abhi band hai — beta me sirf apni key chalti hai. Settings → BYOK me apni Gemini, Groq, ya custom endpoint key add karo.';
+const BYOK_REQUIRED_ERROR =
+  'ShadRox sirf BYOK par chalta hai — apni key ke bina request nahi chal sakti. Settings → BYOK me apni Gemini, Groq, ya custom endpoint key add karo.';
 
 /**
- * Resolves which key a request may spend: the caller's BYOK key, or ShadRox's
- * shared key (opt-in only, Pro tier, never stored server-side beyond the
- * environment). Returns a user-facing error instead of a key when neither path
- * is allowed.
+ * Resolves the key a request may spend: the caller's own BYOK key, and nothing
+ * else. Returns a user-facing error instead of a key when none was supplied.
  */
-export function resolveKeyAccess(
-  provider: ProviderId,
-  model: string,
-  rawKey: string | undefined
-): { access: KeyAccess } | { error: string } {
-  const byokKey = (rawKey || '').trim();
-  // A custom endpoint is the caller's server and the caller's bill, so there is
-  // no shared key that could possibly pay for it.
-  const sharedKey =
-    byokKey || !sharedKeyPathEnabled() || provider === 'custom' ? '' : sharedKeyFor(provider);
-  const apiKey = byokKey || sharedKey;
-
-  if (!apiKey) {
-    return {
-      error: sharedKeyPathEnabled()
-        ? `Is provider (${provider}) ke liye ShadRox ki shared key set nahi hai. Settings → BYOK me apni key add karo.`
-        : SHARED_KEY_OFF_ERROR
-    };
-  }
-
-  if (!byokKey) {
-    // The shared key is what a paid plan spends, and a plan's whole point is to
-    // buy cheap models — but the balance that bounds that spend is not enforced
-    // server-side yet (TODO(phase-3): verify the Supabase session and read the
-    // real credit balance before spending). Until then the hosted functions
-    // keep the Pro-only guardrail and only the operator's own loopback backend
-    // may spend the shared key on any tier, which is how the paid path is
-    // exercised before the meter exists.
-    if (classifyTier(provider, model) !== 'pro' && !runsOnTheUsersMachine()) {
-      return {
-        error: `ShadRox ki shared key sirf Pro models par chalti hai, aur "${model}" free tier me hai. Free models ke liye Settings → BYOK me apni key add karo.`
-      };
-    }
-  }
-
-  return { access: { apiKey, byok: Boolean(byokKey) } };
+export function resolveKeyAccess(rawKey: string | undefined): { access: KeyAccess } | { error: string } {
+  const apiKey = (rawKey || '').trim();
+  if (!apiKey) return { error: BYOK_REQUIRED_ERROR };
+  return { access: { apiKey, byok: true } };
 }

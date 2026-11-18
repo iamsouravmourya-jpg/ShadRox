@@ -14,7 +14,7 @@ import {
 	resolvePatchContent
 } from './patchEngine';
 import { countDiffLines, makeUnifiedDiff } from './patch/clineUiDiff';
-import { clineSectionsToPatches, parseClinePatchSections, refusalReason } from './patch/clinePatchApply';
+import { clineSectionsToPatches, detectDominantLineEnding, parseClinePatchSections, refusalReason } from './patch/clinePatchApply';
 
 const SR_SAMPLE = [
   '<<<<<<< ORIGINAL',
@@ -768,6 +768,109 @@ test('path spelling variants (case, ./, backslashes) still count as one file', (
   assert.equal(resolved.content, 'const next = 3;\n', 'the later block is the final state');
 });
 
+test('BUG-05a: two S/R fences for one file merge disjoint blocks in emission order', () => {
+  const sr = (original: string, updated: string) =>
+    ['<<<<<<< ORIGINAL', original, '=======', updated, '>>>>>>> UPDATED'].join('\n');
+  const onDisk = 'const a = 1;\nconst b = 2;\n';
+  const reply = [
+    '```ts path=src/App.tsx',
+    sr('const a = 1;', 'const a = 10;'),
+    '```',
+    '',
+    '```ts path=src/App.tsx',
+    sr('const b = 2;', 'const b = 20;'),
+    '```'
+  ].join('\n');
+
+  const patches = extractUnifiedPatches(reply, [{ name: 'src/App.tsx', content: onDisk }]);
+  assert.equal(patches.length, 1, 'still one review row per file');
+  assert.equal(patches[0].kind, 'searchReplace', 'a merge must never become a whole-file rewrite');
+  const blocks = (patches[0] as { blocks: Array<{ original: string; updated: string }> }).blocks;
+  assert.equal(blocks.length, 2, 'the first fence\'s edit is kept, not overwritten');
+  assert.equal(blocks[0].updated, 'const a = 10;');
+  assert.equal(blocks[1].updated, 'const b = 20;');
+  const resolved = resolvePatchContent(patches[0], onDisk);
+  assert.deepEqual(resolved.failures, []);
+  assert.equal(resolved.content, 'const a = 10;\nconst b = 20;\n', 'both edits land');
+});
+
+test('BUG-05a: a re-emitted ORIGINAL keeps the later UPDATED when fences merge', () => {
+  const sr = (updated: string) =>
+    ['<<<<<<< ORIGINAL', 'const old = 1;', '=======', updated, '>>>>>>> UPDATED'].join('\n');
+  const reply = [
+    '```ts path=src/App.tsx',
+    sr('const old = 2;'),
+    '```',
+    '',
+    '```ts path=src/App.tsx',
+    sr('const old = 42;'),
+    '```'
+  ].join('\n');
+
+  const patches = extractUnifiedPatches(reply, [{ name: 'src/App.tsx', content: 'const old = 1;\n' }]);
+  assert.equal(patches.length, 1);
+  const blocks = (patches[0] as { blocks: unknown[] }).blocks;
+  assert.equal(blocks.length, 1, 'the same anchor re-targeted is one block, not an overlap');
+  const resolved = resolvePatchContent(patches[0], 'const old = 1;\n');
+  assert.deepEqual(resolved.failures, []);
+  assert.equal(resolved.content, 'const old = 42;\n');
+});
+
+test('BUG-05a: a whole-file rewrite after S/R supersedes the earlier blocks', () => {
+  const reply = [
+    '```ts path=src/App.tsx',
+    SR_SAMPLE,
+    '```',
+    '',
+    '```ts path=src/App.tsx',
+    'export const final = true;',
+    '```'
+  ].join('\n');
+
+  const patches = extractUnifiedPatches(reply, [{ name: 'src/App.tsx', content: 'const old = 1;\n' }]);
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].kind, 'rewrite');
+  assert.equal((patches[0] as { content: string }).content, 'export const final = true;');
+});
+
+test('BUG-05a: S/R after a whole-file rewrite keeps last-wins (no blocks to merge onto)', () => {
+  const reply = [
+    '```ts path=src/App.tsx',
+    'export const rewritten = true;',
+    '```',
+    '',
+    '```ts path=src/App.tsx',
+    SR_SAMPLE,
+    '```'
+  ].join('\n');
+
+  const patches = extractUnifiedPatches(reply, [{ name: 'src/App.tsx', content: 'const old = 1;\n' }]);
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].kind, 'searchReplace');
+  // The S/R anchors verify against disk; a stale anchor fails loudly, never wipes.
+  const resolved = resolvePatchContent(patches[0], 'const old = 1;\n');
+  assert.equal(resolved.content, 'const next = 2;\n');
+});
+
+test('BUG-05a: merging a later clean fence never drops an earlier refusal', () => {
+  const reply = [
+    '```ts path=test.txt',
+    '```',
+    '',
+    '```ts path=test.txt',
+    SR_SAMPLE,
+    '```'
+  ].join('\n');
+
+  const scan = extractUnifiedPatchScan(reply, [{ name: 'test.txt', content: 'const old = 1;\n' }]);
+  assert.equal(scan.patches.length, 1);
+  assert.equal(scan.rejected.length, 1, 'the EMPTY_BODY refusal stays reported');
+  assert.equal(scan.rejected[0].code, 'EMPTY_BODY');
+  const resolved = resolvePatchContent(scan.patches[0], 'const old = 1;\n');
+  assert.equal(resolved.refusal?.code, 'EMPTY_BODY');
+  assert.ok(resolved.failures.length > 0, 'the refusal block never matches — the planner writes zero bytes');
+});
+
 test('a declared file with an empty body is reported, never silently dropped', () => {
   const scan = extractUnifiedPatchScan('```ts path=test.txt\n```', []);
   assert.equal(scan.patches.length, 1, 'the declared path still reaches review');
@@ -898,4 +1001,152 @@ test('a complete block followed by a cut-off block refuses the file with a typed
   const resolved = resolvePatchContent(scan.patches[0], onDisk);
   assert.equal(resolved.refusal?.code, 'TRUNCATED_BLOCK');
   assert.ok(resolved.failures.length > 0, 'the plan fails, so auto-apply writes zero bytes');
+});
+
+/* -------------------------------------------------------------------------- *
+ * Nested fences (CommonMark closing rule): a closing fence must be BARE and
+ * at least as long as the opening run; inner bare samples resolve to the LAST
+ * bare close, and an unproven outer close is a typed refusal, never a partial
+ * write.
+ * -------------------------------------------------------------------------- */
+
+const NESTED_MD = ['# Guide', '', '```ts', 'export const answer = 42;', '```', '', '```', 'plain sample', '```', '', 'Outro.'].join('\n');
+
+test('nested tagged and bare fences never split a Markdown rewrite', () => {
+  const reply = '```markdown path=GUIDE.md\n' + NESTED_MD + '\n```';
+  const scan = extractUnifiedPatchScan(reply, [{ name: 'GUIDE.md', content: '# Guide\n' }]);
+  assert.equal(scan.patches.length, 1, 'no bogus extra block from an inner fence tail');
+  assert.equal(scan.rejected.length, 0);
+  assert.equal(scan.patches[0].kind, 'rewrite');
+  assert.equal((scan.patches[0] as { content: string }).content, NESTED_MD);
+});
+
+test('a longer outer fence contains shorter inner fences unambiguously', () => {
+  const reply = '````markdown path=GUIDE.md\n' + NESTED_MD + '\n````';
+  const scan = extractUnifiedPatchScan(reply, []);
+  assert.equal(scan.patches.length, 1);
+  assert.equal(scan.rejected.length, 0);
+  assert.equal((scan.patches[0] as { content: string }).content, NESTED_MD);
+});
+
+test('a rewrite that dies after an inner BARE pair is a typed refusal (even candidate count)', () => {
+  const reply = '```markdown path=NEW.md\n# Title\n```\nsample\n```\ntrailing prose';
+  const scan = extractUnifiedPatchScan(reply, []);
+  assert.equal(scan.rejected.length, 1);
+  assert.equal(scan.rejected[0].path, 'NEW.md');
+  assert.equal(scan.rejected[0].code, 'TRUNCATED_BLOCK');
+  const resolved = resolvePatchContent(scan.patches[0], '');
+  assert.equal(resolved.refusal?.code, 'TRUNCATED_BLOCK');
+  assert.ok(resolved.failures.length > 0, 'zero bytes: a new file never lands partial');
+});
+
+test('an unclosed inner sample at the chosen close is a typed refusal', () => {
+  // Outer ```` fence; the body pairs one ``` sample but opens a second one
+  // that never closes — the chosen close cannot be proven as the outer one.
+  const reply = '````markdown path=NEW.md\n# T\n```\na\n```\n```\nb\n````';
+  const scan = extractUnifiedPatchScan(reply, []);
+  assert.equal(scan.rejected.length, 1);
+  assert.equal(scan.rejected[0].code, 'TRUNCATED_BLOCK');
+  assert.match(scan.rejected[0].reason, /nested bare/);
+});
+
+test('consecutive bare-opener blocks with a path first line stay separate', () => {
+  const reply = '```\na.ts\nexport const a = 1;\n```\n```\nb.ts\nexport const b = 2;\n```';
+  const patches = extractUnifiedPatches(reply, [{ name: 'a.ts', content: '' }, { name: 'b.ts', content: '' }]);
+  assert.equal(patches.length, 2);
+  assert.equal(patches[0].path, 'a.ts');
+  assert.equal(patches[1].path, 'b.ts');
+  assert.equal((patches[0] as { content: string }).content, 'export const a = 1;');
+  assert.equal((patches[1] as { content: string }).content, 'export const b = 2;');
+});
+
+/* -------------------------------------------------------------------------- *
+ * Blank context lines in Cline hunks; context-only hunks are never dropped.
+ * -------------------------------------------------------------------------- */
+
+test('an unprefixed blank line inside a hunk is empty context, not a whole-patch parse error', () => {
+  const sections = parseClinePatchSections(
+    ['*** Update File: f.ts', '@@', ' const a = 1;', '-const b = 2;', '+const b = 20;', '', ' const c = 3;'].join('\n')
+  );
+  const entries = clineSectionsToPatches(sections, { 'f.ts': 'const a = 1;\nconst b = 2;\n\nconst c = 3;\n' });
+  const update = entries.find((entry) => entry.path === 'f.ts');
+  assert.equal(update?.kind, 'searchReplace');
+  const resolved = resolvePatchContent(update!, 'const a = 1;\nconst b = 2;\n\nconst c = 3;\n');
+  assert.deepEqual(resolved.failures, []);
+  assert.equal(resolved.content, 'const a = 1;\nconst b = 20;\n\nconst c = 3;\n');
+});
+
+test('genuine garbage outside a hunk still errors', () => {
+  assert.throws(
+    () => parseClinePatchSections('*** Begin Patch\nthis is not a patch line\n*** End Patch'),
+    /Unknown line while parsing/
+  );
+});
+
+test('a context-only hunk is refused with HUNK_NO_CHANGES, never silently dropped', () => {
+  const sections = parseClinePatchSections(
+    ['*** Update File: noop.ts', '@@', ' just context', ' more context'].join('\n')
+  );
+  const entries = clineSectionsToPatches(sections, { 'noop.ts': 'just context\nmore context\n' });
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].kind, 'refuse');
+  assert.equal((entries[0] as { code: string }).code, 'HUNK_NO_CHANGES');
+  assert.match((entries[0] as { reason: string }).reason, /no changes/i);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Dominant-EOL splicing: inserted lines match the file; existing lines never
+ * change their endings.
+ * -------------------------------------------------------------------------- */
+
+test('detectDominantLineEnding follows the majority, ties stay LF', () => {
+  assert.equal(detectDominantLineEnding('a\r\nb\r\nc\n'), '\r\n');
+  assert.equal(detectDominantLineEnding('a\nb\nc\r\n'), '\n');
+  assert.equal(detectDominantLineEnding('a\r\nb\n'), '\n');
+  assert.equal(detectDominantLineEnding('a\nb'), '\n');
+  assert.equal(detectDominantLineEnding(''), '\n');
+});
+
+test('a multi-line LF replacement into a CRLF file emits CRLF lines', () => {
+  const content = 'const a = 1;\r\nconst b = 2;\r\nconst c = 3;\r\n';
+  const result = applySearchReplaceBlocks(content, [
+    { original: 'const a = 1;\nconst b = 2;', updated: 'const A = 1;\nconst B = 2;\nconst extra = 9;' }
+  ]);
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.content, 'const A = 1;\r\nconst B = 2;\r\nconst extra = 9;\r\nconst c = 3;\r\n');
+});
+
+test('a stripped-level match ending mid-CRLF keeps the file\'s own CR-LF pair', () => {
+  const content = 'const a = 1;\r\nconst b = 2;\r\n';
+  const match = locateBlock(content, 'const  a = 1;');
+  assert.equal(match.status === 'found' && match.via, 'stripped');
+  const result = applySearchReplaceBlocks(content, [
+    { original: 'const  a = 1;', updated: 'const A = 1;\nconst extra = 0;' }
+  ]);
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.content, 'const A = 1;\r\nconst extra = 0;\r\nconst b = 2;\r\n');
+});
+
+test('a CRLF replacement into a pure-LF file emits LF lines', () => {
+  const result = applySearchReplaceBlocks('const a = 1;\nconst b = 2;\n', [
+    { original: 'const a = 1;', updated: 'const A = 1;\r\nconst extra = 0;' }
+  ]);
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.content, 'const A = 1;\nconst extra = 0;\nconst b = 2;\n');
+});
+
+test('a duplicated self-replacement in a CRLF file stays byte-identical', () => {
+  const content = 'x(1);\r\nx(1);\r\n';
+  const result = applySearchReplaceBlocks(content, [{ original: 'x(1);', updated: 'x(1);' }]);
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.content, content);
+});
+
+/* -------------------------------------------------------------------------- *
+ * countDiffLines: only true '+++'/'---' headers are skipped.
+ * -------------------------------------------------------------------------- */
+
+test('countDiffLines counts content lines starting with ++ or --', () => {
+  const diff = ['--- a/f', '+++ b/f', '@@ -1,2 +1,2 @@', '-keep', '+keep', '+++x', '---y', '++x', '--y'].join('\n');
+  assert.deepEqual(countDiffLines(diff), { additions: 3, deletions: 3 });
 });

@@ -45,6 +45,8 @@ export interface ContentSearchOptions {
   /** Match file paths instead of file contents. */
   namesOnly?: boolean;
   limit?: number;
+  /** Max matching lines one file contributes (default 3). */
+  perFile?: number;
 }
 
 export interface ContentSearchResult {
@@ -108,14 +110,91 @@ export interface VerifyChangeResult {
 export interface DesktopCommandResult {
   stdout: string;
   stderr: string;
-  exitCode: number;
   /**
-   * True when the main process killed the command at its time limit. A killed
+   * `null` when the command was auto-backgrounded into a job and is still
+   * running: there is no exit code yet, and `jobId` says where to poll.
+   */
+  exitCode: number | null;
+  /**
+   * True when the main process killed the command at its silence limit. A killed
    * command proved nothing, so it must not read as an ordinary exit code.
    */
   timedOut?: boolean;
   deniedReason?: string;
+  /** Set when the run became a background job (dev server or long foreground wait). */
+  jobId?: string;
+  backgrounded?: boolean;
+  /** Risk tier the command was classified at (READ/BUILD_TEST/INSTALL/MUTATE/NETWORK/DANGEROUS). */
+  tier?: string;
+  /** Human/model-facing note, e.g. how to poll a backgrounded job. */
+  message?: string;
 }
+
+/** Lifecycle of a command job tracked by the main process. */
+export type DesktopJobStatus = 'running' | 'killed' | 'timed_out' | 'exited';
+
+/** One row of `jobControl({ action: 'list' })` / the `status` response. */
+export interface DesktopJobSummary {
+  jobId: string;
+  command: string;
+  status: DesktopJobStatus;
+  tier?: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  backgrounded: boolean;
+  ready: boolean;
+  readyUrl: string | null;
+  startedAt: number;
+  endedAt: number | null;
+  outputChars: number;
+}
+
+export interface DesktopJobControlRequest {
+  /** `stop` is the canonical kill; `kill` is accepted as an alias. */
+  action: 'list' | 'read_output' | 'status' | 'stop' | 'kill';
+  jobId?: string;
+  /** read_output tail-window size when no explicit range is given. */
+  chars?: number;
+  /** read_output absolute-offset window into the job's rolling output buffer. */
+  range?: { start?: number; end?: number };
+}
+
+export interface DesktopJobControlResult {
+  ok: boolean;
+  error?: string;
+  /** action: list */
+  jobs?: DesktopJobSummary[];
+  jobId?: string;
+  command?: string;
+  status?: DesktopJobStatus;
+  tier?: string;
+  exitCode?: number | null;
+  timedOut?: boolean;
+  backgrounded?: boolean;
+  ready?: boolean;
+  readyUrl?: string | null;
+  startedAt?: number;
+  endedAt?: number | null;
+  outputChars?: number;
+  /** action: read_output — absolute offsets, stable while old text drops off the ring. */
+  start?: number;
+  end?: number;
+  totalChars?: number;
+  text?: string;
+  /** action: stop/kill */
+  killed?: boolean;
+  message?: string;
+}
+
+/** Lifecycle events on `terminal:job`. Output chunks arrive on `terminal:job-output`. */
+export type DesktopJobEvent =
+  | { type: 'started'; jobId: string; workspaceId: string | null; command: string; cwd: string; tier?: string; devServer?: boolean; autoApproved?: boolean }
+  | { type: 'output'; jobId: string; workspaceId: string | null; chunk: string }
+  | { type: 'backgrounded'; jobId: string; workspaceId: string | null; command: string; tier?: string; reason: string }
+  | { type: 'ready'; jobId: string; workspaceId: string | null; url: string | null }
+  | { type: 'exit'; jobId: string; workspaceId: string | null; exitCode: number; timedOut: boolean; status: DesktopJobStatus; durationMs: number };
+
+export type DesktopJobOutputEvent = Extract<DesktopJobEvent, { type: 'output' }>;
 
 /** Read-only snapshot of the workspace's git state, from the main process. */
 export interface GitReadResult {
@@ -288,8 +367,12 @@ export interface TerminalRun {
   command: string;
   stdout: string;
   stderr: string;
-  exitCode: number;
+  /** null while a backgrounded job is still running. */
+  exitCode: number | null;
   durationMs: number;
+  jobId?: string;
+  backgrounded?: boolean;
+  tier?: string;
 }
 
 export interface DesktopPreviewOutput {
@@ -337,6 +420,9 @@ export type DesktopPreviewState =
   | { status: 'starting'; url: null }
   | { status: 'ready'; url: string; /** `static` previews reload on file changes; `dev` servers may use their own HMR. */ mode?: 'dev' | 'static'; hmr?: boolean }
   | { status: 'error'; url: null; message: string };
+
+/** Fired by agent tools when they start/stop the preview outside the pane's own buttons, so the pane follows. */
+export const PREVIEW_AGENT_CONTROL_EVENT = 'shadrox:preview-agent-control';
 
 /**
  * The verdict `electron/preview-assert.cjs` merges and hands over IPC — the
@@ -645,6 +731,11 @@ export interface ShadRoxDesktopAPI {
    */
   runCommand: (workspaceId: string, command: string, riskNotice?: string) => Promise<DesktopCommandResult>;
   /**
+   * Inspect and control command jobs (auto-backgrounded long runs, dev servers).
+   * Confined to the given workspace; unknown job ids resolve `{ ok: false }`.
+   */
+  jobControl: (workspaceId: string, request: DesktopJobControlRequest) => Promise<DesktopJobControlResult>;
+  /**
    * Structured preview sanity check. `observed` means the frame could not prove
    * a pass. Pass `selectors` to re-run the same pinned check instead of letting
    * main re-derive mount points from the current HTML.
@@ -743,6 +834,10 @@ export interface ShadRoxDesktopAPI {
   listTerminalSessions: (workspaceId: string) => Promise<TerminalSessionInfo[]>;
   /** One command the app ran, echoed so the terminal dock can show the transcript. */
   onTerminalRun: (listener: (event: TerminalRun) => void) => () => void;
+  /** Coalesced output chunks from command jobs (every ~250ms while output flows). */
+  onJobOutput: (listener: (event: DesktopJobOutputEvent) => void) => () => void;
+  /** Job lifecycle: started / backgrounded / ready / exit. */
+  onJobEvent: (listener: (event: DesktopJobEvent) => void) => () => void;
   /** Opens a link printed in the terminal in the system browser; refuses non-http(s). */
   openTerminalLink: (url: string) => Promise<boolean>;
   onTerminalOutput: (listener: (event: TerminalOutput) => void) => () => void;

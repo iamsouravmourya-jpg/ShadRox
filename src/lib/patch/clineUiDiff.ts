@@ -163,7 +163,9 @@ export function hunkHeader(lines: string[]): string {
 
 /**
  * Count added/removed lines in a unified diff, ignoring the `---`/`+++`
- * file headers and `@@` hunk headers.
+ * file headers and `@@` hunk headers. A header is '+++'/'---' followed by
+ * whitespace or end of line — a content line like '+++x' (an added line
+ * whose text starts with '++') or '---x' is a change, not a header.
  */
 export function countDiffLines(diff: string): {
 	additions: number;
@@ -172,7 +174,7 @@ export function countDiffLines(diff: string): {
 	let additions = 0;
 	let deletions = 0;
 	for (const line of diff.split("\n")) {
-		if (line.startsWith("+++") || line.startsWith("---")) continue;
+		if (/^(?:\+\+\+|---)(?:\s|$)/.test(line)) continue;
 		if (line.startsWith("+")) additions++;
 		else if (line.startsWith("-")) deletions++;
 	}

@@ -161,15 +161,6 @@ function snippet(text: string): string {
   return clean.length > SNIPPET_LENGTH ? `${clean.slice(0, SNIPPET_LENGTH - 1)}…` : clean;
 }
 
-function spendLabel(capsule: ChangeCapsule): string {
-  const spend = capsule.spend;
-  if (!spend) return 'BYOK/unmetered';
-  const cost = spend.estimatedCostUsd !== null
-    ? `$${spend.estimatedCostUsd.toFixed(4)}`
-    : `${spend.inputTokens + spend.outputTokens} tok`;
-  return `${spend.model} · ${cost}`;
-}
-
 /** One edge list of a dependency answer, dimmed where the far end is not indexed. */
 function DependencyRows({ title, rows }: { title: string; rows: DependencyEvidence[] }): ReactElement {
   return (
@@ -585,7 +576,6 @@ export function TaskInspector({
                               <FileCode className="h-2.5 w-2.5" />
                               {capsule.diffs.length} file{capsule.diffs.length === 1 ? '' : 's'}
                             </span>
-                            <span className="truncate" title={spendLabel(capsule)}>{spendLabel(capsule)}</span>
                           </div>
                         </button>
                       </li>

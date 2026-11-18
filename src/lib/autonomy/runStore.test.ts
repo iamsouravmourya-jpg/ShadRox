@@ -34,7 +34,6 @@ function state(overrides: Partial<RunState> = {}): RunState {
         attempts: []
       }
     ],
-    creditsSpent: 3,
     startedAt: 1,
     ...overrides
   };
@@ -68,6 +67,13 @@ test('a corrupt blob is treated as no run, not a crash', () => {
 
   storage.setItem('shadrox.autonomy.run:/ws/a', JSON.stringify({ goal: 'x' }));
   assert.equal(store.load('/ws/a'), null, 'a partial shape is rejected');
+});
+
+test('a legacy blob carrying creditsSpent still loads', () => {
+  const storage = memoryStorage();
+  storage.setItem('shadrox.autonomy.run:/ws/a', JSON.stringify({ ...state(), creditsSpent: 3 }));
+  const store = createRunStore(storage);
+  assert.equal(store.load('/ws/a')?.goal, 'ship it');
 });
 
 test('save survives a storage that throws, and the null store is a safe no-op', () => {

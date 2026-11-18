@@ -21,7 +21,7 @@ const panels: Panel[] = [
     text: 'The agent reads your project — files, search, diagnostics, Git — and proposes changes as diffs you accept or reject. Requests can include a compact repo map so it understands the codebase before touching anything.',
     bullets: [
       'Read-only tools: list, read, search, diagnostics, Git, outlines',
-      'Five tool rounds by default, with up to six calls per round',
+      'Fifteen tool rounds by default, with up to six calls per round',
       'Edits go through a patch → review → apply pipeline; unsafe edits wait for your accept',
       'Cut-off or malformed edit blocks fail loudly and get one repair retry — never silently dropped',
       'File notes state the real outcome, remembered across restarts',

@@ -34,7 +34,9 @@ const cols = [
     title: 'Project',
     links: [
       { label: 'About the maker', href: '/about' },
+      { label: 'Contributors',    href: '/contributors' },
       { label: 'GitHub repo',     href: GITHUB_REPO, external: true },
+      { label: 'LinkedIn (company)', href: 'https://www.linkedin.com/company/shadrox', external: true },
       { label: 'shadrox.cyou',    href: 'https://www.shadrox.cyou', external: true },
     ],
   },

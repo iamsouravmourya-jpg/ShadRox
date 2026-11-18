@@ -198,6 +198,70 @@ test('isFileMention and filePathFromMention follow the cline shapes', () => {
   assert.equal(filePathFromMention('"/src/a b.ts"'), 'src/a b.ts');
 });
 
+// --- ShadRox extension: natural relative-path mentions ----------------------
+
+test('natural relative paths match without a leading slash', () => {
+  assert.equal(matchOf('@src/App.tsx'), '@src/App.tsx');
+  assert.equal(matchOf('@package.json'), '@package.json');
+  assert.equal(matchOf('@./src/a.ts'), '@./src/a.ts');
+  assert.equal(matchOf('@src/lib/'), '@src/lib/');
+  assert.equal(matchOf('@src/'), '@src/');
+  assert.equal(matchOf('explain @src/App.tsx please'), '@src/App.tsx');
+  assert.equal(matchOf('see @index.ts.'), '@index.ts');
+  assert.equal(matchOf('@file.tar.gz'), '@file.tar.gz');
+});
+
+test('quoted natural paths may contain spaces without a leading slash', () => {
+  assert.equal(matchOf('@"src/My Component.tsx"'), '@"src/My Component.tsx"');
+  assert.equal(matchOf('@"my file.txt"'), '@"my file.txt"');
+});
+
+test('natural forms keep emails, hashes, keywords and bare words intact', () => {
+  assert.deepEqual(parseContextMentions('email me @foo@example.com maybe'), []);
+  assert.deepEqual(parseContextMentions('ping @foo about @barbaz'), []);
+  assert.equal(matchOf('@abcdef1'), '@abcdef1');
+  assert.equal(matchOf('@problems'), '@problems');
+  assert.equal(matchOf('@git-changes'), '@git-changes');
+  assert.equal(matchOf('@v1.2'), null);
+  assert.deepEqual(parseContextMentions('@ssh://git@github.com/repo'), ['ssh://git@github.com/repo']);
+});
+
+test('natural forms drop trailing punctuation like the ported forms', () => {
+  assert.equal(matchOf('@src/App.tsx.'), '@src/App.tsx');
+  assert.equal(matchOf('@package.json,'), '@package.json');
+  assert.equal(matchOf('@src/a.ts!?'), '@src/a.ts');
+  assert.deepEqual('fix @src/a.ts, then @package.json.'.match(mentionRegexGlobal), ['@src/a.ts', '@package.json']);
+});
+
+test('isFileMention and filePathFromMention handle natural forms', () => {
+  assert.equal(isFileMention('src/a.ts'), true);
+  assert.equal(isFileMention('package.json'), true);
+  assert.equal(isFileMention('"src/a b.ts"'), true);
+  assert.equal(isFileMention('src/'), true);
+  assert.equal(isFileMention('workspace:/path'), false);
+  assert.equal(isFileMention('abcdef1234567'), false);
+  assert.equal(filePathFromMention('src/a.ts'), 'src/a.ts');
+  assert.equal(filePathFromMention('"src/a b.ts"'), 'src/a b.ts');
+  assert.equal(filePathFromMention('/src/a.ts'), 'src/a.ts');
+});
+
+test('natural file and folder mentions resolve against the workspace', async () => {
+  const { dir, sources } = await fixture();
+  try {
+    const file = await expandContextMentions('explain @src/a.ts please', sources);
+    assert.ok(file.includes(`<file_content path="src/a.ts">\n${markUntrustedData('export const a = 1;')}\n</file_content>`));
+    const folder = await expandContextMentions('what is in @src/?', sources);
+    assert.ok(folder.includes('<folder_content path="src/">'));
+    assert.ok(folder.includes('nested/'));
+    const quoted = await expandContextMentions('read @"my file.txt" now', sources);
+    assert.ok(quoted.includes(`<file_content path="my file.txt">\n${markUntrustedData('spaced')}\n</file_content>`));
+    const missing = await expandContextMentions('read @nope.txt ok?', sources);
+    assert.equal(missing, 'read @nope.txt ok?');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // --- resolver: expandContextMentions against a temp fixture folder ----------
 
 const fixture = async (): Promise<{ dir: string; sources: MentionSources }> => {

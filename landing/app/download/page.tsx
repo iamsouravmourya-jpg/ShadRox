@@ -23,7 +23,7 @@ import { CopyButton } from './copy-button'
 import { SmartScreenMock } from './smartscreen-mock'
 
 export const metadata: Metadata = {
-  title: 'Download — ShadRox',
+  title: 'ShadRox — Download',
   description:
     'Download ShadRox for Windows 10 / 11 (64-bit). Free during beta — install in four steps, verify the SHA-512 hash, and see exactly why the unsigned build triggers a Windows SmartScreen warning.',
   alternates: { canonical: '/download' },

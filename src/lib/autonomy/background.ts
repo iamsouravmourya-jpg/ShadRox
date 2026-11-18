@@ -5,11 +5,13 @@
  * There is no background process. What is persisted here is a description of a
  * run — never its file contents, replies or patches — so the next launch can say
  * "this run was interrupted" and resume it only in the same workspace and only
- * while the budget allows. A snapshot that says `running` on disk is a snapshot
- * the app never got to finish; `settleInterrupted` is the only thing allowed to
- * rewrite that, and it rewrites it to `paused`, never to a live state.
+ * while its work ceilings leave room to continue. A snapshot that says `running`
+ * on disk is a snapshot the app never got to finish; `settleInterrupted` is the
+ * only thing allowed to rewrite that, and it rewrites it to `paused`, never to a
+ * live state.
  */
 
+import { DEFAULT_TEAM_BUDGET } from '../agents/types';
 import { DEFAULT_RUN_BUDGET } from './types';
 
 export const BACKGROUND_SNAPSHOT_VERSION = 1;
@@ -19,10 +21,7 @@ export const MAX_BACKGROUND_GOAL = 500;
 export const MAX_BACKGROUND_EVENT = 200;
 export const MAX_BACKGROUND_ID = 120;
 export const MAX_BACKGROUND_ROOT = 1024;
-export const MAX_BACKGROUND_CREDITS = 1_000_000;
 export const MAX_BACKGROUND_ATTEMPTS = 999;
-/** Below this, a resume would buy a fraction of a turn; the panel says so instead. */
-export const MIN_RESUME_CREDITS = 0.1;
 export const BACKGROUND_KEEP_LIMIT = 5;
 
 export type BackgroundMode = 'autonomy' | 'team';
@@ -46,8 +45,6 @@ export interface BackgroundRunSnapshot {
   status: BackgroundStatus;
   startedAt: number;
   updatedAt: number;
-  creditsSpent: number;
-  budgetCredits: number;
   tasks: BackgroundTaskSummary[];
   lastEvent: string;
   /** True only when the app closed under a run; `settleInterrupted` sets it. */
@@ -72,8 +69,6 @@ export interface BackgroundRunSource {
   status?: string;
   startedAt?: number;
   updatedAt?: number;
-  creditsSpent?: number;
-  budgetCredits?: number;
   milestones?: ReadonlyArray<BackgroundTaskSource>;
   tasks?: ReadonlyArray<BackgroundTaskSource>;
   lastEvent?: string;
@@ -135,10 +130,6 @@ function finiteNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
-function roundCredits(value: number): number {
-  return Math.min(MAX_BACKGROUND_CREDITS, Math.round(Math.max(0, value) * 10) / 10);
-}
-
 function timestamp(value: unknown, fallback: number): number {
   const number = finiteNumber(value, fallback);
   return number >= 0 ? Math.floor(number) : fallback;
@@ -163,10 +154,6 @@ function toTaskStatus(value: unknown): BackgroundTaskStatus {
   return typeof value === 'string' && (TASK_STATUSES as readonly string[]).includes(value)
     ? (value as BackgroundTaskStatus)
     : 'pending';
-}
-
-function formatSpend(value: number): string {
-  return String(Math.round(value * 10) / 10);
 }
 
 function defaultEvent(
@@ -219,7 +206,6 @@ export function createBackgroundSnapshot(run: BackgroundRunSource): BackgroundRu
   const tasks = sources.slice(0, MAX_BACKGROUND_TASKS).map(summarizeTask);
   const status = toBackgroundStatus(run.status, 'running');
   const mode: BackgroundMode = run.mode === 'team' ? 'team' : 'autonomy';
-  const budget = roundCredits(finiteNumber(run.budgetCredits, DEFAULT_RUN_BUDGET.maxCredits));
   const event = typeof run.lastEvent === 'string'
     ? run.lastEvent
     : typeof run.error === 'string'
@@ -235,8 +221,6 @@ export function createBackgroundSnapshot(run: BackgroundRunSource): BackgroundRu
     status,
     startedAt,
     updatedAt,
-    creditsSpent: roundCredits(finiteNumber(run.creditsSpent, 0)),
-    budgetCredits: budget > 0 ? budget : DEFAULT_RUN_BUDGET.maxCredits,
     tasks,
     lastEvent: sanitizeText(event, MAX_BACKGROUND_EVENT) || defaultEvent(mode, status, tasks),
     interrupted: run.interrupted === true
@@ -282,8 +266,6 @@ function canonicalSnapshot(snapshot: BackgroundRunSnapshot): BackgroundRunSnapsh
     status: snapshot.status,
     startedAt: snapshot.startedAt,
     updatedAt: snapshot.updatedAt,
-    creditsSpent: snapshot.creditsSpent,
-    budgetCredits: snapshot.budgetCredits,
     tasks: snapshot.tasks.map((task) => ({
       id: task.id,
       title: task.title,
@@ -308,24 +290,6 @@ function readText(value: unknown, field: string, limit: number, errors: string[]
     return '';
   }
   return redact(value, limit);
-}
-
-function readNumber(
-  value: unknown,
-  field: string,
-  min: number,
-  max: number,
-  errors: string[]
-): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    errors.push(`${field} must be a finite number`);
-    return null;
-  }
-  if (value < min || value > max) {
-    errors.push(`${field} is out of range`);
-    return null;
-  }
-  return value;
 }
 
 function readInteger(
@@ -414,7 +378,11 @@ export function parseBackgroundSnapshot(raw: string): BackgroundParseResult {
   if (candidate.mode !== 'autonomy' && candidate.mode !== 'team') {
     errors.push('mode must be "autonomy" or "team"');
   }
-  if (typeof candidate.status !== 'string' || !(STATUSES as readonly string[]).includes(candidate.status)) {
+  // A snapshot written before the work-ceiling statuses carried 'stopped-budget';
+  // that is a work stop, and it loads as one. Spend fields on an old blob are
+  // ignored, not validated: they describe nothing this build resumes against.
+  const status = candidate.status === 'stopped-budget' ? 'stopped' : candidate.status;
+  if (typeof status !== 'string' || !(STATUSES as readonly string[]).includes(status)) {
     errors.push('status is not a known run status');
   }
   if (typeof candidate.interrupted !== 'boolean') {
@@ -426,17 +394,12 @@ export function parseBackgroundSnapshot(raw: string): BackgroundParseResult {
   if (startedAt !== null && updatedAt !== null && updatedAt < startedAt) {
     errors.push('updatedAt must not precede startedAt');
   }
-  const creditsSpent = readNumber(candidate.creditsSpent, 'creditsSpent', 0, MAX_BACKGROUND_CREDITS, errors);
-  const budgetCredits = readNumber(candidate.budgetCredits, 'budgetCredits', 0, MAX_BACKGROUND_CREDITS, errors);
-  if (budgetCredits !== null && budgetCredits <= 0) {
-    errors.push('budgetCredits must be greater than zero');
-  }
 
   const tasks = readTasks(candidate.tasks, errors);
   if (errors.length > 0) {
     return { snapshot: null, errors };
   }
-  if (startedAt === null || updatedAt === null || creditsSpent === null || budgetCredits === null || tasks === null) {
+  if (startedAt === null || updatedAt === null || tasks === null) {
     return { snapshot: null, errors: ['the snapshot is incomplete'] };
   }
 
@@ -447,11 +410,9 @@ export function parseBackgroundSnapshot(raw: string): BackgroundParseResult {
       workspaceRoot,
       goal,
       mode: candidate.mode as BackgroundMode,
-      status: candidate.status as BackgroundStatus,
+      status: status as BackgroundStatus,
       startedAt,
       updatedAt,
-      creditsSpent: roundCredits(creditsSpent),
-      budgetCredits: roundCredits(budgetCredits),
       tasks,
       lastEvent,
       interrupted: candidate.interrupted as boolean
@@ -477,11 +438,18 @@ export function settleInterrupted(snapshot: BackgroundRunSnapshot): BackgroundRu
   return copy;
 }
 
-function budgetRemaining(snapshot: BackgroundRunSnapshot): number {
-  return Math.round((snapshot.budgetCredits - snapshot.creditsSpent) * 10) / 10;
+/** The per-task attempt ceiling a resume must still have room under. */
+function attemptCeiling(snapshot: BackgroundRunSnapshot): number {
+  return snapshot.mode === 'team'
+    ? DEFAULT_TEAM_BUDGET.maxAttemptsPerTask
+    : DEFAULT_RUN_BUDGET.maxAttemptsPerMilestone;
 }
 
-/** A resume needs the same workspace, a paused run, and credit left to spend. */
+/**
+ * A resume needs the same workspace, a paused run, and an unfinished task that
+ * has not used up its attempts. A run whose remaining work is all at the ceiling
+ * would stop again on its first turn, so the panel says so instead.
+ */
 export function canResume(snapshot: BackgroundRunSnapshot, currentWorkspaceRoot: string): ResumeCheck {
   if (snapshot.status !== 'paused') {
     return { ok: false, reason: `A ${snapshot.status} run cannot be resumed; only a paused run can.` };
@@ -489,21 +457,23 @@ export function canResume(snapshot: BackgroundRunSnapshot, currentWorkspaceRoot:
   if (!sameWorkspace(snapshot.workspaceRoot, currentWorkspaceRoot)) {
     return { ok: false, reason: `This run belongs to ${snapshot.workspaceRoot}, which is not the open workspace.` };
   }
-  if (budgetRemaining(snapshot) < MIN_RESUME_CREDITS) {
+  const unfinished = snapshot.tasks.filter((task) => task.status === 'pending' || task.status === 'running');
+  const ceiling = attemptCeiling(snapshot);
+  if (unfinished.length > 0 && unfinished.every((task) => task.attempts >= ceiling)) {
     return {
       ok: false,
-      reason: `The run's spend budget is used up (${formatSpend(snapshot.creditsSpent)} of ${formatSpend(snapshot.budgetCredits)}).`
+      reason: `Every unfinished task has used its ${ceiling} attempts; the run has no work left under its ceilings.`
     };
   }
   return { ok: true };
 }
 
-/** One line for the chat resume prompt: what is left and what it has spent. */
+/** One line for the chat resume prompt: how much of the plan is still ahead. */
 export function resumeSummary(snapshot: BackgroundRunSnapshot): string {
   const total = snapshot.tasks.length;
   const left = snapshot.tasks.filter((task) => task.status === 'pending' || task.status === 'running').length;
   const taskWord = total === 1 ? 'task' : 'tasks';
-  return `Resume: ${left} of ${total} ${taskWord} left, ${formatSpend(snapshot.creditsSpent)} spent of the ${formatSpend(snapshot.budgetCredits)} budget.`;
+  return `Resume: ${left} of ${total} ${taskWord} left.`;
 }
 
 function runIdOf(raw: string): string | null {

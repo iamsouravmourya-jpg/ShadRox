@@ -66,6 +66,23 @@ export function detectLineEnding(content: string): LineEnding {
 	return content.includes("\r\n") ? "\r\n" : "\n";
 }
 
+/**
+ * The DOMINANT line ending: CRLF only when CR-LF pairs outnumber bare LFs.
+ * Used when splicing replacement lines into an existing file so inserted
+ * content matches the file's own convention without re-ending existing lines
+ * (a mixed-EOL file keeps its majority convention; a tie stays LF).
+ */
+export function detectDominantLineEnding(content: string): LineEnding {
+	let crlf = 0;
+	let lf = 0;
+	for (let index = 0; index < content.length; index += 1) {
+		if (content[index] !== "\n") continue;
+		if (index > 0 && content[index - 1] === "\r") crlf += 1;
+		else lf += 1;
+	}
+	return crlf > lf ? "\r\n" : "\n";
+}
+
 export function normalizeLineEndings(text: string, eol: LineEnding): string {
 	return text.split(/\r\n|\n/).join(eol);
 }
@@ -403,6 +420,11 @@ export function parseClinePatchSections(patchText: string): ClineParsedSections 
 
 	while (hasMore() && !isEnd()) {
 		const line = lines[index];
+		// A blank line between file sections is formatting, not grammar.
+		if ((line ?? "").trim() === "") {
+			index++;
+			continue;
+		}
 		if (line?.startsWith(PATCH_MARKERS.DELETE)) {
 			const path = line.substring(PATCH_MARKERS.DELETE.length).trim();
 			if (seen.has(path)) throw new DiffError(`Duplicate delete for file: ${path}`);
@@ -456,6 +478,13 @@ export function parseClinePatchSections(patchText: string): ClineParsedSections 
 			];
 			while (!stopMarkers.some((marker) => lines[index]?.startsWith(marker.trim()))) {
 				if (index >= lines.length) break;
+				// Blank lines at a section boundary (before @@ or between hunks)
+				// are formatting; blank lines INSIDE a hunk are handled by peek
+				// as empty context lines.
+				if ((lines[index] ?? "").trim() === "") {
+					index++;
+					continue;
+				}
 				const outerBefore = index;
 				const currentLine = lines[index];
 				const defStr = currentLine?.startsWith("@@ ")
@@ -464,6 +493,9 @@ export function parseClinePatchSections(patchText: string): ClineParsedSections 
 				const sectionStr = currentLine === "@@" ? currentLine : undefined;
 				if (defStr !== undefined || sectionStr !== undefined) {
 					index++;
+					// A bare empty line right after @@ is readability formatting,
+					// not a leading context line (a ' '-prefixed blank still is).
+					while (lines[index] === "") index++;
 				}
 				// defStr is a function-signature anchor. Without file contents we
 				// cannot resolve it, and ShadRox positions hunks by their context
@@ -502,6 +534,8 @@ export type ClineRefusalCode =
 	| "ADD_FILE_EXISTS"
 	/** A hunk with no context lines to anchor on. */
 	| "HUNK_UNANCHORED"
+	/** A hunk (or whole update) that carried only context lines — no changes. */
+	| "HUNK_NO_CHANGES"
 	/** The apply_patch body could not be parsed at all. */
 	| "PARSE_ERROR"
 	/** A fence that declared a file and then wrote no body (a deletion). */
@@ -564,7 +598,7 @@ export function refusalReason(
  */
 export type HunkConversion =
 	| { kind: "blocks"; blocks: Array<{ original: string; updated: string }> }
-	| { kind: "refuse"; reason: string };
+	| { kind: "refuse"; reason: string; code?: ClineRefusalCode };
 
 export function hunkToBlocks(hunk: ClineHunkSection): HunkConversion {
 	const blocks: Array<{ original: string; updated: string }> = [];
@@ -603,7 +637,14 @@ export function hunkToBlocks(hunk: ClineHunkSection): HunkConversion {
 
 	if (!blocks.length) {
 		// A section with zero chunks carries only kept context: a no-op hunk.
-		return { kind: "blocks", blocks: [] };
+		// Dropping it silently contradicts the never-silent-drops contract —
+		// the file is refused with a typed reason instead.
+		return {
+			kind: "refuse",
+			code: "HUNK_NO_CHANGES",
+			reason:
+				"hunk contained no changes — only context lines, so nothing was applied. Re-send the hunk with its actual +/- change lines.",
+		};
 	}
 	return { kind: "blocks", blocks };
 }
@@ -650,21 +691,34 @@ export function clineSectionsToPatches(
 			continue;
 		}
 		const blocks: Array<{ original: string; updated: string }> = [];
+		let refused = false;
 		for (const hunk of update.hunks) {
 			const converted = hunkToBlocks(hunk);
 			if (converted.kind === "refuse") {
 				entries.push({
 					path: update.path,
 					kind: "refuse",
-					code: "HUNK_UNANCHORED",
+					code: converted.code ?? "HUNK_UNANCHORED",
 					reason: converted.reason,
 				});
+				refused = true;
 				blocks.length = 0;
 				break;
 			}
 			blocks.push(...converted.blocks);
 		}
-		if (!blocks.length) continue;
+		if (refused) continue;
+		if (!blocks.length) {
+			// An update with no hunks at all is still a declared edit; it must
+			// surface as a refusal, never a silent skip.
+			entries.push({
+				path: update.path,
+				kind: "refuse",
+				code: "HUNK_NO_CHANGES",
+				reason: `The update for ${update.path} contained no changes — no hunk with +/- lines was found, so nothing was applied. Re-send the patch with the actual change lines.`,
+			});
+			continue;
+		}
 		entries.push({ path: update.path, kind: "searchReplace", blocks });
 	}
 

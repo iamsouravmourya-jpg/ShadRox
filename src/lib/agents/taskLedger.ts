@@ -4,14 +4,13 @@
  * A team or autonomous run is not a second engine and must not be a second
  * bookkeeping system either. The request the user submitted is frozen once
  * (S01); the planner and every worker inherit that same frozen identity — the
- * same workspace, payer, permission mode and budget — instead of being
- * handed free text while the attachments stay on screen for display only.
+ * same workspace and permission mode — instead of being handed free text while
+ * the attachments stay on screen for display only.
  *
  * This module is the parity layer:
  *
  * - `workerScope` projects the frozen envelope plus a task's files into the
- *   exact scope a worker runs under, so no worker can relax Ask/Plan or spend
- *   beyond the shared budget.
+ *   exact scope a worker runs under, so no worker can relax Ask/Plan.
  * - `TaskLedger` counts planner, worker and repair attempts in one place.
  * - `taskCompletionVerdict` decides "done" from verified checks only. A loop
  *   that exited is not a task that passed.
@@ -23,7 +22,6 @@
 
 import type { PermissionMode } from '../agent/runPolicy';
 import type { RequestEnvelope } from '../requestEnvelope';
-import type { ResolvedPayer } from '../sharedKeyPolicy';
 
 export type AttemptRole = 'planner' | 'worker' | 'repair';
 
@@ -33,10 +31,8 @@ export interface TaskAttempt {
   taskId: string | null;
   role: AttemptRole;
   model: string;
-  payer: ResolvedPayer;
   permissionMode: PermissionMode;
   targets: readonly string[];
-  creditsSpent: number;
   status: 'pending' | 'done' | 'failed' | 'cancelled';
 }
 
@@ -73,10 +69,8 @@ export interface WorkerScope {
   workspaceId: string | null;
   targets: readonly TargetVersion[];
   permissionMode: PermissionMode;
-  payer: ResolvedPayer;
   provider: string;
   model: string;
-  budgetCredits: number;
 }
 
 /** The planner sees the frozen request exactly as submitted. */
@@ -89,17 +83,15 @@ export function plannerScope(
     workspaceId: envelope.workspaceId,
     targets: mergeTargetManifest(targets, []),
     permissionMode: envelope.permissionMode,
-    payer: envelope.payer,
     provider: envelope.provider,
-    model: envelope.model,
-    budgetCredits: envelope.budgetCredits
+    model: envelope.model
   };
 }
 
 /**
  * The scope a worker runs under: the frozen envelope plus this task's files.
- * Permission mode, payer and budget are copied verbatim — a worker cannot
- * widen them, only add the files it was assigned.
+ * Permission mode is copied verbatim — a worker cannot widen it, only add the
+ * files it was assigned.
  */
 export function workerScope(
   envelope: RequestEnvelope,
@@ -111,10 +103,8 @@ export function workerScope(
     workspaceId: envelope.workspaceId,
     targets: mergeTargetManifest(base, task.files ?? []),
     permissionMode: envelope.permissionMode,
-    payer: envelope.payer,
     provider: envelope.provider,
-    model: envelope.model,
-    budgetCredits: envelope.budgetCredits
+    model: envelope.model
   };
 }
 
@@ -160,8 +150,8 @@ export function detectFileRaces(
 
 /**
  * The single ledger for a run. Planner, worker and repair attempts all land
- * here, keyed by task, so credits and attempt counts cannot be split across
- * three stores that disagree.
+ * here, keyed by task, so attempt counts cannot be split across three stores
+ * that disagree.
  */
 export class TaskLedger {
   private readonly attempts: TaskAttempt[] = [];
@@ -180,10 +170,5 @@ export class TaskLedger {
 
   get attemptCount(): number {
     return this.attempts.length;
-  }
-
-  /** Credits across planner, worker and repair attempts, in one total. */
-  get creditsSpent(): number {
-    return this.attempts.reduce((sum, attempt) => sum + (Number.isFinite(attempt.creditsSpent) ? attempt.creditsSpent : 0), 0);
   }
 }

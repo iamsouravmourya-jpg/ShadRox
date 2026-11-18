@@ -57,10 +57,10 @@ test('calls past the per-round cap survive parsing for the loop to budget', () =
 });
 
 test('a runaway block is parsed only up to a hard bound and says so', () => {
-  const many = Array.from({ length: 40 }, (_, index) => ({ name: 'read_file', args: { path: `${index}.ts` } }));
+  const many = Array.from({ length: 80 }, (_, index) => ({ name: 'read_file', args: { path: `${index}.ts` } }));
   const blocks = parseToolBlocks(fence(JSON.stringify(many)));
-  assert.equal(blocks[0].calls.length, 16);
-  assert.match(blocks[0].error as string, /24 entries were unusable or past the parse limit/);
+  assert.equal(blocks[0].calls.length, 64);
+  assert.match(blocks[0].error as string, /16 entries were unusable or past the parse limit/);
 });
 
 test('an unterminated fence is not treated as a block', () => {
@@ -208,4 +208,94 @@ test('the budget includes framing overhead so the framed observation fits', () =
   assert.match(payload, /\n```$/);
   const parsed = JSON.parse(payload.replace(/^```shadrox:results\n/, '').replace(/\n```$/, ''));
   assert.equal(parsed.length, 2, 'no call is silently dropped to fit');
+});
+
+/* ------------------------------------------------------------------ *
+ * Line-anchored fence closing: a bare ``` inside a JSON string argument
+ * (e.g. markdown the model is writing to a file) must not end the match
+ * early and lose the whole block.
+ * ------------------------------------------------------------------ */
+
+test('a ``` inside a JSON string argument does not close the fence early', () => {
+  const calls = [{ name: 'create_file', args: { path: 'docs/a.md', content: 'Use ```js fences, or ``` inline.' } }];
+  const blocks = parseToolBlocks(fence(JSON.stringify(calls)));
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].error, null);
+  assert.deepEqual(blocks[0].calls, calls);
+});
+
+test('a later block survives when an earlier argument quotes markdown fences', () => {
+  const first = fence(JSON.stringify([{ name: 'create_file', args: { path: 'a.md', content: '```ts\nconst a = 1;\n```' } }]));
+  const second = fence(JSON.stringify([{ name: 'read_file', args: { path: 'b.ts' } }]));
+  const blocks = parseToolBlocks(`Writing the doc.\n\n${first}\n\n${second}`);
+  assert.equal(blocks.length, 2, 'no block is lost');
+  assert.equal(blocks[0].error, null);
+  assert.equal(blocks[1].error, null);
+  assert.equal(blocks[0].calls[0].name, 'create_file');
+  assert.deepEqual(blocks[1].calls, [{ name: 'read_file', args: { path: 'b.ts' } }]);
+});
+
+test('CRLF fences parse and strip like LF fences', () => {
+  const raw = '```shadrox:tools\r\n[{"name":"read_file","args":{"path":"a.ts"}}]\r\n```\r\n';
+  const blocks = parseToolBlocks(raw);
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].error, null);
+  assert.deepEqual(blocks[0].calls, [{ name: 'read_file', args: { path: 'a.ts' } }]);
+  const stripped = stripToolBlocks(`Before\r\n${raw}After`);
+  assert.match(stripped, /Before/);
+  assert.match(stripped, /After/);
+  assert.doesNotMatch(stripped, /shadrox:tools/);
+  assert.equal(hasOpenToolFence(raw), false);
+});
+
+test('a closing fence with trailing whitespace still closes the block', () => {
+  const blocks = parseToolBlocks('```shadrox:tools\n[{"name":"list_directory","args":{}}]\n```   \n');
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(blocks[0].calls, [{ name: 'list_directory', args: {} }]);
+});
+
+test('a line that merely starts with ``` does not close the fence', () => {
+  const text = '```shadrox:tools\n[{"name":"read_file","args":{"path":"a"}}]\n```js\nmore\n```';
+  const blocks = parseToolBlocks(text);
+  assert.equal(blocks.length, 1);
+  assert.match(blocks[0].error as string, /not valid JSON/);
+});
+
+test('an unterminated fence whose streamed args contain ``` is still open', () => {
+  const partial = '```shadrox:tools\n[{"name":"create_file","args":{"content":"```js';
+  assert.equal(parseToolBlocks(partial).length, 0);
+  // The old substring check saw the inline ``` and called the fence closed.
+  assert.equal(hasOpenToolFence(partial), true);
+  const closed = fence(JSON.stringify([{ name: 'create_file', args: { content: '``` inline' } }]));
+  assert.equal(hasOpenToolFence(closed), false);
+});
+
+test('stripping removes a block whose args quote fences and keeps the edit block', () => {
+  const tool = fence(JSON.stringify([{ name: 'create_file', args: { path: 'a.md', content: '```js x ```' } }]));
+  const text = `Prose.\n${tool}\n\`\`\`path=src/a.ts\n<<<<<<< ORIGINAL\nx\n=======\ny\n>>>>>>> UPDATED\n\`\`\`\nTail.`;
+  const stripped = stripToolBlocks(text);
+  assert.match(stripped, /Prose\./);
+  assert.match(stripped, /Tail\./);
+  assert.match(stripped, /path=src\/a\.ts/);
+  assert.doesNotMatch(stripped, /shadrox:tools/);
+  assert.doesNotMatch(stripped, /create_file/);
+});
+
+test('a results fence whose payload quotes ``` is stripped whole', () => {
+  const payload = JSON.stringify([{ tool: 'read_file', ok: true, result: '``` inline' }]);
+  const text = `Answer.\n\`\`\`shadrox:results\n${payload}\n\`\`\`\nDone.`;
+  assert.equal(stripToolBlocks(text), 'Answer.\n\nDone.');
+});
+
+test('native calls re-fenced with \\u0060-escaped backticks round-trip through the parser', () => {
+  const normalized = [{ name: 'create_file', args: { path: 'docs/a.md', content: 'line1\n```js\nconst a = 1;\n```\nline2' } }];
+  // The exact serialization App.tsx streamOnce uses for provider-native calls:
+  // JSON.stringify escapes newlines (so a line-start ``` is impossible inside
+  // the JSON), and backticks become \u0060 so no raw ``` survives at all.
+  const serialized = JSON.stringify(normalized).replaceAll('`', '\\u0060');
+  assert.ok(!serialized.includes('`'), 'no raw backtick survives in the fence body');
+  const blocks = parseToolBlocks(fence(serialized));
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].error, null);
+  assert.deepEqual(blocks[0].calls, normalized);
 });

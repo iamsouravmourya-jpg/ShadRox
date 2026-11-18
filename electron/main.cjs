@@ -1,8 +1,10 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, protocol, safeStorage, session, shell } = require('electron');
-const { exec, execFile } = require('node:child_process');
+const { exec, execFile, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const http = require('node:http');
+const net = require('node:net');
 const path = require('node:path');
+const treeKill = require('tree-kill');
 const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
 const { randomUUID, createHash } = require('node:crypto');
@@ -11,6 +13,7 @@ let pty = null;
 try { pty = require('node-pty'); } catch { /* PTY support may be unavailable in an unbuilt development install. */ }
 const { createWorkspaceAccess } = require('./workspace.cjs');
 const { runWithCommandApproval } = require('./command-approval.cjs');
+const { classifyCommand, READINESS_LOG_PATTERN, extractReadyUrl } = require('./command-risk.cjs');
 const { sanitizeRiskNotice } = require('./command-risk-notice.cjs');
 const { findPlantedShim, WINDOWS_CMD_SHIMS } = require('./verify-allowlist.cjs');
 const {
@@ -369,6 +372,9 @@ async function recordCommandProof(workspaceId, command, run) {
         exitCode: run.exitCode ?? null,
         stdoutHash: hashText(run.stdout),
         stderrHash: hashText(run.stderr),
+        ...(run.tier ? { tier: run.tier } : {}),
+        ...(run.jobId ? { jobId: run.jobId } : {}),
+        ...(run.backgrounded ? { backgrounded: true } : {}),
         ...(run.deniedReason ? { deniedReason: clipProofText(run.deniedReason) } : {})
       }
     });
@@ -771,6 +777,13 @@ function stopWorkspaceServices(workspaceId) {
     terminalSessions.delete(sessionId);
     try { sessionInfo.terminal.kill(); } catch { /* process already exited */ }
   }
+  // Closing a workspace must not leave its background jobs (dev servers, long
+  // builds) running against a folder the app no longer owns.
+  for (const job of commandJobs.list(workspaceId)) {
+    if (job.status !== 'running') continue;
+    job.killedReason = 'user';
+    void killProcessTree(job.child);
+  }
 }
 
 function watchWorkspace(workspaceId, root) {
@@ -867,17 +880,34 @@ function tokenizeCommand(command) {
   return tokens;
 }
 
-// cmd.exe adds %, ^ and ! to the POSIX metacharacter set; the .cmd shim path
-// below runs through cmd.exe, so all of them are rejected up front.
-const COMMAND_METACHARACTERS = /[;&|<>`$()\\%^!\r\n]/;
+// Owner decisions 2026-11-18: the old metacharacter refusal gate is gone.
+// Compound commands are parsed and risk-tiered by command-risk.cjs, and the
+// approval gate decides from that tier; timeouts are about SILENCE, not
+// wall-clock duration.
 
-/** How long one command may run before the main process kills it. */
-const COMMAND_TIMEOUT_MS = 120_000;
+/** Idle timeout: reset on ANY stdout/stderr; a silent child is killed. */
+const COMMAND_IDLE_TIMEOUT_MS = 120_000;
+/** After this much foreground waiting the command becomes a background job. */
+const COMMAND_AUTO_BACKGROUND_MS = 30_000;
+/** Absolute ceiling for any job, output or not. */
+const JOB_CEILING_MS = 30 * 60_000;
+/** Ring buffer of the last output kept per job for job_control read_output. */
+const JOB_BUFFER_BYTES = 200 * 1024;
+/** Tail handed to the model when a command auto-backgrounds. */
+const JOB_TAIL_CHARS = 4_000;
+/** Default read_output window. */
+const JOB_READ_DEFAULT_CHARS = 8_192;
+/** Foreground stdout/stderr accumulation cap (tail kept beyond it). */
+const FOREGROUND_OUTPUT_CAP = 2 * 1024 * 1024;
+/** Coalescing window for streamed job output events. */
+const OUTPUT_FLUSH_MS = 250;
+/** Finished jobs kept for read_output after exit. */
+const MAX_FINISHED_JOBS = 20;
 
-// Only spaces survive the metacharacter gate, so a token never carries a quote
-// or backslash that would need escaping inside the cmd.exe line.
+// Backslashes are inert to cmd.exe itself, but a trailing run would escape the
+// closing quote under the child's MSVCRT argument parsing, so double it.
 function quoteCmdToken(token) {
-  return /\s/.test(token) ? `"${token}"` : token;
+  return /\s/.test(token) ? `"${token.replace(/\\+$/, (run) => run + run)}"` : token;
 }
 
 // Resolve a bare command name to a trusted absolute executable by scanning PATH
@@ -902,71 +932,391 @@ function resolveWindowsExecutable(name, cwd, env) {
   return null;
 }
 
-function executeCommand(command, cwd) {
+/** Strip ANSI escape sequences (CSI, OSC, single-char) from model-facing output. */
+function stripAnsi(text) {
+  return String(text ?? '').replace(/\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\)|[@-Z\\-_])/g, '');
+}
+
+/**
+ * Rolling output buffer keeping the last `limit` characters with absolute
+ * offsets, so job_control read_output ranges stay stable while old text drops.
+ */
+function createOutputRing(limit) {
+  let buffer = '';
+  let total = 0;
+  return {
+    append(chunk) {
+      const text = String(chunk ?? '');
+      if (!text) return;
+      buffer += text;
+      total += text.length;
+      if (buffer.length > limit) buffer = buffer.slice(buffer.length - limit);
+    },
+    get length() { return total; },
+    get start() { return total - buffer.length; },
+    text() { return buffer; },
+    tail(count) { return buffer.slice(Math.max(0, buffer.length - count)); },
+    slice(from, to) {
+      const base = total - buffer.length;
+      const start = Math.max(base, Number.isFinite(from) ? from : base);
+      const end = Math.min(total, Number.isFinite(to) ? to : total);
+      if (end <= start) return '';
+      return buffer.slice(start - base, end - base);
+    }
+  };
+}
+
+/** Background/long-running command registry. Jobs survive foreground return. */
+function createJobRegistry() {
+  const jobs = new Map();
+  let counter = 0;
+  return {
+    create(fields) {
+      counter += 1;
+      const job = {
+        id: `J${counter}`,
+        status: 'running',
+        exitCode: null,
+        timedOut: false,
+        backgrounded: false,
+        ready: false,
+        readyUrl: null,
+        startedAt: Date.now(),
+        endedAt: null,
+        killedReason: null,
+        child: null,
+        output: createOutputRing(JOB_BUFFER_BYTES),
+        ...fields
+      };
+      jobs.set(job.id, job);
+      return job;
+    },
+    get(id) { return jobs.get(id) || null; },
+    list(workspaceId) {
+      return [...jobs.values()].filter((job) => !workspaceId || job.workspaceId === workspaceId);
+    },
+    prune() {
+      const finished = [...jobs.values()].filter((job) => job.status !== 'running');
+      const excess = finished.length - MAX_FINISHED_JOBS;
+      if (excess <= 0) return;
+      finished.sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0));
+      for (const job of finished.slice(0, excess)) jobs.delete(job.id);
+    }
+  };
+}
+
+const commandJobs = createJobRegistry();
+
+/**
+ * Kill the whole process tree: taskkill /T /F on Windows via tree-kill, the
+ * detached process group first on POSIX. Never leaves orphaned dev servers.
+ */
+function killProcessTree(child) {
   return new Promise((resolve) => {
-    if (COMMAND_METACHARACTERS.test(command)) {
-      resolve({ stdout: '', stderr: 'Shell metacharacters are not allowed.', exitCode: 1, timedOut: false });
+    if (!child || child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
+      resolve(false);
       return;
     }
-    const argv = tokenizeCommand(command);
-    if (argv.length === 0) {
+    let settled = false;
+    const done = (ok) => { if (!settled) { settled = true; resolve(ok); } };
+    if (process.platform !== 'win32') {
+      try { process.kill(-child.pid, 'SIGKILL'); done(true); return; } catch { /* fall through */ }
+    }
+    try {
+      treeKill(child.pid, 'SIGKILL', (error) => {
+        if (!error) { done(true); return; }
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+        done(false);
+      });
+    } catch {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      done(false);
+    }
+  });
+}
+
+/** TCP readiness probe for a dev-server URL: resolves true once it accepts. */
+function checkReadyUrl(url, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    let parsed;
+    try { parsed = new URL(url); } catch { resolve(false); return; }
+    const port = Number(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80);
+    let socket;
+    try { socket = net.connect({ host: parsed.hostname || '127.0.0.1', port }); } catch { resolve(false); return; }
+    const finish = (ok) => { socket.removeAllListeners(); socket.destroy(); resolve(ok); };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+    socket.once('timeout', () => finish(false));
+  });
+}
+
+/**
+ * Terminal-dock job stream. Auto-run tiers stay visible here even without a
+ * dialog. Lifecycle events ride `terminal:job`; output chunks ride their own
+ * `terminal:job-output` channel so a chatty build cannot flood the dock state.
+ */
+function emitJobEvent(payload) {
+  try {
+    const channel = payload && payload.type === 'output' ? 'terminal:job-output' : 'terminal:job';
+    mainWindow?.webContents.send(channel, payload);
+  } catch { /* window gone */ }
+}
+
+/** Coalesced job output chunks; separate channel so lifecycle listeners stay cheap. */
+function emitJobOutput(payload) {
+  try { mainWindow?.webContents.send('terminal:job-output', payload); } catch { /* window gone */ }
+}
+
+/**
+ * Risk-tiered streaming executor. Simple commands keep the hardened direct
+ * spawn (planted-shim refusal, PATH resolution, cmd quote doubling); compound
+ * lines run through the platform shell after approval. Timeouts are about
+ * SILENCE: the idle timer resets on any output, a 30s foreground wait converts
+ * the run into a background job, and a 30-minute ceiling always applies.
+ */
+function executeCommand(command, cwd, meta = {}) {
+  return new Promise((resolve) => {
+    const text = typeof command === 'string' ? command : '';
+    if (!text.trim()) {
       resolve({ stdout: '', stderr: 'Command is empty.', exitCode: 1, timedOut: false });
       return;
     }
-    const env = resolveTerminalPlan({ mode: 'agent' }).env;
-    const options = {
-      cwd,
-      timeout: COMMAND_TIMEOUT_MS,
-      maxBuffer: 2 * 1024 * 1024,
-      windowsHide: true,
-      env
-    };
-    // Nothing else signals a command started here, so a killed child is the time
-    // limit firing. Reporting it as exit 1 instead made a half-run test look like
-    // a failing one, and let a proof command that never finished carry a verdict.
-    const finish = (error, stdout, stderr) => {
-      const timedOut = Boolean(error && (error.killed === true || error.code === 'ETIMEDOUT'));
-      resolve({
-        stdout: String(stdout || ''),
-        stderr: String(stderr || ''),
-        exitCode: error ? (typeof error.code === 'number' ? error.code : 1) : 0,
-        timedOut
-      });
-    };
-
-    if (process.platform !== 'win32') {
-      execFile(argv[0], argv.slice(1), { ...options, shell: false }, finish);
-      return;
-    }
+    const risk = meta.risk || classifyCommand(text, { cwd, root: cwd });
+    const workspaceId = typeof meta.workspaceId === 'string' ? meta.workspaceId : null;
 
     // CreateProcess searches cwd before PATH; refuse a binary-shaped file planted
     // in the project root rather than letting it shadow the approved tool.
-    const planted = findPlantedShim(argv, cwd, (candidate) => {
-      try { return fs.existsSync(candidate); } catch { return false; }
-    }, process.platform);
-    if (planted) {
-      resolve({ stdout: '', stderr: `Refusing to run "${argv[0]}": a file with that name exists in the project folder.`, exitCode: 1, timedOut: false });
+    if (process.platform === 'win32') {
+      for (const segment of risk.segments) {
+        const argv = Array.isArray(segment.argv) ? segment.argv.filter((arg) => typeof arg === 'string') : [];
+        if (argv.length === 0) continue;
+        const planted = findPlantedShim(argv, cwd, (candidate) => {
+          try { return fs.existsSync(candidate); } catch { return false; }
+        }, process.platform);
+        if (planted) {
+          resolve({ stdout: '', stderr: `Refusing to run "${argv[0]}": a file with that name exists in the project folder.`, exitCode: 1, timedOut: false, tier: risk.tier });
+          return;
+        }
+      }
+    }
+
+    const env = resolveTerminalPlan({ mode: 'agent' }).env;
+    const spawnOptions = { cwd, env, windowsHide: true, detached: process.platform !== 'win32' };
+    let child;
+    try {
+      const simple = !risk.shellSyntax && risk.segments.length === 1 && !risk.parseError;
+      if (simple) {
+        const argv = tokenizeCommand(text);
+        if (argv.length === 0) {
+          resolve({ stdout: '', stderr: 'Command is empty.', exitCode: 1, timedOut: false });
+          return;
+        }
+        if (process.platform !== 'win32') {
+          child = spawn(argv[0], argv.slice(1), { ...spawnOptions, shell: false });
+        } else {
+          const base = argv[0];
+          const isShim = WINDOWS_CMD_SHIMS.has(base.toLowerCase()) || /\.(cmd|bat)$/i.test(base);
+          if (isShim) {
+            const resolved = resolveWindowsExecutable(base.replace(/\.(cmd|bat)$/i, ''), cwd, env);
+            if (!resolved) {
+              resolve({ stdout: '', stderr: `Command not found on PATH: ${base}`, exitCode: 1, timedOut: false, tier: risk.tier });
+              return;
+            }
+            // spawn cannot run .cmd/.bat without a shell (CVE-2024-27980), and
+            // shell:true with an argv array concatenates unescaped (DEP0190). Pass
+            // one pre-quoted line as the file with no args; Node wraps it for
+            // cmd /d /s /c, which strips the outer quotes and runs the quoted
+            // executable + args.
+            const line = [resolved, ...argv.slice(1)].map(quoteCmdToken).join(' ');
+            child = spawn(line, [], { ...spawnOptions, shell: true });
+          } else {
+            const hasPathShape = /^[a-z]:[\\/]/i.test(base) || base.includes('/') || base.includes('\\');
+            const resolved = hasPathShape ? null : resolveWindowsExecutable(base, cwd, env);
+            if (resolved) {
+              child = spawn(resolved, argv.slice(1), { ...spawnOptions, shell: false });
+            } else if (hasPathShape) {
+              child = spawn(base, argv.slice(1), { ...spawnOptions, shell: false });
+            } else {
+              // Not on PATH: may be a cmd builtin (echo, dir, type...). Let cmd
+              // decide, with the same pre-quoted-line hardening as shims.
+              const line = argv.map(quoteCmdToken).join(' ');
+              child = spawn(line, [], { ...spawnOptions, shell: true });
+            }
+          }
+        }
+      } else {
+        // Compound line (chains, pipes, redirects, expansions): the approved text
+        // runs verbatim through the platform shell.
+        child = spawn(text, [], { ...spawnOptions, shell: true });
+      }
+    } catch (error) {
+      resolve({ stdout: '', stderr: `Could not start command: ${error instanceof Error ? error.message : String(error)}`, exitCode: 1, timedOut: false, tier: risk.tier });
       return;
     }
 
-    const base = argv[0];
-    const isShim = WINDOWS_CMD_SHIMS.has(base.toLowerCase()) || /\.(cmd|bat)$/i.test(base);
-    if (isShim) {
-      const resolved = resolveWindowsExecutable(base.replace(/\.(cmd|bat)$/i, ''), cwd, env);
-      if (!resolved) {
-        resolve({ stdout: '', stderr: `Command not found on PATH: ${base}`, exitCode: 1, timedOut: false });
+    const job = commandJobs.create({
+      command: text,
+      cwd,
+      workspaceId,
+      tier: risk.tier,
+      devServer: Boolean(risk.devServer),
+      autoApproved: Boolean(meta.autoApproved)
+    });
+    job.child = child;
+    const ring = job.output;
+    let settled = false;
+    let foregroundStdout = '';
+    let foregroundStderr = '';
+    let pendingEvent = '';
+    let probing = false;
+    let flushTimer = null;
+    let idleTimer = null;
+    let autoBgTimer = null;
+    let killTimer = null;
+    const ceilingTimer = setTimeout(() => requestKill('ceiling'), JOB_CEILING_MS);
+
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    const appendCapped = (current, chunk) => {
+      const next = current + chunk;
+      return next.length > FOREGROUND_OUTPUT_CAP ? next.slice(next.length - FOREGROUND_OUTPUT_CAP) : next;
+    };
+
+    const flushOutput = () => {
+      flushTimer = null;
+      if (!pendingEvent) return;
+      const chunk = pendingEvent;
+      pendingEvent = '';
+      emitJobOutput({ type: 'output', jobId: job.id, workspaceId, chunk: stripAnsi(chunk) });
+    };
+
+    const resetIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = null;
+      // A dev server (or any job already proven ready) logs once and then serves
+      // quietly; silence is health, not a hang. Idle-killing it produced a white
+      // preview. Such jobs are bounded only by the absolute ceiling.
+      if (job.devServer || job.ready) return;
+      idleTimer = setTimeout(() => requestKill('idle'), COMMAND_IDLE_TIMEOUT_MS);
+    };
+
+    const probeReadiness = () => {
+      if (!job.devServer || job.ready || probing || job.status !== 'running') return;
+      const recent = stripAnsi(ring.tail(4096));
+      if (!READINESS_LOG_PATTERN.test(recent)) return;
+      const url = extractReadyUrl(recent);
+      if (!url) {
+        job.ready = true;
+        resetIdle();
+        emitJobEvent({ type: 'ready', jobId: job.id, workspaceId, url: null });
         return;
       }
-      // execFile cannot spawn .cmd/.bat without a shell (CVE-2024-27980), and
-      // shell:true with an argv array concatenates unescaped (DEP0190). Pass one
-      // pre-quoted line as the file with no args; Node wraps it for cmd /d /s /c,
-      // which strips the outer quotes and runs the quoted executable + args.
-      const line = [resolved, ...argv.slice(1)].map(quoteCmdToken).join(' ');
-      execFile(line, [], { ...options, shell: true }, finish);
-      return;
-    }
+      probing = true;
+      checkReadyUrl(url).then((ok) => {
+        probing = false;
+        if (ok && job.status === 'running' && !job.ready) {
+          job.ready = true;
+          job.readyUrl = url;
+          resetIdle();
+          emitJobEvent({ type: 'ready', jobId: job.id, workspaceId, url });
+        }
+      }).catch(() => { probing = false; });
+    };
 
-    execFile(base, argv.slice(1), { ...options, shell: false }, finish);
+    const onData = (stream) => (data) => {
+      const chunk = data.toString();
+      ring.append(chunk);
+      if (!job.backgrounded) {
+        if (stream === 'stdout') foregroundStdout = appendCapped(foregroundStdout, chunk);
+        else foregroundStderr = appendCapped(foregroundStderr, chunk);
+      }
+      pendingEvent += chunk;
+      if (pendingEvent.length > JOB_BUFFER_BYTES) pendingEvent = pendingEvent.slice(pendingEvent.length - JOB_BUFFER_BYTES);
+      if (!flushTimer) flushTimer = setTimeout(flushOutput, OUTPUT_FLUSH_MS);
+      resetIdle();
+      probeReadiness();
+    };
+
+    const background = (reason) => {
+      if (settled || job.backgrounded) return;
+      job.backgrounded = true;
+      if (autoBgTimer) { clearTimeout(autoBgTimer); autoBgTimer = null; }
+      emitJobEvent({ type: 'backgrounded', jobId: job.id, workspaceId, command: text, tier: job.tier, reason });
+      settle({
+        stdout: stripAnsi(ring.tail(JOB_TAIL_CHARS)),
+        stderr: '',
+        exitCode: null,
+        timedOut: false,
+        backgrounded: true,
+        jobId: job.id,
+        tier: job.tier,
+        message: `still running, job id ${job.id}; use job_control`
+      });
+    };
+
+    const requestKill = (reason) => {
+      if (job.status !== 'running' || job.killedReason) return;
+      job.killedReason = reason;
+      killProcessTree(child);
+      // If the tree kill never produces a close event, settle anyway.
+      killTimer = setTimeout(() => {
+        if (job.status === 'running') finalize(1, reason !== 'user', `\n[killed by ${reason} limit; process tree did not report exit]`);
+      }, 5000);
+    };
+
+    const clearTimers = () => {
+      clearTimeout(ceilingTimer);
+      if (idleTimer) clearTimeout(idleTimer);
+      if (autoBgTimer) clearTimeout(autoBgTimer);
+      if (killTimer) clearTimeout(killTimer);
+      if (flushTimer) { clearTimeout(flushTimer); flushOutput(); }
+    };
+
+    const finalize = (exitCode, timedOut, note) => {
+      if (job.status !== 'running') return;
+      job.status = job.killedReason === 'user' ? 'killed' : timedOut ? 'timed_out' : 'exited';
+      job.exitCode = exitCode;
+      job.timedOut = timedOut;
+      job.endedAt = Date.now();
+      clearTimers();
+      emitJobEvent({ type: 'exit', jobId: job.id, workspaceId, exitCode, timedOut, status: job.status, durationMs: job.endedAt - job.startedAt });
+      if (!settled) {
+        settle({ stdout: stripAnsi(foregroundStdout), stderr: stripAnsi(foregroundStderr) + note, exitCode, timedOut, tier: job.tier });
+      } else if (job.backgrounded && workspaceId) {
+        // The foreground return already recorded a backgrounded receipt; the real
+        // exit gets its own append-only proof entry.
+        recordCommandProof(workspaceId, text, { stdout: stripAnsi(ring.text()), stderr: note, exitCode, timedOut, tier: job.tier, jobId: job.id, backgrounded: true });
+      }
+      commandJobs.prune();
+    };
+
+    child.stdout?.on('data', onData('stdout'));
+    child.stderr?.on('data', onData('stderr'));
+    child.once('close', (code) => {
+      const timedOut = job.killedReason === 'idle' || job.killedReason === 'ceiling';
+      const note = job.killedReason === 'idle'
+        ? `\n[killed after ${COMMAND_IDLE_TIMEOUT_MS / 1000}s with no output]`
+        : job.killedReason === 'ceiling'
+          ? `\n[killed at the ${JOB_CEILING_MS / 60000}-minute job ceiling]`
+          : job.killedReason === 'user' ? '\n[killed by job_control]' : '';
+      finalize(typeof code === 'number' ? code : 1, timedOut, note);
+    });
+    child.once('error', (error) => {
+      const message = error && error.code === 'ENOENT'
+        ? `Command not found: ${text.split(/\s+/)[0]}`
+        : `Could not run command: ${error instanceof Error ? error.message : String(error)}`;
+      finalize(1, false, message);
+    });
+
+    emitJobEvent({ type: 'started', jobId: job.id, workspaceId, command: text, cwd, tier: job.tier, devServer: job.devServer, autoApproved: job.autoApproved });
+    resetIdle();
+    if (job.devServer) background('dev-server');
+    else autoBgTimer = setTimeout(() => background('foreground-wait'), COMMAND_AUTO_BACKGROUND_MS);
   });
 }
 
@@ -2452,18 +2802,35 @@ function registerIpcHandlers() {
       // Renderer-supplied, so treated as untrusted text: it may explain the
       // command to the user, never reformat the dialog or hide the command.
       riskNotice: sanitizeRiskNotice(riskNotice),
-      showApproval: async ({ command: approvedCommand, cwd, riskNotice: notice }) => {
+      showApproval: async ({ command: approvedCommand, cwd, riskNotice: notice, risk }) => {
+        const dangerous = Boolean(risk && risk.tier === 'DANGEROUS');
+        const segmentLines = risk && Array.isArray(risk.segments) && risk.segments.length > 0
+          ? risk.segments
+            .map((segment) => `[${segment.tier}] ${segment.argv.join(' ')}${segment.reason ? ` — ${segment.reason}` : ''}`)
+            .join('\n')
+          : '';
+        const outOfRoot = risk && Array.isArray(risk.outOfRootPaths) && risk.outOfRootPaths.length > 0
+          ? `\n\nPaths outside the workspace:\n${risk.outOfRootPaths.join('\n')}`
+          : '';
+        const dangerWarning = dangerous
+          ? `DANGEROUS COMMAND — this can destroy files, expose credentials, or take over the machine. It is never auto-approved.\n${(risk.dangerousReasons || []).join('\n')}\n\n`
+          : '';
         const choice = await dialog.showMessageBox(mainWindow, {
-          type: 'warning',
-          buttons: ['Block command', 'Run once'],
+          type: dangerous ? 'error' : 'warning',
+          buttons: ['Block command', dangerous ? 'Run anyway' : 'Run once'],
           defaultId: 0,
           cancelId: 0,
           noLink: true,
-          title: 'Approve command execution',
-          message: 'An agent or workspace action is requesting a shell command.',
+          title: dangerous ? 'Dangerous command — approval required' : 'Approve command execution',
+          message: dangerous
+            ? 'This command was classified DANGEROUS. Run it only if you fully trust it.'
+            : 'An agent or workspace action is requesting a shell command.',
           detail:
+            `${dangerWarning}` +
             `${notice ? `${notice}\n\n` : ''}` +
-            `Review the exact command and working directory. Commands can read, modify, or execute files in this workspace.\n\n${approvedCommand}\n\nWorking directory:\n${cwd}`
+            `Review the exact command and working directory. Commands can read, modify, or execute files in this workspace.\n\n${approvedCommand}\n\nWorking directory:\n${cwd}` +
+            `${segmentLines ? `\n\nCommand segments:\n${segmentLines}` : ''}` +
+            outOfRoot
         });
         return choice.response === 1;
       },
@@ -2473,7 +2840,7 @@ function registerIpcHandlers() {
     });
     const run = approval.approved
       ? approval.result
-      : { stdout: '', stderr: approval.reason, exitCode: 1, timedOut: false, deniedReason: approval.reason };
+      : { stdout: '', stderr: approval.reason, exitCode: 1, timedOut: false, deniedReason: approval.reason, tier: approval.tier };
     mainWindow?.webContents.send('terminal:run', {
       workspaceId,
       command,
@@ -2483,6 +2850,79 @@ function registerIpcHandlers() {
     });
     await recordCommandProof(workspaceId, command, run);
     return run;
+  });
+
+  handleMachineSensitive('job:control', async (event, workspaceId, request) => {
+    assertTrustedRenderer(event);
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    if (!workspace || workspace.mode !== 'folder') {
+      throw new Error('Job control is available only for an opened folder workspace.');
+    }
+    const payload = request && typeof request === 'object' ? request : {};
+    const action = typeof payload.action === 'string' ? payload.action : null;
+
+    const summarize = (job) => ({
+      jobId: job.id,
+      command: job.command,
+      status: job.status,
+      tier: job.tier,
+      exitCode: job.exitCode,
+      timedOut: job.timedOut,
+      backgrounded: job.backgrounded,
+      ready: job.ready,
+      readyUrl: job.readyUrl,
+      startedAt: job.startedAt,
+      endedAt: job.endedAt,
+      outputChars: job.output.length
+    });
+
+    if (action === 'list') {
+      return { ok: true, jobs: commandJobs.list(workspaceId).map(summarize) };
+    }
+
+    const jobId = typeof payload.jobId === 'string' ? payload.jobId : null;
+    const job = jobId ? commandJobs.get(jobId) : null;
+    if (!job || job.workspaceId !== workspaceId) {
+      return { ok: false, error: `Unknown job id ${jobId ?? '(missing)'} for this workspace. Use job_control with action "list" to see jobs.` };
+    }
+
+    if (action === 'status') {
+      return { ok: true, ...summarize(job) };
+    }
+
+    if (action === 'read_output') {
+      const range = payload.range && typeof payload.range === 'object' ? payload.range : {};
+      const chars = Number.isFinite(payload.chars)
+        ? Math.min(JOB_BUFFER_BYTES, Math.max(1, Math.floor(payload.chars)))
+        : JOB_READ_DEFAULT_CHARS;
+      const total = job.output.length;
+      const start = Number.isFinite(range.start) ? Math.max(0, range.start) : Math.max(job.output.start, total - chars);
+      const end = Math.max(start, Number.isFinite(range.end) ? Math.min(total, range.end) : total);
+      return {
+        ok: true,
+        jobId: job.id,
+        status: job.status,
+        exitCode: job.exitCode,
+        timedOut: job.timedOut,
+        ready: job.ready,
+        readyUrl: job.readyUrl,
+        start,
+        end,
+        totalChars: total,
+        text: stripAnsi(job.output.slice(start, end))
+      };
+    }
+
+    if (action === 'stop' || action === 'kill') {
+      if (job.status !== 'running') {
+        return { ok: true, jobId: job.id, killed: false, status: job.status, message: `Job already ${job.status}.` };
+      }
+      job.killedReason = 'user';
+      await killProcessTree(job.child);
+      return { ok: true, jobId: job.id, killed: true, status: job.status };
+    }
+
+    return { ok: false, error: `Unknown job_control action "${action ?? ''}". Use "list", "read_output", "status" or "stop".` };
   });
 
   handleMachineSensitive('git:read', async (event, workspaceId) => {

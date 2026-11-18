@@ -59,8 +59,7 @@ function normalizeTask(raw: RawTask, index: number): TeamTask {
     lastReport: null,
     report: '',
     patchesApplied: 0,
-    patchFailures: [],
-    creditsSpent: 0
+    patchFailures: []
   };
 }
 

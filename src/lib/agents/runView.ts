@@ -19,7 +19,7 @@ import type { Milestone, MilestoneStatus, RunState, RunStatus } from '../autonom
 import { findAgent } from './roles';
 import type { TaskStatus, TeamState, TeamTask } from './types';
 
-export type RunViewStatus = 'planning' | 'running' | 'done' | 'failed' | 'paused' | 'stopped' | 'budget';
+export type RunViewStatus = 'planning' | 'running' | 'done' | 'failed' | 'paused' | 'stopped';
 
 export interface RunViewRow {
   id: string;
@@ -40,7 +40,6 @@ export interface RunViewRow {
   blocker: string | null;
   /** What the checker said, in one line. Null when no check ran. */
   check: string | null;
-  credits: number;
   /** True for the row a spin indicator belongs on. */
   active: boolean;
 }
@@ -50,13 +49,10 @@ export interface RunViewModel {
   status: RunViewStatus;
   /** 'Agent team' or 'Autonomous run'. */
   title: string;
-  /** The line under the title: `3 of 5 tasks passed · 7.4 of 24 cr`. */
+  /** The line under the title: `3 of 5 tasks passed`. */
   statusLine: string;
   /** Why Auto escalated this request. Copied from the decision, never rewritten. */
   reason: string;
-  spent: number;
-  budget: number;
-  budgetLabel: string;
   progressLabel: string;
   rows: RunViewRow[];
   /** Two tasks claiming one file, one sentence each. */
@@ -82,14 +78,8 @@ export interface RunViewOptions {
   log?: readonly string[];
   /** Why the request escalated, from `decideOrchestration`. */
   reason?: string;
-  /** The spend ceiling; falls back to the state's own budget when known. */
-  budgetCredits?: number;
   /** The run/team is still executing in this process. */
   isRunning?: boolean;
-}
-
-function round(value: number): string {
-  return String(Math.round(value * 10) / 10);
 }
 
 function firstSentence(text: string, limit = 200): string {
@@ -188,8 +178,8 @@ function statusOfRun(status: RunStatus): RunViewStatus {
       return 'done';
     case 'failed':
       return 'failed';
-    case 'stopped-budget':
-      return 'budget';
+    case 'stopped':
+      return 'stopped';
     case 'paused':
       return 'paused';
     case 'cancelled':
@@ -209,8 +199,8 @@ function statusOfTeam(status: TeamState['status']): RunViewStatus {
       return 'done';
     case 'failed':
       return 'failed';
-    case 'stopped-budget':
-      return 'budget';
+    case 'stopped':
+      return 'stopped';
     case 'paused':
       return 'paused';
     case 'cancelled':
@@ -221,14 +211,12 @@ function statusOfTeam(status: TeamState['status']): RunViewStatus {
 }
 
 function resumable(status: RunViewStatus, rows: readonly RunViewRow[]): boolean {
-  return (status === 'paused' || status === 'stopped' || status === 'budget' || status === 'failed') && rows.some((row) => row.status === 'pending' || row.status === 'stopped');
+  return (status === 'paused' || status === 'stopped' || status === 'failed') && rows.some((row) => row.status === 'pending' || row.status === 'stopped');
 }
 
 function assemble(
   kind: RunViewModel['kind'],
   status: RunViewStatus,
-  spent: number,
-  budget: number,
   rows: RunViewRow[],
   conflicts: string[],
   error: string | undefined,
@@ -243,15 +231,13 @@ function assemble(
       ? `${done} of ${total} ${noun.units} done`
       : status === 'done'
       ? `${done} of ${total} ${noun.units} passed`
-      : status === 'budget'
-        ? `stopped at the spend cap after ${done} of ${total} ${noun.units}`
-        : status === 'paused'
-          ? `paused after ${done} of ${total} ${noun.units}`
-          : status === 'stopped'
-            ? `stopped after ${done} of ${total} ${noun.units}`
-            : status === 'failed'
-              ? `${done} of ${total} ${noun.units} passed`
-              : `${done} of ${total} ${noun.units} planned`;
+      : status === 'paused'
+        ? `paused after ${done} of ${total} ${noun.units}`
+        : status === 'stopped'
+          ? `stopped after ${done} of ${total} ${noun.units}`
+          : status === 'failed'
+            ? `${done} of ${total} ${noun.units} passed`
+            : `${done} of ${total} ${noun.units} planned`;
   const statusLine = error && status !== 'running' ? firstSentence(`${head} — ${error}`, 300) : head;
   return {
     kind,
@@ -259,9 +245,6 @@ function assemble(
     title: kind === 'team' ? 'Agent team' : 'Autonomous run',
     statusLine,
     reason: options.reason ?? '',
-    spent,
-    budget,
-    budgetLabel: `${round(spent)} of ${round(budget)} cr`,
     progressLabel: `${done}/${total} ${noun.units}`,
     rows: rows.slice(0, MAX_VIEW_ROWS),
     conflicts,
@@ -290,7 +273,6 @@ export function teamRows(tasks: readonly TeamTask[]): RunViewRow[] {
       review,
       blocker: blockerFor(task, tasks),
       check: checkFor(task),
-      credits: task.creditsSpent,
       active: task.status === 'running'
     };
   });
@@ -298,7 +280,6 @@ export function teamRows(tasks: readonly TeamTask[]): RunViewRow[] {
 
 export function milestoneRows(milestones: readonly Milestone[]): RunViewRow[] {
   return milestones.map((milestone) => {
-    const last = milestone.attempts[milestone.attempts.length - 1];
     const touched = milestone.touchedFiles ?? [];
     const review = milestone.pendingReview ?? [];
     return {
@@ -312,7 +293,6 @@ export function milestoneRows(milestones: readonly Milestone[]): RunViewRow[] {
       review,
       blocker: blockerFor(milestone, milestones),
       check: checkFor(milestone),
-      credits: last?.creditsSpent ?? 0,
       active: milestone.status === 'running'
     };
   });
@@ -321,15 +301,13 @@ export function milestoneRows(milestones: readonly Milestone[]): RunViewRow[] {
 export function teamRunView(state: TeamState | null, options: RunViewOptions = {}): RunViewModel | null {
   if (!state) return null;
   const rows = teamRows(state.tasks);
-  const budget = state.budget?.maxCredits ?? options.budgetCredits ?? 0;
-  return assemble('team', statusOfTeam(state.status), state.creditsSpent, budget, rows, state.conflicts ?? [], state.error, options);
+  return assemble('team', statusOfTeam(state.status), rows, state.conflicts ?? [], state.error, options);
 }
 
 export function autonomyRunView(state: RunState | null, options: RunViewOptions = {}): RunViewModel | null {
   if (!state) return null;
   const rows = milestoneRows(state.milestones);
-  const budget = options.budgetCredits ?? 0;
-  return assemble('run', statusOfRun(state.status), state.creditsSpent, budget, rows, [], state.error, options);
+  return assemble('run', statusOfRun(state.status), rows, [], state.error, options);
 }
 
 /**

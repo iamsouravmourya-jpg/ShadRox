@@ -9,10 +9,8 @@ const base: RequestEnvelopeInput = {
   targets: ['src/a.ts'],
   permissionMode: 'agent',
   refineMode: 'code',
-  payer: 'shared',
   provider: 'groq',
-  model: 'glm-4.7-flash',
-  budgetCredits: 40
+  model: 'glm-4.7-flash'
 };
 
 test('a request with nothing changed cannot drift', () => {
@@ -29,10 +27,10 @@ test('the target list is copied, not aliased to the caller array', () => {
   assert.deepEqual(frozen.targets, ['src/a.ts']);
 });
 
-test('switching workspace, payer or model is reported as drift', () => {
+test('switching workspace or model is reported as drift', () => {
   const frozen = createRequestEnvelope(base);
-  const current = createRequestEnvelope({ ...base, workspaceId: 'ws-2', payer: 'byok', model: 'other-model' });
-  assert.deepEqual(envelopeDrift(frozen, current), ['workspace', 'payer', 'model']);
+  const current = createRequestEnvelope({ ...base, workspaceId: 'ws-2', model: 'other-model' });
+  assert.deepEqual(envelopeDrift(frozen, current), ['workspace', 'model']);
 });
 
 test('provider and permission changes are detected', () => {
@@ -43,12 +41,20 @@ test('provider and permission changes are detected', () => {
 
 test('drift is described in plain language for the user', () => {
   const frozen = createRequestEnvelope(base);
-  const current = createRequestEnvelope({ ...base, payer: 'byok' });
-  assert.match(describeEnvelopeDrift(envelopeDrift(frozen, current)), /paying key changed/);
+  const current = createRequestEnvelope({ ...base, model: 'other-model' });
+  assert.match(describeEnvelopeDrift(envelopeDrift(frozen, current)), /model changed/);
 });
 
 test('a null workspace compares equal to a null workspace', () => {
   const frozen = createRequestEnvelope({ ...base, workspaceId: null });
   const current = createRequestEnvelope({ ...base, workspaceId: null });
   assert.deepEqual(envelopeDrift(frozen, current), []);
+});
+
+test('an old persisted payload with extra billing fields still builds cleanly', () => {
+  const legacy = { ...base, payer: 'shared', budgetCredits: 40 } as RequestEnvelopeInput;
+  const envelope = createRequestEnvelope(legacy);
+  assert.equal('payer' in envelope, false);
+  assert.equal('budgetCredits' in envelope, false);
+  assert.deepEqual(envelopeDrift(envelope, createRequestEnvelope(base)), []);
 });

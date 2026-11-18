@@ -24,7 +24,6 @@ function task(overrides: Partial<TeamTask> = {}): TeamTask {
     report: 'Done.',
     patchesApplied: 1,
     patchFailures: [],
-    creditsSpent: 1.5,
     touchedFiles: ['src/a.ts'],
     pendingReview: [],
     filesRead: ['src/a.ts'],
@@ -37,12 +36,11 @@ function state(overrides: Partial<TeamState> = {}): TeamState {
   return {
     id: 'team-1000',
     goal: 'build the checkout',
-    status: 'stopped-budget',
-    tasks: [task(), task({ id: 't2', title: 'cover it', assignee: 'tests', status: 'pending', attempts: 0, lastReport: null, creditsSpent: 0 })],
+    status: 'stopped',
+    tasks: [task(), task({ id: 't2', title: 'cover it', assignee: 'tests', status: 'pending', attempts: 0, lastReport: null })],
     messages: [{ from: 'backend', to: 'team', kind: 'handoff', text: 't1 changed src/a.ts', at: 1000 }],
-    creditsSpent: 1.5,
     startedAt: 1000,
-    error: 'Stopped at the 2-credit cap.',
+    error: 'Stopped at the turn cap of 18.',
     budget: DEFAULT_TEAM_BUDGET,
     conflicts: ['t1, t2 all claim src/a.ts'],
     ...overrides
@@ -63,17 +61,17 @@ function memory(): TeamStorage & { map: Map<string, string> } {
   };
 }
 
-test('a team round-trips through the store with its tasks and spend intact', () => {
+test('a team round-trips through the store with its tasks and work counts intact', () => {
   const store = createTeamStore(memory());
   const original = state();
   store.save('/repo', original);
   const loaded = store.load('/repo');
   assert.ok(loaded);
   assert.equal(loaded.goal, original.goal);
-  assert.equal(loaded.status, 'stopped-budget');
-  assert.equal(loaded.creditsSpent, 1.5);
+  assert.equal(loaded.status, 'stopped');
   assert.equal(loaded.tasks.length, 2);
   assert.equal(loaded.tasks[0].status, 'passed');
+  assert.equal(loaded.tasks[0].attempts, 1);
   assert.deepEqual(loaded.tasks[0].touchedFiles, ['src/a.ts']);
   assert.equal(loaded.tasks[0].summary, 'Added POST /x.');
   assert.equal(loaded.tasks[1].status, 'pending');
@@ -82,14 +80,35 @@ test('a team round-trips through the store with its tasks and spend intact', () 
   assert.equal(loaded.messages.length, 1);
 });
 
-test('the persisted spend survives a reload so a resumed team cannot overspend', () => {
+test('the persisted attempts and ceilings survive a reload so a resumed team counts prior work', () => {
   const storage = memory();
   const store = createTeamStore(storage);
-  store.save('/repo', state({ creditsSpent: 23.7, status: 'cancelled' }));
+  store.save('/repo', state({ status: 'cancelled', tasks: [task({ attempts: 3, toolCalls: 12 })] }));
   const loaded = store.load('/repo');
-  assert.equal(loaded?.creditsSpent, 23.7);
-  assert.equal(loaded?.budget?.maxCredits, 24);
-  assert.ok((loaded?.creditsSpent ?? 0) <= (loaded?.budget?.maxCredits ?? 0));
+  assert.equal(loaded?.tasks[0].attempts, 3);
+  assert.equal(loaded?.tasks[0].toolCalls, 12);
+  assert.equal(loaded?.budget?.maxTurns, DEFAULT_TEAM_BUDGET.maxTurns);
+  assert.equal(loaded?.budget?.maxAttemptsPerTask, DEFAULT_TEAM_BUDGET.maxAttemptsPerTask);
+});
+
+test('a snapshot from before the spend gates were deleted still loads as a work stop', () => {
+  const storage = memory();
+  const legacy = {
+    ...state(),
+    status: 'stopped-budget',
+    creditsSpent: 23.7,
+    budget: { ...DEFAULT_TEAM_BUDGET, maxCredits: 24 },
+    tasks: [{ ...task(), creditsSpent: 1.5 }]
+  };
+  storage.map.set('shadrox.agents.team:/repo', JSON.stringify(legacy));
+  const store = createTeamStore(storage);
+  const loaded = store.load('/repo');
+  assert.ok(loaded, 'an old blob loads, never throws');
+  assert.equal(loaded.status, 'stopped');
+  assert.equal('creditsSpent' in loaded, false, 'spend fields are not read back');
+  assert.equal('creditsSpent' in loaded.tasks[0], false);
+  assert.equal(loaded.budget && 'maxCredits' in loaded.budget, false);
+  assert.deepEqual(loaded.budget, DEFAULT_TEAM_BUDGET);
 });
 
 test('the completed set is what a resume skips', () => {
@@ -180,10 +199,10 @@ test('a bogus verdict in a stored report voids the report rather than inventing 
   assert.equal(clean?.tasks[0].status, 'passed');
 });
 
-test('negative and non-finite credits are refused, not stored', () => {
-  const clean = sanitizeTeamState(state({ creditsSpent: -5, tasks: [task({ creditsSpent: Number.NaN })] }));
-  assert.equal(clean?.creditsSpent, 0);
-  assert.equal(clean?.tasks[0].creditsSpent, 0);
+test('negative and non-finite work counts are refused, not stored', () => {
+  const clean = sanitizeTeamState(state({ tasks: [task({ attempts: -5, patchesApplied: Number.NaN })] }));
+  assert.equal(clean?.tasks[0].attempts, 0);
+  assert.equal(clean?.tasks[0].patchesApplied, 0);
 });
 
 test('a message addressed to one role survives; a bogus one is dropped', () => {

@@ -2,19 +2,18 @@
  * The seam the app drives.
  *
  * `run-loop.ts` is the engine; this file supplies the concrete `DriverDeps` it
- * asks for by composing the planner, the DAG scheduler, the repair brief, the
- * budget and the credit tracker — and nothing else. The behavioural ports (how a
+ * asks for by composing the planner, the DAG scheduler, the repair brief and
+ * the budget — and nothing else. The behavioural ports (how a
  * turn calls the model, how a change is verified, how files are listed, how the
  * run is cancelled) arrive from the caller, so this factory stays free of the
  * app's chat, file and terminal machinery and remains testable with fakes.
  */
 
-import { createCreditTracker, estimateTurn as defaultEstimateTurn } from './budget';
 import { findBlocked, nextRunnable } from './dag';
 import { buildRepairBrief } from './feedback';
 import { createPlanGoal, validatePlan } from './plan';
 import { runAutonomous, type DriverDeps } from './run-loop';
-import { DEFAULT_RUN_BUDGET, type AutonomyPorts, type Milestone, type RunBudget, type RunState } from './types';
+import { DEFAULT_RUN_BUDGET, type AutonomyPorts, type RunBudget, type RunState } from './types';
 
 export interface AutonomyEngineOptions {
   /** The app's behavioural ports: turn, verify, files, events, cancellation. */
@@ -32,7 +31,6 @@ export interface AutonomyEngineOptions {
   resumeFrom?: RunState;
   /** Plan and validate, then stop without writing. */
   dryRun?: boolean;
-  estimateTurn?: (milestone: Milestone) => number;
   now?: () => number;
   /** The Stop/Pause signal handed to each turn so an in-flight request can end. */
   turnSignal?: () => AbortSignal | undefined;
@@ -40,20 +38,14 @@ export interface AutonomyEngineOptions {
 
 /** Compose the engine's driver dependencies from the app-provided pieces. */
 export function createDriverDeps(options: AutonomyEngineOptions): DriverDeps {
-  const budget = options.budget ?? DEFAULT_RUN_BUDGET;
   return {
     ports: options.ports,
-    budget,
+    budget: options.budget ?? DEFAULT_RUN_BUDGET,
     planGoal: createPlanGoal(options.askPlan),
     validate: validatePlan,
     nextRunnable,
     findBlocked,
-    tracker: createCreditTracker({
-      maxCredits: budget.maxCredits,
-      startingSpend: options.resumeFrom?.creditsSpent ?? 0
-    }),
     feedbackFor: buildRepairBrief,
-    estimateTurn: options.estimateTurn ?? defaultEstimateTurn,
     checkpoint: options.checkpoint,
     rollback: options.rollback,
     persist: options.persist,

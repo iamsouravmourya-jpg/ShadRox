@@ -10,13 +10,11 @@
 
 import { CREDIT_RATES, RUPEES_PER_CREDIT, type CreditRate } from './plans';
 import { USD_TO_INR, costRupees, costUsd, isPriced, type TokenSplit } from './modelRates';
-import type { ResolvedPayer } from './sharedKeyPolicy';
 
 /**
  * Keys for the operator-owned shared stack. ShadRox sells no plans, so nothing
- * in the product can produce one of these values; the matrix is kept because
- * `api/ai/_access.ts` can still be run with a shared key by an operator, and it
- * must not drift onto a model no tier ever approved.
+ * in the product can produce one of these values; the matrix is kept as the
+ * approved model-selection reference for the routing math.
  */
 export type SharedPlanKey = 'starter' | 'heavy';
 
@@ -300,9 +298,9 @@ export function routeSharedTask({ plan, taskClass, tokens }: SharedRouteInput): 
 }
 
 /**
- * Shared paid requests are Auto-only; there is no manual model selection on the
- * operator's key. BYOK keeps free model choice — the tokens are the user's own.
+ * Every request runs on the user's own key, so manual model choice is always
+ * allowed — the tokens are the user's own.
  */
-export function manualModelAllowed(payer: ResolvedPayer): boolean {
-  return payer === 'byok';
+export function manualModelAllowed(): boolean {
+  return true;
 }

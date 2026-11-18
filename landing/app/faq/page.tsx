@@ -3,14 +3,26 @@ import Link from 'next/link'
 import { ArrowUpRight, Download, LifeBuoy } from 'lucide-react'
 import { PageShell } from '@/components/landing/page-shell'
 import { Faq } from '@/components/landing/faq'
+import { faqs } from '@/lib/faqs'
 import { Reveal } from '@/components/landing/reveal'
 import { GITHUB_REPO } from '@/lib/download'
 
 export const metadata: Metadata = {
-  title: 'FAQ — ShadRox',
+  title: 'ShadRox — FAQ',
   description:
     'Straight answers about the ShadRox beta: downloading the Windows installer, Google sign-in, where your AI key is stored, what an AI request sends, agent guardrails, updates, previews and billing.',
   alternates: { canonical: '/faq' },
+}
+
+// Built from the exact questions and answers rendered by <Faq /> below.
+const faqJsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: faqs.map((item) => ({
+    '@type': 'Question',
+    name: item.q,
+    acceptedAnswer: { '@type': 'Answer', text: item.a },
+  })),
 }
 
 export default function FaqPage() {
@@ -21,6 +33,7 @@ export default function FaqPage() {
       accent="no fine print."
       sub="Downloading, signing in, AI keys, what a request actually sends, agent guardrails, updates, previews and billing — answered plainly, with the beta limits left in."
     >
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }} />
       <Faq />
 
       {/* ── Still stuck? ── */}

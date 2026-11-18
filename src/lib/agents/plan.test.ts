@@ -20,7 +20,6 @@ function task(overrides: Partial<TeamTask> = {}): TeamTask {
     report: '',
     patchesApplied: 0,
     patchFailures: [],
-    creditsSpent: 0,
     ...overrides
   };
 }

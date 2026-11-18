@@ -14,7 +14,6 @@ test('every event that reports work produces a line naming the task', () => {
     { type: 'task:verdict', id: 't1', verdict: 'unverified', report: { verdict: 'unverified', diagnostics: [], notes: [] } },
     { type: 'task:done', id: 't1', status: 'passed' },
     { type: 'message', message: { from: 'backend', to: 'team', kind: 'handoff', text: 'added the route', at: AT } },
-    { type: 'credit', spent: 1, total: 3 },
     { type: 'team:log', text: 'Coordinating: build it' },
     { type: 'team:done', status: 'done' },
     { type: 'team:integration', report: mergeReport() }
@@ -25,7 +24,7 @@ test('every event that reports work produces a line naming the task', () => {
   assert.match(lines[2] ?? '', /attempt 2/);
   assert.match(lines[3] ?? '', /unverified/);
   assert.match(lines[5] ?? '', /backend → team: added the route/);
-  assert.match(lines[8] ?? '', /Team finished: done/);
+  assert.match(lines[7] ?? '', /Team finished: done/);
 });
 
 test('a message addressed to one agent names that agent', () => {
@@ -58,7 +57,6 @@ function mergeReport(overrides: Partial<TeamMergeReport> = {}): TeamMergeReport 
     awaitingReview: [],
     notes: [],
     reply: 'the pieces fit',
-    creditsSpent: 1,
     at: AT,
     ...overrides
   };

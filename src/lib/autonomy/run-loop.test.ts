@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import { runAutonomous, type DriverDeps } from './run-loop';
 import { findBlocked, nextRunnable } from './dag';
+import { createAutonomyPorts, type AutonomyHost } from './ports';
+import { createFailureReceipt } from '../repairProof';
 import { DEFAULT_RUN_BUDGET, type AutonomyEvent, type Milestone, type PlanError, type RunBudget, type RunState, type TurnUnit, type VerifiableUnit, type VerificationReport, type AutonomyPorts, type TurnResult } from './types';
 
 function milestone(id: string, overrides: Partial<Milestone> = {}): Milestone {
@@ -39,7 +41,6 @@ interface Harness {
   setRollbackResult(ok: boolean): void;
   cancelAfter(count: number): void;
   pauseAfter(count: number): void;
-  spendAfter(count: number): void;
   /** Moves the fake clock, so a wall-clock ceiling can be tested without waiting. */
   advanceClock(ms: number): void;
 }
@@ -55,13 +56,11 @@ function harness(milestones: Milestone[], budget: RunBudget = DEFAULT_RUN_BUDGET
   const rollbacks: string[] = [];
   let rollbackResult = true;
   let verifyImpl = async (_m: VerifiableUnit): Promise<VerificationReport> => PASSED;
-  let turnImpl = (_unit: TurnUnit, _attempt: number): TurnResult => ({ reply: 'ok', patchesApplied: 1, patchFailures: [], creditsSpent: 1, aborted: false });
+  let turnImpl = (_unit: TurnUnit, _attempt: number): TurnResult => ({ reply: 'ok', patchesApplied: 1, patchFailures: [], aborted: false });
   let cancelAfterTurn = Infinity;
   let pauseAfterTurn = Infinity;
-  let inflateSpendFrom = Infinity;
   let turnCount = 0;
   let checkpointCount = 0;
-  let spent = 0;
   let clockMs = 1000;
   /** Stands in for the controller's per-run AbortController. */
   const turnAbort = new AbortController();
@@ -77,7 +76,6 @@ function harness(milestones: Milestone[], budget: RunBudget = DEFAULT_RUN_BUDGET
       turns.push({ milestone: request.milestone.id, attempt, feedbackText: request.feedbackText });
       signals.push(request.signal);
       const result = turnImpl(request.milestone, attempt);
-      if (turnCount >= inflateSpendFrom) spent += 1000;
       return result;
     },
     verify: (m) => verifyImpl(m),
@@ -95,17 +93,8 @@ function harness(milestones: Milestone[], budget: RunBudget = DEFAULT_RUN_BUDGET
     validate: () => [] as PlanError[],
     nextRunnable,
     findBlocked,
-    tracker: {
-      credit: (cost) => {
-        spent += cost;
-        return { allowed: spent <= budget.maxCredits, spent };
-      },
-      spent: () => spent,
-      exhausted: () => spent >= budget.maxCredits
-    },
     feedbackFor: (m, report, failures, attempt) =>
       `${m.id}: ${report.diagnostics.map((d) => d.message).join('|')} refused=${failures.join('|')} n=${attempt}`,
-    estimateTurn: () => 1,
     checkpoint: async () => {
       checkpointCount += 1;
       return `checkpoint-${checkpointCount}`;
@@ -142,9 +131,6 @@ function harness(milestones: Milestone[], budget: RunBudget = DEFAULT_RUN_BUDGET
     pauseAfter: (count) => {
       pauseAfterTurn = count;
     },
-    spendAfter: (count) => {
-      inflateSpendFrom = count;
-    },
     advanceClock: (ms) => {
       clockMs += ms;
     }
@@ -170,7 +156,6 @@ test('review-held files and touched paths survive into the run state', async () 
     reply: 'Updated the file.',
     patchesApplied: 0,
     patchFailures: [],
-    creditsSpent: 0.4,
     aborted: false,
     touchedFiles: [],
     filesRead: ['src/a.ts'],
@@ -188,14 +173,13 @@ test('a check failed by review-held files pauses the run instead of burning atte
     reply: 'Proposed the edit.',
     patchesApplied: 0,
     patchFailures: [],
-    creditsSpent: 0.4,
     aborted: false,
     pendingReview: ['src/a.ts']
   }));
   const state = await runAutonomous('goal', h.deps);
   assert.equal(state.status, 'paused');
   assert.equal(state.milestones[0].status, 'stopped');
-  assert.equal(h.turns.length, 1, 'no paid retry can accept a review for the user');
+  assert.equal(h.turns.length, 1, 'no retry can accept a review for the user');
   assert.deepEqual(h.rollbacks, [], 'the work already landed stays on disk while the user reviews');
   assert.match(state.error ?? '', /waiting for your review/);
   assert.match(state.error ?? '', /resume the run/);
@@ -208,7 +192,6 @@ test('a held file unrelated to the failure does not pause the repair loop', asyn
     reply: 'Proposed an unrelated edit.',
     patchesApplied: 0,
     patchFailures: [],
-    creditsSpent: 0.4,
     aborted: false,
     pendingReview: ['src/other.ts']
   }));
@@ -243,7 +226,7 @@ test('the repair attempt is handed the report verbatim, not a paraphrase', async
 
 test('an interrupted turn is not retried', async () => {
   const h = harness([milestone('m1')]);
-  h.setTurn(() => ({ reply: '', patchesApplied: 0, patchFailures: [], creditsSpent: 0.4, aborted: true }));
+  h.setTurn(() => ({ reply: '', patchesApplied: 0, patchFailures: [], aborted: true }));
   const state = await runAutonomous('goal', h.deps);
   assert.equal(state.milestones[0].status, 'failed');
   assert.equal(state.milestones[0].attempts.length, 1, 'no repair loop after a turn that never finished');
@@ -252,7 +235,7 @@ test('an interrupted turn is not retried', async () => {
 test('a turn the user stopped is filed as stopped, not as a failure', async () => {
   const h = harness([milestone('m1'), milestone('m2')]);
   h.cancelAfter(1);
-  h.setTurn(() => ({ reply: '', patchesApplied: 0, patchFailures: [], creditsSpent: 0.4, aborted: true, stopped: true }));
+  h.setTurn(() => ({ reply: '', patchesApplied: 0, patchFailures: [], aborted: true, stopped: true }));
   const state = await runAutonomous('goal', h.deps);
   assert.equal(state.milestones[0].status, 'stopped', 'a stop is not a failure the model is blamed for');
   assert.equal(state.milestones[1].status, 'pending');
@@ -264,7 +247,7 @@ test('a stopped turn cannot leave a run claiming it finished', async () => {
   const h = harness([milestone('m1'), milestone('m2')]);
   // A host that says "the user stopped this" without a Stop flag set: the run may
   // not resolve to `done` on that, because nothing proves the work ended well.
-  h.setTurn(() => ({ reply: '', patchesApplied: 0, patchFailures: [], creditsSpent: 0.4, aborted: true, stopped: true }));
+  h.setTurn(() => ({ reply: '', patchesApplied: 0, patchFailures: [], aborted: true, stopped: true }));
   const state = await runAutonomous('goal', h.deps);
   assert.equal(state.status, 'cancelled');
   assert.notEqual(state.status, 'done');
@@ -294,8 +277,8 @@ test('Pause files the milestone it interrupted as stopped, never left running', 
   h.pauseAfter(2);
   h.setTurn((unit) =>
     unit.id === 'm2'
-      ? { reply: '', patchesApplied: 1, patchFailures: [], creditsSpent: 0.4, aborted: true, stopped: true }
-      : { reply: 'ok', patchesApplied: 1, patchFailures: [], creditsSpent: 0.4, aborted: false }
+      ? { reply: '', patchesApplied: 1, patchFailures: [], aborted: true, stopped: true }
+      : { reply: 'ok', patchesApplied: 1, patchFailures: [], aborted: false }
   );
   const state = await runAutonomous('goal', h.deps);
   assert.equal(state.status, 'paused');
@@ -319,33 +302,12 @@ test('Stop cancels between milestones and says how many were left', async () => 
   assert.equal(state.milestones[1].status, 'pending');
 });
 
-test('the budget stops the run rather than overrunning it', async () => {
-  const h = harness([milestone('m1'), milestone('m2')], { ...DEFAULT_RUN_BUDGET, maxCredits: 2 });
-  h.spendAfter(1);
-  const state = await runAutonomous('goal', h.deps);
-  assert.equal(state.status, 'stopped-budget');
-  assert.match(state.error ?? '', /spend cap of 2/);
-  assert.equal(h.turns.length, 1, 'no turn is started once the cap is gone');
-});
-
-test('an expensive next turn is refused before it is spent', async () => {
-  const h = harness([milestone('m1')], { ...DEFAULT_RUN_BUDGET, maxCredits: 3 });
-  const estimate = h.deps.estimateTurn;
-  h.deps.estimateTurn = () => 5;
-  const state = await runAutonomous('goal', h.deps);
-  assert.equal(state.status, 'stopped-budget');
-  assert.match(state.error ?? '', /estimated at 5 spend/);
-  assert.equal(h.turns.length, 0);
-  assert.equal(state.milestones[0].status, 'pending');
-  h.deps.estimateTurn = estimate;
-});
-
 test('the turn cap stops the run and says which ceiling fired', async () => {
   const h = harness([milestone('m1'), milestone('m2')], { ...DEFAULT_RUN_BUDGET, maxTurns: 1 });
   const state = await runAutonomous('goal', h.deps);
-  assert.equal(state.status, 'stopped-budget');
+  assert.equal(state.status, 'stopped');
   assert.match(state.error ?? '', /turn cap of 1/);
-  assert.equal(h.turns.length, 1, 'a second turn would have been paid for');
+  assert.equal(h.turns.length, 1, 'a second turn would have started');
   assert.equal(state.milestones[1].status, 'pending');
 });
 
@@ -355,9 +317,9 @@ test('the tool-call cap counts only what the host really reported', async () => 
   assert.equal(state.status, 'done', 'a host that reports no tool calls is bounded by its turns, not by a guess');
 
   const counted = harness([milestone('m1'), milestone('m2')], { ...DEFAULT_RUN_BUDGET, maxToolCalls: 3 });
-  counted.setTurn(() => ({ reply: 'ok', patchesApplied: 1, patchFailures: [], creditsSpent: 1, aborted: false, toolCalls: 3 }));
+  counted.setTurn(() => ({ reply: 'ok', patchesApplied: 1, patchFailures: [], aborted: false, toolCalls: 3 }));
   const stopped = await runAutonomous('goal', counted.deps);
-  assert.equal(stopped.status, 'stopped-budget');
+  assert.equal(stopped.status, 'stopped');
   assert.match(stopped.error ?? '', /tool-call cap of 3/);
   assert.equal(counted.turns.length, 1);
 });
@@ -366,10 +328,10 @@ test('the wall-clock cap stops between units without waiting for one', async () 
   const h = harness([milestone('m1'), milestone('m2')], { ...DEFAULT_RUN_BUDGET, maxWallClockMs: 1000 });
   h.setTurn((unit) => {
     h.advanceClock(1500);
-    return { reply: unit.id, patchesApplied: 1, patchFailures: [], creditsSpent: 1, aborted: false };
+    return { reply: unit.id, patchesApplied: 1, patchFailures: [], aborted: false };
   });
   const state = await runAutonomous('goal', h.deps);
-  assert.equal(state.status, 'stopped-budget');
+  assert.equal(state.status, 'stopped');
   assert.match(state.error ?? '', /Stopped after 2s/);
   assert.equal(h.turns.length, 1);
 });
@@ -379,35 +341,13 @@ test('a long turn does not buy the run another one — the clock is read before 
   h.setVerify(async () => FAILED);
   h.setTurn(() => {
     h.advanceClock(1200);
-    return { reply: 'ok', patchesApplied: 1, patchFailures: [], creditsSpent: 1, aborted: false };
+    return { reply: 'ok', patchesApplied: 1, patchFailures: [], aborted: false };
   });
   const state = await runAutonomous('goal', h.deps);
-  assert.equal(state.status, 'stopped-budget');
+  assert.equal(state.status, 'stopped');
   assert.match(state.error ?? '', /time limit is 1s/);
-  assert.equal(h.turns.length, 1, 'the second attempt was refused before it was paid for');
+  assert.equal(h.turns.length, 1, 'the second attempt was refused before it started');
   assert.equal(state.milestones[0].status, 'stopped', 'it ran, so it is not filed back under pending');
-});
-
-test('a turn that costs more than the cap is settled, and the run stops on the evidence', async () => {
-  const h = harness([milestone('m1'), milestone('m2')], { ...DEFAULT_RUN_BUDGET, maxCredits: 10 });
-  h.deps.estimateTurn = () => 1;
-  h.setTurn(() => ({ reply: 'ok', patchesApplied: 1, patchFailures: [], creditsSpent: 11, aborted: false }));
-  const state = await runAutonomous('goal', h.deps);
-  assert.equal(state.status, 'stopped-budget');
-  assert.match(state.error ?? '', /spend cap of 10/);
-  assert.match(state.error ?? '', /took the run to 11/);
-  assert.equal(h.turns.length, 1, 'the overshoot stops here rather than at the next boundary');
-});
-
-test('a repair attempt is priced on what the milestone actually cost, not on the guess', async () => {
-  const h = harness([milestone('m1')], { ...DEFAULT_RUN_BUDGET, maxCredits: 12, maxAttemptsPerMilestone: 3 });
-  h.deps.estimateTurn = () => 1;
-  h.setVerify(async () => FAILED);
-  h.setTurn(() => ({ reply: 'ok', patchesApplied: 1, patchFailures: [], creditsSpent: 5, aborted: false }));
-  const state = await runAutonomous('goal', h.deps);
-  assert.equal(h.turns.length, 2, 'a third turn at the observed price would have passed the cap, so it is refused');
-  assert.equal(state.status, 'stopped-budget');
-  assert.match(state.error ?? '', /estimated at 5 spend/);
 });
 
 test('a plan that will not validate never reaches the model', async () => {
@@ -464,14 +404,6 @@ test('a read-only milestone with no checker is unverified but raises no alarm', 
   assert.equal(state.error, undefined, 'an unproven investigation has nothing to warn about');
 });
 
-test('credits are settled from the real turn cost, not the estimate', async () => {
-  const h = harness([milestone('m1'), milestone('m2')]);
-  h.setTurn(() => ({ reply: 'ok', patchesApplied: 2, patchFailures: [], creditsSpent: 0.6, aborted: false }));
-  const state = await runAutonomous('goal', h.deps);
-  assert.equal(state.creditsSpent, 1.2);
-  assert.equal(h.events.filter((e) => e.type === 'credit').length, 2);
-});
-
 test('the final state is persisted after every verdict so a crash loses nothing', async () => {
   const h = harness([milestone('m1'), milestone('m2')]);
   const state = await runAutonomous('goal', h.deps);
@@ -503,6 +435,67 @@ test('a failed run that wrote files rolls back to the pre-run checkpoint', async
   assert.match(state.error ?? '', /rolled .*back to the pre-run checkpoint/i);
 });
 
+test('a turn that mutated disk without patches still rolls back on a failed run', async () => {
+  const h = harness([milestone('m1')]);
+  h.setVerify(async () => FAILED);
+  // delete_file / run_command / MCP writes change the workspace without
+  // applying a single patch: patchesApplied alone used to leave wrote=false.
+  h.setTurn(() => ({ reply: 'ran a command', patchesApplied: 0, changedFiles: 2, patchFailures: [], aborted: false }));
+  const state = await runAutonomous('goal', h.deps);
+  assert.equal(state.status, 'failed');
+  assert.deepEqual(h.rollbacks, ['checkpoint-1'], 'non-patch writes are writes');
+  assert.equal(state.rolledBack, true);
+});
+
+test('a run whose turns wrote nothing at all does not roll back', async () => {
+  const h = harness([milestone('m1')]);
+  h.setVerify(async () => FAILED);
+  h.setTurn(() => ({ reply: 'read only', patchesApplied: 0, changedFiles: 0, patchFailures: [], aborted: false }));
+  const state = await runAutonomous('goal', h.deps);
+  assert.equal(state.status, 'failed');
+  assert.deepEqual(h.rollbacks, [], 'nothing was written, so there is nothing to restore');
+  assert.equal(state.rolledBack, undefined);
+});
+
+test('the turn\'s command-failure receipt is filed on the attempt record', async () => {
+  const receipt = createFailureReceipt({ source: 'test', target: 'npm test', errorMessage: '2 tests failed', exitCode: 1 });
+  const h = harness([milestone('m1')]);
+  h.setTurn(() => ({ reply: 'ok', patchesApplied: 1, patchFailures: [], aborted: false, failureProof: receipt }));
+  const state = await runAutonomous('goal', h.deps);
+  assert.equal(state.milestones[0].attempts[0].failureProof, receipt);
+  const last = h.states[h.states.length - 1];
+  assert.equal(last.milestones[0].attempts[0].failureProof?.id, receipt.id, 'the persisted state keeps the evidence too');
+});
+
+test('a zero-write pass is annotated and logged through the real verifier', async () => {
+  const h = harness([milestone('m1')]);
+  h.setTurn(() => ({ reply: 'looked around', patchesApplied: 0, changedFiles: 0, patchFailures: [], aborted: false }));
+  // The real ports adapter and the real verifyMilestone, wired as the app
+  // wires them: a clean checker answer must not hide that nothing was written.
+  const host: AutonomyHost = {
+    runTurn: async () => ({ reply: '', patchesApplied: 0, patchFailures: [], aborted: false }),
+    getDiagnostics: async () => [],
+    listFiles: () => ['src/a.ts'],
+    askPlan: async () => '[]',
+    runCommand: async () => ({ argv: '', exitCode: 0, stdoutTail: '', stderrTail: '', timedOut: false })
+  };
+  const realPorts = createAutonomyPorts(host, {
+    rootPath: '/ws',
+    onEvent: h.deps.ports.onEvent,
+    isCancellationRequested: () => false
+  });
+  h.deps.ports.verify = realPorts.verify;
+  const state = await runAutonomous('goal', h.deps);
+  assert.equal(state.status, 'done');
+  assert.equal(state.milestones[0].status, 'passed', 'the note annotates the pass; it never flips it');
+  const report = state.milestones[0].attempts[0].verification;
+  assert.match(report?.notes.join(' ') ?? '', /touched nothing/);
+  assert.ok(
+    h.events.some((event) => event.type === 'log' && /touched nothing/.test(event.text)),
+    'the panel log and journal see the caveat, not just the bare verdict'
+  );
+});
+
 test('a rollback that fails keeps the checkpoint id and says so', async () => {
   const h = harness([milestone('m1')]);
   h.setVerify(async () => FAILED);
@@ -527,7 +520,6 @@ test('resume continues a persisted plan instead of replanning', async () => {
     id: 'run-1',
     goal: 'goal',
     status: 'cancelled',
-    creditsSpent: 5,
     startedAt: 1,
     milestones: [
       { ...milestone('m1'), status: 'passed' },
@@ -546,7 +538,6 @@ test('resume turns a milestone left running back into a runnable one', async () 
     id: 'run-1',
     goal: 'goal',
     status: 'failed',
-    creditsSpent: 1,
     startedAt: 1,
     milestones: [{ ...milestone('m1'), status: 'running' }]
   };
@@ -561,11 +552,10 @@ test('resume re-runs the milestone a pause left stopped, and keeps what passed',
     id: 'run-1',
     goal: 'goal',
     status: 'paused',
-    creditsSpent: 3,
     startedAt: 1,
     milestones: [
       { ...milestone('m1'), status: 'passed' },
-      { ...milestone('m2'), status: 'stopped', attempts: [{ index: 1, reply: 'half a turn', patchesApplied: 1, patchFailures: [], verification: PASSED, creditsSpent: 1, startedAt: 2 }] },
+      { ...milestone('m2'), status: 'stopped', attempts: [{ index: 1, reply: 'half a turn', patchesApplied: 1, patchFailures: [], verification: PASSED, startedAt: 2 }] },
       { ...milestone('m3'), dependsOn: ['m2'] }
     ]
   };
@@ -575,7 +565,7 @@ test('resume re-runs the milestone a pause left stopped, and keeps what passed',
   assert.deepEqual(
     h.turns.map((turn) => turn.milestone),
     ['m2', 'm3'],
-    'the stopped milestone is runnable again and the passed one is not paid for twice'
+    'the stopped milestone is runnable again and the passed one is not run twice'
   );
   assert.equal(state.milestones[0].status, 'passed');
 });
