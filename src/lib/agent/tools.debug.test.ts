@@ -17,9 +17,21 @@ test('debugger_state is a known built-in tool', () => {
   assert.equal(definition.parameters, 'none');
 });
 
-test('the tool registry now holds fourteen tools including debugger_state', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 14);
+test('the tool registry now holds eighteen tools including the write tools, job_control and preview_control', () => {
+  assert.equal(TOOL_DEFINITIONS.length, 18);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'debugger_state').length, 1);
+  assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'write_file').length, 1);
+  assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'edit_file').length, 1);
+  assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'job_control').length, 1);
+  assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'preview_control').length, 1);
+});
+
+test('preview_control is exposed to native providers with an action enum', () => {
+  const entry = nativeToolDefinitions().find((tool) => tool.name === 'preview_control');
+  assert.ok(entry, 'a built-in without a native schema is invisible to function-calling providers');
+  const schema = entry.parameters as { properties: { action: { enum: string[] } }; required: string[] };
+  assert.deepEqual(schema.properties.action.enum, ['start', 'stop', 'restart']);
+  assert.deepEqual(schema.required, ['action']);
 });
 
 test('debugger_state has an empty native schema and is exposed to providers', () => {

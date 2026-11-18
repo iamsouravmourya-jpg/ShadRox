@@ -8,7 +8,7 @@ import { APP_VERSION, GITHUB_REPO, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import { CapabilitySheet } from './capability-sheet'
 
 export const metadata: Metadata = {
-  title: 'Features — ShadRox',
+  title: 'ShadRox — Features',
   description:
     'Editor, AI chat, local preview, Git and terminal in one Windows workspace. The full capability sheet: CodeMirror 6 editing, @-mention context, MCP servers, approval-gated runs, rewindable checkpoints and GitHub push.',
   alternates: { canonical: '/features' },

@@ -20,7 +20,7 @@ import { Reveal } from '@/components/landing/reveal'
 import { APP_VERSION, GITHUB_REPO, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 
 export const metadata: Metadata = {
-  title: 'How it works — ShadRox',
+  title: 'ShadRox — How it works',
   description:
     'From folder to commit: sign in with Google, open a local project, connect your own AI key, review every diff, then run, preview and commit — all inside one Windows app.',
   alternates: { canonical: '/how-it-works' },

@@ -19,20 +19,16 @@ const ENVELOPE: RequestEnvelope = createRequestEnvelope({
   targets: ['src/parser.ts'],
   permissionMode: 'ask',
   refineMode: 'code',
-  payer: 'shared',
   provider: 'gateway',
-  model: 'glm-4.7-flash',
-  budgetCredits: 24
+  model: 'glm-4.7-flash'
 });
 
 describe('workerScope parity (S16)', () => {
-  it('gives every worker the same frozen permission mode, payer and budget (S16)', () => {
+  it('gives every worker the same frozen permission mode and workspace (S16)', () => {
     const a = workerScope(ENVELOPE, { id: 't1', files: [{ path: 'src/a.ts', version: 'v1' }] });
     const b = workerScope(ENVELOPE, { id: 't2', files: [{ path: 'src/b.ts', version: 'v1' }] });
     for (const scope of [a, b]) {
       assert.equal(scope.permissionMode, 'ask');
-      assert.equal(scope.payer, 'shared');
-      assert.equal(scope.budgetCredits, 24);
       assert.equal(scope.workspaceId, 'ws-a');
     }
     assert.deepEqual(a.targets.map((t) => t.path), ['src/a.ts']);
@@ -124,10 +120,8 @@ describe('TaskLedger (S16)', () => {
       taskId: null,
       role: 'planner',
       model: 'gemini-2.5-flash-lite',
-      payer: 'shared',
       permissionMode: 'ask',
       targets: [],
-      creditsSpent: 0.4,
       status: 'done'
     });
     ledger.record({
@@ -135,10 +129,8 @@ describe('TaskLedger (S16)', () => {
       taskId: 't1',
       role: 'worker',
       model: 'qwen3-coder-next',
-      payer: 'shared',
       permissionMode: 'ask',
       targets: ['src/a.ts'],
-      creditsSpent: 1.5,
       status: 'done'
     });
     ledger.record({
@@ -146,14 +138,11 @@ describe('TaskLedger (S16)', () => {
       taskId: 't1',
       role: 'repair',
       model: 'deepseek-v4.1-flash',
-      payer: 'shared',
       permissionMode: 'ask',
       targets: ['src/a.ts'],
-      creditsSpent: 2,
       status: 'done'
     });
     assert.equal(ledger.attemptCount, 3);
     assert.equal(ledger.attemptsFor('t1').length, 2);
-    assert.equal(ledger.creditsSpent, 3.9);
   });
 });

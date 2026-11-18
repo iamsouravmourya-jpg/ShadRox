@@ -32,7 +32,7 @@ export function isRunState(value: unknown): value is RunState {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<RunState>;
   if (typeof candidate.goal !== 'string' || typeof candidate.status !== 'string') return false;
-  if (typeof candidate.creditsSpent !== 'number' || typeof candidate.startedAt !== 'number') return false;
+  if (typeof candidate.startedAt !== 'number') return false;
   if (!Array.isArray(candidate.milestones)) return false;
   return candidate.milestones.every((milestone) => {
     const entry = milestone as Partial<Milestone>;

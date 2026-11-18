@@ -17,7 +17,7 @@ import { Reveal } from '@/components/landing/reveal'
 import { APP_VERSION, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 
 export const metadata: Metadata = {
-  title: 'Privacy — ShadRox',
+  title: 'ShadRox — Privacy',
   description:
     'What ShadRox keeps on your computer, what a single AI request sends to your provider, and what the required Google sign-in stores. Local project files, OS-encrypted provider keys and default-deny agent commands.',
   alternates: { canonical: '/privacy' },

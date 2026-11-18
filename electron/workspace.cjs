@@ -103,6 +103,11 @@ function isIgnoredFile(fileName) {
   return BINARY_EXTENSIONS.has(ext) && !isPreviewAsset(fileName);
 }
 
+/** Env files (.env, .env.local, …) are readable config, not hidden junk. */
+function isEnvFile(clean) {
+  return path.posix.basename(clean).startsWith('.env');
+}
+
 async function resolveWorkspaceDirectory(workspace, relativePath = '', create = false) {
   const clean = relativePath ? normalizeRelativePath(relativePath) : '';
   let current = workspace.root;
@@ -134,7 +139,7 @@ function hashContent(content) {
 async function resolveWorkspaceFile(workspace, relativePath) {
   const clean = normalizeRelativePath(relativePath);
   const hidden = clean.split('/').some((part) => part.startsWith('.') || IGNORED_DIRECTORIES.has(part));
-  if (hidden && !isShadroxConfigFile(clean) && !isProjectDocFile(clean)) {
+  if (hidden && !isShadroxConfigFile(clean) && !isProjectDocFile(clean) && !isEnvFile(clean)) {
     throw new Error('Hidden and generated project files are not available in the editor.');
   }
   if ((isIgnoredFile(path.posix.basename(clean)) || isPreviewAsset(clean)) && !isProjectDocFile(clean)) {
@@ -852,8 +857,20 @@ function createWorkspaceAccess() {
         if (hadMappedPath) {
           await fs.rename(temporaryPath, target);
         } else {
-          await fs.link(temporaryPath, target);
-          await fs.unlink(temporaryPath);
+          const linked = await fs.link(temporaryPath, target).then(() => true, () => false);
+          if (linked) {
+            await fs.unlink(temporaryPath);
+          } else {
+            // OneDrive/FAT32/network volumes refuse hard links; rename is the
+            // same-volume atomic move, copy+unlink covers cross-volume EXDEV.
+            try {
+              await fs.rename(temporaryPath, target);
+            } catch (renameError) {
+              if (renameError.code !== 'EXDEV') throw renameError;
+              await fs.copyFile(temporaryPath, target);
+              await fs.unlink(temporaryPath);
+            }
+          }
         }
         workspace.fileMap.set(relativePath, target);
         const persisted = await fs.readFile(target, 'utf8').catch(() => null);

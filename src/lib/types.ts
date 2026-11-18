@@ -127,18 +127,12 @@ export interface ChatMessage {
     outputTokens?: number;
     /** Prompt-cache tokens reported by the provider, already included in inputTokens. */
     cachedTokens?: number;
-    /**
-     * Credits this turn actually cost at the rate table, derived from the real
-     * split. Absent when the split is unknown — a guessed charge is worse than
-     * no charge, because the balance would drift silently.
-     */
-    credits?: number;
     /** The model the answer route requested, for provenance in the header. */
     model?: string;
     /** The provider-reported served model, or null when it was not returned. */
     servedModel?: string | null;
     /**
-     * How trustworthy the token/credit figures are. `pending` means at least one
+     * How trustworthy the token figures are. `pending` means at least one
      * attempt reported no usage, so the number is incomplete rather than zero.
      */
     usageState?: 'measured' | 'estimated' | 'pending';
@@ -152,12 +146,9 @@ export interface ChatMessage {
   /** An automatic run/team turn, rendered inline instead of a separate panel. */
   orchestration?: {
     kind: 'autonomy' | 'team';
-    status: 'planning' | 'running' | 'done' | 'failed' | 'paused' | 'stopped' | 'budget';
+    status: 'planning' | 'running' | 'done' | 'failed' | 'paused' | 'stopped';
     /** Why Auto escalated this request instead of answering it directly. */
     reason: string;
-    /** Hard ceiling the engine enforces for this run, in credits. */
-    budgetCredits: number;
-    creditsSpent?: number;
     /** Newest engine log lines, trimmed; the full log stays in the hook. */
     progress?: string[];
     /** One-line outcome: milestones/tasks passed, files changed, or the error. */
@@ -176,8 +167,6 @@ export interface ChatMessage {
   };
   /** Self-Healing Proof receipt showing verified failure and heal state. */
   selfHealingProof?: import('./repairProof').FailureReceipt;
-  /** Exact spend and prompt cache savings recorded for this turn. */
-  spendLedgerRecord?: import('./spendLedger').TokenSpendRecord;
   /** Final per-file write outcomes, persisted so restored history stays honest. */
   writeOutcomes?: Record<string, PersistedWriteOutcome>;
   /** True when this message came back from storage instead of this session. */

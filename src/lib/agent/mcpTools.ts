@@ -116,7 +116,7 @@ interface Route {
 const EMPTY_DISCOVERY: McpDiscovery = { tools: [], failures: [], omittedTools: 0 };
 
 function refusal(message: string): ToolOutcome {
-  return { ok: false, content: '', error: message };
+  return { ok: false, content: '', error: message, refused: true };
 }
 
 /** Every error string in here becomes prompt or transcript text, so a credential stops here. */

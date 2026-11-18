@@ -40,6 +40,11 @@ export const MAX_TRIM_ITERATIONS = 100;
 export const MIN_BUDGET_CHARS = 5_000;
 export const RESERVED_OUTPUT_FLOOR_TOKENS = 4_096;
 export const MAX_SYSTEM_INSTRUCTION_CHARS = 80_000;
+/** The server hard-413s any single history message over 60,000 chars
+ * (api/_validate.ts `chatMessageChars`), independent of the model window.
+ * Every message is kept safely below that so one huge multi-file edit reply
+ * can never brick the next request. */
+export const MAX_MESSAGE_CHARS = 55_000;
 
 export interface BudgetedMessage {
   role: 'user' | 'assistant' | 'system';
@@ -132,6 +137,10 @@ function indexMultiplier(index: number, count: number): number {
  *
  * Whole pair groups (a tool call and the observation that answered it) are
  * trimmed in the same pass, the way Cline drops them in the same pass.
+ *
+ * Independently of the window, every message is held under `MAX_MESSAGE_CHARS`
+ * (head+tail with an explicit marker): the server hard-rejects any single
+ * history message over 60k chars, so the cap runs even when the total fits.
  */
 export function trimMessagesToBudget(
   messages: BudgetedMessage[],
@@ -141,7 +150,6 @@ export function trimMessagesToBudget(
 ): TrimResult {
   const budget = messageBudgetChars(contextWindow, maxOutput, extraInputChars);
   const result = messages.map((message) => ({ ...message }));
-  let total = result.reduce((sum, message) => sum + message.content.length, 0);
   let trimmed = 0;
   let trimmedChars = 0;
   let iterations = 0;
@@ -161,6 +169,22 @@ export function trimMessagesToBudget(
       break;
     }
   }
+
+  // Per-message hard cap, independent of the window budget: the server 413s
+  // any single history message over 60k chars even when the total history fits
+  // the window, so a huge multi-file edit reply is cut here before it can brick
+  // the next request. Head and tail survive with an explicit marker, and the
+  // cut keeps untrusted-data wrappers and code fences balanced.
+  result.forEach((message, index) => {
+    if (message.content.length <= MAX_MESSAGE_CHARS) return;
+    const before = message.content.length;
+    message.content = capMessageContent(message.content, MAX_MESSAGE_CHARS);
+    trimmed += 1;
+    trimmedChars += before - message.content.length;
+    stages.add(trimStageOf(message.role, message.content));
+    if (index >= newestTurnStart) newestTurnTrimmed = true;
+  });
+  let total = result.reduce((sum, message) => sum + message.content.length, 0);
 
   /** How short this message may get in this phase without breaking a tool pair. */
   const floorFor = (index: number, phase: 'staged' | 'last_resort'): number => {
@@ -299,6 +323,39 @@ function countUnescaped(text: string, marker: string): number {
 
 function countFences(text: string): number {
   return (text.match(/```/g) ?? []).length;
+}
+
+/** Hard per-message cap so no single history message can trip the server's
+ * 60k-char 413. Head and tail are preserved around an explicit '[...trimmed...]'
+ * marker; like `capSystemInstruction`, the cut re-balances untrusted-data
+ * wrappers and code fences so a split payload cannot forge a boundary. */
+export function capMessageContent(content: string, maxChars = MAX_MESSAGE_CHARS): string {
+  if (content.length <= maxChars) return content;
+  const marker = `\n\n[...trimmed...] ${content.length} chars total; the middle was cut to fit the per-message limit.\n\n`;
+  if (maxChars <= marker.length) return marker.slice(0, Math.max(0, maxChars));
+
+  const repairReserve = UNTRUSTED_BEGIN.length + UNTRUSTED_END.length + 16;
+  const available = Math.max(0, maxChars - marker.length - repairReserve);
+  const headChars = Math.floor(available * 0.6);
+  const tailChars = available - headChars;
+  let head = content.slice(0, headChars);
+  let tail = tailChars > 0 ? content.slice(-tailChars) : '';
+
+  if (countUnescaped(head, UNTRUSTED_BEGIN) > countUnescaped(head, UNTRUSTED_END)) {
+    head += `\n${UNTRUSTED_END}`;
+  }
+  if (countFences(head) % 2 === 1) {
+    head += '\n```';
+  }
+  if (countUnescaped(tail, UNTRUSTED_END) > countUnescaped(tail, UNTRUSTED_BEGIN)) {
+    tail = `${UNTRUSTED_BEGIN}\n${tail}`;
+  }
+  if (countFences(tail) % 2 === 1) {
+    tail = `\`\`\`\n${tail}`;
+  }
+
+  const capped = `${head}${marker}${tail}`;
+  return capped.length <= maxChars ? capped : capped.slice(0, maxChars);
 }
 
 /** Hard cap for the system instruction so a huge context dump cannot crowd out

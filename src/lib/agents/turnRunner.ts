@@ -11,7 +11,7 @@
  * `App.tsx` can hand it its own `runToolRounds`, `streamChat` and patch engine
  * without any of those files moving:
  *
- *   stream            one model turn (the app's real, billed one)
+ *   stream            one model turn (the app's real one)
  *   runToolRounds     the chat tool loop, passed through as a value
  *   buildMessages     composes the system context + the instruction
  *   extractPatches    the app's reply -> file-change parser
@@ -26,8 +26,10 @@ import type { ToolActivity, ToolLoopInput, ToolLoopResult } from '../agent/toolL
 import type { TaskPlan } from '../agent/taskPlan';
 import type { ChatTurn } from '../ai';
 import { allowsEffect, type RequestScope, type RunPolicy } from '../agent/runPolicy';
+import { isControlTool } from '../agent/tools';
+import type { FailureReceipt } from '../repairProof';
 import type { AttemptRecord } from '../taskUsage';
-import { confinePatches } from '../autonomy/confinement';
+import { confinePatches, isInsideWorkspaceRoot } from '../autonomy/confinement';
 import type { ApplyPolicyKind } from '../autonomy/types';
 import {
   normalizePolicyPath,
@@ -63,8 +65,6 @@ export interface AgentTurnPorts {
   workspaceId: string | null;
   /** User-configured MCP tools discovered for this turn. */
   external?: ToolLoopInput['external'];
-  /** Token cost settled by the caller's stream wrapper, once the turn is over. */
-  measureCredits?: () => number;
 }
 
 export interface AgentTurnInput {
@@ -125,7 +125,19 @@ export interface AgentTurnOutcome {
   toolRounds: number;
   /** True when the tool budget ran out and the answer was forced. */
   capped: boolean;
-  creditsSpent: number;
+  /**
+   * Successful workspace-mutating tool calls (delete_file, run_command,
+   * external MCP writes), straight from the tool loop's own count. Patches are
+   * excluded — `applied` already reports those. Zero when the loop reported
+   * nothing, so a caller can always read a number.
+   */
+  changedFiles: number;
+  /**
+   * The latest command-failure receipt the tool loop captured, passed through
+   * untouched: the chat card shows it, and a run files it on the attempt so a
+   * failed check keeps the real exit code and stderr behind it.
+   */
+  failureProof?: FailureReceipt | null;
   /** Stop was pressed, or the model call died. The loop must not retry this. */
   aborted: boolean;
   /** True when `aborted` was the user's Stop, not a failed request. */
@@ -231,6 +243,21 @@ function trimmedSummary(text: string): string {
 }
 
 /**
+ * The tool calls a run's ceiling should charge: calls that actually ran.
+ * A success ran; a failure that was not refused ran and failed on the way to
+ * disk or a provider, which is real work too. A call the permission guard
+ * refused never executed, and the control tools (update_tasks, finish) only
+ * steer the loop — neither belongs against a budget meant for workspace work.
+ */
+export function executedToolCallCount(activity: readonly ToolActivity[]): number {
+  return activity.filter(
+    (entry) =>
+      (entry.ok === true || (entry.ok === false && entry.refused !== true)) &&
+      !isControlTool(entry.name)
+  ).length;
+}
+
+/**
  * The request scope tightens milestone confinement: a file the planner declared
  * but the request did not target is refused, never written. With no scope the
  * milestone's own expectedFiles stand unchanged.
@@ -257,7 +284,7 @@ function stoppedOutcome(reason: string, input: AgentTurnInput): AgentTurnOutcome
     toolActivity: [],
     toolRounds: 0,
     capped: false,
-    creditsSpent: input.ports.measureCredits?.() ?? 0,
+    changedFiles: 0,
     aborted: true,
     stopped: true,
     wroteNothing: true,
@@ -272,7 +299,7 @@ function stoppedOutcome(reason: string, input: AgentTurnInput): AgentTurnOutcome
  */
 export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutcome> {
   const aborted = () => input.signal?.aborted === true;
-  // A Stop pressed before the turn even started must not open a billable request.
+  // A Stop pressed before the turn even started must not open a model request.
   if (aborted()) return stoppedOutcome('Stopped before this turn started.', input);
 
   const messages = input.ports.buildMessages(input.instruction);
@@ -301,7 +328,10 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
     toolActivity: loop.activity,
     toolRounds: loop.rounds,
     capped: loop.capped,
-    creditsSpent: input.ports.measureCredits?.() ?? 0,
+    // Non-patch writes and the failure receipt are the loop's evidence, not
+    // this module's to re-derive: pass both through exactly as reported.
+    changedFiles: loop.changedFiles ?? 0,
+    failureProof: loop.failureProof,
     plan: loop.plan,
     finish: loop.finish
   };
@@ -351,7 +381,32 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
   }
 
   const patches = input.ports.extractPatches(loop.text);
-  const { allowed, refused } = confinePatches(patches, scopedExpectedFiles(input.expectedFiles, input.policy?.scope));
+  const scoped = scopedExpectedFiles(input.expectedFiles, input.policy?.scope);
+  // Confinement must tell creation from modification: probe the disk for every
+  // unlisted candidate so a brand-new in-workspace file is allowed while an
+  // existing unlisted file stays refused. Only safe, in-scope paths are read;
+  // anything not probed defaults to "exists" and keeps the old refusal.
+  const declared = new Set(scoped.map(normalizePolicyPath));
+  const scopePaths = input.policy?.scope?.allowedPaths;
+  const scopeSet = scopePaths && scopePaths.length > 0
+    ? new Set(scopePaths.map((path) => normalizePolicyPath(path).toLowerCase()))
+    : null;
+  const existence = new Map<string, boolean>();
+  if (scoped.length > 0) {
+    for (const patch of patches) {
+      const normalized = normalizePolicyPath(patch.path);
+      if (declared.has(normalized) || existence.has(normalized)) continue;
+      if (!isInsideWorkspaceRoot(patch.path)) continue;
+      if (scopeSet && !scopeSet.has(normalized.toLowerCase())) continue;
+      // A Stop that landed before the probe forbids proceeding to any write.
+      if (aborted()) return stopMidTurn();
+      const current = await input.ports.readFile(patch.path);
+      existence.set(normalized, current !== null);
+    }
+  }
+  const { allowed, refused } = confinePatches(patches, scoped, {
+    fileExists: (path) => existence.get(path) ?? true
+  });
 
   // An investigation task declared no files, so every change it emitted is out of
   // scope by definition and is reported as such instead of being quietly dropped.

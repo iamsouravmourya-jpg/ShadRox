@@ -17,6 +17,7 @@ import {
 } from './ai/retryPolicy';
 import type { RefineMode } from './types';
 import type { UsageSource } from './taskUsage';
+import { flightRecorder } from './observability/flightRecorder';
 
 export type { UsageSource };
 
@@ -140,6 +141,9 @@ export interface StreamDoneInfo {
   servedModel?: string | null;
   usageSource?: UsageSource;
   incomplete?: boolean;
+  /** Request features the server's fallback ladder had to drop to get the call
+   * through (e.g. 'tools', 'reasoning_effort'). Absent when nothing was dropped. */
+  droppedFeatures?: string[];
   attempts?: number;
 }
 
@@ -326,42 +330,69 @@ export async function streamChat(options: StreamChatOptions, handlers: StreamCha
   let previousDelayMs = settings.initialDelayMs;
   let attempt = 0;
 
-  for (;;) {
-    attempt += 1;
-    const failure = await runStreamAttempt(options, handlers, deps, settings, attempt);
-    if (!failure) return;
+  // Flight recorder: when the tool loop already owns a run, these events join
+  // its trace; a standalone stream opens (and closes) a run of its own. The
+  // recorder is fail-open — it can never break or block the stream.
+  const trace: AttemptTrace = { stopReason: 'complete', sawDone: false, receivedOutput: false, startedAt: Date.now() };
+  const ownsRun = flightRecorder.activeRunId() === null;
+  if (ownsRun) flightRecorder.startRun({ kind: 'stream', label: `${options.provider}/${options.model}` });
 
-    // A rate limit is a promise about when to come back, not a suggestion: it
-    // gets the longer wall-clock budget so a provider-requested ~30-60 s wait
-    // is actually served instead of dying on the default 30 s deadline.
-    const attemptSettings: RetrySettings = failure.exInfo.name === 'RateLimitError'
-      ? { ...settings, maxElapsedMs: Math.max(settings.maxElapsedMs, RATE_LIMIT_MAX_ELAPSED_MS) }
-      : settings;
-    const plan = planRetry({
-      previousDelayMs,
-      failedAttempt: attempt,
-      elapsedMs: deps.now() - startedAt,
-      retryAfterSeconds: failure.retryAfterSeconds,
-      settings: attemptSettings,
-      rng: deps.rng
-    });
-    if (plan.kind === 'exhausted') {
-      const description = failure.exInfo.description ? ` ${failure.exInfo.description}` : '';
-      const gaveUp = attempt > 1 ? ` Giving up after ${attempt} attempts.` : '';
-      const hint = failure.exInfo.name === 'RateLimitError' ? rateLimitExhaustedHint(options.provider) : '';
-      handlers.onError(`${failure.message}${description}${gaveUp}${hint}`);
-      return;
+  try {
+    for (;;) {
+      attempt += 1;
+      const failure = await runStreamAttempt(options, handlers, deps, settings, attempt, trace);
+      if (!failure) return;
+
+      // A rate limit is a promise about when to come back, not a suggestion: it
+      // gets the longer wall-clock budget so a provider-requested ~30-60 s wait
+      // is actually served instead of dying on the default 30 s deadline.
+      const attemptSettings: RetrySettings = failure.exInfo.name === 'RateLimitError'
+        ? { ...settings, maxElapsedMs: Math.max(settings.maxElapsedMs, RATE_LIMIT_MAX_ELAPSED_MS) }
+        : settings;
+      const plan = planRetry({
+        previousDelayMs,
+        failedAttempt: attempt,
+        elapsedMs: deps.now() - startedAt,
+        retryAfterSeconds: failure.retryAfterSeconds,
+        settings: attemptSettings,
+        rng: deps.rng
+      });
+      if (plan.kind === 'exhausted') {
+        const description = failure.exInfo.description ? ` ${failure.exInfo.description}` : '';
+        const gaveUp = attempt > 1 ? ` Giving up after ${attempt} attempts.` : '';
+        const hint = failure.exInfo.name === 'RateLimitError' ? rateLimitExhaustedHint(options.provider) : '';
+        trace.stopReason = 'provider_error';
+        flightRecorder.record('provider_error', {
+          code: failure.exInfo.name,
+          message: failure.message,
+          exhausted: true,
+          attempts: attempt
+        });
+        handlers.onError(`${failure.message}${description}${gaveUp}${hint}`);
+        return;
+      }
+
+      flightRecorder.record('retry', {
+        attempt,
+        maxAttempts: settings.maxAttempts,
+        delayMs: plan.delayMs,
+        reason: failure.exInfo.name
+      });
+      handlers.onRetry?.({
+        attempt,
+        maxAttempts: settings.maxAttempts,
+        delayMs: plan.delayMs,
+        reason: failure.exInfo.name,
+        message: aiderRetryMessage(failure.exInfo.description, plan.delayMs, attempt, settings.maxAttempts)
+      });
+      previousDelayMs = plan.nextDelayMs;
+      if (await sleepUnlessAborted(plan.delayMs, options.signal, deps)) {
+        trace.stopReason = 'aborted';
+        return;
+      }
     }
-
-    handlers.onRetry?.({
-      attempt,
-      maxAttempts: settings.maxAttempts,
-      delayMs: plan.delayMs,
-      reason: failure.exInfo.name,
-      message: aiderRetryMessage(failure.exInfo.description, plan.delayMs, attempt, settings.maxAttempts)
-    });
-    previousDelayMs = plan.nextDelayMs;
-    if (await sleepUnlessAborted(plan.delayMs, options.signal, deps)) return;
+  } finally {
+    if (ownsRun) flightRecorder.stopRun(trace.stopReason, { attempts: attempt });
   }
 }
 
@@ -370,6 +401,62 @@ interface RetryableFailure {
   exInfo: ExInfo;
   message: string;
   retryAfterSeconds: number | null;
+}
+
+/**
+ * Mutable trace box shared by the retry loop and one attempt: the recorder's
+ * stop reason and stream lifecycle facts, without changing what the attempt
+ * returns or how the handlers behave.
+ */
+interface AttemptTrace {
+  stopReason: string;
+  sawDone: boolean;
+  receivedOutput: boolean;
+  startedAt: number;
+}
+
+/** Rough input size for the recorder: chars/4, flagged as an estimate. */
+function estimateInputTokens(options: StreamChatOptions): number {
+  const chars = (options.systemInstruction?.length ?? 0)
+    + options.messages.reduce((total, turn) => total + turn.content.length + (turn.imageData?.length ?? 0), 0);
+  return Math.ceil(chars / 4);
+}
+
+/**
+ * One provider attempt, wrapped for the flight recorder: `model_request` goes
+ * out before the fetch and `stream_end` is recorded on EVERY exit path via
+ * finally. The attempt's own behaviour is unchanged.
+ */
+async function runStreamAttempt(
+  options: StreamChatOptions,
+  handlers: StreamChatHandlers,
+  deps: RetryClockDeps,
+  settings: RetrySettings,
+  attempt: number,
+  trace: AttemptTrace
+): Promise<RetryableFailure | null> {
+  trace.startedAt = Date.now();
+  trace.sawDone = false;
+  trace.receivedOutput = false;
+  flightRecorder.record('model_request', {
+    model: options.model,
+    provider: options.provider,
+    attempt,
+    tokens_in: estimateInputTokens(options),
+    tokens_in_estimated: true,
+    tier: options.apiKey && options.apiKey.trim() ? 'byok' : 'shadrox'
+  });
+  try {
+    return await runStreamAttemptCore(options, handlers, deps, settings, attempt, trace);
+  } finally {
+    flightRecorder.record('stream_end', {
+      attempt,
+      ms: Date.now() - trace.startedAt,
+      sawDone: trace.sawDone,
+      receivedOutput: trace.receivedOutput,
+      outcome: trace.stopReason
+    });
+  }
 }
 
 /** Raised internally when the stream goes byte-silent past `idleTimeoutMs`. */
@@ -392,12 +479,13 @@ const PARTIAL_KEPT_WARNING =
 const UNCONFIRMED_EOF_WARNING =
   'The stream ended before the model confirmed completion — the partial answer is kept as incomplete.';
 
-async function runStreamAttempt(
+async function runStreamAttemptCore(
   options: StreamChatOptions,
   handlers: StreamChatHandlers,
   deps: RetryClockDeps,
   settings: RetrySettings,
-  attempt: number
+  attempt: number,
+  trace: AttemptTrace
 ): Promise<RetryableFailure | null> {
   const {
     provider,
@@ -435,10 +523,14 @@ async function runStreamAttempt(
       })
     });
   } catch (error) {
-    if (signal?.aborted) return null;
+    if (signal?.aborted) {
+      trace.stopReason = 'aborted';
+      return null;
+    }
     if (error instanceof TypeError) {
       // aider: litellm APIConnectionError, retryable. Safe to replay — the body
       // never produced a token, so there is nothing to duplicate.
+      flightRecorder.record('provider_error', { code: 'APIConnectionError', message: 'fetch failed before a response', retryable: true, attempt });
       return {
         exInfo: EXCEPTION_INFO.APIConnectionError,
         message:
@@ -446,6 +538,12 @@ async function runStreamAttempt(
         retryAfterSeconds: null
       };
     }
+    trace.stopReason = 'provider_error';
+    flightRecorder.record('provider_error', {
+      code: error instanceof Error && error.name === 'AbortError' ? 'AbortError' : 'FetchError',
+      message: error instanceof Error ? error.message : 'Network error.',
+      attempt
+    });
     handlers.onError(
       error instanceof Error && error.name === 'AbortError'
         ? 'Generation stopped.'
@@ -462,6 +560,7 @@ async function runStreamAttempt(
     const message = (serverMessage || `Request failed (HTTP ${response.status}).`)
       .replace(/(?:sk|pk|ghp|github_pat|glpat|xox[baprs]-)[A-Za-z0-9._-]+/gi, '[redacted credential]')
       .slice(0, 500);
+    flightRecorder.record('provider_error', { code: exInfo.name, status: response.status, message, retryable: exInfo.retry, attempt });
     if (exInfo.retry) {
       return {
         exInfo,
@@ -469,20 +568,31 @@ async function runStreamAttempt(
         retryAfterSeconds: parseRetryAfterSeconds(response.headers.get('retry-after'))
       };
     }
+    trace.stopReason = 'provider_error';
     handlers.onError(message);
     return null;
   }
 
   const reader = response.body?.getReader();
   if (!reader) {
+    trace.stopReason = 'provider_error';
+    flightRecorder.record('provider_error', { code: 'NoStream', message: 'Stream unavailable.', attempt });
     handlers.onError('Stream unavailable.');
     return null;
   }
+  flightRecorder.record('stream_start', { attempt, status: response.status });
 
   const textDecoder = new TextDecoder();
   let streamError: string | null = null;
   let sawDone = false;
   let receivedOutput = false;
+  /** First output of the attempt: one recorder event, then never again. */
+  const markOutput = (kind: string): void => {
+    if (receivedOutput) return;
+    receivedOutput = true;
+    trace.receivedOutput = true;
+    flightRecorder.record('stream_first_token', { ms: Date.now() - trace.startedAt, kind, attempt });
+  };
   const stripPrefix = resumePrefix ? createPrefixStripper(resumePrefix) : null;
 
   const decoder = createSseDecoder(({ data }) => {
@@ -497,10 +607,10 @@ async function runStreamAttempt(
     if (!event || typeof event !== 'object') return;
 
     if (event.type === 'delta' && typeof event.text === 'string') {
-      receivedOutput = true;
+      markOutput('delta');
       handlers.onDelta(stripPrefix ? stripPrefix(event.text) : event.text);
     } else if (event.type === 'reasoning' && typeof event.text === 'string') {
-      receivedOutput = true;
+      markOutput('reasoning');
       handlers.onReasoning?.(event.text);
     } else if (event.type === 'tool_calls' && Array.isArray(event.calls)) {
       const calls = event.calls.filter((call: unknown): call is NativeToolCall =>
@@ -510,11 +620,28 @@ async function runStreamAttempt(
           typeof (call as NativeToolCall).arguments === 'string')
       );
       if (calls.length > 0) {
-        receivedOutput = true;
+        markOutput('tool_calls');
         handlers.onToolCalls?.(calls);
       }
     } else if (event.type === 'done') {
       sawDone = true;
+      trace.sawDone = true;
+      const finishReason = typeof event.finishReason === 'string' ? event.finishReason : null;
+      // A reply the provider cut at its output limit is NOT a completed turn:
+      // surface it on the existing incomplete flag so the host can mark the
+      // attempt honestly instead of selling the truncation as a clean answer.
+      const lengthCut = isLengthFinishReason(finishReason);
+      flightRecorder.record('usage', {
+        tokens: typeof event.tokens === 'number' ? event.tokens : 0,
+        inputTokens: typeof event.inputTokens === 'number' ? event.inputTokens : null,
+        outputTokens: typeof event.outputTokens === 'number' ? event.outputTokens : null,
+        cachedInputTokens: typeof event.cachedInputTokens === 'number' ? event.cachedInputTokens : null,
+        usageSource: readUsageSource(event.usageSource) ?? 'unknown',
+        finishReason,
+        truncated: typeof event.truncated === 'boolean' ? event.truncated : lengthCut,
+        servedModel: readServedModel(event.servedModel) ?? null,
+        attempt
+      });
       handlers.onDone?.({
         tokens: event.tokens ?? 0,
         inputTokens: typeof event.inputTokens === 'number' ? event.inputTokens : undefined,
@@ -523,13 +650,15 @@ async function runStreamAttempt(
         provider: event.provider ?? provider,
         model: event.model ?? model,
         tier: event.tier ?? resolvedTier,
-        finishReason: event.finishReason ?? null,
+        finishReason,
         firstTokenMs: typeof event.firstTokenMs === 'number' ? event.firstTokenMs : null,
         durationMs: typeof event.durationMs === 'number' ? event.durationMs : null,
         promptCache: readPromptCache(event.promptCache),
         truncated: typeof event.truncated === 'boolean' ? event.truncated : undefined,
         servedModel: readServedModel(event.servedModel),
         usageSource: readUsageSource(event.usageSource),
+        incomplete: lengthCut ? true : undefined,
+        droppedFeatures: readDroppedFeatures(event.droppedFeatures),
         attempts: attempt
       });
     } else if (event.type === 'error') {
@@ -547,33 +676,43 @@ async function runStreamAttempt(
   } catch (error) {
     await cancelQuietly(reader);
     if (sawDone) return null;
-    if (signal?.aborted) return null;
+    if (signal?.aborted) {
+      trace.stopReason = 'aborted';
+      return null;
+    }
 
     if (error instanceof StreamIdleTimeoutError) {
       const message = 'The AI stream went silent before it finished.';
       if (receivedOutput) {
         // aider partial + warning: the mid-stream timeout is NOT replayed.
+        trace.stopReason = 'provider_error';
+        flightRecorder.record('provider_error', { code: 'Timeout', message, partial: true, attempt });
         handlers.onWarning?.(PARTIAL_KEPT_WARNING);
         handlers.onError(message);
         return null;
       }
       // aider: Timeout — "The API provider timed out without returning a
       // response. They may be down or overloaded." Retryable, replay-safe.
+      flightRecorder.record('provider_error', { code: 'Timeout', message, retryable: true, attempt });
       return { exInfo: EXCEPTION_INFO.Timeout, message, retryAfterSeconds: null };
     }
 
     if (error instanceof Error && error.name === 'AbortError') {
+      trace.stopReason = 'aborted';
       handlers.onError('Generation stopped.');
       return null;
     }
 
     if (receivedOutput) {
+      trace.stopReason = 'provider_error';
+      flightRecorder.record('provider_error', { code: 'StreamInterrupted', message: 'The AI stream was interrupted before it finished.', partial: true, attempt });
       handlers.onWarning?.(PARTIAL_KEPT_WARNING);
       handlers.onError('The AI stream was interrupted before it finished.');
       return null;
     }
     // Connection lost before the first token: nothing reached the UI, so a
     // replay duplicates no work and no output.
+    flightRecorder.record('provider_error', { code: 'APIConnectionError', message: 'The AI stream was interrupted before it finished.', retryable: true, attempt });
     return {
       exInfo: EXCEPTION_INFO.APIConnectionError,
       message: 'The AI stream was interrupted before it finished.',
@@ -583,13 +722,18 @@ async function runStreamAttempt(
 
   if (sawDone) await cancelQuietly(reader);
 
-  if (signal?.aborted) return null;
+  if (signal?.aborted) {
+    trace.stopReason = 'aborted';
+    return null;
+  }
 
   if (streamError) {
     const exInfo = classifyFailure(null, streamError);
+    flightRecorder.record('provider_error', { code: exInfo.name, message: streamError, retryable: exInfo.retry && !receivedOutput, partial: receivedOutput, attempt });
     if (exInfo.retry && !receivedOutput) {
       return { exInfo, message: streamError, retryAfterSeconds: null };
     }
+    trace.stopReason = 'provider_error';
     if (exInfo.retry && receivedOutput) {
       handlers.onWarning?.(PARTIAL_KEPT_WARNING);
     }
@@ -612,6 +756,8 @@ async function runStreamAttempt(
       attempts: attempt
     });
   } else {
+    trace.stopReason = 'provider_error';
+    flightRecorder.record('provider_error', { code: 'EmptyResponse', message: 'The model returned an empty response.', attempt });
     handlers.onError('The model returned an empty response.');
   }
   return null;
@@ -621,6 +767,18 @@ function readPromptCache(value: unknown): StreamPromptCacheInfo | null | undefin
   if (value === null) return null;
   if (value && typeof value === 'object' && !Array.isArray(value)) return value as StreamPromptCacheInfo;
   return undefined;
+}
+
+/** Provider finish reasons that mean the reply was cut at an output limit:
+ * 'length' (OpenAI/Groq/custom) and 'MAX_TOKENS' (Gemini). */
+function isLengthFinishReason(reason: string | null): boolean {
+  return reason !== null && /^(length|max_tokens)$/i.test(reason);
+}
+
+function readDroppedFeatures(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const features = value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+  return features.length > 0 ? features : undefined;
 }
 
 function readServedModel(value: unknown): string | null | undefined {

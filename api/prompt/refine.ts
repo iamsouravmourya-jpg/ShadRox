@@ -20,7 +20,6 @@ import {
 import { parseProviderId, resolveKeyAccess } from '../ai/_access.js';
 import { resolveCustomEndpoint } from '../ai/_endpoint.js';
 import { refineWithCompatibleEndpoint } from '../ai/_compatible.js';
-import { checkSharedKeySpend, clientIp, outputCeiling, rateLimitedMessage } from '../ai/_spendGuard.js';
 import type { ProviderId } from '../ai/_types.js';
 
 type RefineMode = 'code' | 'plan' | 'complex';
@@ -31,17 +30,6 @@ const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b';
-
-/**
- * The model this route actually calls, per provider — the tier gate keys off it.
- * `custom` has no default: the caller's model id is used, and an empty string
- * can never satisfy the shared-key Pro gate that reads this table.
- */
-const ROUTE_MODEL: Record<ProviderId, string> = {
-  gemini: DEFAULT_GEMINI_MODEL,
-  groq: DEFAULT_GROQ_MODEL,
-  custom: ''
-};
 
 const PROVIDERS: ProviderId[] = ['gemini', 'groq', 'custom'];
 
@@ -168,28 +156,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     return;
   }
 
-  // BYOK policy, shared with chat/fim/commit-message: this route used to read
-  // `process.env.SHADROX_GEMINI_API_KEY` as its own fallback, which let any
-  // anonymous caller on the public Vercel deployment spend the operator's key
-  // with no tier gate and no limit. The env fallback is gone on purpose —
-  // `resolveKeyAccess` is the only path to a shared key, and it still requires
-  // a Pro-tier model, which this route's fixed free-tier models never are.
-  const resolved = resolveKeyAccess(provider, model || ROUTE_MODEL[provider], userKey);
+  // BYOK policy, shared with chat/fim/commit-message: the caller's own key is
+  // the only path, and a request without one is refused here.
+  const resolved = resolveKeyAccess(userKey);
   if ('error' in resolved) {
     sendError(res, 400, resolved.error);
     return;
   }
-  const { apiKey, byok } = resolved.access;
-
-  const decision = checkSharedKeySpend('refine', clientIp(req), byok);
-  if ('retryAfterSeconds' in decision) {
-    res.setHeader('Retry-After', String(decision.retryAfterSeconds));
-    sendError(res, 429, rateLimitedMessage(decision.retryAfterSeconds));
-    return;
-  }
+  const { apiKey } = resolved.access;
 
   const instruction = buildInstruction(contextInfo || 'React + TypeScript workspace', mode);
-  const ceiling = outputCeiling('refine', byok);
 
   try {
     const produced =
@@ -199,9 +175,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
           ? await refineWithGroq(apiKey, rawPrompt, instruction)
           : await refineWithCompatibleEndpoint(endpoint, apiKey, model, rawPrompt, instruction);
 
-    // Shared-key requests get the hard output ceiling; `Infinity` (BYOK) is a no-op.
-    const raw = produced.slice(0, ceiling);
-    const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+    const cleaned = produced.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
 
     let parsed: {
       detectedLanguage?: string;

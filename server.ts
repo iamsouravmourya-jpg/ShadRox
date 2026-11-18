@@ -14,7 +14,6 @@ import githubCreateRepo from './api/github/create-repo';
 import githubPush from './api/github/push';
 import type { ApiRequest, ApiResponse } from './api/_http';
 import { sendJson } from './api/_http';
-import { sharedKeyPathEnabled } from './api/ai/_access';
 
 dotenv.config();
 
@@ -50,16 +49,7 @@ export async function startServer(options: {
   };
 
   mount('get', '/api/health', async (_req, res) => {
-    const shared = sharedKeyPathEnabled();
-    sendJson(res, 200, {
-      status: 'ok',
-      brand: 'ShadRox',
-      sharedKeyPath: shared,
-      sharedKeys: {
-        groq: shared && Boolean(process.env.SHADROX_GROQ_API_KEY || process.env.GROQ_API_KEY),
-        gemini: shared && Boolean(process.env.SHADROX_GEMINI_API_KEY || process.env.GEMINI_API_KEY)
-      }
-    });
+    sendJson(res, 200, { status: 'ok', brand: 'ShadRox' });
   });
 
   mount('post', '/api/byok/validate', byokValidate);

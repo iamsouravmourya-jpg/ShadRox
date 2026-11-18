@@ -108,7 +108,7 @@ export async function streamCustomEndpoint(
   // an unknown field.
   const cacheKey = supportsPromptCacheKey(url) ? promptCacheKeyValue(plan) : undefined;
 
-  const body = (withTemperature: boolean, withTools: boolean, withMarkers: boolean) =>
+  const body = (withTemperature: boolean, withTools: boolean, withMarkers: boolean, withStreamOptions: boolean) =>
     JSON.stringify({
       model,
       messages: buildMessages(request, withMarkers),
@@ -116,7 +116,7 @@ export async function streamCustomEndpoint(
       max_tokens: maxOutputTokens,
       ...(cacheKey ? { prompt_cache_key: cacheKey } : {}),
       stream: true,
-      stream_options: { include_usage: true },
+      ...(withStreamOptions ? { stream_options: { include_usage: true } } : {}),
       ...(withTools && request.toolDefinitions?.length
         ? {
             tools: request.toolDefinitions.map((tool) => ({
@@ -128,7 +128,7 @@ export async function streamCustomEndpoint(
         : {})
     });
 
-  const send = (withTemperature: boolean, fetchAttempts: number, withTools: boolean, withMarkers: boolean) =>
+  const send = (withTemperature: boolean, fetchAttempts: number, withTools: boolean, withMarkers: boolean, withStreamOptions: boolean) =>
     fetchUpstream(
       url,
       {
@@ -137,7 +137,7 @@ export async function streamCustomEndpoint(
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json'
         },
-        body: body(withTemperature, withTools, withMarkers)
+        body: body(withTemperature, withTools, withMarkers, withStreamOptions)
       },
       signal,
       fetchAttempts,
@@ -146,7 +146,9 @@ export async function streamCustomEndpoint(
 
   let withTools = Boolean(request.toolDefinitions?.length);
   let withMarkers = mode === 'cache_control';
-  let response = await send(true, 1, withTools, withMarkers);
+  let withTemperature = true;
+  let withStreamOptions = true;
+  let response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
   let payload = response.ok ? '' : await readErrorPayload(response);
 
   // A gateway that forwards Claude but not Anthropic's content-part extension:
@@ -156,23 +158,38 @@ export async function streamCustomEndpoint(
   if (!response.ok && withMarkers && rejectsCacheControl(payload)) {
     withMarkers = false;
     droppedFeatures.push('cache_control');
-    response = await send(true, 1, withTools, withMarkers);
+    response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 
   if (!response.ok && withTools && (rejectsNativeTools(payload) || rejectsToolCall(payload))) {
     withTools = false;
     droppedFeatures.push('tools');
-    response = await send(true, 1, withTools, withMarkers);
+    response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 
   // `temperature` is optional in the OpenAI spec and some inference servers
   // reject it outright (local quant builds especially). One retry without it
   // costs nothing and turns a hard failure into a working chat.
-  if (!response.ok && /temperature/i.test(payload)) {
+  if (!response.ok && withTemperature && /temperature/i.test(payload)) {
+    withTemperature = false;
     droppedFeatures.push('temperature');
-    response = await send(false, 1, withTools, withMarkers);
+    response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
+    payload = response.ok ? '' : await readErrorPayload(response);
+  }
+
+  // Local OpenAI-compatible servers (vLLM, older Ollama, LM Studio) 400/422 on
+  // fields they do not know, and their error bodies do not always name the
+  // field — so ANY 400/422 while `stream_options` is still on buys one resend
+  // without it. Usage then degrades to the text estimate below. Auth-shaped
+  // bodies are excluded: a missing usage flag cannot fix a bad key, and
+  // 401/403 never enter this rung at all.
+  if (!response.ok && withStreamOptions && (response.status === 400 || response.status === 422) &&
+    !/api.?key|authorization|unauthorized|permission|unauthenticated|credential/i.test(payload)) {
+    withStreamOptions = false;
+    droppedFeatures.push('stream_options');
+    response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 

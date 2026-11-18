@@ -17,7 +17,6 @@ import { buildFimMessages, postprocessFimCompletion } from '../../src/lib/fim.js
 import { ADAPTERS, parseProviderId, resolveKeyAccess } from './_access.js';
 import { resolveCustomEndpoint } from './_endpoint.js';
 import { completeOnce } from './_completion.js';
-import { checkSharedKeySpend, clientIp, outputCeiling, rateLimitedMessage } from './_spendGuard.js';
 import type { ProviderId } from './_types.js';
 
 export const config = { maxDuration: 15 };
@@ -71,19 +70,12 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     return;
   }
 
-  const resolved = resolveKeyAccess(provider, model, apiKey);
+  const resolved = resolveKeyAccess(apiKey);
   if ('error' in resolved) {
     sendError(res, 400, resolved.error);
     return;
   }
-  const { apiKey: spendKey, byok } = resolved.access;
-
-  const decision = checkSharedKeySpend('completion', clientIp(req), byok);
-  if ('retryAfterSeconds' in decision) {
-    res.setHeader('Retry-After', String(decision.retryAfterSeconds));
-    sendError(res, 429, rateLimitedMessage(decision.retryAfterSeconds));
-    return;
-  }
+  const { apiKey: spendKey } = resolved.access;
 
   const { systemInstruction, prompt } = buildFimMessages(prefix, suffix, language);
 
@@ -102,8 +94,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       systemInstruction,
       temperature: 0.1,
       thinking: 'low',
-      // The route cap protects latency; the shared-key ceiling protects the bill.
-      maxChars: Math.min(FIM_MAX_OUTPUT_CHARS, outputCeiling('completion', byok)),
+      // The route cap protects latency.
+      maxChars: FIM_MAX_OUTPUT_CHARS,
       signal: abort.signal
     });
     sendJson(res, 200, { text: postprocessFimCompletion(result.text, suffix), tokens: result.tokens });

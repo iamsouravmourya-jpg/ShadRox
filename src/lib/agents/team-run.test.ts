@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createCreditTracker } from '../autonomy/budget';
-import { CREDIT_RATES } from '../plans';
 import type { PlanError, TurnResult, TurnUnit, VerifiableUnit, VerificationReport } from '../autonomy/types';
 import { runTeam, type TeamDeps } from './team-run';
 import {
@@ -37,7 +35,6 @@ function plannedTask(overrides: Partial<TeamTask> = {}): TeamTask {
     report: '',
     patchesApplied: 0,
     patchFailures: [],
-    creditsSpent: 0,
     ...overrides
   };
 }
@@ -71,7 +68,6 @@ function harness(plan: TeamPlan, budget: TeamBudget = DEFAULT_TEAM_BUDGET): Harn
     reply: 'ok',
     patchesApplied: 1,
     patchFailures: [],
-    creditsSpent: 1,
     aborted: false
   });
   let validateImpl = (): PlanError[] => [];
@@ -116,7 +112,6 @@ function harness(plan: TeamPlan, budget: TeamBudget = DEFAULT_TEAM_BUDGET): Harn
       validateCount += 1;
       return validateImpl();
     },
-    tracker: createCreditTracker({ maxCredits: budget.maxCredits }),
     checkpoint: () => {
       checkpointCount += 1;
     },
@@ -176,12 +171,11 @@ test('a clean parse is still validated, and a validation error fails the team', 
   assert.equal(h.validateCalls(), 1);
 });
 
-test('two independent tasks run, pass, and settle the credits', async () => {
+test('two independent tasks run and pass', async () => {
   const h = harness({ tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2', assignee: 'tests' })], errors: [] });
   const state = await h.run('build it');
   assert.equal(state.status, 'done');
   assert.deepEqual(state.tasks.map((task) => task.status), ['passed', 'passed']);
-  assert.equal(state.creditsSpent, 2);
   assert.equal(state.messages.length, 2);
   assert.equal(h.checkpoints(), 1);
   assert.equal(h.events.some((event) => event.type === 'team:planned'), true);
@@ -194,7 +188,6 @@ test('review-held files and tool context survive into the team task state', asyn
     reply: 'Updated the file.',
     patchesApplied: 0,
     patchFailures: [],
-    creditsSpent: 0.4,
     aborted: false,
     touchedFiles: [],
     filesRead: ['src/a.ts'],
@@ -208,7 +201,7 @@ test('review-held files and tool context survive into the team task state', asyn
 
 test('the instruction handed to the agent carries the role brief and shared context', async () => {
   const h = harness({ tasks: [plannedTask({ id: 't1', expectedFiles: [] }), plannedTask({ id: 't2' })], errors: [] });
-  h.setTurn((unit) => ({ reply: `reply for ${unit.id}`, patchesApplied: 0, patchFailures: [], creditsSpent: 1, aborted: false }));
+  h.setTurn((unit) => ({ reply: `reply for ${unit.id}`, patchesApplied: 0, patchFailures: [], aborted: false }));
   await h.run('goal');
   assert.match(h.turns[0].instruction, /Backend agent/);
   assert.doesNotMatch(h.turns[0].instruction, /WHAT THE OTHER AGENTS REPORTED/);
@@ -227,6 +220,64 @@ test('a failed check is retried with a repair brief, and the retry can pass', as
   assert.equal(h.turns[0].feedbackText, undefined);
   assert.match(h.turns[1].feedbackText ?? '', /repair attempt 2/);
   assert.match(h.turns[1].feedbackText ?? '', /Cannot find name 'x'/);
+});
+
+test('a failed check\'s proof-command output reaches the retry prompt verbatim', async () => {
+  const h = harness({ tasks: [plannedTask({ id: 't1' })], errors: [] });
+  let checks = 0;
+  const failedWithCommand: VerificationReport = {
+    ...FAILED,
+    command: { argv: 'npm test', exitCode: 1, stdoutTail: 'FAIL src/a.test.ts', stderrTail: 'Cannot find module ./setup', timedOut: false },
+    notes: ['one type error', 'the proof command exited 1; its output is attached as diagnostic evidence, not a verdict.']
+  };
+  h.setVerify(() => (++checks === 1 ? failedWithCommand : PASSED));
+  const state = await h.run('goal');
+  assert.equal(state.tasks[0].status, 'passed');
+  const retry = h.turns[1].feedbackText ?? '';
+  assert.match(retry, /Proof command: npm test/);
+  assert.match(retry, /Exit code: 1/);
+  assert.match(retry, /FAIL src\/a\.test\.ts/);
+  assert.match(retry, /Cannot find module \.\/setup/);
+});
+
+test('a passed task with a red proof command shares that evidence with the next agent', async () => {
+  const h = harness({ tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2', dependsOn: ['t1'] })], errors: [] });
+  h.setVerify((unit) =>
+    unit.id === 't1'
+      ? {
+          verdict: 'passed',
+          diagnostics: [],
+          notes: ['the proof command exited 1; its output is attached as diagnostic evidence, not a verdict.'],
+          command: { argv: 'npm test', exitCode: 1, stdoutTail: 'no tests found', stderrTail: '', timedOut: false }
+        }
+      : PASSED
+  );
+  const state = await h.run('goal');
+  assert.equal(state.tasks[0].status, 'passed', 'the red command alone does not fail the task');
+  assert.equal(state.tasks[1].status, 'passed', 'the dependent is not blocked');
+  assert.match(h.turns[1].instruction, /proof command exited 1/);
+});
+
+test('the shared context window keeps 12 prior messages and stays bounded', async () => {
+  const tasks = Array.from({ length: 15 }, (_, index) =>
+    plannedTask({ id: `t${index + 1}`, title: `read ${index + 1}`, expectedFiles: [] })
+  );
+  const h = harness({ tasks, errors: [] }, { ...DEFAULT_TEAM_BUDGET, maxTurns: 40, maxTasks: 20 });
+  h.setTurn((unit) => ({
+    reply: `reply-for-${unit.id} ${'detail '.repeat(60)}`,
+    patchesApplied: 0,
+    patchFailures: [],
+    aborted: false
+  }));
+  await h.run('goal');
+  const last = h.turns.at(-1)?.instruction ?? '';
+  assert.match(last, /reply-for-t14/, 'the most recent message is present');
+  assert.match(last, /reply-for-t3/, 'the 12-message window reaches back past the old 6-message cut');
+  assert.doesNotMatch(last, /reply-for-t1\b/, 'messages older than the window drop out');
+  assert.doesNotMatch(last, /reply-for-t2\b/, 'messages older than the window drop out');
+  const section = last.split('WHAT THE OTHER AGENTS REPORTED BEFORE THIS TASK:\n')[1]?.split('\n\nReply with the change itself')[0] ?? '';
+  assert.ok(section.length > 0, 'the context section exists');
+  assert.ok(section.length <= 6000, `the shared context stays bounded, got ${section.length}`);
 });
 
 test('a task that never passes fails, and its dependent is blocked', async () => {
@@ -273,30 +324,10 @@ test('an unverified investigation task carries the status but raises no alarm', 
 
 test('an aborted turn fails the task and is not retried', async () => {
   const h = harness({ tasks: [plannedTask({ id: 't1' })], errors: [] });
-  h.setTurn(() => ({ reply: '', patchesApplied: 0, patchFailures: [], creditsSpent: 0, aborted: true }));
+  h.setTurn(() => ({ reply: '', patchesApplied: 0, patchFailures: [], aborted: true }));
   const state = await h.run('goal');
   assert.equal(state.tasks[0].status, 'failed');
   assert.equal(h.turns.length, 1);
-});
-
-test('the team stops at the spend cap and leaves the rest pending', async () => {
-  // One turn costs exactly one edit, so a one-edit cap must stop before task two.
-  const h = harness({ tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] }, { ...DEFAULT_TEAM_BUDGET, maxCredits: CREDIT_RATES.codeEdit });
-  h.setTurn((unit) => ({ reply: `reply for ${unit.id}`, patchesApplied: 0, patchFailures: [], creditsSpent: CREDIT_RATES.codeEdit, aborted: false }));
-  const state = await h.run('goal');
-  assert.equal(state.status, 'stopped-budget');
-  assert.equal(state.tasks[0].status, 'passed');
-  assert.equal(state.tasks[1].status, 'pending');
-  assert.match(state.error ?? '', /spend cap of 1\.2/);
-});
-
-test('the team stops before a turn that would exceed the cap, returning the task to pending', async () => {
-  const h = harness({ tasks: [plannedTask({ id: 't1' })], errors: [] }, { ...DEFAULT_TEAM_BUDGET, maxCredits: 0.5 });
-  const state = await h.run('goal');
-  assert.equal(state.status, 'stopped-budget');
-  assert.equal(state.tasks[0].status, 'pending');
-  assert.equal(h.turns.length, 0);
-  assert.match(state.error ?? '', /estimated at 1\.2 spend/);
 });
 
 test('the team obeys the same turn and clock ceilings as a solo run', async () => {
@@ -305,7 +336,7 @@ test('the team obeys the same turn and clock ceilings as a solo run', async () =
     { ...DEFAULT_TEAM_BUDGET, maxTurns: 1 }
   );
   const turnState = await turns.run('goal');
-  assert.equal(turnState.status, 'stopped-budget');
+  assert.equal(turnState.status, 'stopped');
   assert.match(turnState.error ?? '', /turn cap of 1/);
   assert.equal(turns.turns.length, 1);
 
@@ -315,10 +346,10 @@ test('the team obeys the same turn and clock ceilings as a solo run', async () =
   );
   clock.setTurn((unit) => {
     clock.advanceClock(1500);
-    return { reply: `reply for ${unit.id}`, patchesApplied: 1, patchFailures: [], creditsSpent: 1, aborted: false };
+    return { reply: `reply for ${unit.id}`, patchesApplied: 1, patchFailures: [], aborted: false };
   });
   const clockState = await clock.run('goal');
-  assert.equal(clockState.status, 'stopped-budget');
+  assert.equal(clockState.status, 'stopped');
   assert.match(clockState.error ?? '', /Stopped after 2s/);
   assert.equal(clock.turns.length, 1);
 });
@@ -332,12 +363,11 @@ test('the team counts reported tool calls and ignores ones nobody measured', asy
     reply: `reply for ${unit.id}`,
     patchesApplied: 1,
     patchFailures: [],
-    creditsSpent: 1,
     aborted: false,
     toolCalls: 4
   }));
   const state = await counted.run('goal');
-  assert.equal(state.status, 'stopped-budget');
+  assert.equal(state.status, 'stopped');
   assert.match(state.error ?? '', /tool-call cap of 4/);
 
   const unmeasured = harness(
@@ -345,25 +375,6 @@ test('the team counts reported tool calls and ignores ones nobody measured', asy
     { ...DEFAULT_TEAM_BUDGET, maxToolCalls: 0 }
   );
   assert.equal((await unmeasured.run('goal')).status, 'done');
-});
-
-test('a team turn that overshoots the cap stops the run on the evidence', async () => {
-  const h = harness(
-    { tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] },
-    { ...DEFAULT_TEAM_BUDGET, maxCredits: 10 }
-  );
-  h.setTurn((unit) => ({
-    reply: `reply for ${unit.id}`,
-    patchesApplied: 1,
-    patchFailures: [],
-    creditsSpent: 11,
-    aborted: false
-  }));
-  const state = await h.run('goal');
-  assert.equal(state.status, 'stopped-budget');
-  assert.match(state.error ?? '', /spend cap of 10/);
-  assert.match(state.error ?? '', /the team is at 11/);
-  assert.equal(h.turns.length, 1);
 });
 
 test('cancellation stops between tasks and marks the run cancelled', async () => {
@@ -392,8 +403,8 @@ test('a task paused mid-turn is filed stopped, never left running or called fail
   h.pauseAfter(2);
   h.setTurn((unit) =>
     unit.id === 't2'
-      ? { reply: '', patchesApplied: 1, patchFailures: [], creditsSpent: 0.4, aborted: true, stopped: true }
-      : { reply: 'ok', patchesApplied: 1, patchFailures: [], creditsSpent: 0.4, aborted: false }
+      ? { reply: '', patchesApplied: 1, patchFailures: [], aborted: true, stopped: true }
+      : { reply: 'ok', patchesApplied: 1, patchFailures: [], aborted: false }
   );
   const state = await h.run('goal');
   assert.equal(state.status, 'paused');
@@ -412,14 +423,14 @@ test('Stop outranks Pause for a team, and a stopped turn is not reported as a fa
 test('a turn the user stopped leaves the task stopped and the team not done', async () => {
   const h = harness({ tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] });
   h.cancelAfter(1);
-  h.setTurn(() => ({ reply: '', patchesApplied: 0, patchFailures: [], creditsSpent: 0.4, aborted: true, stopped: true }));
+  h.setTurn(() => ({ reply: '', patchesApplied: 0, patchFailures: [], aborted: true, stopped: true }));
   const state = await h.run('goal');
   assert.equal(state.tasks[0].status, 'stopped');
   assert.equal(state.status, 'cancelled');
   assert.equal(h.turns.length, 1);
 });
 
-test('every task turn is handed the abort signal, so Stop ends the paid request', async () => {
+test('every task turn is handed the abort signal, so Stop ends the in-flight request', async () => {
   const h = harness({ tasks: [plannedTask({ id: 't1' }), plannedTask({ id: 't2' })], errors: [] });
   await h.run('goal');
   assert.equal(h.signals.length, 2);
@@ -443,7 +454,6 @@ function writes(files: Record<string, string[]>) {
     reply: `did ${unit.id}`,
     patchesApplied: 1,
     patchFailures: [],
-    creditsSpent: 1,
     aborted: false,
     touchedFiles: files[unit.id] ?? []
   });
@@ -488,7 +498,6 @@ test('a run that changed files ends with an integration turn and a per-role merg
   assert.match(state.messages.at(-1)?.text ?? '', /Integration \(coordinator\) verdict clean/);
   assert.equal(state.summaryReport?.mergeVerdict, 'clean');
   assert.deepEqual(state.summaryReport?.filesModified, ['src/ui.ts', 'src/api.ts']);
-  assert.equal(state.creditsSpent, 3);
 });
 
 test('two roles writing one file is flagged as a conflict and fails the run', async () => {
@@ -576,24 +585,29 @@ test('the closing turn can be handed to the reviewer instead of the coordinator'
   assert.match(h.turns.at(-1)?.instruction ?? '', /You are the Reviewer agent/);
 });
 
-test('a run with no credit left for the closing turn is still judged, and says it was not merged', async () => {
-  const h = harness(
-    { tasks: [plannedTask({ id: 't1', assignee: 'frontend' }), plannedTask({ id: 't2', assignee: 'backend' })], errors: [] },
-    { ...DEFAULT_TEAM_BUDGET, maxCredits: 2.2 }
-  );
+test('a stop that lands during the closing check still judges the merge without running the turn', async () => {
+  const h = harness({ tasks: [plannedTask({ id: 't1', assignee: 'frontend' }), plannedTask({ id: 't2', assignee: 'backend' })], errors: [] });
   h.setTurn(writes({ t1: ['src/ui.ts'], t2: ['src/api.ts'] }));
+  // The user's Stop arrives after the last task settled but before the closing
+  // turn starts: the whole-team check still reports, the turn itself never runs.
+  let stopped = false;
+  h.deps.ports.isCancellationRequested = () => stopped;
+  h.setVerify((unit) => {
+    if (unit.id === 'integration') stopped = true;
+    return PASSED;
+  });
   const state = await h.run('goal');
 
   assert.equal(h.turns.length, 2);
-  assert.equal(state.status, 'done');
   assert.equal(state.mergeReport?.ran, false);
   assert.equal(state.mergeReport?.verdict, 'clean');
   assert.match(state.mergeReport?.notes.join(' ') ?? '', /the closing turn did not run/);
+  assert.match(state.mergeReport?.notes.join(' ') ?? '', /the user stopped the team/);
 });
 
 test('a run that wrote nothing has no end to merge, so there is no closing turn', async () => {
   const h = harness({ tasks: [plannedTask({ id: 't1', expectedFiles: [] })], errors: [] });
-  h.setTurn((unit) => ({ reply: `did ${unit.id}`, patchesApplied: 0, patchFailures: [], creditsSpent: 1, aborted: false }));
+  h.setTurn((unit) => ({ reply: `did ${unit.id}`, patchesApplied: 0, patchFailures: [], aborted: false }));
   const state = await h.run('goal');
 
   assert.equal(state.status, 'done');

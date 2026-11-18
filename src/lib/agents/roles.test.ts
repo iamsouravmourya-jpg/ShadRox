@@ -32,13 +32,12 @@ function task(overrides: Partial<TeamTask> = {}): TeamTask {
     report: '',
     patchesApplied: 0,
     patchFailures: [],
-    creditsSpent: 0,
     ...overrides
   };
 }
 
 function state(tasks: TeamTask[]): TeamState {
-  return { id: 'team-1', goal: 'build it', status: 'running', tasks, messages: [], creditsSpent: 0, startedAt: 0 };
+  return { id: 'team-1', goal: 'build it', status: 'running', tasks, messages: [], startedAt: 0 };
 }
 
 test('the roster has the four specialists and never the coordinator', () => {

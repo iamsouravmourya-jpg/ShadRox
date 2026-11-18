@@ -50,31 +50,46 @@ test('read-only commands pass', () => {
   }
 });
 
-test('redirection to /dev sinks, fd duplication and tmp capture is allowed', () => {
+test('redirection to /dev sinks and fd duplication is allowed', () => {
   assert.equal(blocks('ls > /dev/null'), false);
   assert.equal(blocks('ls 2> /dev/null'), false);
   assert.equal(blocks('make check 2>&1 | tail -n 50'), false);
   assert.equal(blocks('echo warn >&2'), false);
-  assert.equal(blocks('cmd &> /dev/null'), false);
-  assert.equal(blocks('npm run build > /tmp/build.log 2>&1'), false);
-  assert.equal(blocks('npm test >> /tmp/test-output.txt'), false);
-  assert.equal(blocks('cargo build 2>&1 | tee /tmp/cargo.log'), false);
-  assert.equal(blocks('long_cmd > $TMPDIR/out.log'), false);
-  assert.equal(blocks('echo x > %TEMP%\\out.log'), false);
-  assert.equal(blocks('echo x > $env:TEMP\\out.log'), false);
+  assert.equal(blocks('ls &> /dev/null'), false);
 });
 
-test('operators inside quotes, argument position, heredocs and comments do not flag', () => {
+test('tmp and expansion redirect targets are outside the workspace and flag (owner decisions 2026-11-18)', () => {
+  // The old Cline port whitelisted /tmp capture; the risk classifier treats any
+  // write outside the workspace root as dangerous, and unresolvable expansions
+  // fail safe. The tier gate asks before these run.
+  assert.equal(blocks('npm run build > /tmp/build.log 2>&1'), true);
+  assert.equal(blocks('npm test >> /tmp/test-output.txt'), true);
+  assert.equal(blocks('cargo build 2>&1 | tee /tmp/cargo.log'), true);
+  assert.equal(blocks('long_cmd > $TMPDIR/out.log'), true);
+  assert.equal(blocks('echo x > %TEMP%\\out.log'), true);
+  assert.equal(blocks('echo x > $env:TEMP\\out.log'), true);
+});
+
+test('operators inside quotes, argument position and arithmetic do not flag', () => {
   assert.equal(blocks("grep '=>' src/index.ts"), false);
   assert.equal(blocks('echo "a > b"'), false);
   assert.equal(blocks("git log --grep='rm -rf'"), false);
   assert.equal(blocks('man rm'), false);
   assert.equal(blocks('which mv cp rm'), false);
   assert.equal(blocks('git log -- rm.txt'), false);
-  assert.equal(blocks('python3 <<\'EOF\'\nx = 10\nprint(x > 5)\nEOF'), false);
-  assert.equal(blocks('echo a \\> b'), false);
-  assert.equal(blocks('ls # > notes.txt'), false);
   assert.equal(blocks('echo $((3 > 2))'), false);
+});
+
+test('Windows reality: backslash is literal, # is not a comment, heredoc bodies are data', () => {
+  // cmd.exe has no # comments and treats backslash as a path character, so
+  // both of these carry a real redirect on Windows and must flag.
+  assert.equal(blocks('echo a \\> b'), true);
+  assert.equal(blocks('ls # > notes.txt'), true);
+  // The heredoc body is masked (the `x > 5` inside is data, not a redirect),
+  // but feeding a script to python3 is still execution the gate must ask for.
+  const reason = findFileEditingCommand('python3 <<\'EOF\'\nx = 10\nprint(x > 5)\nEOF');
+  assert.equal(reason, '`python3` (interactive interpreter)');
+  assert.doesNotMatch(reason ?? '', /redirection/);
 });
 
 test('file-mutating commands are blocked with the ported reason strings', () => {

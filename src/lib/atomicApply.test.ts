@@ -230,6 +230,77 @@ test('a created file emitted twice plans as ONE created job', () => {
   assert.equal(plan.jobs[0].content, 'second');
 });
 
+test('BUG-05b: two pending S/R patches for one path merge into ONE job, both edits land', () => {
+  const files = [file('src/a.ts', 'const a = 1;\nconst b = 2;\n')];
+  const plan = planAtomicApply(
+    [searchReplace('src/a.ts', 'const a = 1;', 'const a = 10;'), searchReplace('SRC/A.TS', 'const b = 2;', 'const b = 20;')],
+    files
+  );
+
+  assert.equal(plan.ok, true);
+  assert.equal(plan.jobs.length, 1, 'one job per path — no duplicate write, no "2 files" row');
+  assert.equal(plan.jobs[0].path, 'src/a.ts');
+  assert.equal(plan.jobs[0].content, 'const a = 10;\nconst b = 20;\n', 'the earlier edit is merged, not superseded');
+  assert.deepEqual(plan.patches.map((patch) => patch.status), ['applied', 'applied']);
+  assert.equal(plan.patches[0].appliedContent, plan.jobs[0].content);
+  assert.equal(plan.patches[1].appliedContent, plan.jobs[0].content);
+  assert.equal(plan.patches[0].originalContent, 'const a = 1;\nconst b = 2;\n');
+});
+
+test('BUG-05b: merged patches re-targeting one ORIGINAL keep the later UPDATED', () => {
+  const files = [file('src/a.ts', 'const a = 1;\n')];
+  const plan = planAtomicApply(
+    [searchReplace('src/a.ts', 'const a = 1;', 'const a = 2;'), searchReplace('src/a.ts', 'const a = 1;', 'const a = 42;')],
+    files
+  );
+
+  assert.equal(plan.ok, true);
+  assert.equal(plan.jobs.length, 1);
+  assert.equal(plan.jobs[0].content, 'const a = 42;\n');
+  assert.deepEqual(plan.patches.map((patch) => patch.status), ['applied', 'applied']);
+});
+
+test('BUG-05b: a trailing S/R patch supersedes an earlier rewrite (last-wins), anchors still verify', () => {
+  const files = [file('src/a.ts', 'const a = 1;\n')];
+  const plan = planAtomicApply(
+    [rewrite('src/a.ts', 'const rewritten = true;\n'), searchReplace('src/a.ts', 'const a = 1;', 'const a = 9;')],
+    files
+  );
+
+  assert.equal(plan.ok, true);
+  assert.equal(plan.jobs.length, 1);
+  assert.equal(plan.jobs[0].content, 'const a = 9;\n');
+  assert.deepEqual(plan.patches.map((patch) => patch.status), ['rejected', 'applied']);
+  assert.match(plan.patches[0].failure ?? '', /Superseded by a later patch/);
+});
+
+test('BUG-05b: one broken anchor in a merged group empties the plan and fails every merged patch', () => {
+  const files = [file('src/a.ts', 'const a = 1;\nconst b = 2;\n')];
+  const plan = planAtomicApply(
+    [searchReplace('src/a.ts', 'const a = 1;', 'const a = 10;'), searchReplace('src/a.ts', 'const gone = 0;', 'const gone = 1;')],
+    files
+  );
+
+  assert.equal(plan.ok, false);
+  assert.equal(plan.jobs.length, 0);
+  assert.equal(failuresOf(plan).length, 1, 'one failure per file, not per merged patch');
+  assert.equal(failuresOf(plan)[0].code, 'ANCHOR_NOT_FOUND');
+  assert.deepEqual(plan.patches.map((patch) => patch.status), ['failed', 'failed']);
+});
+
+test('BUG-05b: a refusal merged into a later clean S/R patch still blocks the plan (zero bytes)', () => {
+  const onDisk = 'const a = 1;\n';
+  const patches = extractUnifiedPatches(
+    ['```ts path=test.txt', '```', '', '```ts path=test.txt', '<<<<<<< ORIGINAL', 'const a = 1;', '=======', 'const a = 2;', '>>>>>>> UPDATED', '```'].join('\n'),
+    [{ name: 'test.txt', content: onDisk }]
+  ).map(pending);
+
+  const plan = planAtomicApply(patches, [file('test.txt', onDisk)]);
+  assert.equal(plan.ok, false);
+  assert.equal(plan.jobs.length, 0);
+  assert.equal(failuresOf(plan)[0].code, 'EMPTY_BODY');
+});
+
 test('a refused Cline delete reaches the plan failure with its typed reason, not "text not found"', () => {
   const onDisk = 'export const gone = 1;\n';
   const patches = extractUnifiedPatches(

@@ -2,7 +2,8 @@ import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { Plus_Jakarta_Sans } from 'next/font/google'
 import { ThemeProvider } from '@/components/landing/theme-provider'
-import { APP_VERSION, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
+import { APP_VERSION, GITHUB_REPO, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
+import { SITE_URL, SITE_URL_CYOU, SITE_URL_TECH } from '@/lib/site'
 import './globals.css'
 
 const jakarta = Plus_Jakarta_Sans({
@@ -12,12 +13,14 @@ const jakarta = Plus_Jakarta_Sans({
   fallback: ['Segoe UI', 'system-ui', 'sans-serif'],
 })
 
-const SITE_URL = 'https://www.shadrox.cyou'
+const TITLE = 'ShadRox — Project files, editor, AI chat, preview, Git and terminal in one Windows app'
+const DESCRIPTION = 'A native Windows workspace for local projects: focused code editor, bring-your-own-key AI chat, live project preview, Git tools and an integrated terminal. Files stay on your computer; only the context you choose goes to your AI provider.'
+const OG_DESCRIPTION = 'A native Windows workspace for local projects. Files stay on your computer; only the context you choose goes to your AI provider.'
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: 'ShadRox — Project files, editor, AI chat, preview, Git and terminal in one Windows app',
-  description: 'A native Windows workspace for local projects: focused code editor, bring-your-own-key AI chat, live project preview, Git tools and an integrated terminal. Files stay on your computer; only the context you choose goes to your AI provider.',
+  title: TITLE,
+  description: DESCRIPTION,
   authors: [{ name: 'Sourav Maurya', url: 'https://github.com/iamsouravmourya-jpg' }],
   creator: 'Sourav Maurya',
   publisher: 'ShadRox',
@@ -26,14 +29,14 @@ export const metadata: Metadata = {
     type: 'website',
     url: SITE_URL,
     siteName: 'ShadRox',
-    title: 'ShadRox — Project files, editor, AI chat, preview, Git and terminal in one Windows app',
-    description: 'A native Windows workspace for local projects. Files stay on your computer; only the context you choose goes to your AI provider.',
+    title: TITLE,
+    description: OG_DESCRIPTION,
     images: [{ url: '/og.png', width: 1200, height: 630, alt: 'ShadRox — project files, editor, AI chat, preview, Git and terminal in one Windows app' }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'ShadRox — Project files, editor, AI chat, preview, Git and terminal in one Windows app',
-    description: 'A native Windows workspace for local projects. Files stay on your computer; only the context you choose goes to your AI provider.',
+    title: TITLE,
+    description: OG_DESCRIPTION,
     images: ['/og.png'],
   },
   icons: {
@@ -52,51 +55,59 @@ export const viewport: Viewport = {
   themeColor: '#f6f8fb',
 }
 
-const jsonLd = {
-  '@context': 'https://schema.org',
-  '@graph': [
-    {
-      '@type': 'Organization',
-      '@id': `${SITE_URL}/#organization`,
-      name: 'ShadRox',
-      url: SITE_URL,
-      logo: { '@type': 'ImageObject', url: `${SITE_URL}/brand-logo.png` },
-      foundingDate: '2026',
-      founder: { '@id': `${SITE_URL}/#sourav-maurya` },
-      description: 'ShadRox is a solo-developed, local-first desktop AI coding workspace for Windows.',
-    },
-    {
-      '@type': 'Person',
-      '@id': `${SITE_URL}/#sourav-maurya`,
-      name: 'Sourav Maurya',
-      url: 'https://github.com/iamsouravmourya-jpg',
-      sameAs: ['https://github.com/iamsouravmourya-jpg', 'https://www.linkedin.com/in/sourav-maurya-45b272377', 'https://www.shadrox.cyou'],
-      jobTitle: 'Solo Developer & AI Engineer',
-      description: 'A full-stack developer and AI engineer from Delhi, India. Built ShadRox alone.',
-      address: { '@type': 'PostalAddress', addressLocality: 'Delhi', addressCountry: 'IN' },
-    },
-    {
-      '@type': 'WebSite',
-      '@id': `${SITE_URL}/#website`,
-      url: SITE_URL,
-      name: 'ShadRox',
-      publisher: { '@id': `${SITE_URL}/#organization` },
-    },
-    {
-      '@type': 'SoftwareApplication',
-      name: 'ShadRox',
-      applicationCategory: 'DeveloperApplication',
-      operatingSystem: 'Windows 10, Windows 11 (64-bit)',
-      softwareVersion: APP_VERSION,
-      dateModified: '2026-11-09',
-      url: SITE_URL,
-      downloadUrl: WINDOWS_DOWNLOAD_URL,
-      offers: { '@type': 'Offer', price: '0', priceCurrency: 'INR', availability: 'https://schema.org/InStock' },
-      image: `${SITE_URL}/brand-logo.png`,
-      author: { '@id': `${SITE_URL}/#sourav-maurya` },
-      description: 'A native desktop workspace for local projects with a code editor, Markdown preview, BYOK AI chat, project preview, Git tools, and an integrated terminal.',
-    },
-  ],
+function buildJsonLd(siteUrl: string) {
+  return {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'Organization',
+        '@id': `${siteUrl}/#organization`,
+        name: 'ShadRox',
+        url: siteUrl,
+        logo: { '@type': 'ImageObject', url: `${siteUrl}/brand-logo.png` },
+        foundingDate: '2026',
+        founder: { '@id': `${siteUrl}/#sourav-maurya` },
+        description: 'ShadRox is a solo-developed, local-first desktop AI coding workspace for Windows.',
+        sameAs: [
+          'https://www.linkedin.com/company/shadrox',
+          GITHUB_REPO,
+          SITE_URL_TECH,
+          SITE_URL_CYOU,
+        ],
+      },
+      {
+        '@type': 'Person',
+        '@id': `${siteUrl}/#sourav-maurya`,
+        name: 'Sourav Maurya',
+        url: 'https://github.com/iamsouravmourya-jpg',
+        sameAs: ['https://github.com/iamsouravmourya-jpg', 'https://www.linkedin.com/in/sourav-maurya-45b272377'],
+        jobTitle: 'Solo Developer & AI Engineer',
+        description: 'A full-stack developer and AI engineer from Delhi, India. Built ShadRox alone.',
+        address: { '@type': 'PostalAddress', addressLocality: 'Delhi', addressCountry: 'IN' },
+      },
+      {
+        '@type': 'WebSite',
+        '@id': `${siteUrl}/#website`,
+        url: siteUrl,
+        name: 'ShadRox',
+        publisher: { '@id': `${siteUrl}/#organization` },
+      },
+      {
+        '@type': 'SoftwareApplication',
+        name: 'ShadRox',
+        applicationCategory: 'DeveloperApplication',
+        operatingSystem: 'Windows 10, Windows 11 (64-bit)',
+        softwareVersion: APP_VERSION,
+        dateModified: '2026-11-18',
+        url: siteUrl,
+        downloadUrl: WINDOWS_DOWNLOAD_URL,
+        offers: { '@type': 'Offer', price: '0', priceCurrency: 'INR', availability: 'https://schema.org/InStock' },
+        image: `${siteUrl}/brand-logo.png`,
+        author: { '@id': `${siteUrl}/#sourav-maurya` },
+        description: 'A native desktop workspace for local projects with a code editor, Markdown preview, BYOK AI chat, project preview, Git tools, and an integrated terminal. Free during beta; bring your own AI provider key.',
+      },
+    ],
+  }
 }
 
 export default function RootLayout({
@@ -104,6 +115,8 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  const jsonLd = buildJsonLd(SITE_URL)
+
   return (
     <html lang="en" suppressHydrationWarning className={jakarta.variable}>
       <body className="antialiased">

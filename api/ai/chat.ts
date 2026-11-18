@@ -23,15 +23,7 @@ import {
 import { ADAPTERS, parseProviderId, resolveKeyAccess } from './_access.js';
 import { budgetRequest } from './_budget.js';
 import { promptCacheReport, shapeStablePrefix, type PromptCacheReport } from './_promptCache.js';
-import { resolveCustomEndpoint, runsOnTheUsersMachine } from './_endpoint.js';
-import {
-  checkAdmission,
-  checkSharedKeySpend,
-  clientIp,
-  fitChunk,
-  outputCeiling,
-  rateLimitedMessage
-} from './_spendGuard.js';
+import { resolveCustomEndpoint } from './_endpoint.js';
 import type { ChatMessage, ChatRequestBody, NativeToolDefinition, ProviderId } from './_types.js';
 import type { MeteredStreamResult } from './_upstream.js';
 import { nativeToolDefinitions as parseNativeToolDefinitions } from './_toolCalls.js';
@@ -68,9 +60,8 @@ function errorMessage(error: unknown, provider: ProviderId): string {
  * Body: { provider, model, apiKey?, messages[], systemInstruction?, temperature? }
  * Streams normalised SSE events: {type:'delta'|'reasoning'|'done'|'error'}.
  *
- * - apiKey present  -> BYOK passthrough, user pays, we never store the key.
- * - apiKey absent   -> falls back to the ShadRox shared key from the environment, which
- *                      is restricted to Pro-tier models.
+ * BYOK passthrough only: the caller's own key pays, we never store it, and a
+ * request without a key is refused.
  */
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   if (req.method !== 'POST') {
@@ -142,40 +133,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     });
   }
 
-  const resolved = resolveKeyAccess(provider, model, apiKey);
+  const resolved = resolveKeyAccess(apiKey);
   if ('error' in resolved) {
     sendError(res, 400, resolved.error);
     return;
   }
-  const { apiKey: spendKey, byok } = resolved.access;
+  const { apiKey: spendKey } = resolved.access;
   const adapter = ADAPTERS[provider];
-
-  // Shared-key traffic only: a best-effort, in-process per-IP brake. BYOK calls
-  // cost the operator nothing, so they never pass through this gate.
-  const ip = clientIp(req);
-  const decision = checkSharedKeySpend('chat', ip, byok);
-  if ('retryAfterSeconds' in decision) {
-    res.setHeader('Retry-After', String(decision.retryAfterSeconds));
-    sendError(res, 429, rateLimitedMessage(decision.retryAfterSeconds));
-    return;
-  }
-
-  // S12 admission: hosted operator-key spend needs an authoritative entitlement
-  // and fails closed until one is installed. The operator's own loopback backend
-  // keeps the existing exemption (same policy as the Pro-tier gate in _access),
-  // and BYOK never consults admission at all.
-  if (!byok && !runsOnTheUsersMachine()) {
-    const admission = await checkAdmission({ scope: 'chat', provider, model, ip, byok });
-    if (!admission.admitted) {
-      sendError(
-        res,
-        403,
-        admission.message ||
-          'ShadRox ki shared key ke liye admission abhi available nahi hai. Settings → BYOK me apni key add karo — BYOK requests hamesha chalti hain.'
-      );
-      return;
-    }
-  }
 
   // Enforce the model's context budget on the message history. The client
   // trims too, but the server is the boundary that actually spends the key.
@@ -219,10 +183,6 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   const startedAt = performance.now();
   let firstTokenMs: number | null = null;
-  let sentChars = 0;
-  let capped = false;
-  // Hard output ceiling, shared-key requests only.
-  const ceiling = outputCeiling('chat', byok);
 
   const markFirstToken = () => {
     if (firstTokenMs === null) firstTokenMs = Math.round(performance.now() - startedAt);
@@ -234,40 +194,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   };
 
   const forward = (type: 'delta' | 'reasoning', text: string) => {
-    if (capped || abort.signal.aborted || res.writableEnded) return;
-    const { head, capped: hitCeiling } = fitChunk(sentChars, ceiling, text);
-    if (head) {
-      sentChars += head.length;
+    if (abort.signal.aborted || res.writableEnded) return;
+    if (text) {
       markFirstToken();
-      emit({ type, text: head });
+      emit({ type, text });
     }
-    if (hitCeiling) {
-      capped = true;
-      // Stop listening: the model would keep talking, we just stop paying.
-      abort.abort();
-    }
-  };
-
-  // Closing turn for a reply that hit the ceiling: a normal `done` event, marked
-  // truncated. Written with `sseSend` directly because the abort flag is already
-  // set by then and `emit()` would (correctly) refuse to write.
-  const finishTruncated = () => {
-    if (res.writableEnded) return;
-    sseSend(res, {
-      type: 'done',
-      tokens: 0,
-      provider,
-      model,
-      tier: 'shadrox',
-      finishReason: 'length',
-      truncated: true,
-      // The stream was cut before any provider usage frame arrived: nothing
-      // here is provider-measured, and no served model was confirmed.
-      usageSource: 'estimated',
-      promptCache: cacheReport,
-      firstTokenMs,
-      durationMs: Math.round(performance.now() - startedAt)
-    });
   };
 
   try {
@@ -292,17 +223,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
           forward('reasoning', text);
         },
         toolCalls(calls) {
-          if (capped || abort.signal.aborted || res.writableEnded || calls.length === 0) return;
-          const serialized = JSON.stringify(calls);
-          const { capped: hitCeiling } = fitChunk(sentChars, ceiling, serialized);
-          if (hitCeiling) {
-            capped = true;
-            abort.abort();
-            return;
-          }
-          // Tool calls ship whole or not at all, so the ceiling counts the full
-          // serialized length — the same sentChars ledger as deltas/reasoning.
-          sentChars += serialized.length;
+          if (abort.signal.aborted || res.writableEnded || calls.length === 0) return;
           markFirstToken();
           emit({ type: 'tool_calls', calls });
         }
@@ -310,7 +231,6 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     );
 
     if (abort.signal.aborted || res.writableEnded) {
-      if (capped) finishTruncated();
       sseEnd(res);
       return;
     }
@@ -336,21 +256,17 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       promptCache: meta.promptCache ?? cacheReport,
       provider,
       model,
-      tier: byok ? 'byok' : 'shadrox',
+      tier: 'byok',
       finishReason: result.finishReason,
       firstTokenMs,
       durationMs: Math.round(performance.now() - startedAt)
     });
   } catch (error) {
-    if (capped) {
-      // Reaching the ceiling is expected, not a failure: close the turn cleanly.
-      finishTruncated();
-    } else if (abort.signal.aborted) {
+    if (abort.signal.aborted) {
       sseEnd(res);
       return;
-    } else {
-      sseSend(res, { type: 'error', message: errorMessage(error, provider) });
     }
+    sseSend(res, { type: 'error', message: errorMessage(error, provider) });
   }
 
   sseEnd(res);

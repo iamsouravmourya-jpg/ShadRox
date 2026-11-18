@@ -18,6 +18,7 @@ import type {
   DiagnosticLine,
   TurnRequest,
   TurnResult,
+  TurnWrites,
   VerifiableUnit,
   VerificationReport,
   Verdict
@@ -114,15 +115,28 @@ function tail(text: string, limit = 4000): string {
  * Judge a milestone from diagnostics plus its optional proof command.
  *
  * - an error diagnostic         -> failed, and a green command cannot undo it
- * - the command exited non-zero -> failed
+ * - the command exited non-zero -> diagnostic evidence, not a verdict: its exit
+ *   code and output ride on the report for the next attempt's repair brief, but
+ *   the compiler diagnostics decide. A fresh workspace's planner-invented
+ *   `npm test`/`tsc` often fails before deps or scripts exist, and that alone
+ *   must not kill the task (and block every dependent).
+ * - the command timed out       -> failed: it proved nothing and burned its budget
  * - a clean check or green cmd  -> passed
  * - the command was declined    -> the diagnostics verdict stands, with a note
  * - nothing checked it          -> unverified, never a silent pass
+ *
+ * `writes` is what the turn under judgment actually wrote. When it reports
+ * zero patches and zero changed files, the report carries the promised
+ * "touched nothing" note — a clean typecheck of bytes nobody edited proves the
+ * workspace is clean, not that the milestone was done. The note never changes
+ * the verdict: a read-only investigation milestone still passes or stays
+ * unverified exactly as before, only honestly annotated.
  */
 export async function verifyMilestone(
   unit: VerifiableUnit,
   host: AutonomyHost,
-  rootPath: string
+  rootPath: string,
+  writes?: TurnWrites
 ): Promise<VerificationReport> {
   const notes: string[] = [];
   let diagnostics: DiagnosticLine[] | null = null;
@@ -148,7 +162,9 @@ export async function verifyMilestone(
       if (outcome.declinedReason) {
         notes.push(`the proof command was not run: ${outcome.declinedReason}`);
       } else if (outcome.exitCode !== 0) {
-        notes.push(`the proof command exited ${outcome.exitCode === null ? 'without a code' : outcome.exitCode}.`);
+        notes.push(
+          `the proof command exited ${outcome.exitCode === null ? 'without a code' : outcome.exitCode}; its output is attached as diagnostic evidence, not a verdict.`
+        );
       }
     } catch (error) {
       notes.push(`the proof command could not run: ${error instanceof Error ? error.message : String(error)}`);
@@ -159,7 +175,12 @@ export async function verifyMilestone(
   // A command killed by its time limit proved nothing, whatever exit code the
   // runner reported for it, so it can never carry a milestone to `passed`.
   const commandPassed = commandRan && command.exitCode === 0 && !command.timedOut;
-  const commandFailed = commandRan && (command.exitCode !== 0 || command.timedOut);
+  // A non-zero exit alone is a diagnostic report, not a failure verdict: the
+  // planner invents proof commands (`npm test`, `tsc`) that a fresh workspace
+  // cannot satisfy yet. The exit code and captured output stay on the report
+  // (and flow into the next attempt's repair brief); only a timeout still
+  // counts against the task.
+  const commandFailed = commandRan && command.timedOut;
   const hasError = diagnostics?.some((line) => line.severity === 'error') ?? false;
 
   // A failure is sticky: a green command never erases a type error the same
@@ -176,6 +197,13 @@ export async function verifyMilestone(
     }
   }
 
+  // The caveat types.ts promises: a milestone that touched nothing. Attached
+  // whenever the host reported the turn's writes and both counts are zero —
+  // including a `passed`, which is exactly where silence used to hide it.
+  if (writes && writes.patchesApplied === 0 && (writes.changedFiles ?? 0) === 0) {
+    notes.push('the milestone touched nothing: the turn applied no patches and changed no files.');
+  }
+
   return { verdict, diagnostics: diagnostics ?? [], command, notes };
 }
 
@@ -183,7 +211,7 @@ export async function verifyMilestone(
 export function createAutonomyPorts(host: AutonomyHost, options: AutonomyPortsOptions): AutonomyPorts {
   return {
     runTurn: (request) => host.runTurn(request),
-    verify: (unit) => verifyMilestone(unit, host, options.rootPath),
+    verify: (unit, writes) => verifyMilestone(unit, host, options.rootPath, writes),
     listFiles: () => host.listFiles(),
     askPlan: (prompt) => host.askPlan(prompt),
     onEvent: options.onEvent,

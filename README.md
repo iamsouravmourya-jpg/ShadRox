@@ -1,531 +1,71 @@
 <div align="center">
 
-<img src="assets/icon.png" alt="ShadRox" width="120" />
+<img src="assets/icon.png" alt="ShadRox" width="96" />
 
 # ShadRox
 
-### Your project, code, AI, and preview — in one workspace.
+**Your project, code, AI, and preview — in one Windows workspace.**
 
-A native desktop workspace for working on local projects with an editor, Markdown preview, BYOK AI chat, project preview, Git tools, and an integrated terminal.
-
-[![Version](https://img.shields.io/badge/version-0.1.0-violet?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
+[![Version](https://img.shields.io/badge/version-0.1.2-violet?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0d0f13?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](./LICENSE)
-[![Electron](https://img.shields.io/badge/Electron-44-47848F?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
-[![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-7-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-[Download for Windows](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.0-Setup.exe) · [All Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Report an Issue](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
+[Download for Windows](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.2-Setup.exe) · [All releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Report an issue](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
 
 </div>
 
----
+ShadRox is a native Electron desktop app that puts a code editor, BYOK AI chat and agent, live project preview, Git tools, and an integrated terminal in one window. Open a local folder, edit files, ask your own AI provider for help, run the project, and commit — without leaving the workspace. Project files stay on your disk; only the prompt and context you choose are sent to the provider you configure. ShadRox is free, bring-your-own-key only, and has no billing.
 
-> **ShadRox is beta software (v0.1.0).** It is not a mature replacement for a general-purpose IDE. Agent output and model-generated edits can be incorrect — inspect proposed changes and keep backups or use Git for important work.
-
-The download button points at the **last published** GitHub release. This source tree is version `0.1.0` and includes the behavior below.
-
-**In this source tree**
-- **Recent workspace reopen.** Reopen a saved folder or file set with an in-app loading status, access checks, and a ready-file count so it is clear when the workspace is still opening.
-- **Simplified chat controls.** The Run settings menu holds exactly three access modes — Ask, Plan, and Agent. Ask and Plan are read-only; Agent may edit files and run commands you approve. Workspace attachments, one external photo (shown as a thumbnail above the composer with a remove control), and `@` mentions remain available, while microphone, prompt auto-refine, Semantic, and Auto composer toggles stay out of the beta UI.
-- **Long pastes become attachments.** A clipboard paste of 4,000 or more characters, or 60 or more lines, becomes a named `pasted-<time>.txt` chip above the composer. The chat bubble stays short while the text reaches the model as pasted-text context; shorter pastes insert normally.
-- **Empty new projects.** New project asks for a name and a save location, creates an empty folder there, and opens it. No starter files are written, and an existing non-empty folder is refused rather than overwritten.
-- **Feedback drawer.** The top-bar Feedback button opens a right-side drawer with exactly two report types, Bug and Feature request. The report carries only the message you typed: it is POSTed to the owner's private Google Sheet, which records the date server-side and files the message under a Bug or Feature column. No email, account details, app version, platform, code, or file names are attached.
-- **Day and night themes.** One toggle switches between the light and dark themes. Until you pick a side the app starts on your OS preference; after that your choice is remembered.
-- **Consent before sign-in.** Continue with Google stays disabled until you tick that you agree to the Terms of Service and Privacy Policy.
-- **Branded composer.** The ShadRox mark is shown inside the chat prompt, and the preview toolbar keeps the workspace focused without the extra Live/Manual toggle.
-- **Assistant shell access.** The agent can run a command in the opened folder and read its real exit code and output.
-- **Command approval.** Every shell command now requires a native approval dialog, including the former verification commands (`npm test`, `pytest`, `tsc --noEmit`, and Git status/diff). The workspace is checked again after approval and before the command runs.
-- **Security hardening.** MCP connections and external debug adapters require native approval. Preview bundles exclude vault secrets, repository rules and skills are treated as untrusted reference data, and renderer CSP is applied only to the app origin.
-- **Hardened production builds.** The production renderer is obfuscated with control-flow flattening, dead-code injection, hexadecimal identifiers, and RC4-protected string arrays. The Electron main process and local API backend are bundled into V8 bytecode (`.jsc`) and their source files are removed from the packaged application. The sandboxed preload bridge remains a small source loader because Electron does not allow Node bytecode loaders inside sandboxed preloads. Self-defending mode is intentionally disabled because it is incompatible with Electron's production runtime. This protection is enabled only for production packaging; development remains readable and debuggable.
-- **Verified writes.** After applying edits, ShadRox re-reads the files and only reports a save when the bytes on disk actually changed.
-- **Terminal state.** PowerShell and bash emit OSC 133 / 633 markers for cwd, command text, and exit code. The panel shows cwd and the last exit code, and notices a running command that has gone silent. Command Prompt and plain `/bin/sh` are not wrapped. The agent can read that summary with `terminal_state`. It cannot type into the interactive shell.
-- **Failure receipts.** A failed `run_command` is shown on the assistant message with that turn's undo checkpoint id. The model receives the error and a repair brief. ShadRox does not apply a repair patch by itself.
-- **Preview.** Stale preview servers and Next.js dev locks are cleaned up the next time that project starts. After a preview is ready, a bounded check reports `ok`, `warn`, `fatal`, or `observed`. `observed` means the check could not prove the page.
-- **Debugger.** Add a `shadrox.debug.json` at the workspace root with one or more `node` launch configurations, then start it from the Debug panel: breakpoints go in the editor gutter, the paused frame and its locals open beside the code, and hovering an identifier while paused evaluates it in that frame. Programs and working directories outside the workspace are refused.
-- **Proof and usage.** Assistant commands append a local signed ledger line with the redacted command, hashes of the command and its output, and the exit code — never the output text. Settings reports the token usage the provider returns for each turn; ShadRox bills nothing and keeps no meter.
-- **Workspace consent.** Reopening a folder or file requires a path the main process already accepted. An unknown path asks again before it is mounted.
-- **Credential scrubbing.** API error text is redacted for GitHub and AWS-shaped tokens. Terminal environments drop credential-shaped variables.
-- **Context budgets.** Prompt fitting uses per-model window and output limits. Stable prompt prefixes are shaped for providers that can cache them.
-- **Replies and logo.** Assistant answers render as cards. The shield-and-ribbon mark is the app icon. Landing call-to-action accents use silver, violet, and cyan.
-
-## What is ShadRox?
-
-ShadRox brings your project explorer, code editor, Markdown preview, AI chat, local web preview, Git tools, and terminal into one Electron desktop app. Open a folder, browse and edit files, review AI-proposed changes, and run supported projects without leaving the workspace.
-
-Your project files stay **on your computer**; ShadRox does not sync project folders to a cloud workspace. When you ask AI for help, the prompt and included project context are sent to the provider you selected. Provider keys are stored in the desktop app's OS-backed encrypted store and are not sent to ShadRox.
+> **Beta software (v0.1.2).** Agent output and model-generated edits can be incorrect. Review changes, keep backups or use Git, and do not approve commands you do not understand. See [BETA_TERMS.md](./BETA_TERMS.md).
 
 ## Features
 
-| | Feature | What it does |
-|---|---|---|
-| 🛡️ | **Command approval** | Shell commands, verification commands, and Git status/diff require a native approval dialog with a plain-language risk notice for the command. `delete_file` also requires `confirm: true` and a follow-up read that proves the path is gone. |
-| 📟 | **Terminal state** | PowerShell and bash report cwd, the command line, and the exit code. The panel shows them, and `terminal_state` lets the agent read the same summary, including how long a command has been silent. |
-| 🩹 | **Failure receipts** | A failed assistant command becomes a receipt on the chat message, with the turn's undo checkpoint id. The model sees the error. A patch is still a normal reviewed edit, not an automatic rewrite. |
-| 📊 | **Proof and usage** | Command ledger lines store the redacted command, hashes and exit code — not output text — in a signed Ed25519 chain. The usage shown in Settings is the token count the provider reports for each turn, including cache hits when that field exists; ShadRox bills nothing and keeps no meter. |
-| 📁 | **Project Explorer** | Open a local folder or selected files, create a new empty project folder and open it, browse the workspace tree, and create, rename, or delete files and folders. A new project writes no starter files and refuses a non-empty target folder; files are loaded as you open them. |
-| ✏️ | **Editor & Markdown preview** | CodeMirror 6 editing, split editor groups, pinned/reorderable tabs, quick open, outline, inline completions, and a one-click source/preview toggle for Markdown files. |
-| 🔍 | **Code navigation** | TypeScript diagnostics, go-to-definition, find references, rename, quick fixes, semantic highlighting, and workspace symbol search where supported. |
-| 💬 | **AI chat and queue** | Use Gemini, Groq, or a custom OpenAI-compatible endpoint. Replies render as cards with headings, tables, quotes, and copyable code blocks. Queue follow-up messages while a turn is running; attach workspace files, one photo (thumbnail with a remove control), or use `@` mentions for files and symbols; a long paste of 4,000+ characters or 60+ lines becomes a `pasted-<time>.txt` attachment while the bubble stays short; inspect proposed file changes and review supported diffs before applying. |
-| 🧭 | **Recent workspace reopen** | Reopen saved folders and file sets with persisted native consent, a visible loading state, and a confirmation when files are ready. |
-| 🎛️ | **Focused chat controls** | Choose Ask, Plan, or Agent from one Run settings menu: Ask and Plan are read-only, while Agent may edit files and run commands you approve. The composer includes the ShadRox mark and keeps optional microphone, auto-refine, Semantic, and Auto controls out of the current beta surface. |
-| ⌘ | **Command palette & quick edit** | Fuzzy-find files, workspace symbols, and commands from one palette; select code and press Ctrl+K for an inline AI edit; accept ghost-text completions powered by server-side FIM. |
-| 🤖 | **Bounded agent loop** | Multi-round tool use with native provider calls where supported and a text-protocol fallback. Built-in tools list directories, read files, search names and text, inspect diagnostics and Git state, outline files, delete one path, read terminal state, answer a running prompt with approval, read the paused debugger, and run one shell command with its real exit code. Every request also carries a compact repo map. Turns have tool and iteration limits. |
-| 🚀 | **Multi-step runs and teams** | Plan larger work as tasks, run verification/repair stages, or coordinate specialist roles. Features an autonomous DAG execution engine and role-confined agent teams. |
-| 🔌 | **MCP servers** | Connect user-configured Model Context Protocol servers. Starting a server or listing/calling its tools requires consent for the complete server configuration. |
-| 👁️ | **Local preview & assertions** | Preview Markdown, static sites, detected Node web projects, and Python/Go/PHP/Java/.NET backends. Includes DOM route, element, and console error assertions. |
-| 🧭 | **Behavior-to-Code Studio** | Record preview clicks and runtime errors, map interactions to source paths, and generate an editable acceptance contract with baseline and post-patch verification states. |
-| 🧠 | **Living Intent Graph** | Index workspace symbols and dependencies, persist approved rationale locally, flag decisions stale after SHA-256 changes, and inject budgeted intent context into AI tasks. |
-| 📈 | **Outcome-Calibrated Auto** | Record route outcomes, pass rates, repair iterations, token use, and latency locally; Auto ranks models using verified historical results instead of token price alone. |
-| 🧩 | **Task Inspector** | One dock for capsules, Intent Graph, Behavior Studio, and Calibrated Auto. Capsule and intent data support offline JSON export/import. |
-| 🔀 | **Source control** | Inspect staged and unstaged Git changes, preview file diffs, stage or unstage, commit with AI-generated messages, switch local branches, see ahead/behind counts against the upstream, and detect and resolve merge conflicts. |
-| 🔎 | **Workspace search & replace** | Search files on disk and in buffers, review matching results, and replace selected or matching text. |
-| ⏮️ | **Checkpoints** | Review assistant checkpoints and restore earlier workspace content. |
-| 📝 | **Rules & skills** | Load project conventions from `SHADROX.md`, `AGENTS.md`, `QODER.md`, `.cursorrules`, and `.shadrox/rules/*.md`; reusable skills live under `.shadrox/skills/`. |
-| 🔗 | **GitHub integration** | Validate tokens and push code from the app; a repository-creation endpoint ships with the API layer. |
-| 🔧 | **Plugins & automations** | Use declarative workspace plugins and scheduled or webhook-triggered automations. |
-| ⏪ | **Machine Delta core** | Main-process snapshot, inspection, and explicit restore primitives for bounded workspace, local Git, and ShadRox-owned preview changes. |
-| 🐛 | **Debugger (DAP)** | Launches a Node program declared in the workspace's `shadrox.debug.json` through the Debug Adapter Protocol: breakpoints in the editor gutter, call stack, scopes and variables, hover values while paused, and pause/continue/step. Bundled adapters may start directly; external adapters require native approval and a scrubbed environment. Adapters run as bounded argv processes, never through a shell. Heap profiling is not included. |
-| 🔄 | **Update checks** | The app checks for a newer release 15 seconds after start and every 6 hours, and shows a badge when one exists. Downloading and installing the new installer stays manual from GitHub Releases. |
+- **Editor** — CodeMirror 6, split groups, pinned tabs, quick open, outline, Ctrl+K inline AI edit, ghost-text completions, Markdown source/preview toggle.
+- **AI chat (BYOK)** — Gemini, Groq, or any OpenAI-compatible endpoint with your own key; Ask/Plan/Agent modes, `@` mentions, file/photo attachments, message queue.
+- **Agent with guardrails** — risk-tiered command approval (safe commands auto-run, risky ones ask, dangerous ones always ask in red), background jobs, verified file writes.
+- **Live preview** — static sites, Node web frameworks, and detected Python/Go/PHP/Java/.NET backends, with a bounded health check.
+- **Terminal** — interactive shell rooted in the workspace; PowerShell and bash report cwd and exit codes.
+- **Git & checkpoints** — diffs, staging, AI commit messages, branches, conflict resolution, GitHub push, and rewindable workspace checkpoints.
+- **Multi-step runs & teams (beta)** — larger goals escalate from chat to a plan-edit-verify run or a coordinator-led agent team.
+- **Extensible** — MCP servers, project rules and skills, a Node debugger, plugins and automations (beta).
 
-### Task Inspector systems
+## Quick start
 
-The Task Inspector groups the local-first engineering records that accompany an AI task:
+1. **Download** the installer: [ShadRox-v0.1.2-Setup.exe](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.2-Setup.exe) (Windows 10/11, 64-bit). The build is unsigned — if SmartScreen warns, verify the download source, then choose **More info → Run anyway**. Details in [INSTALL.md](./INSTALL.md) and [docs/troubleshooting.md](./docs/troubleshooting.md).
+2. **Install and sign in** with Google (required; you must accept the Terms and Privacy Policy first).
+3. **Add your own API key** in **Settings → Models & Keys** — Gemini, Groq, or a custom OpenAI-compatible endpoint. See [docs/byok.md](./docs/byok.md).
+4. **Open a folder** and start editing, asking, running, and committing.
 
-- **Behavior Studio** listens to preview bridge events such as source-mapped clicks and runtime errors. It keeps a bounded interaction history and turns it into an acceptance contract containing the target source location, observed failure, expected behavior, and reproduction steps. Running the contract captures evidence per phase — a screenshot digest plus DOM and console assertion results — for `baseline` and `postPatch`, so a pass is backed by what the page actually did.
-- **Living Intent Graph** scans loaded source files for symbols and dependency edges. User-approved decisions are stored in browser local storage, re-hashed against current files, and marked `stale` when their governing content changes.
-- **Outcome-Calibrated Auto** keeps a bounded local ledger of route, model, verification, repair, token, and latency outcomes. Ranking uses a pass rate shrunk toward the pool's own prior and only reorders a route once it has five verified runs, so a lucky 1-for-1 cannot beat a proven model; new and unproven models keep the neutral fallback order. Every choice carries a human-readable reason, the fallback reason included, and the Task Inspector can pin a model per task type (`bugfix`, `refactor`, `feature`, `test`, `chat`), which overrides the ranking until unpinned.
+## Documentation
 
-These records remain local to the workspace/browser profile. Use the Inspector's export controls to create portable JSON backups; imports are validated before they are stored.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Electron Main Process                     │
-│  main.cjs · preload.cjs · workspace.cjs · desktop-security.cjs   │
-│  ┌──────────┐  ┌────────────┐  ┌──────────┐  ┌───────────────┐   │
-│  │ TS Service│  │ Preview RT │  │ Terminal │  │ MCP Client    │   │
-│  │ (LSP)     │  │ (node-pty) │  │ (xterm)  │  │ (approval-gated)│  │
-│  └──────────┘  └────────────┘  └──────────┘  └───────────────┘   │
-│  ┌──────────┐  ┌────────────┐  ┌──────────────────────────────┐  │
-│  │ Updater   │  │ Git Ops    │  │ Automation Webhook           │  │
-│  │(auto-update)│ │(create/push)│  │ (scheduler + HTTP triggers)  │  │
-│  │ Workspace consent · command approval · Machine Delta core       │
-│  └──────────┘  └────────────┘  └──────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-              ▲ IPC (context-isolated, preload bridge) ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     React 19 Renderer (Vite)                     │
-│  ┌───────────┐ ┌──────────┐ ┌─────────┐ ┌────────┐ ┌─────────┐  │
-│  │ File Tree  │ │ CodeEdit │ │ ChatPanel│ │ Preview│ │ Terminal│  │
-│  │ Outline    │ │ (CM6)    │ │ Agent    │ │ Pane   │ │ Panel   │  │
-│  │ QuickOpen  │ │ FIM      │ │ Timeline │ │ Click→ │ │ xterm   │  │
-│  │ References │ │ Diag.    │ │ Settings │ │ source │ │         │  │
-│  └───────────┘ └──────────┘ └─────────┘ └────────┘ └─────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-              ▲ Express local server / Vite dev renderers dev server (server.ts) ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                            API Layer                              │
-│  /ai/chat · /ai/commit-message · /ai/fim · /byok/validate        │
-│  /github/create-repo · /github/push · /github/validate           │
-│  /prompt/refine · Gemini · Groq · OpenAI-compatible · BYOK       │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## How a request travels
-
-```
- ┌──────────────┐      prompt + context      ┌──────────────────┐
- │  Your computer │  ───────────────────────▶  │  AI Provider      │
- │                 │                            │  (Gemini / Groq /  │
- │  • Local files  │  ◀───────────────────────  │   compatible)     │
- │  • BYOK key     │      response (stream)      └──────────────────┘
- │    (encrypted)  │
- │  • Project rules│   Supabase (auth only):
- │  • Skills       │   email, name, avatar,
- │  • Repo map     │   app version, platform
- └──────────────┘
-```
-
-Project files are edited locally on your disk. Only the prompt and the context you include go to the provider. Your provider key stays encrypted on your device.
-
-## AI Agent: What It Does and Does Not Do
-
-The agent is more than a one-shot text patch parser. It can request bounded rounds of workspace tools, receive their results, and continue reasoning.
-
-**Built-in workspace tools:**
-- Directory listing
-- File reads
-- Filename and text search
-- Diagnostics
-- Git state
-- File outlines
-- Delete one file or an empty folder (`delete_file`, requires `confirm: true`, then a disk check)
-- Read the interactive terminal (`terminal_state`: cwd, running command, last exit code, silent seconds)
-- Answer a running prompt (`terminal_answer`: one short line, shown in an approval dialog first)
-- Read the paused debugger (`debugger_state`: top frame, scopes, bounded locals; read-only)
-- One shell command per call (`run_command`)
-
-`run_command` runs in the opened folder and returns the real exit code, stdout, and stderr. A model field is not permission. Every command opens a native approval dialog, and the workspace is checked again before execution. A non-zero exit becomes a failure receipt on that chat message. The command and its result are also echoed into the terminal panel. `terminal_state` only reads. `terminal_answer` types one printable line, and only into a terminal that is already running a command — never into an idle prompt — after the user approves the exact bytes; a cancel types nothing. Passwords, tokens and secrets are refused.
-
-The model can also update its task plan and finish a turn explicitly. A turn is limited to **five tool rounds** by default, with up to six calls in a round.
-
-**File changes** are proposed through ShadRox's patch format and sent through a patch/review/apply pipeline — they are never arbitrary model-issued filesystem writes. Changes that are unsafe to apply automatically (edits to files the turn did not read, destructive rewrites) are held for review rather than silently written. After applying, the app re-reads each file and reports a save only if the content on disk matches the proposed result.
-
-> Providers with native function calling use it for tool requests; ShadRox normalizes those calls into its bounded tool contract. A ShadRox-formatted text protocol is the fallback for providers that do not support native tools. The loop is an early implementation and can make mistakes.
-
-### Autonomous Engine
-
-Multi-step requests can escalate from chat to a bounded autonomous run:
-
-```
-Goal → Plan (task DAG) → Milestone turn (guarded patches) → Verify
-     ↑                                                        │
-     └──── Repair brief (≤ maxAttempts) ◀──── failed ─────────┘
-                  rollback to checkpoint on an unrecoverable failure
-```
-
-The engine plans work as a **task DAG** of milestones, applies changes through the same guarded patch pipeline, and **verifies** each milestone with diagnostics plus an optional approval-gated command. A failed milestone gets a repair brief and up to a configurable number of attempts; a run that still fails and has written files rolls the workspace back to its checkpoint. Runs are durable: a journal and run store survive restarts, a run can be paused, cancelled and resumed, and enforced time, tool-call and spend budgets stop a runaway run.
-
-### Agent Teams
-
-For goals that span multiple concerns, a **Coordinator** splits the work and assigns each task to a specialist:
-
-| Role | Owns | Does not touch |
-|---|---|---|
-| **Coordinator** | Planning and assignment | Never edits files |
-| **Frontend** | Components, styling, client state, rendering | Server code, data access, tests |
-| **Backend** | APIs, data access, services, build config | UI code, tests |
-| **Tests** | Test files and fixtures | Product code (won't weaken tests to pass) |
-| **Reviewer** | Reads results, reports problems | Changes nothing |
-
-Teams share the same bounded tool loop and guarded patch path. Each agent's brief includes file ownership boundaries so they stay out of each other's way.
-
-## AI Providers & Project Context
-
-**Supported providers:**
-- Google Gemini
-- Groq
-- Custom OpenAI-compatible endpoints (including Ollama, LM Studio, and compatible gateways)
-
-The beta and the product run on **Bring Your Own Key (BYOK)**. Add a provider key in Settings; model availability and charges depend on that provider. Your own key carries every request and the provider bills you directly — ShadRox bills nothing, meters nothing and caps nothing.
-
-**Project context** is assembled locally for each request and can include:
-- Selected files
-- Search results
-- A compact repository map
-- Project rules
-- Recent conversation (compacted without another model call when long)
-
-> Only the prompt and context selected for a request are sent to its configured AI provider. Do not send private code to a provider unless its data-handling terms are acceptable to you.
-
-**Project convention files:**
-
-| File | Scope |
+| Page | What it covers |
 |---|---|
-| `SHADROX.md` | Root project rules |
-| `AGENTS.md` | Root or nested per-directory rules |
-| `QODER.md` | Root project rules |
-| `.cursorrules` | Root project rules |
-| `.shadrox/rules/*.md` | Structured rule files |
-| `.shadrox/skills/` | Reusable skills |
+| [docs/features.md](./docs/features.md) | Editor, chat/agent, runs & teams, preview, terminal, Git/checkpoints, MCP, debugger, tech stack, building from source |
+| [docs/byok.md](./docs/byok.md) | Providers, where keys are stored, what leaves your machine, accounts and billing |
+| [docs/agent-tools.md](./docs/agent-tools.md) | Agent tool surface, command risk tiers, background jobs, loop limits, safety model |
+| [docs/troubleshooting.md](./docs/troubleshooting.md) | SmartScreen, preview port conflicts, pnpm/bun projects, OneDrive locks, logs |
+| [docs/faq.md](./docs/faq.md) | Plain answers to common questions |
+| [INSTALL.md](./INSTALL.md) | Beta installation steps |
+| [SECURITY.md](./SECURITY.md) | Reporting vulnerabilities |
+| [PRIVACY.md](./PRIVACY.md) | Privacy summary |
+| [BETA_TERMS.md](./BETA_TERMS.md) | Beta terms of use |
+| [LICENSE](./LICENSE) | AGPL-3.0-only full text |
 
-## Preview & Terminal
+## Development
 
-**Preview** supports:
-- ✅ Static sites (served by ShadRox)
-- ✅ Vite, Next.js, Nuxt, Astro, Angular, SvelteKit, Remix, webpack, and Parcel projects
-- ✅ Node-based web projects (detected scripts)
-- ✅ Python, Go, PHP, Java, and .NET backends (detected entry points — the runtime itself must be installed on your machine)
-
-Opening a project workspace automatically starts its detected preview script and may install missing dependencies. Check the detected project and run script before opening an untrusted workspace. Click-to-source works for static pages served through ShadRox, not external dev servers.
-
-For a running local preview, **Check** inspects only bounded frame structure and recent console errors. An **Observed** result is deliberately not a claim that the page looks correct.
-
-The **integrated terminal** is an interactive shell rooted in the workspace. Credential-shaped environment variables are stripped before the shell starts. PowerShell and bash load a small ShadRox script that reports cwd, the command line, and the exit code. Assistant commands are a separate non-interactive run: they do not type into that shell. **Every assistant command requires approval in a native dialog**, and the workspace is checked again between approval and execution.
-
-Assistant commands append a proof line under the app's user-data folder: the redacted command, hashes of the command, stdout, and stderr, plus the exit code. The line never stores the output text, and credential-shaped parts of the command (tokens, passwords, `Authorization` headers, credentials in URLs) are replaced before the line is signed. The Ed25519 proof ledger signs records and keeps its keys in the OS encrypted store, so an edited, reordered or torn ledger is detected on read rather than trusted. `npm run verify:proofs` re-checks every ledger offline and exits non-zero on any failure. This is not remote attestation, and it does not protect a machine the attacker already controls.
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Desktop shell | Electron 44 |
-| Renderer | React 19 |
-| Build tool | Vite 8 |
-| Language | TypeScript 7 |
-| Styling | Tailwind CSS 4 |
-| Code editor | CodeMirror 6 |
-| Terminal | xterm.js + node-pty |
-| Dev server | Express 4 |
-| Auth | Supabase (Google sign-in) |
-| Icons | Lucide React |
-| Packaging | electron-builder |
-| Updates | electron-updater |
-
-> The renderer is built with TypeScript 7; the in-app language service and `npm run typecheck` use a bundled TypeScript 5.9 service, so the editor's diagnostics match what ships inside the app.
-
-## Requirements
-
-- **Node.js** 22.12 or newer
-- **npm**
-- **Windows** or **macOS** for desktop packaging
-- A **Supabase project** with Google sign-in configured (to build from source)
-- A **Gemini**, **Groq**, or compatible endpoint API key to use AI features
-
-Some native dependencies may require platform build tools. Project previews may also need the package manager and toolchain used by the project.
-
-## Quick Start
-
-### Run from source
+Requires Node.js 22.12+ and npm. A Supabase project with Google sign-in is needed to run from source (`cp .env.example .env`, then set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`).
 
 ```sh
-# Install dependencies
 npm install
-
-# Copy environment config and add Supabase credentials
-cp .env.example .env
-#   Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env
-#   Never put a Supabase service_role key in the desktop app
-
-# Run the desktop app (dev server + Electron)
-npm run dev:desktop
-
-# Or run only the local dev server + browser UI
-npm run dev
+npm test             # Node test suite (src/, electron/, api/)
+npm run typecheck    # bundled TypeScript 5.9 service
+npm run dev:desktop  # dev server + Electron app
 ```
 
-### Landing page (separate app)
-
-The landing page lives in `landing/` and uses pnpm:
-
-```sh
-corepack pnpm --dir landing install --frozen-lockfile
-npm run dev:landing
-```
-
-## Development Commands
-
-| Command | Purpose |
-|---|---|
-| `npm run dev` | Start the local Express/Vite development server. |
-| `npm run dev:desktop` | Start the dev server and Electron app together. |
-| `npm run build` | Build the renderer into `dist/`. |
-| `npm run typecheck` | Type-check the TypeScript project. |
-| `npm test` | Run the Node test suite. |
-| `npm run benchmark` | Grade the model-free agent benchmark suite in `benchmark/cases/`. |
-| `npm run verify:proofs` | Re-verify every signed proof ledger offline; exits non-zero on any failure. |
-| `npm start` | Alias of `npm run dev` — the same Express server with Vite dev middleware. |
-| `npm run preview` | Serve the built `dist/` renderer locally. |
-| `npm run build:desktop` | Stage and package the desktop application. |
-| `npm run dist:win` | Build a Windows NSIS installer (no publish). |
-| `npm run dist:mac` | Build a macOS DMG. |
-| `npm run release:win` | Build and publish a Windows release (requires `GH_TOKEN`). |
-
-### Production build protection
-
-`npm run build:desktop` and `npm run dist:win` set `NODE_ENV=production` and run the complete hardening pipeline automatically:
-
-1. Vite obfuscates the renderer bundle with control-flow flattening (`0.80`), dead-code injection (`0.40`), hexadecimal identifiers, and RC4 string-array encoding. Self-defending mode stays disabled for Electron compatibility.
-2. The Electron main process and local API/backend are bundled and compiled to V8 bytecode with Bytenode. The sandboxed preload bridge is shipped as source to preserve Electron's preload security model and startup compatibility.
-3. Original backend and Electron JavaScript/TypeScript source files are removed from the staging directory before Electron Builder creates the ASAR.
-
-`npm run dev` and `npm run dev:desktop` do not run this pipeline, so local debugging remains readable. Obfuscation and bytecode raise the cost of static inspection but cannot make a distributed application mathematically impossible to reverse-engineer; keep signing keys, provider secrets, and other confidential material out of the client.
-
-## Project Structure
-
-```
-shadrox/
-├── electron/           # Main process: IPC, workspace consent, command approval, preview checks, shell integration, proof store, terminal, MCP, updater
-├── src/
-│   ├── components/      # React UI: editor, chat, preview, terminal, settings, explorer
-│   ├── hooks/           # React hooks
-│   └── lib/
-│       ├── agent/       # Bounded tool loop, tool protocol, MCP tools, task plans
-│       ├── agents/      # Team runs, roles, ownership, turn runner, coordinator
-│       ├── ai/          # Upstream backoff and retry policy for provider calls
-│       ├── autonomy/     # Autonomous engine: DAG, run-loop, confinement, budget
-│       ├── automations/ # Schedulers, webhooks, declarative automations
-│       ├── capsules/    # Context capsule capture, redaction, sandboxing, and storage
-│       ├── chat/        # @-mention context resolution inside chat
-│       ├── compaction/  # History compaction strategies and message pairing
-│       ├── editor/      # Search/replace, hunks, semantic tokens, references
-│       ├── behavior/    # Preview interaction events and acceptance contracts
-│       ├── benchmark/   # Model-free agent benchmark runner and graders
-│       ├── calibratedAuto/ # Outcome ledger, route profiles, calibrated ranking
-│       ├── intent/      # Living intent graph, symbol dependencies, local decisions
-│       ├── debug/       # DAP framing, adapter rails, runtime capture for repair receipts
-│       ├── machine/     # Machine Delta support modules
-│       ├── patch/       # Cline-style diff parsing, UI diff rendering, and patch application
-│       ├── plugins/     # Plugin manifest, loader, hook engine
-│       ├── preview/     # Preview instrumentation experiments (shipped click-to-source lives in src/lib/previewSource.ts)
-│       ├── proof/       # Signed proof ledger and offline verification
-│       ├── search/      # Fuzzy scoring for workspace and file search
-│       └── terminal/    # Sessions, OSC parser, terminal state, ring buffer
-├── api/
-│   ├── ai/             # Chat, FIM, commit message, budget, spend guard, upstream
-│   ├── byok/           # BYOK key validation
-│   ├── github/         # Repo creation, push, token validation
-│   └── prompt/         # Prompt refinement
-├── benchmark/          # Reproducible agent benchmark cases (see benchmark/README.md)
-├── supabase/           # Auth schema (profiles table, triggers)
-├── landing/            # Next.js marketing site
-├── scripts/            # Desktop packaging, icon generation, test and benchmark runners
-├── public/             # Static renderer assets
-├── assets/             # App icon
-└── server.ts           # Express dev server entry point
-```
-
-## Testing
-
-ShadRox keeps its test suite close to the code — files under `src/`, `electron/`, and `api/` cover the agent loop, autonomy engine, agent teams, plugins, automations, editor operations, packaging, and security. `npm test` auto-discovers and runs every `*.test.*` file in those three trees:
-
-```sh
-npm test
-```
-
-Tests run through Node's built-in test runner with `tsx` for TypeScript support. Builds and tests do not replace a clean-machine installer smoke test — verify installation, sign-in, preview, terminal, AI provider access, update behavior, and file changes before distributing a release.
-
-### Agent benchmark
-
-`npm run benchmark` grades the agent end-to-end without calling any model. Each case in `benchmark/cases/<case-id>/` (its task kind lives in `case.json`) pins a fixture, a prompt, the expected reply, and the commands that must pass afterwards; the reply is replayed through the same parse → verify → atomic-apply → git rail the product uses, so a passing run is evidence about the real pipeline rather than a mock.
-
-```sh
-npm run benchmark                 # grade every case, report failures
-npm run benchmark -- --case id    # grade one case
-npm run benchmark -- --case id --reply reply.md   # grade a reply an agent really produced
-npm run benchmark -- --json       # machine-readable output
-```
-
-The suite refuses to report a hollow pass: each case must fail its baseline and assert at least one real check, so an edit that never applied or a command that tests nothing shows up as a failure. Cases cover the four task kinds the outcome router tracks — `bugfix`, `refactor`, `feature`, and `test`. See [benchmark/README.md](./benchmark/README.md) for the case format and how to add one.
-
-## Local Data & Account
-
-The desktop app works against files on your computer. ShadRox does not provide project synchronization or store your project files in a cloud workspace.
-
-| What | Where | Notes |
-|---|---|---|
-| Project files | Your disk | Opened and edited locally; no ShadRox cloud project sync |
-| AI provider key | OS-backed encrypted storage (desktop) | Never sent to a ShadRox cloud server; used by the local API process and the provider you choose |
-| Account identity | Supabase | Email, name, avatar, app version, platform only |
-| AI prompts | Sent to your configured provider | Only the prompt + context you choose |
-| Feedback reports | The owner's private Google Sheet | Sent only when you press Send feedback; contains only your message, a Bug/Feature marker, and a server-side date |
-
-Google sign-in through Supabase is required to enter the app. Continue with Google stays disabled until you tick that you agree to the Terms of Service and Privacy Policy. Supabase stores account identity and profile fields; project files and AI prompts are not sent to Supabase as part of sign-in. AI providers process the prompt and context you send under their own data-handling terms.
-
-The key is encrypted only in the packaged desktop app, where the OS-backed store is available. `npm run dev` has no such bridge, so in the browser build the key sits in that browser's `localStorage` in plain text and is posted to the local `/api/byok/validate` and `/api/ai` routes on your own machine — do not run the browser build on a shared machine or with a key you would not accept seeing in that browser's profile.
-
-## Feedback
-
-The Feedback button in the top bar opens a drawer with two report types, Bug and Feature request. There is no ShadRox feedback server, no Supabase table, and no analytics service in this path. The app POSTs a small JSON body — `{ kind, message }` — straight to a Google Apps Script web app owned by the ShadRox maintainer, which appends one row to a private Google Sheet:
-
-| Column | Contents |
-|---|---|
-| Date | Stamped by Apps Script on the server, in the sheet's time zone (`yyyy-MM-dd HH:mm:ss`) |
-| Bug | The message, when the report type is Bug |
-| Feature | The message, when the report type is Feature request |
-
-Nothing else is collected or stored: no contact field, no email or account row, no app version, no platform or user agent, no code, file names, or diagnostics. The sender only ever appends; the sheet is not readable through the endpoint, and the script rejects calls that do not match the allowed payload, enforces a per-hour write quota, and caps message length.
-
-**Owner setup (one time).** The webhook endpoint is baked into the build, so end users configure nothing:
-
-1. Create a Google Sheet — the first tab is used.
-2. Create the script, either way:
-   - **Standalone (most reliable):** open `script.google.com` → **New project**, paste [`scripts/feedback-apps-script.gs`](scripts/feedback-apps-script.gs), and set `SHEET_ID` at the top to the ID in the sheet URL (`/d/<ID>/edit`). Do this when the browser is signed into more than one Google account; the sheet's Extensions menu can then open a Drive "unable to open the file" page.
-   - **Bound:** in the sheet, Extensions → Apps Script, paste the file, and leave `SHEET_ID` empty.
-3. Deploy → New deployment → Web app, with **Execute as: Me** and **Who has access: Anyone**, then copy the `/exec` URL. Opening that URL in a browser should print only `Not found` — the endpoint is write-only by design.
-4. Add `SHADROX_FEEDBACK_WEBHOOK=<your /exec URL>` to `.env` (gitignored) and rebuild with `npm run dist:win`.
-
-The URL never ships as plain text: Vite encodes it at build time and the renderer decodes it in memory, so the plain string does not appear in the bundle. That is a speed bump against casual copying, not a secret — any endpoint a client can call can be extracted by a determined user. The real limits are on the server side: write-only access, strict payload validation, a per-hour quota, and a sheet that only the owner can read. Keep the URL out of the repo, issues, and screenshots; if it ever leaks, redeploy the web app to get a new `/exec` URL and rebuild.
-
-## Beta Limitations
-
-- This is **beta software.** Agent output and model-generated edits can be incorrect; inspect diffs and retain backups.
-- Provider-native tool calls are used where supported, with ShadRox's text protocol as a fallback. Reads and inspections are unguarded. File edits go through the patch pipeline. `delete_file` requires `confirm: true`. Shell commands, verification commands, and Git status/diff require the native approval dialog. Approval is not a sandbox: an approved command can still change the machine.
-- Agent loops, autonomous runs, teams, plugins, and automations are evolving features; verify important work yourself.
-- Preview support is **project-dependent**; not every language, framework, or server configuration can be run in the preview pane.
-- Google sign-in and Supabase configuration are required for the desktop app. BYOK keys and access to models are the user's responsibility.
-- ShadRox has no paid plan, no checkout and nothing to bill you; the only way to use AI is your own key. Where the UI says "credits" (run budgets, automation caps), it means ShadRox's internal unit of work — roughly one edit-sized turn — never money, and it is used only to stop a runaway run. Model labels such as "free on your key" or "paid on your key" describe what **your provider** charges that key, not a ShadRox tier.
-- Preview is intentionally local and does not embed vault secrets into generated preview HTML or JavaScript. Treat project rules, skills, MCP servers, and external debugger adapters as untrusted until approved.
-- Windows builds are **unsigned**; Windows may show a SmartScreen warning.
-
-## FAQ
-
-<details>
-<summary><b>Can I download ShadRox now?</b></summary>
-
-Yes. The Download for Windows button links to the latest beta installer for Windows 10 or 11, 64-bit. Google sign-in is required when you first open the app. Windows may show a SmartScreen warning because the installer is not code-signed — verify the download source before choosing "More" and then "Run anyway."
-</details>
-
-<details>
-<summary><b>Do I need a ShadRox account?</b></summary>
-
-Yes. On first launch the app asks you to continue with Google. It opens your browser, you pick a Google account, and the app receives a session in return. ShadRox stores basic account details such as email, name, avatar URL, app version, and platform. Passwords are handled by Google.
-</details>
-
-<details>
-<summary><b>How do updates work?</b></summary>
-
-The app checks for a newer release 15 seconds after start and every 6 hours, and shows an update badge when one exists. It does not download or install updates by itself — download the new installer from GitHub Releases and run it to update.
-</details>
-
-<details>
-<summary><b>Does ShadRox store my project in the cloud?</b></summary>
-
-No. The desktop workspace opens and edits project files on your computer. There is no ShadRox cloud project sync. When you ask the AI for help, the prompt and the project context you include are sent to the AI provider you selected.
-</details>
-
-<details>
-<summary><b>Where is my AI provider key stored?</b></summary>
-
-Your Gemini, Groq, or compatible-provider key is saved on your device in the desktop app's OS-backed encrypted store. AI requests go from your machine to the provider; ShadRox servers do not receive the provider key. Your provider may charge for usage.
-</details>
-
-<details>
-<summary><b>Which AI providers are supported?</b></summary>
-
-The current app supports Gemini, Groq, and custom OpenAI-compatible endpoints (including compatible local gateways such as Ollama or LM Studio). Model availability and limits depend on the provider.
-</details>
-
-<details>
-<summary><b>Can I preview any project?</b></summary>
-
-Static sites, supported Node-based web projects, and detected Python, Go, PHP, Java, and .NET backends are the current focus — the runtime for a backend must be installed on your machine. Some external sites may block embedded previews.
-</details>
-
-<details>
-<summary><b>Can I preview Markdown files?</b></summary>
-
-Yes. Select any `.md` or `.markdown` file and use the Preview button beside its name; use Source to return to editing.
-</details>
-
-## Who is behind ShadRox?
-
-ShadRox is a solo project — not a company. It is designed, built, and maintained by **Sourav Maurya**, a 19-year-old full-stack developer and AI engineer based in Delhi, India. The app, this repository, and [shadrox.cyou](https://www.shadrox.cyou) are all maintained by one person, in the open.
-
-- GitHub: [@iamsouravmourya-jpg](https://github.com/iamsouravmourya-jpg)
-- LinkedIn: [Sourav Maurya](https://www.linkedin.com/in/sourav-maurya-45b272377)
-- Website: [shadrox.cyou](https://www.shadrox.cyou)
-
-## Acknowledgements
-
-ShadRox is built on excellent open-source projects including [Electron](https://www.electronjs.org/), [React](https://react.dev/), [CodeMirror](https://codemirror.net/), [xterm.js](https://xtermjs.org/), [Vite](https://vitejs.dev/), [Tailwind CSS](https://tailwindcss.com/), and [Supabase](https://supabase.com/). Third-party dependencies remain subject to their own licenses.
+Full command list, benchmark, and packaging notes: [docs/features.md](./docs/features.md#building-from-source).
 
 ## License
 
-ShadRox is free, open-source software: you can redistribute it and/or modify it under the terms of the [GNU Affero General Public License version 3](./LICENSE) as published by the Free Software Foundation. Copyright (c) 2026 Sourav Maurya.
+ShadRox is free software under the [GNU Affero General Public License v3.0 only](./LICENSE). Copyright (c) 2026 Sourav Maurya. If you run a modified version as a network service, you must offer its complete corresponding source to that service's users. No warranty; third-party dependencies keep their own licenses.
 
-The AGPL-3.0 lets you use, study, modify and share ShadRox. If you run a modified version as a service over a network, you must offer its complete corresponding source to the users of that service. ShadRox is distributed without any warranty; see the license for the full terms. Third-party dependencies remain governed by their own licenses.
-
----
-
-<div align="center">
-
-Built with care by [Sourav Maurya](https://github.com/iamsouravmourya-jpg)
-
-[Download](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.0-Setup.exe) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Issues](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
-
-</div>
-
-<!-- Setup test -->
+Built by [Sourav Maurya](https://github.com/iamsouravmourya-jpg) — a solo project, in the open. [Website](https://www.shadrox.cyou) · [LinkedIn](https://www.linkedin.com/in/sourav-maurya-45b272377)

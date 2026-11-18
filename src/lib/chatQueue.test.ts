@@ -6,9 +6,9 @@ import { createRequestEnvelope, envelopeDrift, type RequestEnvelope } from './re
 const item = (id: string) => ({ id, text: id });
 
 /**
- * S01 acceptance: a request parked in the queue carries its own execution and
- * billing identity. Changing the app's settings while it waits must not rebind
- * it to the new workspace, key, plan, provider, model or permission mode.
+ * S01 acceptance: a request parked in the queue carries its own execution
+ * identity. Changing the app's settings while it waits must not rebind it to
+ * the new workspace, provider, model or permission mode.
  */
 const frozenItem = (id: string, envelope: RequestEnvelope): QueuedChatItem & { envelope: RequestEnvelope } => ({
   id,
@@ -24,10 +24,8 @@ const frozenEnvelope = (overrides: Partial<RequestEnvelope> = {}): RequestEnvelo
     targets: ['src/parser.ts'],
     permissionMode: 'ask',
     refineMode: 'code',
-    payer: 'byok',
     provider: 'gemini',
     model: 'glm-4.7-flash',
-    budgetCredits: 4,
     ...overrides
   });
 
@@ -54,20 +52,19 @@ test('chat queue accepts a request below its limit', () => {
 });
 
 test('a queued request runs with the identity it was sent with, not later settings', () => {
-  const frozen = frozenEnvelope({ permissionMode: 'ask', payer: 'byok' });
+  const frozen = frozenEnvelope({ permissionMode: 'ask' });
   const { queue } = enqueueChatItem([], frozenItem('req-1', frozen));
 
-  // The user switches to Agent mode and flips to the shared key while it waits.
-  const later = frozenEnvelope({ permissionMode: 'agent', payer: 'shared' });
+  // The user switches to Agent mode while it waits.
+  const later = frozenEnvelope({ permissionMode: 'agent' });
 
   const next = dequeueChatItem(queue);
   assert.ok(next.item);
   // The queued copy is untouched by the later settings.
   assert.equal(next.item.envelope.permissionMode, 'ask');
-  assert.equal(next.item.envelope.payer, 'byok');
 
   const drift = envelopeDrift(next.item.envelope, later);
-  assert.deepEqual(drift, ['payer', 'permission']);
+  assert.deepEqual(drift, ['permission']);
 });
 
 test('a queued request for another workspace is flagged, not silently rebound', () => {

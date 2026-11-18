@@ -26,7 +26,7 @@ import { APP_VERSION, GITHUB_REPO, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import { CommandApprovalDemo } from './command-approval-demo'
 
 export const metadata: Metadata = {
-  title: 'The agent — ShadRox',
+  title: 'ShadRox — The agent',
   description:
     'A bounded, reviewable AI agent: 14 built-in tools, default-deny command approval, honest edit reports and checkpoints that restore files and Git position. Agent, autonomous run and team features are beta.',
   alternates: { canonical: '/agent' },
@@ -59,7 +59,7 @@ const loopFacts: LoopFact[] = [
   },
   {
     icon: Repeat,
-    value: '5',
+    value: '15',
     label: 'tool rounds by default',
     sub: 'The loop is bounded from the start.',
   },

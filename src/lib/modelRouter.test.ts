@@ -71,9 +71,8 @@ test('a shared route reports the approved model and its budget fit', () => {
   assert.equal(route.reason.includes('approved localized-edit model'), true);
 });
 
-test('manual model choice is BYOK-only', () => {
-  assert.equal(manualModelAllowed('byok'), true);
-  assert.equal(manualModelAllowed('shared'), false);
+test('manual model choice is always allowed on the user’s own key', () => {
+  assert.equal(manualModelAllowed(), true);
 });
 
 /**

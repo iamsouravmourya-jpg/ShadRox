@@ -2,9 +2,11 @@
  * PORTED FROM CLINE (https://github.com/cline/cline), Apache License 2.0,
  * Copyright (c) Cline Bot Inc. contributors.
  *
- * `mentionRegex` / `mentionRegexGlobal` are a verbatim port of the mention
- * grammar in cline's `apps/vscode/src/shared/context-mentions.ts`, and the
- * rewrite-then-append behavior of `expandContextMentions` mirrors
+ * `mentionRegex` / `mentionRegexGlobal` port the mention grammar in cline's
+ * `apps/vscode/src/shared/context-mentions.ts`, extended with natural
+ * relative-path forms (`@src/App.tsx`, `@package.json`) that cline's
+ * leading-slash-only grammar does not recognize; the rewrite-then-append
+ * behavior of `expandContextMentions` mirrors
  * `parseMentions` in cline's `apps/vscode/src/core/mentions/index.ts`
  * (`<file_content>` / `<folder_content>` blocks appended after pointer
  * phrases). This copy is used under Apache-2.0 with attribution; the full
@@ -23,13 +25,18 @@ import { markUntrustedData } from '../agent/toolProtocol';
 import { scrubWorkspaceText } from '../envSafety';
 
 /**
- * Mention regex (ported verbatim from cline's context-mentions.ts):
- * - `@` — the mention must start with '@'.
+ * Mention regex (ported from cline's context-mentions.ts, then extended):
+ * - `(?<![\w])@` — the mention must start with '@' not glued to a word, so
+ *   the domain half of an email (`foo@example.com`) is never a mention.
  * - `[\w-]+:/[^\s]*?` — workspace-prefixed paths (`@name:/path`); ShadRox is
  *   single-root, so these stay literal.
  * - `[\w-]+:"\/[^"]*?"` — workspace-prefixed quoted paths.
  * - `/[^\s]*?` — plain workspace-relative paths starting with '/'.
- * - `"\/[^"]*?"` — quoted paths that may contain spaces.
+ * - `"[^"]*?"` — quoted paths that may contain spaces, leading '/' optional.
+ * - `[\w.-]+?(?:/[\w.-]*?)+` — natural relative paths (`@src/App.tsx`,
+ *   `@./lib/util.ts`, `@src/` folders); ShadRox extension.
+ * - `[\w.-]+?\.[a-zA-Z][\w]*?` — bare file names with a letter-led extension
+ *   (`@package.json`); ShadRox extension.
  * - `(?:\w+:\/\/)[^\s]+?` — URLs; recognized, not resolved here.
  * - `[a-f0-9]{7,40}\b` — git commit hashes; recognized, not resolved here.
  * - `problems\b`, `terminal\b`, `git-changes\b` — exact keywords.
@@ -37,11 +44,13 @@ import { scrubWorkspaceText } from '../envSafety';
  *   the match so `@problems,` still mentions `problems`.
  */
 export const mentionRegex = new RegExp(
-  '@(' +
+  '(?<![\\w])@(' +
     '[\\w-]+:/[^\\s]*?' + // Workspace-prefixed file paths: @workspace:name/path
     '|[\\w-]+:"\\/[^"]*?"' + // Workspace-prefixed quoted file paths
     '|/[^\\s]*?' + // Simple file paths
-    '|"\\/[^"]*?"' + // Quoted file paths which can contain spaces
+    '|"[^"]*?"' + // Quoted file paths which can contain spaces
+    '|[\\w.-]+?(?:/[\\w.-]*?)+' + // Natural relative paths: @src/App.tsx, @src/
+    '|[\\w.-]+?\\.[a-zA-Z][\\w]*?' + // Bare file names: @package.json
     '|(?:\\w+:\\/\\/)[^\\s]+?' + // URLs
     '|[a-f0-9]{7,40}\\b' + // Git commit hashes
     '|problems\\b' + // Exact word 'problems'
@@ -59,15 +68,20 @@ export function parseContextMentions(text: string): string[] {
   return [...new Set(matches.map((match) => match.slice(1)))];
 }
 
-/** File mentions are '/path' or quoted '"/path with spaces"' forms. */
+/** File mentions are '/path', quoted paths, or natural relative paths. */
 export function isFileMention(token: string): boolean {
-  return token.startsWith('/') || token.startsWith('"/');
+  if (token.startsWith('/') || token.startsWith('"/')) return true;
+  const bare = token.replace(/^"|"$/g, '');
+  if (!bare || bare.includes(':')) return false;
+  if (/^[a-f0-9]{7,40}$/.test(bare)) return false;
+  return bare.includes('/') || /\.[a-zA-Z][\w]*$/.test(bare);
 }
 
-/** Unquote and strip the leading '/': the workspace-relative path. */
+/** Unquote and strip a leading '/' if present: the workspace-relative path. */
 export function filePathFromMention(token: string): string {
   const quoted = /^"(.*)"$/.exec(token);
-  return (quoted ? quoted[1] : token).slice(1);
+  const bare = quoted ? quoted[1] : token;
+  return bare.startsWith('/') ? bare.slice(1) : bare;
 }
 
 export interface MentionSources {

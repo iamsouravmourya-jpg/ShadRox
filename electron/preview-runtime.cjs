@@ -97,11 +97,51 @@ function getPackageManager(manifest, root, isAvailable = isCommandAvailable) {
     ? manifest.packageManager.split('@')[0]
     : '';
   if (PACKAGE_MANAGERS[declared] && isAvailable(declared)) return declared;
-  if (require('node:fs').existsSync(path.join(root, 'pnpm-lock.yaml')) && isAvailable('pnpm')) return 'pnpm';
-  if (require('node:fs').existsSync(path.join(root, 'yarn.lock')) && isAvailable('yarn')) return 'yarn';
-  if ((require('node:fs').existsSync(path.join(root, 'bun.lockb')) ||
-      require('node:fs').existsSync(path.join(root, 'bun.lock'))) && isAvailable('bun')) return 'bun';
+  const fsSync = require('node:fs');
+  if (fsSync.existsSync(path.join(root, 'pnpm-lock.yaml')) && isAvailable('pnpm')) return 'pnpm';
+  if (fsSync.existsSync(path.join(root, 'yarn.lock')) && isAvailable('yarn')) return 'yarn';
+  if ((fsSync.existsSync(path.join(root, 'bun.lockb')) ||
+      fsSync.existsSync(path.join(root, 'bun.lock'))) && isAvailable('bun')) return 'bun';
+  // The existing node_modules store is the strongest signal of which manager can
+  // safely operate on it. npm's arborist crashes (#resolveLinks null,
+  // "isDescendantOf") when it rebuilds the ideal tree over a pnpm/bun symlink
+  // store, so prefer the manager that built the store even when the lockfile
+  // names a different (uninstalled) one.
+  const layout = nodeModulesManager(root);
+  if (layout && isAvailable(layout)) return layout;
   return 'npm';
+}
+
+/** Which manager built the existing node_modules store, read from its layout. */
+function nodeModulesManager(root) {
+  const fsSync = require('node:fs');
+  if (fsSync.existsSync(path.join(root, 'node_modules', '.pnpm'))) return 'pnpm';
+  if (fsSync.existsSync(path.join(root, 'node_modules', '.bun'))) return 'bun';
+  return null;
+}
+
+function lockfileManager(root) {
+  const fs = require('node:fs');
+  if (fs.existsSync(path.join(root, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (fs.existsSync(path.join(root, 'yarn.lock'))) return 'yarn';
+  if (fs.existsSync(path.join(root, 'bun.lockb')) || fs.existsSync(path.join(root, 'bun.lock'))) return 'bun';
+  return null;
+}
+
+// Installing with a manager foreign to the lockfile rewrites the dependency
+// tree and can fail on peer resolution the lockfile never had; keep the
+// fallback non-polluting and say so in the console instead of silently npm-ing
+// a bun/pnpm project.
+function installArgsFor(manager, root) {
+  const foreign = lockfileManager(root);
+  if (!foreign || foreign === manager) {
+    return { args: PACKAGE_MANAGERS[manager].installArgs, notice: null };
+  }
+  const notice = `${foreign} lockfile found but ${foreign} is not installed; ${manager} will install without writing a lockfile. Install ${foreign} for an exact reproduction.`;
+  if (manager === 'npm') {
+    return { args: ['install', '--no-audit', '--no-fund', '--no-package-lock', '--legacy-peer-deps'], notice };
+  }
+  return { args: PACKAGE_MANAGERS[manager].installArgs, notice };
 }
 
 function getPreviewScript(manifest) {
@@ -788,9 +828,9 @@ function createPreviewRuntime({
     );
   }
 
-  async function installDependencies(manager, root, workspaceId) {
+  async function installDependencies(manager, root, workspaceId, installArgs) {
     assertManagerAvailable(manager);
-    const child = spawnCommand(manager, PACKAGE_MANAGERS[manager].installArgs, root);
+    const child = spawnCommand(manager, installArgs ?? PACKAGE_MANAGERS[manager].installArgs, root);
     processes.set(workspaceId, { child, url: null, rejectReady: null });
     try {
       await waitForExit(child, workspaceId, 'install');
@@ -954,8 +994,10 @@ function createPreviewRuntime({
     assertManagerAvailable(manager);
     const missingDependencies = await findMissingDependencies(manifest, root);
     if (missingDependencies.length > 0) {
+      const { args: installArgs, notice: installNotice } = installArgsFor(manager, root);
+      if (installNotice) emit(workspaceId, 'status', installNotice);
       emit(workspaceId, 'status', `Installing ${missingDependencies.length} missing project dependencies...`);
-      await installDependencies(manager, root, workspaceId);
+      await installDependencies(manager, root, workspaceId, installArgs);
       emit(workspaceId, 'status', 'Dependencies installed. Starting local project...');
     }
 
@@ -1043,13 +1085,18 @@ function createPreviewRuntime({
       const hintedUrls = new Set();
       const probingUrls = new Set();
       let checking = false;
-      const checkUrl = async (url) => {
+      const checkUrl = async (url, { fromHint = false } = {}) => {
         if (settled || probingUrls.has(url)) return;
         probingUrls.add(url);
         try {
           const port = Number(new URL(url).port);
           const exitCode = record.child.exitCode;
-          if (baselinePorts.has(port) || (exitCode !== null && exitCode !== undefined)) return;
+          // The baseline snapshot only fences off the blind port scan: a port
+          // that answered before this start may have been freed (or claimed)
+          // by the child since. When the child announces a URL itself, that
+          // claim outranks the old snapshot — otherwise a leftover server on
+          // the very port the project binds made readiness wait forever.
+          if ((!fromHint && baselinePorts.has(port)) || (exitCode !== null && exitCode !== undefined)) return;
           if (await probeHttp(url)) {
             if (settled || duplicateNextServerDetected || readinessTimer !== null) return;
             readinessTimer = setTimeout(() => {
@@ -1125,7 +1172,7 @@ function createPreviewRuntime({
         }
         if (url && !settled && !reportsExistingNextServer) {
           hintedUrls.add(url);
-          void checkUrl(url);
+          void checkUrl(url, { fromHint: true });
         }
         if (reportsExistingNextServer && url) hintedUrls.add(url);
       };
@@ -1416,6 +1463,9 @@ module.exports = {
   findPreviewProject,
   findStaticPreviewProjects,
   getPackageManager,
+  lockfileManager,
+  nodeModulesManager,
+  installArgsFor,
   getPreviewScript,
   getRunArgs,
   getScriptPort,

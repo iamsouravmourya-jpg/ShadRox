@@ -1,6 +1,6 @@
 /**
  * The team driver: coordinate a goal into tasks, then run them until they pass,
- * the budget dies, or the user stops it.
+ * a work ceiling is reached, or the user stops it.
  *
  * Nothing in this file knows what a model, a file, or a terminal is. Every
  * capability arrives through `TeamPorts`, which is the same seam the solo run
@@ -10,7 +10,7 @@
  * Tasks run one at a time, on purpose. Every task's turn goes through the app's
  * single workspace, so two agents editing at once would produce a patch that
  * applies against bytes the other one already changed. Bounded concurrency here
- * means a hard task cap and a hard spend cap, not a thread pool.
+ * means a hard task cap and hard work ceilings, not a thread pool.
  *
  * When the last task settles, one closing turn reads the run as a whole. Each task
  * only ever checked its own files, so a prop Frontend renamed and Backend never
@@ -18,10 +18,9 @@
  * the only moment anything looks at all the changed files at once.
  */
 
-import { ceilingReached, estimateTurn, toolCallsReported, type WorkUsage } from '../autonomy/budget';
+import { ceilingReached, toolCallsReported, type WorkUsage } from '../autonomy/budget';
 import { countPending, findBlocked, nextRunnable } from '../autonomy/dag';
 import { buildRepairBrief } from '../autonomy/feedback';
-import type { CreditTracker } from '../autonomy/run-loop';
 import type { DiagnosticLine, PlanError, TurnUnit, VerificationReport } from '../autonomy/types';
 import { normalizeOwnedPath } from './ownership';
 import {
@@ -52,7 +51,6 @@ export interface TeamDeps {
   /** coordinator.planTeam, adapted to the files the workspace reports right now. */
   planTeam: (goal: string, files: string[], budget: TeamBudget) => Promise<TeamPlan>;
   validate: (tasks: TeamTask[], budget: TeamBudget) => PlanError[];
-  tracker: CreditTracker;
   /** Runs once before the first write so a failed team can be rolled back. */
   checkpoint: (goal: string) => Promise<void> | void;
   persist: (state: TeamState) => void;
@@ -82,8 +80,8 @@ const INTEGRATION_TITLE = 'Integrate the team’s changes as one closing pass';
 /** How much of an agent's reply is kept for the view and for later agents. */
 const REPORT_LIMIT = 800;
 /** How many prior messages are handed to the next agent, and how many characters. */
-const CONTEXT_MESSAGES = 6;
-const CONTEXT_CHARS = 1600;
+const CONTEXT_MESSAGES = 12;
+const CONTEXT_CHARS = 6000;
 
 function newTask(source: TeamTask): TeamTask {
   return {
@@ -93,8 +91,7 @@ function newTask(source: TeamTask): TeamTask {
     lastReport: null,
     report: '',
     patchesApplied: 0,
-    patchFailures: [],
-    creditsSpent: 0
+    patchFailures: []
   };
 }
 
@@ -113,7 +110,7 @@ function firstLine(text: string): string {
 }
 
 /**
- * What the team has spent of its non-money ceilings, read off the tasks rather
+ * What the team has used of its work ceilings, read off the tasks rather
  * than a counter the driver has to keep in sync — so a resumed plan still counts
  * the turns its earlier pass made.
  */
@@ -156,10 +153,17 @@ function summarise(task: TeamTask, outcome: 'passed' | 'unverified' | 'failed'):
     // is done and nothing disproved it, but nothing proved it either.
     return `"${task.title}" is unverified — nothing checked it (${notes.join('; ') || 'no checker could run'}). Treat it as unproven.`;
   }
+  // A passed task whose proof command was red still owes the team that
+  // evidence: the verdict followed the compiler, but the next agent should
+  // know the command's output exists before building on the work.
+  const command = task.lastReport?.command;
+  const redCommand = command && !command.declinedReason && command.exitCode !== 0
+    ? ` Its proof command exited ${command.exitCode ?? 'without a code'}; the captured output is diagnostic evidence in the task report.`
+    : '';
   if (task.expectedFiles.length === 0) {
-    return `"${task.title}" — ${firstLine(task.report) || 'no reply'}`;
+    return `"${task.title}" — ${firstLine(task.report) || 'no reply'}${redCommand}`;
   }
-  return `"${task.title}" changed ${task.patchesApplied} file${task.patchesApplied === 1 ? '' : 's'}; the check said ${task.lastReport?.verdict ?? 'unverified'}.`;
+  return `"${task.title}" changed ${task.patchesApplied} file${task.patchesApplied === 1 ? '' : 's'}; the check said ${task.lastReport?.verdict ?? 'unverified'}.${redCommand}`;
 }
 
 /**
@@ -177,7 +181,6 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
     status: 'planning',
     tasks: [],
     messages: [],
-    creditsSpent: 0,
     startedAt: deps.now()
   };
   deps.persist(state);
@@ -216,15 +219,9 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
     const next = nextRunnable(state.tasks);
     if (!next) break;
 
-    if (deps.tracker.exhausted()) {
-      state.status = 'stopped-budget';
-      state.error = `Stopped at the spend cap of ${deps.budget.maxCredits}. ${countPending(state.tasks)} task(s) did not run.`;
-      break;
-    }
-
     const ceiling = ceilingReached(deps.budget, workUsage(state.tasks, deps.now() - clockStart));
     if (ceiling) {
-      state.status = 'stopped-budget';
+      state.status = 'stopped';
       state.error = `${ceiling.message} ${countPending(state.tasks)} task(s) did not run.`;
       break;
     }
@@ -239,8 +236,6 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
     deps.ports.onEvent({ type: 'task:start', id: next.id, assignee: next.assignee });
 
     let outcome: 'passed' | 'unverified' | 'failed' | 'stopped' = 'failed';
-    /** Set when a turn's real cost pushed the team past its cap. */
-    let overSpend: number | null = null;
     for (let attempt = 1; attempt <= deps.budget.maxAttemptsPerTask; attempt += 1) {
       if (userHalt(deps.ports) !== null) {
         // The task was set running above. Leaving it `running` in a persisted
@@ -252,28 +247,12 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
         break;
       }
 
-      const estimate = estimateTurn(next);
-      // The estimate is a prediction; what this task has already cost is
-      // evidence, so a task that runs dearer than predicted is refused on the
-      // higher of the two.
-      const observed = next.attempts > 0 ? Math.round((next.creditsSpent / next.attempts) * 10) / 10 : 0;
-      const reserve = Math.max(estimate, observed);
-      if (deps.tracker.spent() + reserve > deps.budget.maxCredits) {
-        // Nothing has been attempted yet, so the task goes back to pending rather
-        // than staying flagged as running in a persisted state.
-        next.status = 'pending';
-        state.status = 'stopped-budget';
-        state.error = `Stopped before "${next.title}": the next turn is estimated at ${reserve} spend and the team cap is ${deps.budget.maxCredits}.`;
-        outcome = 'stopped';
-        break;
-      }
-
       // A turn can take minutes, so the ceilings are read again at the point
-      // where one more turn would otherwise be paid for.
+      // where one more turn would otherwise start.
       const midCeiling = ceilingReached(deps.budget, workUsage(state.tasks, deps.now() - clockStart));
       if (midCeiling) {
         next.status = next.attempts > 0 ? 'stopped' : 'pending';
-        state.status = 'stopped-budget';
+        state.status = 'stopped';
         state.error = `${midCeiling.message} ${countPending(state.tasks)} task(s) did not run.`;
         outcome = 'stopped';
         break;
@@ -302,7 +281,7 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
         feedback: prior ?? undefined,
         feedbackText,
         // Without this the Stop button only lands between tasks, so a teammate's
-        // paid turn keeps streaming after the user asked for it to end.
+        // turn keeps streaming after the user asked for it to end.
         signal: deps.turnSignal?.()
       });
       next.touchedFiles = [...new Set([...(next.touchedFiles ?? []), ...(turn.touchedFiles ?? [])])];
@@ -317,17 +296,10 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
       next.report = trim(turn.reply, REPORT_LIMIT);
       next.patchesApplied += turn.patchesApplied;
       next.patchFailures = turn.patchFailures;
-      next.creditsSpent = Math.round((next.creditsSpent + turn.creditsSpent) * 10) / 10;
       if (typeof turn.toolCalls === 'number') {
         next.toolCalls = (next.toolCalls ?? 0) + turn.toolCalls;
       }
-      // The real cost is settled after the turn, from the tokens the provider
-      // reported; the estimate before it is only the gate that stops a runaway.
-      const settled = deps.tracker.credit(turn.creditsSpent);
-      if (!settled.allowed) overSpend = settled.spent;
-      state.creditsSpent = deps.tracker.spent();
       deps.ports.onEvent({ type: 'task:verdict', id: next.id, verdict: report.verdict, report });
-      deps.ports.onEvent({ type: 'credit', spent: turn.creditsSpent, total: state.creditsSpent });
       deps.persist(state);
 
       if (turn.aborted) {
@@ -367,7 +339,7 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
       }
 
       // A failed check whose cause sits in the review queue cannot be repaired
-      // by another paid turn: only the user can accept those bytes. Pause with
+      // by another turn: only the user can accept those bytes. Pause with
       // the work intact instead of burning attempts and failing the team.
       const held = next.pendingReview ?? [];
       if (held.length > 0 && reviewExplainsFailure(next, report, held)) {
@@ -402,16 +374,6 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
 
     postMessage(state, next, outcome, deps);
     deps.persist(state);
-
-    // The estimate let this turn start; the real cost is the evidence. One turn
-    // may overshoot because nobody can refuse a turn not yet run — many may
-    // not, so the team stops on the overshoot instead of rediscovering it.
-    if (overSpend !== null) {
-      state.status = 'stopped-budget';
-      state.error = `Stopped at the spend cap of ${deps.budget.maxCredits}: "${next.title}" has taken ${next.creditsSpent} and the team is at ${overSpend}, so no further turn is started. ${countPending(state.tasks)} task(s) did not run.`;
-      deps.persist(state);
-      break;
-    }
   }
 
   const halt = userHalt(deps.ports) ?? endedByUser;
@@ -427,7 +389,6 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
     }
   }
 
-  state.creditsSpent = deps.tracker.spent();
   if (state.status === 'running') {
     const unresolved = state.tasks.filter((task) => task.status === 'failed' || task.status === 'blocked');
     // Only an unverified step that owned files is worth an alarm: a read-only
@@ -443,10 +404,10 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
   }
 
   // The closing pass, and only for a run whose assigned work is all settled: a
-  // cancelled or budget-stopped team reports what it has, it has no end to merge.
+  // cancelled or ceiling-stopped team reports what it has, it has no end to merge.
   if (canIntegrate(state, deps)) await integrateRun(goal, state, deps);
 
-  // The merge turn credits itself, so the file list is read after it, not before.
+  // The merge turn may write files of its own, so the file list is read after it.
   const touchedFiles = Array.from(
     new Set([...state.tasks.flatMap((t) => t.touchedFiles ?? []), ...(state.mergeReport?.files ?? [])])
   );
@@ -479,10 +440,10 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
 function canIntegrate(state: TeamState, deps: TeamDeps): boolean {
   if (deps.ports.isCancellationRequested()) return false;
   // A halted team has no end to merge: it stopped because the user asked, not
-  // because the work finished, so an integration turn would spend credits on a
-  // run they intend to continue.
+  // because the work finished, so an integration turn would do work on a run
+  // they intend to continue.
   if (userHalt(deps.ports) !== null) return false;
-  if (state.status === 'planning' || state.status === 'cancelled' || state.status === 'paused' || state.status === 'stopped-budget') return false;
+  if (state.status === 'planning' || state.status === 'cancelled' || state.status === 'paused' || state.status === 'stopped') return false;
   if (state.tasks.some((task) => task.status === 'pending' || task.status === 'running')) return false;
   return changedFileUnion(state.tasks).length > 0;
 }
@@ -508,19 +469,16 @@ async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Pro
   // wider here is the unit it names — every changed file at once, not one task's.
   const before = await deps.ports.verify({ id: INTEGRATION_TASK_ID, expectedFiles: mergedFiles });
 
-  const estimate = estimateTurn({ expectedFiles: mergedFiles });
-  const left = Math.round((deps.budget.maxCredits - deps.tracker.spent()) * 10) / 10;
-  const skipped = deps.ports.isCancellationRequested() || left < estimate;
+  const skipped = deps.ports.isCancellationRequested();
 
   deps.ports.onEvent({
     type: 'team:log',
     text: skipped
-      ? `Integration pass skipped: the closing turn needs about ${estimate} spend and the team has ${left} left.`
+      ? 'Integration pass skipped: the user stopped the team.'
       : `Integration: ${role} is checking ${mergedFiles.length} changed file(s) together.`
   });
 
   let reply = '';
-  let creditsSpent = 0;
   let ran = false;
   let checked = before;
 
@@ -542,15 +500,12 @@ async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Pro
     const turn = await deps.ports.runTurn({ goal, milestone: unit });
     ran = true;
     reply = trim(turn.reply, REPORT_LIMIT);
-    creditsSpent = turn.creditsSpent;
-    deps.tracker.credit(turn.creditsSpent);
-    deps.ports.onEvent({ type: 'credit', spent: turn.creditsSpent, total: deps.tracker.spent() });
 
     const extra = [...new Set((turn.touchedFiles ?? []).map(normalizeOwnedPath))]
       .filter((file) => file.length > 0 && !mergedFiles.includes(file));
     if (extra.length > 0) {
-      // A repair is part of the merge: it is credited to the role that made it and
-      // re-checked, because fixing one pair can break another.
+      // A repair is part of the merge: it is attributed to the role that made it
+      // and re-checked, because fixing one pair can break another.
       const mine = byRole.find((entry) => entry.role === role);
       if (mine) {
         mine.taskIds.push(INTEGRATION_TASK_ID);
@@ -565,7 +520,7 @@ async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Pro
     if (turn.aborted) notes.push('the closing turn was interrupted mid-turn, so its repair may be partial.');
   } else {
     notes.push(
-      `the closing turn did not run — ${integrationSkipReason(deps)}. This verdict is the whole-team check, not a merge.`
+      'the closing turn did not run — the user stopped the team. This verdict is the whole-team check, not a merge.'
     );
   }
 
@@ -606,12 +561,10 @@ async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Pro
     awaitingReview,
     notes,
     reply,
-    creditsSpent,
     at: deps.now()
   };
 
   state.mergeReport = report;
-  state.creditsSpent = deps.tracker.spent();
 
   // The panel already shows `conflicts`, so an overlap the merge found on disk goes
   // there as well: a collision nobody planned is still a collision the user must see.
@@ -639,13 +592,6 @@ async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Pro
   deps.ports.onEvent({ type: 'team:integration', report });
   deps.ports.onEvent({ type: 'message', message });
   deps.persist(state);
-}
-
-/** Why the closing turn never ran, in the words a user reads. */
-function integrationSkipReason(deps: TeamDeps): string {
-  return deps.ports.isCancellationRequested()
-    ? 'the user stopped the team'
-    : 'the spend cap left no room for it';
 }
 
 /** The one thing a red merge row needs: which file, and what the checker said. */

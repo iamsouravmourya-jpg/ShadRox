@@ -20,7 +20,6 @@ test('describeEvent writes one readable line for every event the panel logs', ()
     [{ type: 'milestone:attempt', id: 'm1', attempt: 2 }, /attempt 2/],
     [{ type: 'milestone:verdict', id: 'm1', verdict: 'failed', report: { verdict: 'failed', diagnostics: [], notes: [] } }, /failed/],
     [{ type: 'milestone:done', id: 'm1', status: 'passed' }, /passed/],
-    [{ type: 'credit', spent: 1.5, total: 4 }, /1\.5/],
     [{ type: 'log', text: 'plain line' }, /plain line/],
     [{ type: 'run:done', status: 'done' }, /done/]
   ];

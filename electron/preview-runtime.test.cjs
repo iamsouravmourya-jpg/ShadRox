@@ -13,6 +13,9 @@ const {
   findPreviewProject,
   findStaticPreviewProjects,
   getPackageManager,
+  lockfileManager,
+  nodeModulesManager,
+  installArgsFor,
   getPreviewScript,
   getRunArgs,
   getScriptPort,
@@ -144,6 +147,23 @@ test('selects package manager and local preview script deterministically', async
     command: 'node server.js'
   });
   assert.equal(getPreviewScript({ scripts: { test: 'node test.js' } }), null);
+});
+
+test('prefers the manager that built the node_modules store over a foreign lockfile', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-store-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  // A bun lockfile, but the store on disk is pnpm's symlink layout. npm over
+  // this store crashes arborist (#resolveLinks null), so pnpm must win when present.
+  await fs.writeFile(path.join(root, 'bun.lock'), '');
+  await fs.mkdir(path.join(root, 'node_modules', '.pnpm'), { recursive: true });
+  assert.equal(nodeModulesManager(root), 'pnpm');
+  assert.equal(getPackageManager({}, root, (name) => name === 'pnpm' || name === 'npm'), 'pnpm');
+  // pnpm absent: layout cannot be honoured, fall back to npm (caller warns).
+  assert.equal(getPackageManager({}, root, (name) => name === 'npm'), 'npm');
+  // No store at all: layout is null and the lockfile fallback is unchanged.
+  const bare = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-bare-'));
+  context.after(() => fs.rm(bare, { recursive: true, force: true }));
+  assert.equal(nodeModulesManager(bare), null);
 });
 
 test('resolves runtime commands from PATH and never from the workspace', async (context) => {
@@ -329,6 +349,60 @@ test('keeps the host the dev server printed so Next.js HMR stays same-origin', a
   assert.equal(result.url, `http://localhost:${base}/`);
   assert.equal(result.port, base);
   assert.equal(result.hmr, true);
+});
+
+test('a URL the child printed wins over a port that answered before startup', async (context) => {
+  // A leftover dev server from a previous session answers the baseline scan.
+  // The new child binds the same port and announces it: readiness must follow
+  // the child's own claim instead of fencing that port off forever.
+  const bindFree = (port, host) => new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(false));
+    probe.listen(port, host, () => probe.close(() => resolve(true)));
+  });
+  let base = null;
+  for (const port of [3000, 3001, 3002, 4173, 4174, 4200, 4321, 5000, 5173, 5174, 8000, 8001, 8080, 8081, 9000]) {
+    if (await bindFree(port, '127.0.0.1') && await bindFree(port, '::1')) { base = port; break; }
+  }
+  assert.ok(base, 'A free common dev port is required for the baseline-hint race.');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-baseline-hint-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  await writeProject(root, 'node server.js');
+
+  const leftover = http.createServer((_request, response) => response.end('leftover server'));
+  await new Promise((resolve) => leftover.listen(base, '127.0.0.1', resolve));
+  context.after(() => new Promise((resolve) => {
+    leftover.closeAllConnections?.();
+    leftover.close(resolve);
+  }));
+
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.pid = 5200;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = () => true;
+  const spawnProcess = (command, args) => {
+    if (command === 'taskkill.exe') {
+      const killer = new EventEmitter();
+      setImmediate(() => killer.emit('close', 0));
+      return killer;
+    }
+    if (!/\brun dev\b/.test([command, ...args].join(' '))) {
+      const probe = new EventEmitter();
+      probe.exitCode = 0;
+      setImmediate(() => probe.emit('close', 0));
+      return probe;
+    }
+    setTimeout(() => child.stdout.write(`Local: http://localhost:${base}/\n`), 400);
+    return child;
+  };
+  const runtime = createPreviewRuntime({ spawnProcess, readyTimeout: 3000 });
+  context.after(() => runtime.stopAll());
+
+  const result = await runtime.start('baseline-hint-workspace', root);
+  assert.equal(result.url, `http://localhost:${base}/`);
+  assert.equal(result.port, base);
 });
 
 test('relocates over a foreign process on the pinned port without killing it', async (context) => {
@@ -872,4 +946,25 @@ test('reaps only orphaned preview servers recorded for the same project', { skip
   } finally {
     try { stray.kill(); } catch {}
   }
+});
+
+test('a foreign lockfile makes the npm fallback non-polluting and announced', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-lockfile-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+
+  assert.equal(lockfileManager(root), null);
+  const plain = installArgsFor('npm', root);
+  assert.deepEqual(plain.args, ['install', '--no-audit', '--no-fund']);
+  assert.equal(plain.notice, null);
+
+  await fs.writeFile(path.join(root, 'bun.lock'), '');
+  assert.equal(lockfileManager(root), 'bun');
+  const fallback = installArgsFor('npm', root);
+  assert.ok(fallback.args.includes('--no-package-lock'), 'a bun project must not gain a package-lock.json');
+  assert.ok(fallback.args.includes('--legacy-peer-deps'), 'peer resolution of a foreign tree must not hard-fail');
+  assert.match(fallback.notice ?? '', /bun lockfile found but bun is not installed/);
+
+  const matching = installArgsFor('bun', root);
+  assert.deepEqual(matching.args, ['install']);
+  assert.equal(matching.notice, null);
 });

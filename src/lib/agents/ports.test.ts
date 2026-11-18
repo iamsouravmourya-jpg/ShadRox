@@ -7,7 +7,7 @@ import type { TeamEvent } from './types';
 
 function host(overrides: Partial<AutonomyHost> = {}): AutonomyHost {
   return {
-    runTurn: async () => ({ reply: 'ok', patchesApplied: 0, patchFailures: [], creditsSpent: 0, aborted: false }),
+    runTurn: async () => ({ reply: 'ok', patchesApplied: 0, patchFailures: [], aborted: false }),
     getDiagnostics: async () => [],
     listFiles: () => ['src/a.ts'],
     askPlan: async () => '[]',
@@ -23,7 +23,7 @@ test('createTeamPorts delegates runTurn and listFiles straight to the host', asy
       listFiles: () => ['src/a.ts', 'src/b.ts'],
       runTurn: async (request) => {
         calls.push(request.milestone.id);
-        return { reply: 'done', patchesApplied: 2, patchFailures: [], creditsSpent: 1, aborted: false };
+        return { reply: 'done', patchesApplied: 2, patchFailures: [], aborted: false };
       }
     }),
     { rootPath: 'C:/repo', onEvent: () => undefined, isCancellationRequested: () => false }

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DEFAULT_MAX_TOOL_ROUNDS, runToolRounds } from './toolLoop';
+import { DEFAULT_MAX_TOOL_ROUNDS, MAX_CALLS_PER_ROUND, runToolRounds, ZERO_PROGRESS_LIMIT } from './toolLoop';
 import { createMcpToolHandle } from './mcpTools';
 import type { McpBridge } from './mcpTools';
 import type { ChatTurn } from '../ai';
+import { flightRecorder } from '../observability/flightRecorder';
 
 const fence = (body: string) => '```shadrox:tools\n' + body + '\n```';
 const toolBlock = (calls: unknown) => fence(JSON.stringify(calls));
@@ -114,26 +115,112 @@ test('a call dropped by the per-round cap is not recorded as already run', async
   await withBridge({
     readFile: async (_id: string, path: string) => { read.push(path); return { name: path, content: path, version: 'v' }; }
   }, async () => {
-    const six = Array.from({ length: 6 }, (_, index) => ({ name: 'read_file', args: { path: `a${index}.ts` } }));
-    const seventh = { name: 'read_file', args: { path: 'dropped.ts' } };
-    const model = scripted([`${toolBlock(six)}\n${toolBlock([seventh])}`, toolBlock([seventh]), 'Answer.']);
+    const full = Array.from({ length: MAX_CALLS_PER_ROUND }, (_, index) => ({ name: 'read_file', args: { path: `a${index}.ts` } }));
+    const extra = { name: 'read_file', args: { path: 'dropped.ts' } };
+    const model = scripted([`${toolBlock(full)}\n${toolBlock([extra])}`, toolBlock([extra]), 'Answer.']);
     const result = await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
     const observation = model.seen[1].at(-1).content;
-    assert.equal((observation.match(/"tool":/g) ?? []).length, 6, 'one round runs six');
+    assert.equal((observation.match(/"tool":/g) ?? []).length, MAX_CALLS_PER_ROUND, 'one round runs the imported cap');
     assert.match(observation, /dropped\.ts did not run this round/, 'the model is told the call was cut');
-    assert.equal(read.length, 7, 'the cut call is still runnable in the next round');
+    assert.match(observation, new RegExp(`at most ${MAX_CALLS_PER_ROUND} calls`), 'the cut message reflects the imported cap');
+    assert.equal(read.length, MAX_CALLS_PER_ROUND + 1, 'the cut call is still runnable in the next round');
     assert.equal(read.at(-1), 'dropped.ts');
     assert.equal(result.text, 'Answer.');
   });
 });
 
 test('an unknown tool is answered with the available list, not executed', async () => {
-  const model = scripted([toolBlock([{ name: 'write_file', args: { path: 'a' } }]), 'Noted.']);
+  const model = scripted([toolBlock([{ name: 'create_file', args: { path: 'a' } }]), 'Noted.']);
   const result = await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
   assert.equal(result.rounds, 2);
   assert.deepEqual(result.activity, []);
   assert.match(model.seen[1].at(-1).content, /is not a tool/);
   assert.match(model.seen[1].at(-1).content, /read_file/);
+});
+
+test('round patches are applied before the round\'s tool calls run', async () => {
+  const order: string[] = [];
+  await withBridge({
+    readFile: async (_id: string, path: string) => {
+      order.push(`read:${path}`);
+      return { name: path, content: 'fresh bytes', version: 'v2' };
+    }
+  }, async () => {
+    const model = scripted([
+      '```path=src/a.ts\nconst a = 2;\n```\n\n' + toolBlock([readCall]),
+      'It declares const a = 2.'
+    ]);
+    const result = await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      stream: model.stream,
+      applyRoundPatches: async (text, round) => {
+        order.push(`apply:${round}`);
+        assert.match(text, /path=src\/a\.ts/, 'the hook receives the raw round text');
+      }
+    });
+    assert.deepEqual(order, ['apply:0', 'read:src/a.ts'], 'the edit lands before the read observes it');
+    assert.equal(result.rounds, 2);
+    assert.equal(result.activity.length, 1);
+    assert.equal(result.activity[0].ok, true);
+  });
+});
+
+test('the apply hook runs once per tool round and never for a prose answer', async () => {
+  const applied: number[] = [];
+  await withBridge({
+    readFile: async (_id: string, path: string) => ({ name: path, content: 'x', version: 'v' })
+  }, async () => {
+    const model = scripted([toolBlock([readCall]), toolBlock([{ name: 'read_file', args: { path: 'src/b.ts' } }]), 'Done.']);
+    await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      stream: model.stream,
+      applyRoundPatches: async (_text, round) => { applied.push(round); }
+    });
+    assert.deepEqual(applied, [0, 1]);
+  });
+});
+
+test('an abort during the round apply stops the loop before any tool runs', async () => {
+  let stopped = false;
+  let reads = 0;
+  await withBridge({
+    readFile: async () => { reads += 1; return { name: 'a', content: 'x', version: 'v' }; }
+  }, async () => {
+    const model = scripted([toolBlock([readCall]), 'ignored']);
+    const result = await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => stopped,
+      stream: model.stream,
+      applyRoundPatches: async () => { stopped = true; }
+    });
+    assert.equal(reads, 0, 'no tool runs after the stop');
+    assert.equal(result.activity.length, 0);
+    assert.equal(result.text, '', 'the tool fence is stripped from the stopped reply');
+  });
+});
+
+test('the apply hook still runs when every call in the round was a duplicate', async () => {
+  let applies = 0;
+  let reads = 0;
+  await withBridge({
+    readFile: async (_id: string, path: string) => { reads += 1; return { name: path, content: 'x', version: 'v' }; }
+  }, async () => {
+    const model = scripted([toolBlock([readCall]), toolBlock([readCall]), 'Answer.']);
+    await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      stream: model.stream,
+      applyRoundPatches: async () => { applies += 1; }
+    });
+    assert.equal(reads, 1);
+    assert.equal(applies, 2, 'a round whose calls were all deduped still lands its edits');
+  });
 });
 
 test('a malformed block is fed back so the model can retry', async () => {
@@ -151,7 +238,8 @@ test('a tool request with no folder open explains itself instead of looping', as
   assert.equal(result.rounds, 1);
 });
 
-test('the budget ends with a forced final answer, tool-free', async () => {
+test('the default budget is 60 rounds with one soft wrap-up note at 80%', async () => {
+  assert.equal(DEFAULT_MAX_TOOL_ROUNDS, 60);
   const asking = Array.from({ length: DEFAULT_MAX_TOOL_ROUNDS },
     (_, index) => toolBlock([{ name: 'list_directory', args: { path: `dir${index}` } }]));
   const model = scripted([...asking, 'Final answer.']);
@@ -162,8 +250,49 @@ test('the budget ends with a forced final answer, tool-free', async () => {
     stream: model.stream
   });
   assert.equal(result.capped, true);
+  assert.equal(result.stopReason, 'step_cap');
   assert.equal(result.text, 'Final answer.');
   assert.match(model.seen.at(-1)!.at(-1).content, /Tool budget for this answer is finished/);
+  const notes = model.seen.at(-1)!.filter((turn) => turn.role === 'system' && /Step budget nearly spent/.test(turn.content));
+  assert.equal(notes.length, 1, 'exactly one soft note');
+  assert.match(notes[0].content, /48\/60/);
+  assert.match(notes[0].content, /wrap up/);
+  // The soft note lands before round 49's stream, not earlier.
+  const firstNote = model.seen.findIndex((turns) => turns.some((turn) => turn.role === 'system' && /Step budget nearly spent/.test(turn.content)));
+  assert.equal(firstNote, 48, 'the note appears once 48 rounds are spent');
+});
+
+test('a hard stop carries a resumable state summary for a Continue button', async () => {
+  const asking = Array.from({ length: DEFAULT_MAX_TOOL_ROUNDS },
+    (_, index) => toolBlock([{ name: 'list_directory', args: { path: `dir${index}` } }]));
+  const model = scripted([...asking, 'Final answer.']);
+  const result = await runToolRounds({
+    messages: [{ role: 'user', content: 'refactor the parser' }],
+    workspaceId: 'ws',
+    aborted: () => false,
+    stream: model.stream,
+    initialPlan: [{ id: 't1', subject: 'read the parser', status: 'doing' }]
+  });
+  assert.equal(result.stopReason, 'step_cap');
+  const resume = result.resume;
+  assert.ok(resume, 'a capped stop exposes resume data');
+  assert.equal(resume.stopReason, 'step_cap');
+  assert.equal(resume.maxRounds, 60);
+  assert.equal(resume.pendingIntent, 'read the parser', 'the first open task is the pending intent');
+  assert.equal(resume.plan[0].id, 't1');
+  assert.ok(resume.messages.length > 0);
+  assert.equal(resume.messages[0].content, 'refactor the parser');
+  assert.ok(resume.round >= 60);
+  // The transcript is complete: the forced-final ask is the last turn, so a
+  // Continue button can re-stream from exactly where the stop landed.
+  assert.match(resume.messages.at(-1)!.content, /Tool budget for this answer is finished/);
+});
+
+test('a clean prose answer carries no resume payload', async () => {
+  const model = scripted(['The file exports a function.']);
+  const result = await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
+  assert.equal(result.stopReason, 'complete');
+  assert.equal(result.resume, undefined);
 });
 
 test('repeating one call until the cap still yields an answer, not an empty reply', async () => {
@@ -280,9 +409,15 @@ test('finish is refused once while the plan still has an open task', async () =>
   });
 });
 
-test('the same refused call three rounds running earns a stuck instruction', async () => {
-  const repeated = toolBlock([{ name: 'not_a_tool', args: {} }]);
-  const model = scripted([repeated, repeated, repeated, 'Answering with what I have.']);
+test('8 zero-progress steps earn one stuck nudge summarizing what was tried', async () => {
+  // A known tool the guard refuses (no path): refused calls are never cached,
+  // so each round really attempts it and returns the identical error — no new
+  // information, no progress signals. Repetition alone is not the trigger;
+  // ZERO_PROGRESS_LIMIT consecutive dead steps are.
+  assert.equal(ZERO_PROGRESS_LIMIT, 8);
+  const repeated = toolBlock([{ name: 'read_file', args: {} }]);
+  // Round 1 is new information (first attempt); rounds 2-9 are the 8 dead steps.
+  const model = scripted(Array.from({ length: ZERO_PROGRESS_LIMIT + 2 }, () => repeated).concat('Answering with what I have.'));
   const result = await runToolRounds({
     messages: baseMessages,
     workspaceId: 'ws',
@@ -290,22 +425,66 @@ test('the same refused call three rounds running earns a stuck instruction', asy
     stream: model.stream
   });
   assert.equal(result.text, 'Answering with what I have.');
-  const nudged = model.seen.at(-1)!.some((turn) => turn.content.includes('You are looping'));
-  assert.equal(nudged, true, 'the loop told the model it was repeating');
+  const nudges = model.seen.at(-1)!.filter((turn) => turn.role === 'user' && turn.content.includes('You are looping'));
+  // One nudge mid-loop; forceFinal then re-issues the same order as its ask.
+  assert.equal(nudges.length, 2, 'the nudge plus the forced-final order');
+  assert.match(nudges[0].content, /last 8 steps made no progress/);
+  assert.match(nudges[0].content, /read_file/, 'the nudge summarizes what was tried');
+  // The nudge lands once 8 consecutive dead steps have accumulated.
+  const firstNudge = model.seen.findIndex((turns) => turns.some((turn) => turn.content.includes('You are looping')));
+  assert.equal(firstNudge, ZERO_PROGRESS_LIMIT + 1, 'the nudge waits for 8 dead steps');
+  assert.ok(!model.seen[ZERO_PROGRESS_LIMIT].some((turn) => turn.content.includes('You are looping')), 'no early nudge');
 });
 
-test('a model that stays stuck past the nudge is forced to answer', async () => {
-  const repeated = toolBlock([{ name: 'not_a_tool', args: {} }]);
-  const model = scripted([repeated, repeated, repeated, repeated, repeated, 'Forced answer.']);
+test('a model that stays stuck past the nudge is forced to answer with stop reason stuck', async () => {
+  const repeated = toolBlock([{ name: 'read_file', args: {} }]);
+  const model = scripted(Array.from({ length: ZERO_PROGRESS_LIMIT + 2 }, () => repeated).concat('Forced answer.'));
   const result = await runToolRounds({
     messages: baseMessages,
     workspaceId: 'ws',
-    maxRounds: 5,
     aborted: () => false,
     stream: model.stream
   });
   assert.equal(result.capped, true);
+  assert.equal(result.stopReason, 'stuck');
   assert.equal(result.text, 'Forced answer.');
+  assert.ok(result.resume, 'a stuck stop is resumable');
+  assert.equal(result.resume!.stopReason, 'stuck');
+});
+
+test('real progress between dead steps keeps the stuck detector quiet', async () => {
+  // Alternate a dead refused call with a genuinely new file read: each new
+  // read is a progress signal AND new information, so the zero-progress
+  // counter never reaches 8 even across 16 rounds.
+  const dead = toolBlock([{ name: 'read_file', args: {} }]);
+  const responses: string[] = [];
+  for (let index = 0; index < 8; index += 1) {
+    responses.push(dead, toolBlock([{ name: 'read_file', args: { path: `src/f${index}.ts` } }]));
+  }
+  responses.push('All files read.');
+  await withBridge({
+    readFile: async (_id: string, path: string) => ({ name: path, content: `content of ${path}`, version: 'v' })
+  }, async () => {
+    const model = scripted(responses);
+    const result = await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
+    assert.equal(result.text, 'All files read.');
+    assert.equal(result.stopReason, 'complete');
+    const nudged = model.seen.some((turns) => turns.some((turn) => turn.content.includes('You are looping')));
+    assert.equal(nudged, false, 'progress resets the dead-step counter');
+  });
+});
+
+test('marking todo items done is progress even without disk reads', async () => {
+  const responses: string[] = [];
+  for (let index = 0; index < ZERO_PROGRESS_LIMIT + 1; index += 1) {
+    responses.push(updateTasks([{ id: `t${index}`, subject: `step ${index}`, status: 'done' }]));
+  }
+  responses.push('Plan complete.');
+  const model = scripted(responses);
+  const result = await runToolRounds({ messages: baseMessages, workspaceId: null, aborted: () => false, stream: model.stream });
+  assert.equal(result.text, 'Plan complete.');
+  assert.equal(result.stopReason, 'complete');
+  assert.equal(result.plan.length, ZERO_PROGRESS_LIMIT + 1);
 });
 
 const externalRead = { name: 'mcp__search__web', args: { q: 'aider' } };
@@ -409,18 +588,19 @@ test('an MCP call runs with no folder open and comes back as an observation', as
   });
   assert.deepEqual(external.calls, ['search:web']);
   assert.equal(result.error, null, 'an external call is not blocked on a workspace');
+  assert.equal(result.changedFiles, 1, 'a successful external call is one progress unit');
   assert.match(model.seen[1].at(-1).content, /external answer/);
   assert.equal(result.text, 'The search found two projects.');
 });
 
-test('an MCP call takes one of the six slots in a round', async () => {
+test('an MCP call takes one of the per-round slots', async () => {
   const external = mcpFixture();
   const reads: string[] = [];
   await withBridge({
     readFile: async (_id: string, path: string) => { reads.push(path); return { name: path, content: path, version: 'v' }; }
   }, async () => {
-    const six = Array.from({ length: 6 }, (_, index) => ({ name: 'read_file', args: { path: `r${index}.ts` } }));
-    const model = scripted([toolBlock([externalRead, ...six]), 'Answer.']);
+    const full = Array.from({ length: MAX_CALLS_PER_ROUND }, (_, index) => ({ name: 'read_file', args: { path: `r${index}.ts` } }));
+    const model = scripted([toolBlock([externalRead, ...full]), 'Answer.']);
     const result = await runToolRounds({
       messages: baseMessages,
       workspaceId: 'ws',
@@ -428,9 +608,9 @@ test('an MCP call takes one of the six slots in a round', async () => {
       stream: model.stream,
       external: external.handle
     });
-    assert.equal(reads.length, 5, 'the MCP call cost a disk slot');
-    assert.equal(result.activity.length, 6);
-    assert.match(model.seen[1].at(-1).content, /r5\.ts did not run this round/);
+    assert.equal(reads.length, MAX_CALLS_PER_ROUND - 1, 'the MCP call cost a disk slot');
+    assert.equal(result.activity.length, MAX_CALLS_PER_ROUND);
+    assert.match(model.seen[1].at(-1).content, new RegExp(`r${MAX_CALLS_PER_ROUND - 1}\\.ts did not run this round`));
   });
 });
 
@@ -512,6 +692,7 @@ test('the user saying no to an MCP tool is a refusal the loop reports, not a ser
   });
   assert.deepEqual(external.calls, [], 'nothing was sent to the server');
   assert.equal(result.activity[0].ok, false);
+  assert.equal(result.activity[0].refused, true, 'a user "no" is a held refusal, not a failed operation');
   assert.match(result.activity[0].error as string, /did not allow/);
   assert.match(result.activity[0].error as string, /Do not retry/);
   assert.equal(result.text, 'I answered from what I already knew.', 'the turn still finishes');
@@ -681,4 +862,182 @@ test('plan mode refuses a write, and the delete never touches disk', async () =>
     assert.equal(result.activity[0].refused, true);
     assert.match(result.activity[0].error ?? '', /plan mode does not allow write/);
   });
+});
+
+/* ------------------------------------------------------------------ *
+ * Phase 0: cached duplicates (never refused), hash/epoch invalidation,
+ * and the flight recorder's view of the turn.
+ * ------------------------------------------------------------------ */
+
+test('a repeated read across rounds returns the cached result, never a refusal', async () => {
+  let reads = 0;
+  await withBridge({
+    readFile: async (_id: string, path: string) => { reads += 1; return { name: path, content: 'const a = 1;', version: 'v' }; }
+  }, async () => {
+    const model = scripted([toolBlock([readCall]), toolBlock([readCall]), 'It declares const a.']);
+    const result = await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
+    assert.equal(reads, 1, 'the duplicate never touched disk');
+    assert.equal(result.activity.length, 1, 'a cache hit is not a new execution');
+    const observation = model.seen[2].at(-1).content;
+    assert.match(observation, /\[unchanged since step 1\]/, 'the cached result is honestly labelled');
+    assert.match(observation, /const a = 1;/, 'the earlier result is returned, not a refusal');
+    assert.doesNotMatch(observation, /already succeeded|Ask for something different/);
+    assert.equal(result.stopReason, 'complete');
+    assert.equal(result.changedFiles, 0);
+  });
+});
+
+test('a failed call is never cached, so the identical retry really runs', async () => {
+  let reads = 0;
+  await withBridge({
+    readFile: async () => { reads += 1; throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' }); }
+  }, async () => {
+    const model = scripted([toolBlock([readCall]), toolBlock([readCall]), 'The file is not there.']);
+    const result = await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
+    assert.equal(reads, 2, 'failures stay retryable');
+    assert.equal(result.activity.length, 2);
+    assert.equal(result.activity[1].ok, false);
+    assert.doesNotMatch(model.seen[2].at(-1).content, /unchanged since step/);
+  });
+});
+
+test('a write invalidates the cached read of that path by content hash', async () => {
+  const files = new Map<string, string>([['src/a.ts', 'const a = 1;']]);
+  let diskReads = 0;
+  await withBridge({
+    readFile: async (_id: string, path: string) => {
+      diskReads += 1;
+      if (!files.has(path)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { name: path, content: files.get(path), version: 'v' };
+    },
+    verifyChangeSet: async () => ({ ok: true, issues: [] }),
+    saveFiles: async (_id: string, entries: Array<{ name: string; content: string }>) => {
+      for (const entry of entries) files.set(entry.name, entry.content);
+      return { errors: [], saved: entries.map((entry) => ({ name: entry.name })) };
+    }
+  }, async () => {
+    const write = { name: 'write_file', args: { path: 'src/a.ts', content: 'const a = 2;' } };
+    const model = scripted([
+      toolBlock([readCall]),
+      toolBlock([write]),
+      toolBlock([readCall]),
+      toolBlock([readCall]),
+      'Updated and verified.'
+    ]);
+    const result = await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
+    // r1 read + the write's own pre-read + r3 re-read = 3; r4 is a cache hit.
+    assert.equal(diskReads, 3, 'the write invalidated the stale read, the re-read re-cached it');
+    assert.equal(result.activity.length, 3);
+    assert.equal(result.activity[1].name, 'write_file');
+    assert.equal(result.activity[1].ok, true);
+    assert.match(result.activity[2].output ?? '', /const a = 2;/, 'the fresh read saw the new bytes');
+    assert.match(model.seen[3].at(-1).content, /const a = 2;/);
+    assert.match(model.seen[4].at(-1).content, /\[unchanged since step 3\]/, 'the post-write read is cached at its new step');
+    assert.equal(result.changedFiles, 1);
+    assert.equal(result.text, 'Updated and verified.');
+  });
+});
+
+test('a command mutation invalidates cached observations through the epoch', async () => {
+  let reads = 0;
+  let commands = 0;
+  await withBridge({
+    readFile: async (_id: string, path: string) => { reads += 1; return { name: path, content: 'x', version: 'v' }; },
+    runCommand: async () => { commands += 1; return { stdout: 'ok\n', stderr: '', exitCode: 0 }; }
+  }, async () => {
+    const model = scripted([
+      toolBlock([readCall]),
+      toolBlock([{ name: 'run_command', args: { command: 'echo ok' } }]),
+      toolBlock([readCall]),
+      'Read again after the command.'
+    ]);
+    const result = await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
+    assert.equal(commands, 1);
+    assert.equal(reads, 2, 'the epoch bump made the earlier observation re-runnable');
+    assert.doesNotMatch(model.seen[3].at(-1).content, /already succeeded/);
+    assert.equal(result.changedFiles, 1);
+  });
+});
+
+test('a cached mutation neither re-runs nor re-counts changedFiles', async () => {
+  let commands = 0;
+  await withBridge({
+    runCommand: async () => { commands += 1; return { stdout: 'hi\n', stderr: '', exitCode: 0 }; }
+  }, async () => {
+    const asking = toolBlock([{ name: 'run_command', args: { command: 'echo hi' } }]);
+    const model = scripted([asking, asking, asking, 'It printed hi.']);
+    const result = await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
+    assert.equal(commands, 1, 'the identical mutation ran exactly once');
+    assert.equal(result.changedFiles, 1, 'cache hits do not inflate the mutation count');
+    assert.match(model.seen[2].at(-1).content, /\[unchanged since step 1\]/);
+    assert.match(model.seen[3].at(-1).content, /\[unchanged since step 1\]/);
+    assert.equal(result.stopReason, 'complete');
+  });
+});
+
+test('an aborted turn stops with reason aborted and a resume payload', async () => {
+  let aborted = false;
+  const result = await runToolRounds({
+    messages: baseMessages,
+    workspaceId: 'ws',
+    aborted: () => aborted,
+    stream: async () => { aborted = true; return { text: 'partial', error: null }; }
+  });
+  assert.equal(result.stopReason, 'aborted');
+  assert.ok(result.resume);
+  assert.equal(result.resume!.pendingIntent, 'what is in a.ts?');
+});
+
+test('the flight recorder captures the turn sequence, cache hits and the stop reason', async () => {
+  flightRecorder.reset();
+  await withBridge({
+    readFile: async (_id: string, path: string) => ({ name: path, content: 'const a = 1;', version: 'v' })
+  }, async () => {
+    const model = scripted([toolBlock([readCall]), toolBlock([readCall]), 'Done.']);
+    await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
+  });
+  const runs = flightRecorder.listRuns();
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].kind, 'tool-loop');
+  assert.equal(runs[0].stopReason, 'complete');
+  const events = flightRecorder.readEvents(runs[0].runId);
+  const types = events.map((event) => event.type);
+  assert.equal(types[0], 'turn_started');
+  assert.ok(types.includes('context_assembled'));
+  assert.ok(types.includes('tool_call_started'));
+  assert.ok(types.includes('tool_result'));
+  assert.ok(types.includes('cache_hit'), 'the duplicate is visible in the trace');
+  assert.equal(types.at(-1), 'stop');
+  const toolResult = events.find((event) => event.type === 'tool_result');
+  assert.equal(toolResult!.data.tool, 'read_file');
+  assert.equal(toolResult!.data.status, 'ok');
+  assert.equal(typeof toolResult!.data.ms, 'number');
+  const stop = events.at(-1)!;
+  assert.equal(stop.data.reason, 'complete');
+  // Sequence numbers are strictly increasing: append-only order is the truth.
+  events.forEach((event, index) => assert.equal(event.seq, index));
+  flightRecorder.reset();
+});
+
+test('the recorder scrubs credentials out of command events before they are kept', async () => {
+  flightRecorder.reset();
+  const secret = 'sk-abcdefghijklmnopqrstuvwx123456';
+  await withBridge({
+    runCommand: async () => ({ stdout: '', stderr: '', exitCode: 0 })
+  }, async () => {
+    const model = scripted([
+      toolBlock([{ name: 'run_command', args: { command: `echo API_KEY=${secret}` } }]),
+      'Ran it.'
+    ]);
+    await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
+  });
+  const runs = flightRecorder.listRuns();
+  const events = flightRecorder.readEvents(runs[0].runId);
+  const requested = events.find((event) => event.type === 'command_requested');
+  assert.ok(requested, 'the command boundary is recorded');
+  const serialized = JSON.stringify(events);
+  assert.ok(!serialized.includes(secret), 'the raw key never reaches the log');
+  assert.match(String(requested!.data.command), /\[REDACTED_SECRET\]/);
+  assert.ok(events.some((event) => event.type === 'command_finished' && event.data.exit === 0));
+  flightRecorder.reset();
 });

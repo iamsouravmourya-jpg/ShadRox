@@ -38,7 +38,6 @@ import type { PermissionMode } from '../lib/agent/runPolicy';
 import { getProviderMeta, type ModelInfo, type ModelTier } from '../lib/providers';
 import { estimateTokens } from '../lib/toolUtils';
 import { computeHunks, groupedHunkId, hunkStats } from '../lib/editor/hunks';
-import { formatTokenSplit } from '../lib/usageCredits';
 import type { Skill } from '../lib/skills';
 import { contextManifestTotals, shouldSubmitOnEnter, type ContextManifest } from '../lib/contextManifest';
 import { applyTemplate, PROMPT_TEMPLATES } from '../lib/promptTemplates';
@@ -235,9 +234,9 @@ const PERMISSION_BUTTON_STYLE: Record<PermissionMode, string> = {
 
 /**
  * The honest one-line provenance for an answer (S10): the route the request
- * asked for, the model the provider said it served when that differed, and the
- * certainty of the usage figures. A served identity is only shown when the
- * provider actually reported one — never inferred from the request.
+ * asked for, and the model the provider said it served when that differed.
+ * A served identity is only shown when the provider actually reported one —
+ * never inferred from the request.
  */
 function describeAnswerRoute(metrics: NonNullable<ChatMessage['metrics']>, models: ModelInfo[]): string {
   const requested = metrics.model
@@ -251,14 +250,15 @@ function describeAnswerRoute(metrics: NonNullable<ChatMessage['metrics']>, model
   return requested;
 }
 
-const ORCHESTRATION_STATUS: Record<NonNullable<ChatMessage['orchestration']>['status'], { label: string; tone: string }> = {
+// Keyed loosely so a card persisted by an older build (with a status this one
+// no longer knows) still renders: the lookup below falls back to 'stopped'.
+const ORCHESTRATION_STATUS: Record<string, { label: string; tone: string }> = {
   planning: { label: 'planning', tone: 'text-accent border-accent-line bg-accent-soft' },
   running: { label: 'working', tone: 'text-accent border-accent-line bg-accent-soft' },
   done: { label: 'done', tone: 'text-ok border-ok/30 bg-ok/10' },
   failed: { label: 'failed', tone: 'text-danger border-danger/30 bg-danger/10' },
   stopped: { label: 'stopped', tone: 'text-ink-3 border-line-2 bg-overlay' },
-  paused: { label: 'paused', tone: 'text-cool border-cool/30 bg-cool-soft' },
-  budget: { label: 'budget cap', tone: 'text-warn border-warn/30 bg-warn/10' }
+  paused: { label: 'paused', tone: 'text-cool border-cool/30 bg-cool-soft' }
 };
 
 /** The chat-inline trace of an automatic run or team with Executive Summary Report. */
@@ -276,7 +276,7 @@ function OrchestrationCard({
   const orchestration = message.orchestration;
   if (!orchestration) return null;
   const Icon = orchestration.kind === 'team' ? Users : Bot;
-  const status = ORCHESTRATION_STATUS[orchestration.status];
+  const status = ORCHESTRATION_STATUS[orchestration.status] ?? ORCHESTRATION_STATUS.stopped;
   const active = orchestration.status === 'planning' || orchestration.status === 'running';
   const report = orchestration.summaryReport;
 
@@ -1925,17 +1925,15 @@ export function ChatPanel({
                       <details className="font-mono text-ink-5">
                         <summary className="flex cursor-pointer items-center gap-1">
                           <Zap className="w-3 h-3" />
-                          Usage
+                          Route
                         </summary>
                         <span
                           className="mt-1 block"
-                          title="Route model · usage certainty · tokens · duration"
+                          title="Route model · attempts · duration"
                         >
                           {describeAnswerRoute(message.metrics, models)}
-                          {` · ${message.metrics.usageState ?? 'pending'}`}
                           {message.metrics.attempts && message.metrics.attempts > 1 ? ` · ${message.metrics.attempts} attempts` : ''}
                           {message.metrics.firstTokenMs !== null ? ` · ${message.metrics.firstTokenMs}ms` : ''}
-                          {message.metrics.tokens > 0 ? ` · ${formatTokenSplit(message.metrics, message.metrics.tokens)}` : ''}
                           {message.metrics.durationMs ? ` · ${(message.metrics.durationMs / 1000).toFixed(1)}s` : ''}
                         </span>
                       </details>

@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ProofLedger } from './proofLedger';
-import { SpendLedger } from './spendLedger';
 import { resolveModelMetadata, KNOWN_MODELS_CATALOG } from './modelMetadata';
 import { createFailureReceipt } from './repairProof';
 
@@ -45,30 +44,6 @@ test('ProofLedger records and summarizes milestone proofs and healing receipts',
   ledger.updateFailureReceipt(failure);
   assert.equal(ledger.getSummary().totalHealed, 1);
   assert.equal(ledger.getSummary().healingSuccessRate, 1);
-});
-
-test('SpendLedger calculates prompt spend, cached token savings, and hit ratio', () => {
-  const ledger = new SpendLedger();
-
-  // 100,000 prompt tokens total, 80,000 cached (80% hit rate)
-  ledger.recordTurnSpend({
-    provider: 'gemini',
-    model: 'gemini-2.5-flash',
-    promptTokens: 100_000,
-    cachedTokens: 80_000,
-    completionTokens: 2_000,
-    inputPricePerMillion: 0.15,
-    outputPricePerMillion: 0.60,
-    cacheReadPricePerMillion: 0.0375
-  });
-
-  const summary = ledger.getSummary();
-  assert.equal(summary.totalPromptTokens, 100_000);
-  assert.equal(summary.totalCachedTokens, 80_000);
-  assert.equal(summary.totalCompletionTokens, 2_000);
-  assert.ok(summary.cacheSavingsUsd > 0, 'Should have positive cache savings');
-  assert.ok(summary.totalCostUsd > 0);
-  assert.equal(summary.cacheHitRatio, 0.8); // 80k cached of 100k total prompt tokens
 });
 
 test('resolveModelMetadata normalizes known models and falls back cleanly for unknown models', () => {

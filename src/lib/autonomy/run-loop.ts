@@ -1,6 +1,6 @@
 /**
- * The autonomous driver: plan, then run milestones until they pass, the budget
- * dies, or the user stops it.
+ * The autonomous driver: plan, then run milestones until they pass, a work
+ * ceiling is reached, or the user stops it.
  *
  * Nothing in this file knows what a model, a file, or a terminal is. Every
  * capability arrives through `DriverDeps`, which is what makes the loop testable
@@ -22,12 +22,6 @@ import type {
 } from './types';
 import { ceilingReached, type CeilingStop, workUsageOf } from './budget';
 
-export interface CreditTracker {
-  credit(cost: number): { allowed: boolean; spent: number };
-  spent(): number;
-  exhausted(): boolean;
-}
-
 export interface DriverDeps {
   ports: AutonomyPorts;
   budget: RunBudget;
@@ -37,11 +31,8 @@ export interface DriverDeps {
   nextRunnable: (milestones: Milestone[]) => Milestone | null;
   /** Milestones that can never run because a dependency failed. */
   findBlocked: (milestones: Milestone[]) => Milestone[];
-  tracker: CreditTracker;
   /** feedback.buildRepairFeedback */
   feedbackFor: (milestone: Milestone, report: VerificationReport, patchFailures: string[], attemptIndex: number) => string;
-  /** Estimated cost of one more turn, so the budget stops before the spend. */
-  estimateTurn: (milestone: Milestone) => number;
   /** Runs once before the first write so Rollback has something to restore. */
   checkpoint: (goal: string) => Promise<string | null> | string | null;
   /** Restores the pre-run checkpoint after a run fails unrecoverably. */
@@ -56,8 +47,6 @@ export interface DriverDeps {
    */
   turnSignal?: () => AbortSignal | undefined;
 }
-
-export const MAX_PLAN_REPAIRS = 2;
 
 function newMilestone(source: Milestone): Milestone {
   return { ...source, status: 'pending', attempts: [] };
@@ -118,12 +107,8 @@ export async function runAutonomous(
         goal,
         status: 'planning',
         milestones: [],
-        creditsSpent: 0,
         startedAt: deps.now()
       };
-  // The tracker is seeded with the persisted spend by the engine, so a resumed
-  // run can never treat an already-spent budget as fresh.
-  state.creditsSpent = deps.tracker.spent();
   deps.persist(state);
 
   if (resuming) {
@@ -182,15 +167,9 @@ export async function runAutonomous(
     const next = deps.nextRunnable(state.milestones);
     if (!next) break;
 
-    if (deps.tracker.exhausted()) {
-      state.status = 'stopped-budget';
-      state.error = `Stopped at the spend cap of ${deps.budget.maxCredits}. ${remaining(state.milestones)} milestone(s) did not run.`;
-      break;
-    }
-
     const ceiling = workStop(deps, state.milestones, deps.now() - clockStart);
     if (ceiling) {
-      state.status = 'stopped-budget';
+      state.status = 'stopped';
       state.error = `${ceiling.message} ${remaining(state.milestones)} milestone(s) did not run.`;
       break;
     }
@@ -205,8 +184,6 @@ export async function runAutonomous(
     deps.ports.onEvent({ type: 'milestone:start', id: next.id });
 
     let outcome: 'passed' | 'unverified' | 'failed' | 'blocked' | 'stopped' = 'failed';
-    /** Set when a turn's real cost pushed the run past its cap. */
-    let overSpend: number | null = null;
     for (let attempt = 1; attempt <= deps.budget.maxAttemptsPerMilestone; attempt += 1) {
       if (userHalt(deps.ports) !== null) {
         // The unit was set running above. Leaving it `running` in a persisted
@@ -218,27 +195,12 @@ export async function runAutonomous(
         break;
       }
 
-      const estimate = deps.estimateTurn(next);
-      // The estimate is a prediction; the milestone's own turns are evidence. A
-      // unit that has already cost more than it was guessed to cost is refused
-      // on what it really costs, not on the guess that let it start.
-      const reserve = Math.max(estimate, ...next.attempts.map((attempt) => attempt.creditsSpent), 0);
-      if (deps.tracker.spent() + reserve > deps.budget.maxCredits) {
-        // Nothing has been attempted yet, so the milestone goes back to pending
-        // rather than staying flagged as running in a persisted state.
-        next.status = 'pending';
-        state.status = 'stopped-budget';
-        state.error = `Stopped before "${next.title}": the next turn is estimated at ${reserve} spend and the cap is ${deps.budget.maxCredits}.`;
-        outcome = 'stopped';
-        break;
-      }
-
       // A turn can take minutes, so the clock and the iteration caps are read
-      // again at the point where one more turn would otherwise be paid for.
+      // again at the point where one more turn would otherwise start.
       const midCeiling = workStop(deps, state.milestones, deps.now() - clockStart);
       if (midCeiling) {
         next.status = next.attempts.length > 0 ? 'stopped' : 'pending';
-        state.status = 'stopped-budget';
+        state.status = 'stopped';
         state.error = `${midCeiling.message} ${remaining(state.milestones)} milestone(s) did not run.`;
         outcome = 'stopped';
         break;
@@ -260,7 +222,7 @@ export async function runAutonomous(
         milestone: next,
         feedback: prior,
         feedbackText,
-        // Without this the Stop button only lands between units, so a paid turn
+        // Without this the Stop button only lands between units, so a turn
         // keeps streaming after the user asked for it to end.
         signal: deps.turnSignal?.()
       });
@@ -269,7 +231,12 @@ export async function runAutonomous(
       if (turn.pendingReview && turn.pendingReview.length > 0) {
         deps.ports.onEvent({ type: 'milestone:review', id: next.id, paths: turn.pendingReview });
       }
-      const report = await deps.ports.verify(next);
+      // The verifier is told what this turn actually wrote, so a milestone
+      // that passed a clean check without touching a byte says so in its notes.
+      const report = await deps.ports.verify(next, {
+        patchesApplied: turn.patchesApplied,
+        changedFiles: turn.changedFiles
+      });
       const verdict = verdictOf(report);
       const attemptRecord: Attempt = {
         index: attempt,
@@ -277,18 +244,17 @@ export async function runAutonomous(
         patchesApplied: turn.patchesApplied,
         patchFailures: turn.patchFailures,
         verification: report,
-        creditsSpent: turn.creditsSpent,
         toolCalls: turn.toolCalls,
+        // The command-failure receipt travels with the attempt: the journal
+        // and a resumed run can see the real evidence behind a failed check.
+        failureProof: turn.failureProof ?? undefined,
         startedAt
       };
       next.attempts.push(attemptRecord);
-      if (turn.patchesApplied > 0) wrote = true;
-      // The real cost is settled after the turn, from the tokens the provider
-      // reported; the estimate before it is only the gate that stops a runaway.
-      const settled = deps.tracker.credit(turn.creditsSpent);
-      if (!settled.allowed) overSpend = settled.spent;
-      state.creditsSpent = deps.tracker.spent();
-      deps.ports.onEvent({ type: 'credit', spent: turn.creditsSpent, total: state.creditsSpent });
+      // Patches are not the only way a turn writes: delete_file, run_command
+      // and external MCP tools mutate the workspace without applying a patch,
+      // and a run that damaged disk through them must still roll back.
+      if (turn.patchesApplied > 0 || (turn.changedFiles ?? 0) > 0) wrote = true;
       deps.ports.onEvent({ type: 'milestone:verdict', id: next.id, verdict, report });
       deps.persist(state);
 
@@ -309,6 +275,15 @@ export async function runAutonomous(
       if (verdict === 'passed') {
         next.status = 'passed';
         outcome = 'passed';
+        // A passed with caveats is still shown with the caveats: the verdict
+        // event alone reads as a bare "passed", so the notes (a touched-nothing
+        // milestone, a declined proof command) reach the panel log and journal.
+        if (report.notes.length > 0) {
+          deps.ports.onEvent({
+            type: 'log',
+            text: `"${next.title}" passed (${report.notes.join('; ')}).`
+          });
+        }
         break;
       }
 
@@ -328,9 +303,9 @@ export async function runAutonomous(
       }
 
       // A failed check whose cause sits in the review queue cannot be repaired
-      // by another paid turn: the bytes are not on disk and only the user can
+      // by another turn: the bytes are not on disk and only the user can
       // accept them. Pause with the work intact instead of burning the attempt
-      // budget and then rolling back everything the run already landed.
+      // ceiling and then rolling back everything the run already landed.
       const held = next.pendingReview ?? [];
       if (held.length > 0 && reviewExplainsFailure(next, report, held)) {
         next.status = 'stopped';
@@ -365,18 +340,6 @@ export async function runAutonomous(
     }
     deps.ports.onEvent({ type: 'milestone:done', id: next.id, status: next.status });
     deps.persist(state);
-
-    // The estimate is what let the turn start; the real cost is the evidence.
-    // One turn may overshoot the cap because nobody can bill a turn it has not
-    // run yet — many turns may not, so the run stops on the overshoot rather
-    // than rediscovering it at the next boundary.
-    if (overSpend !== null) {
-      const last = next.attempts[next.attempts.length - 1];
-      state.status = 'stopped-budget';
-      state.error = `Stopped at the spend cap of ${deps.budget.maxCredits}: "${next.title}" cost ${last?.creditsSpent ?? 0} and took the run to ${overSpend}, so no further turn is started. ${remaining(state.milestones)} milestone(s) did not run.`;
-      deps.persist(state);
-      break;
-    }
   }
 
   const halt = userHalt(deps.ports) ?? endedByUser;
@@ -392,7 +355,6 @@ export async function runAutonomous(
     }
   }
 
-  state.creditsSpent = deps.tracker.spent();
   if (state.status === 'running') {
     const unresolved = state.milestones.filter((m) => m.status === 'failed' || m.status === 'blocked');
     // Counted from the milestone list, not the local log, so a run that resumes

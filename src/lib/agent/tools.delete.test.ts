@@ -114,6 +114,7 @@ test('a typed not-found read verifies the delete', async () => {
         const outcome = await runTool('ws', deleteCall);
         assert.equal(outcome.ok, true);
         assert.match(outcome.content, /verified gone from disk/);
+        assert.equal(outcome.changedFiles, 1, 'a verified delete counts one changed file');
       }
     );
   });

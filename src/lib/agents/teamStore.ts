@@ -2,15 +2,15 @@
  * Where a team run's state survives a reload.
  *
  * `autonomy/runStore.ts` does this for solo runs; a team had no store at all, so
- * pausing a team and coming back re-ran the coordinator from zero — paying again
- * for tasks that had already finished. This file is the missing half: the same
+ * pausing a team and coming back re-ran the coordinator from zero — redoing
+ * tasks that had already finished. This file is the missing half: the same
  * defensive shape (a corrupt or foreign blob is "no team", never a crash), plus
  * the per-task detail a resume needs: which tasks are done, what each one
- * changed, what it reported, and how many credits the run has already spent.
+ * changed, and what it reported.
  *
- * Size is bounded on write. The whole point of persisting a team is to spend less
- * next time, so a store that fills the quota and throws away every transcript is
- * worse than no store.
+ * Size is bounded on write. The whole point of persisting a team is to redo less
+ * work next time, so a store that fills the quota and throws away every
+ * transcript is worse than no store.
  */
 
 import type { PlanError, Verdict, VerificationReport } from '../autonomy/types';
@@ -42,11 +42,11 @@ const MAX_REPORT_CHARS = 1200;
 const MAX_MESSAGE_CHARS = 800;
 const MAX_PATH_CHARS = 300;
 const MAX_ERROR_CHARS = 1500;
-const MAX_CREDITS = 100_000;
+const MAX_COUNT = 100_000;
 const MAX_DURATION_MS = 24 * 60 * 60 * 1000;
 
 const TASK_STATUSES: readonly TaskStatus[] = ['pending', 'running', 'passed', 'unverified', 'failed', 'blocked', 'stopped'];
-const TEAM_STATUSES = ['planning', 'running', 'done', 'failed', 'paused', 'cancelled', 'stopped-budget'] as const;
+const TEAM_STATUSES = ['planning', 'running', 'done', 'failed', 'paused', 'cancelled', 'stopped'] as const;
 const VERDICTS: readonly Verdict[] = ['passed', 'failed', 'unverified'];
 const ROLES: readonly AgentRole[] = ['coordinator', 'frontend', 'backend', 'tests', 'reviewer'];
 const MESSAGE_KINDS = ['handoff', 'finding', 'blocked'] as const;
@@ -56,11 +56,11 @@ function text(value: unknown, limit: number): string {
 }
 
 function numberOr(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? Math.min(Math.max(value, 0), MAX_CREDITS) : fallback;
+  return typeof value === 'number' && Number.isFinite(value) ? Math.min(Math.max(value, 0), MAX_COUNT) : fallback;
 }
 
 /**
- * Milliseconds are not credits: the credit clamp that keeps a stored total
+ * Milliseconds are not counts: the count clamp that keeps a stored total
  * honest would turn a twenty-minute ceiling into a hundred-second one.
  */
 function durationOr(value: unknown, fallback: number): number {
@@ -140,7 +140,6 @@ function sanitizeTask(value: unknown): TeamTask | null {
     report: text(raw.report, MAX_REPORT_CHARS),
     patchesApplied: Math.floor(numberOr(raw.patchesApplied, 0)),
     patchFailures: pathList(raw.patchFailures).slice(0, 20),
-    creditsSpent: numberOr(raw.creditsSpent, 0),
     touchedFiles: pathList(raw.touchedFiles),
     pendingReview: pathList(raw.pendingReview),
     filesRead: pathList(raw.filesRead),
@@ -167,14 +166,12 @@ function sanitizeMessage(value: unknown): TeamMessage | null {
 function sanitizeBudget(value: unknown): TeamBudget | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const raw = value as Record<string, unknown>;
-  const maxCredits = numberOr(raw.maxCredits, 0);
   const maxTasks = Math.floor(numberOr(raw.maxTasks, 0));
   const maxAttemptsPerTask = Math.floor(numberOr(raw.maxAttemptsPerTask, 0));
-  if (maxCredits <= 0 || maxTasks <= 0 || maxAttemptsPerTask <= 0) return undefined;
+  if (maxTasks <= 0 || maxAttemptsPerTask <= 0) return undefined;
   // A state saved before the work ceilings existed is read with the shipped
   // defaults rather than zero, so an old run cannot come back unbounded.
   return {
-    maxCredits,
     maxTasks,
     maxAttemptsPerTask,
     maxTurns: Math.floor(numberOr(raw.maxTurns, DEFAULT_TEAM_BUDGET.maxTurns)),
@@ -188,14 +185,18 @@ function sanitizeBudget(value: unknown): TeamBudget | undefined {
  *
  * Every field is re-derived rather than trusted: a task without an id or an
  * unknown assignee is dropped, because a resumed run that hands a half-task to a
- * nonexistent role would pay for a turn it cannot report on.
+ * nonexistent role would run a turn it cannot report on. Fields the current
+ * shape does not know are simply not read, so an older blob still loads.
  */
 export function sanitizeTeamState(value: unknown): TeamState | null {
   if (!value || typeof value !== 'object') return null;
   const raw = value as Record<string, unknown>;
   const goal = text(raw.goal, MAX_GOAL_CHARS).trim();
   if (!goal) return null;
-  if (!TEAM_STATUSES.includes(raw.status as (typeof TEAM_STATUSES)[number])) return null;
+  // Snapshots from before the spend gates were deleted filed a ceiling stop as
+  // 'stopped-budget'; that is a work stop, and it loads as one.
+  const status = raw.status === 'stopped-budget' ? 'stopped' : raw.status;
+  if (!TEAM_STATUSES.includes(status as (typeof TEAM_STATUSES)[number])) return null;
   if (!Array.isArray(raw.tasks)) return null;
   const tasks = raw.tasks.slice(0, MAX_TASKS).map(sanitizeTask).filter((task): task is TeamTask => task !== null);
   if (tasks.length === 0) return null;
@@ -205,10 +206,9 @@ export function sanitizeTeamState(value: unknown): TeamState | null {
   const state: TeamState = {
     id: text(raw.id, 120) || `team-restored`,
     goal,
-    status: raw.status as TeamState['status'],
+    status: status as TeamState['status'],
     tasks,
     messages,
-    creditsSpent: numberOr(raw.creditsSpent, 0),
     startedAt: numberOr(raw.startedAt, 0)
   };
   if (typeof raw.error === 'string') state.error = text(raw.error, MAX_ERROR_CHARS);

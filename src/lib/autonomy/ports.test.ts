@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { DesktopDiagnostic } from '../desktop';
+import { buildRepairBrief } from './feedback';
 import {
   collectMilestoneDiagnostics,
   createAutonomyPorts,
@@ -48,7 +49,7 @@ function okCommand(overrides: Partial<CommandOutcome> = {}): CommandOutcome {
 
 function host(overrides: Partial<AutonomyHost> = {}): AutonomyHost {
   return {
-    runTurn: async () => ({ reply: '', patchesApplied: 0, patchFailures: [], creditsSpent: 0, aborted: false }),
+    runTurn: async () => ({ reply: '', patchesApplied: 0, patchFailures: [], aborted: false }),
     getDiagnostics: async () => [],
     listFiles: () => [],
     askPlan: async () => '[]',
@@ -109,14 +110,49 @@ test('verifyMilestone: the proof command decides when diagnostics cannot', async
   const greenWithNoFiles = await verifyMilestone(noFiles, host(), ROOT);
   assert.equal(greenWithNoFiles.verdict, 'passed', 'a green command is proof even with nothing to type-check');
 
+  // BUG-03: a red command with clean diagnostics is diagnostic evidence, not a
+  // failure verdict — a fresh workspace's `npm test` fails before deps exist.
   const red = await verifyMilestone(
     milestone({ verifyCommand: 'npm test' }),
     host({ runCommand: async () => okCommand({ exitCode: 1, stderrTail: 'boom' }) }),
     ROOT
   );
-  assert.equal(red.verdict, 'failed');
+  assert.equal(red.verdict, 'passed', 'clean compiler diagnostics decide; the red command alone does not fail the task');
   assert.match(red.notes.join(' '), /exited 1/);
   assert.equal(red.command?.exitCode, 1);
+  assert.equal(red.command?.stderrTail, 'boom', 'the failure output stays on the report for the next attempt');
+});
+
+test('verifyMilestone: a red command with error diagnostics still fails, output captured for repair', async () => {
+  const report = await verifyMilestone(
+    milestone({ verifyCommand: 'npm test' }),
+    host({
+      getDiagnostics: async () => [diag()],
+      runCommand: async () => okCommand({ exitCode: 1, stdoutTail: '1 failing test', stderrTail: 'AssertionError: expected 2' })
+    }),
+    ROOT
+  );
+  assert.equal(report.verdict, 'failed', 'compiler diagnostics errors remain fatal');
+  assert.equal(report.command?.exitCode, 1);
+  assert.equal(report.command?.stdoutTail, '1 failing test');
+  assert.equal(report.command?.stderrTail, 'AssertionError: expected 2');
+  // The repair brief the next attempt reads must carry the command's evidence.
+  const brief = buildRepairBrief({ ...milestone(), verifyCommand: 'npm test' }, report, [], 1);
+  assert.match(brief, /Exit code: 1/);
+  assert.match(brief, /AssertionError: expected 2/);
+  assert.match(brief, /1 failing test/);
+});
+
+test('verifyMilestone: a red command with no checker is unverified, never a silent pass or a kill', async () => {
+  const report = await verifyMilestone(
+    milestone({ verifyCommand: 'npm test' }),
+    host({ getDiagnostics: async () => null, runCommand: async () => okCommand({ exitCode: 1, stderrTail: 'missing script: test' }) }),
+    ROOT
+  );
+  assert.equal(report.verdict, 'unverified');
+  assert.equal(report.command?.exitCode, 1);
+  assert.equal(report.command?.stderrTail, 'missing script: test');
+  assert.match(report.notes.join(' '), /exited 1/);
 });
 
 test('verifyMilestone: a green command never erases a type error', async () => {
@@ -189,6 +225,52 @@ test('verifyMilestone: a proof command killed by its time limit cannot carry a p
   assert.match(timedOut.notes.join(' '), /killed by its time limit/);
 });
 
+test('verifyMilestone: a zero-write pass says the milestone touched nothing', async () => {
+  const report = await verifyMilestone(milestone(), host(), ROOT, { patchesApplied: 0, changedFiles: 0 });
+  assert.equal(report.verdict, 'passed', 'the note annotates the verdict; it never flips it');
+  assert.match(report.notes.join(' '), /touched nothing/);
+  assert.match(report.notes.join(' '), /applied no patches and changed no files/);
+});
+
+test('verifyMilestone: a host that reports no non-patch writes is taken at its word', async () => {
+  const report = await verifyMilestone(milestone(), host(), ROOT, { patchesApplied: 0 });
+  assert.equal(report.verdict, 'passed');
+  assert.match(report.notes.join(' '), /touched nothing/, 'zero patches and no reported mutations is zero writes');
+});
+
+test('verifyMilestone: real writes earn a pass with no touched-nothing note', async () => {
+  const patched = await verifyMilestone(milestone(), host(), ROOT, { patchesApplied: 1, changedFiles: 0 });
+  const commanded = await verifyMilestone(milestone(), host(), ROOT, { patchesApplied: 0, changedFiles: 2 });
+  for (const report of [patched, commanded]) {
+    assert.equal(report.verdict, 'passed');
+    assert.doesNotMatch(report.notes.join(' '), /touched nothing/);
+  }
+});
+
+test('verifyMilestone: a read-only investigation still passes, now honestly annotated', async () => {
+  const unit = milestone({ expectedFiles: [], verifyCommand: 'npm test' });
+  const report = await verifyMilestone(unit, host(), ROOT, { patchesApplied: 0, changedFiles: 0 });
+  assert.equal(report.verdict, 'passed', 'a green proof command is still proof for a read-only unit');
+  assert.match(report.notes.join(' '), /touched nothing/);
+});
+
+test('verifyMilestone: without write evidence the report is unchanged', async () => {
+  const report = await verifyMilestone(milestone(), host(), ROOT);
+  assert.equal(report.verdict, 'passed');
+  assert.deepEqual(report.notes, [], 'no writes argument means no claim either way');
+});
+
+test('createAutonomyPorts hands the turn\'s writes to the verifier', async () => {
+  const ports = createAutonomyPorts(host(), {
+    rootPath: ROOT,
+    onEvent: () => undefined,
+    isCancellationRequested: () => false
+  });
+  const report = await ports.verify(milestone(), { patchesApplied: 0, changedFiles: 0 });
+  assert.equal(report.verdict, 'passed');
+  assert.match(report.notes.join(' '), /touched nothing/);
+});
+
 test('createAutonomyPorts forwards every capability and hides the host behind the contract', async () => {
   const events: AutonomyEvent[] = [];
   let cancelled = false;
@@ -198,7 +280,6 @@ test('createAutonomyPorts forwards every capability and hides the host behind th
         reply: request.milestone.id,
         patchesApplied: 2,
         patchFailures: ['src/a.ts: no match'],
-        creditsSpent: 1,
         aborted: false
       }),
       listFiles: () => ['src/a.ts'],

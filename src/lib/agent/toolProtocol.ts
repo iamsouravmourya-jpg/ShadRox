@@ -11,8 +11,14 @@ import { scrubWorkspaceText } from '../envSafety';
  */
 export const TOOL_FENCE = 'shadrox:tools';
 export const RESULT_FENCE = 'shadrox:results';
-/** Parsing stops here so a runaway block cannot allocate itself into the loop. */
-const MAX_PARSED_CALLS = 16;
+/**
+ * Parsing stops here so a runaway block cannot allocate itself into the loop.
+ * This is an anti-abuse bound, NOT the per-round budget: it sits well above
+ * MAX_CALLS_PER_ROUND (16) so a round's overflow survives parsing and the loop
+ * can cut it with the helpful "did not run this round, ask again" note instead
+ * of a generic parse-loss message.
+ */
+const MAX_PARSED_CALLS = 64;
 /** One observation may not eat the context: the round's results share this budget. */
 const MAX_ROUND_RESULT_CHARS = 48_000;
 const MIN_RESULT_CHARS = 1_000;
@@ -64,10 +70,22 @@ function parseBareToolCalls(text: string): ParsedToolBlock | null {
   };
 }
 
+/**
+ * A fence closes ONLY on a line that is exactly ``` (optional trailing
+ * whitespace, CRLF aware, anchored to line start). A bare ``` anywhere else —
+ * e.g. inside a JSON string argument that quotes markdown — must not end the
+ * match early and lose the whole block. The `m` flag makes ^/$ line boundaries.
+ */
+const TOOL_BLOCK_PATTERN = /```[ \t]*shadrox:tools[ \t]*\r?\n([\s\S]*?)^[ \t]*```[ \t]*\r?$/gm;
+const RESULT_BLOCK_PATTERN = /```[ \t]*shadrox:results[ \t]*\r?\n([\s\S]*?)^[ \t]*```[ \t]*\r?$/gm;
+/** A closing fence as it appears AFTER an opening marker: the rest begins
+ * mid-line, so only a later line that is exactly ``` counts as the close. */
+const CLOSE_FENCE_AFTER_OPEN = /\n[ \t]*```[ \t]*\r?(?:\n|$)/;
+
 /** Finds every tool fence in a reply. An unterminated fence is a streamed block still in flight. */
 export function parseToolBlocks(text: string): ParsedToolBlock[] {
   const blocks: ParsedToolBlock[] = [];
-  const pattern = /```[ \t]*shadrox:tools[ \t]*\r?\n([\s\S]*?)```/g;
+  const pattern = new RegExp(TOOL_BLOCK_PATTERN.source, 'gm');
   let match: RegExpExecArray | null = pattern.exec(text);
   while (match) {
     const raw = match[1].trim();
@@ -98,19 +116,28 @@ export function parseToolBlocks(text: string): ParsedToolBlock[] {
 }
 
 export function hasOpenToolFence(text: string): boolean {
-  const start = text.lastIndexOf(`\`\`\`${TOOL_FENCE}`);
+  const opening = /```[ \t]*shadrox:tools/g;
+  let start = -1;
+  let match: RegExpExecArray | null = opening.exec(text);
+  while (match) {
+    start = match.index;
+    match = opening.exec(text);
+  }
   if (start < 0) return false;
-  return text.slice(start + TOOL_FENCE.length + 3).indexOf('```') < 0;
+  const rest = text.slice(start + 3 + TOOL_FENCE.length);
+  // Same line-anchored close as parseToolBlocks: an inline ``` inside the
+  // streamed JSON does not close the fence, so the block is still in flight.
+  return !CLOSE_FENCE_AFTER_OPEN.test(rest);
 }
 
 /** Strips every tool fence so a partial block never renders as JSON in the chat. */
 export function stripToolBlocks(text: string): string {
   const stripped = text
-    .replace(/```[ \t]*shadrox:tools[ \t]*\r?\n[\s\S]*?```/g, '')
+    .replace(new RegExp(TOOL_BLOCK_PATTERN.source, 'gm'), '')
     .replace(/```[ \t]*shadrox:tools[\s\S]*$/g, '')
     // A model that echoes its observations back as a results fence must never
     // surface raw JSON in the transcript.
-    .replace(/```[ \t]*shadrox:results[ \t]*\r?\n[\s\S]*?```/g, '')
+    .replace(new RegExp(RESULT_BLOCK_PATTERN.source, 'gm'), '')
     .replace(/```[ \t]*shadrox:results[\s\S]*$/g, '')
     .trim();
   return parseBareToolCalls(stripped) ? '' : stripped;

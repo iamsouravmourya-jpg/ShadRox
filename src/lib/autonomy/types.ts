@@ -14,6 +14,9 @@
  * the run summary all keep saying it was not proven.
  */
 
+// Type-only: erased at compile time, so this file still has no runtime dependencies.
+import type { FailureReceipt } from '../repairProof';
+
 export type Verdict = 'passed' | 'failed' | 'unverified';
 
 /**
@@ -39,13 +42,18 @@ export type ApplyPolicyKind = 'review' | 'auto';
  */
 export const DEFAULT_APPLY_POLICY: ApplyPolicyKind = 'auto';
 
+/**
+ * `stopped` means a work ceiling (turns, tool calls, wall clock) ended the run
+ * with work still pending — not a failure of the work, and not the user's Stop.
+ * `cancelled` is the user's Stop; the two must not share a status.
+ */
 export type RunStatus =
   | 'planning'
   | 'ready'
   | 'running'
   | 'paused'
   | 'done'
-  | 'stopped-budget'
+  | 'stopped'
   | 'cancelled'
   | 'failed';
 
@@ -113,11 +121,16 @@ export interface Attempt {
   /** Paths the engine refused, with the reason already in the string. */
   patchFailures: string[];
   verification?: VerificationReport;
-  creditsSpent: number;
   /** Wall clock, for the panel's elapsed column and for resume. */
   startedAt: number;
   /** The turn's real tool-call count, when the host reported one. */
   toolCalls?: number;
+  /**
+   * The command-failure receipt the turn's tool loop captured, when one failed.
+   * Kept on the attempt so the journal and a resumed run can see the exact
+   * evidence (exit code, stderr) behind a failed check, not just the verdict.
+   */
+  failureProof?: FailureReceipt | null;
 }
 
 export interface PlanError {
@@ -138,12 +151,6 @@ export interface PlanError {
 }
 
 export interface RunBudget {
-  /**
-   * Hard ceiling for one run, in the internal cost unit (₹0.35 of upstream
-   * spend). Nothing bills it — it exists so the loop stops instead of running
-   * a user's own key down forever. The operator owns this number.
-   */
-  maxCredits: number;
   maxAttemptsPerMilestone: number;
   maxMilestones: number;
   /**
@@ -167,20 +174,21 @@ export interface RunBudget {
 }
 
 /**
- * 20 is roughly 20 applied edits, which is what a run is worth before a human
- * should look at it; 3 attempts is what the salvageable repair loop used, and
- * it is the reason that loop could not burn a key forever. 24 turns is that
- * ceiling applied to the run (8 milestones is the plan cap, and one clean
- * attempt each is the shape of a good plan), and 20 minutes is what a run of
- * that size takes on a slow local model — long enough to finish, short enough
- * that a stall is noticed.
+ * 3 attempts is what the salvageable repair loop used, and it is the reason
+ * that loop could not iterate forever. 24 turns is that ceiling applied to the
+ * run (8 milestones is the plan cap, and one clean attempt each is the shape of
+ * a good plan), and 20 minutes is what a run of that size takes on a slow local
+ * model — long enough to finish, short enough that a stall is noticed. 3840 tool
+ * calls keeps the original four-full-turns ratio at the current loop size: 60
+ * rounds x 16 calls is 960 per tool-heavy turn, so four such turns (3840) no
+ * longer exhaust the run cap. Every number here is a work ceiling that stops a
+ * runaway loop; none of them is a spend limit.
  */
 export const DEFAULT_RUN_BUDGET: RunBudget = {
-  maxCredits: 20,
   maxAttemptsPerMilestone: 3,
   maxMilestones: 8,
   maxTurns: 24,
-  maxToolCalls: 120,
+  maxToolCalls: 3840,
   maxWallClockMs: 20 * 60 * 1000
 };
 
@@ -189,7 +197,6 @@ export interface RunState {
   goal: string;
   status: RunStatus;
   milestones: Milestone[];
-  creditsSpent: number;
   startedAt: number;
   /** Shown verbatim in the panel; the reason a run is not running. */
   error?: string;
@@ -230,8 +237,8 @@ export interface TurnRequest {
   feedbackText?: string;
   /**
    * Ends the in-flight model call when the user hits Stop. Without it, Stop is
-   * only noticed between units, so a teammate's paid turn keeps streaming after
-   * the user asked for it to end.
+   * only noticed between units, so a teammate's turn keeps streaming after the
+   * user asked for it to end.
    */
   signal?: AbortSignal;
   /** Defaults to `DEFAULT_APPLY_POLICY`; the caller may tighten it per run. */
@@ -242,7 +249,6 @@ export interface TurnResult {
   reply: string;
   patchesApplied: number;
   patchFailures: string[];
-  creditsSpent: number;
   /** The user hit Stop, or the model call died. The loop does not retry either. */
   aborted: boolean;
   /**
@@ -257,14 +263,37 @@ export interface TurnResult {
   touchedFiles?: string[];
   /** Files the apply policy held back for the user instead of writing. */
   pendingReview?: string[];
-  /** Set when a stop landed before any change was extracted: nothing was written. */
-  wroteNothing?: boolean;
   /**
    * Tool calls this turn actually made, counted by the host from its own tool
    * loop. Left undefined when the host cannot say: the run's tool-call ceiling
    * then has nothing to count, rather than counting a guess.
    */
   toolCalls?: number;
+  /**
+   * Successful workspace-mutating tool calls this turn (delete_file,
+   * run_command, external MCP writes), as the tool loop counted them. Patches
+   * are not included — `patchesApplied` already counts those. Undefined when
+   * the host cannot say; the loop then falls back to patch evidence alone.
+   */
+  changedFiles?: number;
+  /**
+   * The latest command-failure receipt the turn's tool loop captured. The chat
+   * path shows it on the reply card; the run keeps it on the attempt so a
+   * failed check carries the real exit code and stderr behind it.
+   */
+  failureProof?: FailureReceipt | null;
+}
+
+/**
+ * What one turn actually wrote, handed to the verifier alongside the unit.
+ * A milestone whose turn applied no patches and changed no files may still
+ * pass a clean check — but the report must say it touched nothing, because a
+ * green typecheck of bytes nobody edited is not proof the milestone was done.
+ */
+export interface TurnWrites {
+  patchesApplied: number;
+  /** Non-patch workspace mutations, when the host reports them. */
+  changedFiles?: number;
 }
 
 /**
@@ -273,7 +302,12 @@ export interface TurnResult {
  */
 export interface AutonomyPorts {
   runTurn: (request: TurnRequest) => Promise<TurnResult>;
-  verify: (unit: VerifiableUnit) => Promise<VerificationReport>;
+  /**
+   * Check one unit. `writes` is what the turn that just ran actually wrote, so
+   * a zero-write pass can be annotated honestly; omitting it keeps the old
+   * diagnostics-plus-command verdict with no write evidence either way.
+   */
+  verify: (unit: VerifiableUnit, writes?: TurnWrites) => Promise<VerificationReport>;
   /** Repo-relative paths that exist right now, for plan validation and confinement. */
   listFiles: () => string[];
   /** Ask the model for the plan; returns its raw text answer. */
@@ -281,15 +315,15 @@ export interface AutonomyPorts {
   onEvent: (event: AutonomyEvent) => void;
   /**
    * Set by the panel's Stop button. Checked between units, and mirrored into
-   * `TurnRequest.signal` so Stop ends the request in flight rather than paying
-   * for the rest of it.
+   * `TurnRequest.signal` so Stop ends the request in flight rather than letting
+   * it run to completion.
    */
   isCancellationRequested: () => boolean;
   /**
-   * Set by the panel's Pause button. A paused run keeps its plan and its spend
-   * and is expected to continue; a stopped one is finished — the two are not the
-   * same flag. Optional because a caller with no pause control leaves the run
-   * with nothing to honour.
+   * Set by the panel's Pause button. A paused run keeps its plan and its
+   * progress and is expected to continue; a stopped one is finished — the two
+   * are not the same flag. Optional because a caller with no pause control
+   * leaves the run with nothing to honour.
    */
   isPauseRequested?: () => boolean;
 }
@@ -302,6 +336,5 @@ export type AutonomyEvent =
   | { type: 'milestone:done'; id: string; status: MilestoneStatus }
   /** Changes the apply policy refused to write without the user. */
   | { type: 'milestone:review'; id: string; paths: string[] }
-  | { type: 'credit'; spent: number; total: number }
   | { type: 'log'; text: string }
   | { type: 'run:done'; status: RunStatus };

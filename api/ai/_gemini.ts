@@ -37,7 +37,7 @@ function buildSystemInstruction(request: StreamRequest, shaped: readonly ChatMes
 }
 
 function buildContents(request: StreamRequest, shaped: readonly ChatMessage[]) {
-  return shaped
+  const entries = shaped
     .filter((message) => message.role !== 'system')
     .map((message) => ({
       role: message.role === 'assistant' ? 'model' : 'user',
@@ -51,6 +51,17 @@ function buildContents(request: StreamRequest, shaped: readonly ChatMessage[]) {
         }] : [])
       ]
     }));
+  // Gemini 400s unless turns strictly alternate user/model. Tool observations
+  // arrive as user turns and empty assistant turns are stripped upstream
+  // (chat.ts), so adjacent same-role entries must become ONE content whose
+  // parts keep their original order — never reordered or dropped.
+  const contents: typeof entries = [];
+  for (const entry of entries) {
+    const previous = contents[contents.length - 1];
+    if (previous && previous.role === entry.role) previous.parts.push(...entry.parts);
+    else contents.push(entry);
+  }
+  return contents;
 }
 
 export async function streamGemini(request: StreamRequest, sink: StreamSink): Promise<StreamResult> {
@@ -223,7 +234,13 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
 
   if (!fullText.trim() && toolCalls.length === 0) {
     if (finishReason === 'SAFETY') throw new UpstreamError('Model ne response safety filter se block kar diya.', 400);
-    throw new Error('Model returned an empty response.');
+    // Same length-specific honesty as the OpenAI-family adapters: an empty
+    // reply cut at the output limit is not a generic "empty response".
+    throw new Error(
+      finishReason === 'MAX_TOKENS'
+        ? 'Model hit its output limit before writing an answer. Try a higher limit or a shorter prompt.'
+        : 'Model returned an empty response.'
+    );
   }
 
   // Tool-call output is generated output too: the text-estimate fallback must

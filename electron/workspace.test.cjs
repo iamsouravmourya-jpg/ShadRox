@@ -140,6 +140,20 @@ test('reads and saves only the two .shadrox config files, never other hidden pat
   assert.equal(await fs.readFile(path.join(root, '.shadrox', 'secrets.txt'), 'utf8'), 'hidden');
 });
 
+test('readFile opens .env files for the agent but keeps other dotfiles hidden', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-env-read-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, '.env'), 'API_KEY=abc\nPORT=3000\n');
+  await fs.writeFile(path.join(root, '.env.local'), 'TOKEN=xyz\n');
+  await fs.writeFile(path.join(root, '.hidden.txt'), 'secret notes');
+
+  const access = createWorkspaceAccess();
+  const opened = await access.openFolder(root);
+  assert.equal((await access.readFile(opened.workspaceId, '.env')).content, 'API_KEY=abc\nPORT=3000\n');
+  assert.equal((await access.readFile(opened.workspaceId, '.env.local')).content, 'TOKEN=xyz\n');
+  await assert.rejects(access.readFile(opened.workspaceId, '.hidden.txt'), /Hidden and generated/);
+});
+
 test('createDirectory makes explorer folders and refuses hidden, generated and taken paths', async (context) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-mkdir-'));
   context.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -391,6 +405,45 @@ test('saveFiles writes a never-opened folder file and still guards hidden ones',
   assert.match(result.errors[0].message, /not part of the opened workspace/);
   assert.equal(await fs.readFile(path.join(root, 'notes', 'todo.md'), 'utf8'), 'second');
   assert.equal(await fs.readFile(path.join(root, '.env'), 'utf8'), 'SECRET=1');
+});
+
+test('saveFiles falls back to rename when hard links are refused (OneDrive/FAT32)', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-link-eperm-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+
+  const access = createWorkspaceAccess();
+  const opened = await access.openFolder(root);
+  const linkMock = context.mock.method(fs, 'link', async () => {
+    throw Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM' });
+  });
+
+  const result = await access.saveFiles(opened.workspaceId, [
+    { name: 'fresh.txt', content: 'saved without hard links' }
+  ]);
+  assert.deepEqual(result.saved, ['fresh.txt'], JSON.stringify(result.errors));
+  assert.equal(linkMock.mock.callCount(), 1);
+  assert.equal(await fs.readFile(path.join(root, 'fresh.txt'), 'utf8'), 'saved without hard links');
+  assert.deepEqual(await fs.readdir(root), ['fresh.txt'], 'the temporary file must not survive the save');
+});
+
+test('saveFiles copies across volumes when both link and rename report EXDEV', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-link-exdev-'));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+
+  const access = createWorkspaceAccess();
+  const opened = await access.openFolder(root);
+  const exdev = () => Object.assign(new Error('EXDEV: cross-device link not permitted'), { code: 'EXDEV' });
+  const linkMock = context.mock.method(fs, 'link', async () => { throw exdev(); });
+  const renameMock = context.mock.method(fs, 'rename', async () => { throw exdev(); });
+
+  const result = await access.saveFiles(opened.workspaceId, [
+    { name: 'fresh.txt', content: 'saved across volumes' }
+  ]);
+  assert.deepEqual(result.saved, ['fresh.txt'], JSON.stringify(result.errors));
+  assert.equal(linkMock.mock.callCount(), 1);
+  assert.equal(renameMock.mock.callCount(), 1);
+  assert.equal(await fs.readFile(path.join(root, 'fresh.txt'), 'utf8'), 'saved across volumes');
+  assert.deepEqual(await fs.readdir(root), ['fresh.txt'], 'the temporary file must not survive the save');
 });
 
 test('searchContent finds text with line, column and a centred preview', async (context) => {

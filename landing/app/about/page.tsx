@@ -24,7 +24,7 @@ import { Reveal } from '@/components/landing/reveal'
 import { APP_VERSION, GITHUB_REPO, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 
 export const metadata: Metadata = {
-  title: 'About the maker — ShadRox',
+  title: 'ShadRox — About the maker',
   description:
     'ShadRox is a solo project by Sourav Maurya, a 19-year-old full-stack developer and AI engineer from Delhi, India. Why it exists, what it is built with, and an honest account of the beta.',
   alternates: { canonical: '/about' },

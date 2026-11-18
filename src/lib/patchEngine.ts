@@ -2,6 +2,7 @@ import { resolveTarget, type FilePatch, type KnownFile } from './markdown';
 import { canonicalize, calculateSimilarity, SIMILARITY_THRESHOLD } from './patch/clineDiff';
 import {
 	clineSectionsToPatches,
+	detectDominantLineEnding,
 	parseClinePatchSections,
 	refusalBlock,
 	refusalReason,
@@ -398,11 +399,27 @@ export function applySearchReplaceBlocks(
   const failedIndexes = new Set(failures.map((failure) => failure.blockIndex));
   const applicable = sorted.filter((range) => !failedIndexes.has(range.blockIndex));
 
+  // Inserted lines adopt the file's DOMINANT line ending: a model emits LF
+  // patch text even for CRLF files, and splicing it verbatim used to leave
+  // mixed EOLs behind on Windows. Existing lines are never re-ended.
+  const eol = detectDominantLineEnding(content);
   let result = content;
   for (let index = applicable.length - 1; index >= 0; index -= 1) {
     const range = applicable[index];
     const block = blocks[range.blockIndex];
-    result = result.slice(0, range.start) + block.updated + result.slice(range.end);
+    let end = range.end;
+    let updated = block.updated;
+    // A self-replacement must stay byte-identical wherever it lands (the
+    // ambiguous-duplicate safe case above), so it is never re-ended.
+    if (updated !== block.original) {
+      updated = updated.split(/\r\n|\n/).join(eol);
+      // A whitespace-stripped match can end BETWEEN a CR and its LF; keep the
+      // file's own CRLF pair intact instead of splicing mid-pair.
+      if (eol === '\r\n' && content[end - 1] === '\r' && content[end] === '\n' && !block.original.endsWith('\r')) {
+        end -= 1;
+      }
+    }
+    result = result.slice(0, range.start) + updated + result.slice(end);
   }
 
   return { content: result, failures };
@@ -434,27 +451,98 @@ interface BlockScan {
   context: string;
   body: string;
   terminated: boolean;
+  /**
+   * The block mixes nested BARE ``` fences with its own closing fence and the
+   * structure does not prove where the rewrite ends (unbalanced inner fences,
+   * or an even number of closing candidates — the outer close is missing).
+   * The body may be truncated, so it must never be written.
+   */
+  ambiguousFence?: boolean;
 }
 
+const FENCE_LINE = /^(`{3,})(.*)$/;
+const PATH_DECLARATION = /(?:path|file|filename|filepath)\s*[:=]/i;
+/** Prose that names a file ("Update b.ts:", "path=src/a.ts") — an edit announcement. */
+const FILE_MENTION = /[\w./\\-]+\.[a-z0-9]{1,5}\b/i;
+
+/**
+ * True when the bare fence at `index` opens the NEXT edit block rather than
+ * closing another inner sample: its first body line declares a path (Void's
+ * chat convention) or starts a SEARCH/REPLACE or apply_patch body.
+ */
+function opensNewEditBlock(lines: string[], index: number): boolean {
+  for (let scan = index + 1; scan < lines.length; scan += 1) {
+    const trimmed = lines[scan].trim();
+    if (!trimmed) continue;
+    return (
+      PATH_DECLARATION.test(trimmed) ||
+      /^[\w./\\-]+\.[a-z0-9]{1,5}$/i.test(trimmed) ||
+      trimmed === SEARCH_ORIGINAL_MARKER ||
+      trimmed.startsWith(PATCH_MARKERS.BEGIN) ||
+      trimmed.startsWith(PATCH_MARKERS.ADD) ||
+      trimmed.startsWith(PATCH_MARKERS.UPDATE) ||
+      trimmed.startsWith(PATCH_MARKERS.DELETE)
+    );
+  }
+  return false;
+}
+
+/**
+ * Simulates fence pairing inside a chosen block body: every inner fence
+ * (tagged or bare) must be closed by a BARE run at least as long. An unclosed
+ * inner fence means the "last bare fence" picked as the outer close was
+ * really an inner sample's close and the reply was cut off — the body cannot
+ * be trusted as a complete rewrite.
+ */
+function innerFencesBalanced(lines: string[], from: number, to: number): boolean {
+  const stack: number[] = [];
+  for (let index = from; index < to; index += 1) {
+    const match = FENCE_LINE.exec(lines[index].trim());
+    if (!match) continue;
+    const length = match[1].length;
+    const bare = match[2].trim() === '';
+    if (stack.length) {
+      if (bare && length >= stack[stack.length - 1]) stack.pop();
+      continue;
+    }
+    stack.push(length);
+  }
+  return stack.length === 0;
+}
+
+/**
+ * Scans fenced code blocks with CommonMark's closing rule: a fence closes a
+ * block only when it is BARE (no info string) and its backtick run is at
+ * least as long as the opening run. A tagged inner fence (```ts) therefore
+ * NEVER closes the rewrite around it — editing a Markdown file that contains
+ * code samples no longer truncates the rewrite at the first inner fence.
+ *
+ * Inner BARE ``` samples are the remaining ambiguity. They are resolved by
+ * preferring the LAST bare closing fence before the next edit fence header
+ * or the end of the reply: inner bare fences pair up inside the body, so the
+ * final unpaired bare fence is the outer close. Two soundness checks guard
+ * the choice — the body's inner fences must all balance, and the number of
+ * closing candidates must be odd (inner pairs + one outer close). An even
+ * count means the reply died after an inner pair and the outer close never
+ * arrived: the block is flagged ambiguous and becomes a typed refusal
+ * instead of a partial write (which assessRewriteRisk cannot catch for NEW
+ * files). A longer outer fence (````markdown) avoids the ambiguity entirely.
+ */
 function scanFencedBlocks(content: string): BlockScan[] {
   const lines = content.split('\n');
   const blocks: BlockScan[] = [];
   let index = 0;
 
   while (index < lines.length) {
-    if (!lines[index].trim().startsWith('```')) {
+    const open = FENCE_LINE.exec(lines[index].trim());
+    if (!open) {
       index += 1;
       continue;
     }
 
-    const info = lines[index].trim().slice(3);
-    const bodyLines: string[] = [];
-    let close = index + 1;
-    while (close < lines.length && !lines[close].trim().startsWith('```')) {
-      bodyLines.push(lines[close]);
-      close += 1;
-    }
-    const terminated = close < lines.length;
+    const openLength = open[1].length;
+    const info = open[2].trim();
+    const start = index;
 
     let context = '';
     for (let scan = index - 1; scan >= 0; scan -= 1) {
@@ -464,8 +552,82 @@ function scanFencedBlocks(content: string): BlockScan[] {
       }
     }
 
-    blocks.push({ info, context, body: bodyLines.join('\n'), terminated });
-    index = close + 1;
+    // Inner sample fences (tagged openers) and bare closing candidates seen
+    // while no inner fence is open. A candidate is not committed to until the
+    // scan ends or the next edit block begins.
+    const inner: number[] = [];
+    const candidates: number[] = [];
+    let editProseSinceCandidate = false;
+    let boundary = -1;
+    let scan = start + 1;
+    for (; scan < lines.length; scan += 1) {
+      const trimmed = lines[scan].trim();
+      const fence = FENCE_LINE.exec(trimmed);
+      if (!fence) {
+        if (candidates.length && trimmed && (PATH_DECLARATION.test(trimmed) || FILE_MENTION.test(trimmed))) {
+          editProseSinceCandidate = true;
+        }
+        continue;
+      }
+      const length = fence[1].length;
+      const rest = fence[2].trim();
+      const bare = rest === '';
+      if (inner.length) {
+        // Inside a tagged sample only a bare, long-enough run closes it;
+        // every other line (including tagged fences) is sample content.
+        if (bare && length >= inner[inner.length - 1]) inner.pop();
+        continue;
+      }
+      if (bare && length >= openLength) {
+        // A bare fence after a closing candidate is either another inner
+        // sample fence or the next edit block's opener.
+        if (candidates.length && (opensNewEditBlock(lines, scan) || editProseSinceCandidate)) {
+          boundary = scan;
+          break;
+        }
+        candidates.push(scan);
+        editProseSinceCandidate = false;
+        continue;
+      }
+      if (!bare) {
+        // A tagged fence after the block closed starts the next edit block
+        // when it declares a path or follows edit prose; otherwise it opens
+        // an inner code sample.
+        if (candidates.length && (PATH_DECLARATION.test(rest) || editProseSinceCandidate)) {
+          boundary = scan;
+          break;
+        }
+        inner.push(length);
+        continue;
+      }
+      // A bare run shorter than the opening fence cannot close it: content.
+    }
+
+    let close: number;
+    let terminated: boolean;
+    let ambiguousFence = false;
+    if (candidates.length) {
+      close = candidates[candidates.length - 1];
+      terminated = true;
+      ambiguousFence =
+        !innerFencesBalanced(lines, start + 1, close) || candidates.length % 2 === 0;
+    } else {
+      close = lines.length;
+      terminated = false;
+    }
+    // Resume after the chosen close (not at the boundary): prose and any
+    // fences swallowed as inner samples are re-scanned, so a following edit
+    // block is still extracted with its own path context.
+    const next = close + 1;
+
+    blocks.push({
+      info,
+      context,
+      body: lines.slice(start + 1, close).join('\n'),
+      terminated,
+      ambiguousFence
+    });
+    index = next;
   }
 
   return blocks;
@@ -503,8 +665,9 @@ function patchPathKey(path: string): string {
  * Two rules stop a reply from turning into a lie about what happened:
  *  - ONE patch per file. A model that re-emits the same block in two tool
  *    rounds used to produce two review rows for one file ("Changes · 2
- *    files" for a single create). The LAST block for a path wins, because it
- *    reflects the model's final state; earlier duplicates are dropped.
+ *    files" for a single create). SEARCH/REPLACE fences for one path merge
+ *    their blocks in emission order (a re-targeted ORIGINAL takes the later
+ *    UPDATED); a whole-file rewrite supersedes, last rewrite wins.
  *  - A fence that names a file and writes nothing is a deletion attempt, not a
  *    no-op. It used to `continue` silently, so "I deleted test.txt" produced
  *    zero patches, zero errors and no verification. It now becomes a refusal
@@ -526,9 +689,28 @@ export function extractUnifiedPatchScan(content: string, files: KnownFile[] = []
       entries.push({ patch, rejected });
       return;
     }
-    // Same file named twice: keep the later block (final state) but the first
-    // path spelling, so the review row label stays stable.
-    const firstPath = entries[existing].patch.path;
+    const prev = entries[existing];
+    // Keep the first path spelling so the review row label stays stable.
+    const firstPath = prev.patch.path;
+    if (prev.patch.kind === 'searchReplace' && patch.kind === 'searchReplace') {
+      // Two S/R fences for one file carry complementary edits: merge blocks in
+      // emission order. A later block re-targeting the same ORIGINAL replaces
+      // the earlier one (a re-emission is the final state for that anchor).
+      const blocks = [...prev.patch.blocks];
+      for (const block of patch.blocks) {
+        const at = blocks.findIndex((held) => held.original === block.original);
+        if (at >= 0) blocks[at] = block;
+        else blocks.push(block);
+      }
+      entries[existing] = {
+        patch: { path: firstPath, kind: 'searchReplace', blocks },
+        rejected: rejected ?? prev.rejected
+      };
+      return;
+    }
+    // A whole-file rewrite supersedes earlier patches (last rewrite wins). An
+    // S/R fence after a rewrite keeps last-wins: a rewrite carries no blocks to
+    // merge onto, and S/R anchors verify against disk, so nothing silently wipes.
     entries[existing] = { patch: { ...patch, path: firstPath }, rejected };
   };
 
@@ -537,10 +719,13 @@ export function extractUnifiedPatchScan(content: string, files: KnownFile[] = []
     const info = block.info;
     let context = block.context;
 
-    if (!block.terminated) {
+    if (!block.terminated || block.ambiguousFence) {
       // A reply that died mid-fence still declared an edit. Skipping it
       // silently is how the chat ends up claiming "patched" for a change that
       // never landed — an explicit edit intent becomes a refusal instead.
+      // The same holds for a fence whose nested bare ``` samples leave the
+      // outer close unproven: a NEW file has no assessRewriteRisk guard, so
+      // partial content must never reach disk.
       if (!looksLikeClinePatch(body)) {
         const lines = body.split('\n');
         const head = lines[0]?.trim() ?? '';
@@ -555,7 +740,9 @@ export function extractUnifiedPatchScan(content: string, files: KnownFile[] = []
         looksLikeClinePatch(body);
       const target = declared ? resolveTarget(info, context, body, files) : null;
       if (target) {
-        const reason = `The reply ended in the middle of the code block for ${target}, so the change is incomplete and nothing was applied. Re-send the complete block, closing the fence and every ORIGINAL/=======/UPDATED section.`;
+        const reason = block.ambiguousFence
+          ? `The code block for ${target} mixes nested bare \`\`\` fences with its own closing fence, so where the rewrite ends cannot be determined safely and nothing was applied. Re-send it with a longer outer fence (four backticks, e.g. \`\`\`\`markdown path=...) so inner \`\`\` samples cannot close it, or use SEARCH/REPLACE blocks.`
+          : `The reply ended in the middle of the code block for ${target}, so the change is incomplete and nothing was applied. Re-send the complete block, closing the fence and every ORIGINAL/=======/UPDATED section.`;
         add(
           { path: target, kind: 'searchReplace', blocks: [refusalBlock(reason, 'TRUNCATED_BLOCK')] },
           { path: target, code: 'TRUNCATED_BLOCK', reason }

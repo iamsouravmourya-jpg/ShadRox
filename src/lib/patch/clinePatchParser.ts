@@ -106,6 +106,11 @@ export class PatchParser {
 		this.skipBeginSentinel();
 
 		while (this.hasMoreLines() && !this.isEndMarker()) {
+			// Blank lines between file sections are formatting, not grammar.
+			if ((this.lines[this.index] ?? "").trim() === "") {
+				this.index++;
+				continue;
+			}
 			this.parseNextAction();
 		}
 
@@ -201,6 +206,13 @@ export class PatchParser {
 			)
 		) {
 			const currentLine = this.lines[this.index];
+			if (currentLine === undefined) break;
+			// Blank lines at a section boundary are formatting; blanks inside a
+			// hunk are consumed by peek() as empty context lines.
+			if (currentLine.trim() === "") {
+				this.index++;
+				continue;
+			}
 			const defStr = currentLine?.startsWith("@@ ")
 				? currentLine.substring(3)
 				: undefined;
@@ -208,6 +220,9 @@ export class PatchParser {
 
 			if (defStr !== undefined || sectionStr !== undefined) {
 				this.index++;
+				// A bare empty line right after @@ is readability formatting,
+				// not a leading context line (a ' '-prefixed blank still is).
+				while (this.lines[this.index] === "") this.index++;
 			} else if (index !== 0) {
 				throw new DiffError(`Invalid Line:\n${this.lines[this.index]}`);
 			}
@@ -435,7 +450,7 @@ export function peek(lines: string[], initialIndex: number): PeekResult {
 	while (index < lines.length) {
 		const sourceLine = lines[index];
 		if (
-			!sourceLine ||
+			sourceLine === undefined ||
 			stopMarkers.some((marker) => sourceLine.startsWith(marker.trim()))
 		) {
 			break;
@@ -446,10 +461,27 @@ export function peek(lines: string[], initialIndex: number): PeekResult {
 		if (sourceLine.startsWith("***")) {
 			throw new DiffError(`Invalid line: ${sourceLine}`);
 		}
+		if (sourceLine.trim() === "") {
+			// A blank/whitespace-only line inside a hunk is an unprefixed EMPTY
+			// CONTEXT line — real diff tools tolerate it, and breaking here used
+			// to turn one blank line into a parse error for the WHOLE patch.
+			// A blank whose next non-blank line is a section/file marker is
+			// formatting between hunks instead: stop and let the section loop
+			// skip it, so it never becomes a phantom context line.
+			let ahead = index + 1;
+			while (ahead < lines.length && (lines[ahead] ?? "").trim() === "") {
+				ahead += 1;
+			}
+			const next = lines[ahead];
+			if (next === undefined || next.startsWith("@@") || next.startsWith("***")) {
+				break;
+			}
+		}
 
 		index++;
 		const previousMode: "keep" | "add" | "delete" = mode;
-		let line = sourceLine;
+		// Whitespace-only lines normalize to a ' '-prefixed empty context line.
+		let line = sourceLine.trim() === "" ? " " : sourceLine;
 
 		if (line[0] === "+") {
 			mode = "add";

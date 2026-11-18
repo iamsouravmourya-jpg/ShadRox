@@ -26,7 +26,6 @@ function task(overrides: Partial<TeamTask> = {}): TeamTask {
     report: 'done',
     patchesApplied: 1,
     patchFailures: [],
-    creditsSpent: 1.2,
     ...overrides
   };
 }
@@ -38,7 +37,6 @@ function teamState(tasks: TeamTask[], overrides: Partial<TeamState> = {}): TeamS
     status: 'running',
     tasks,
     messages: [],
-    creditsSpent: tasks.reduce((total, entry) => total + entry.creditsSpent, 0),
     startedAt: 1,
     budget: DEFAULT_TEAM_BUDGET,
     ...overrides
@@ -60,7 +58,6 @@ function milestone(overrides: Partial<Milestone> = {}): Milestone {
         patchesApplied: 1,
         patchFailures: [],
         verification: { verdict: 'passed', diagnostics: [], notes: [] },
-        creditsSpent: 1,
         startedAt: 1
       }
     ],
@@ -69,15 +66,15 @@ function milestone(overrides: Partial<Milestone> = {}): Milestone {
 }
 
 function runState(milestones: Milestone[], overrides: Partial<RunState> = {}): RunState {
-  return { id: 'run-1', goal: 'refactor auth', status: 'running', milestones, creditsSpent: 1, startedAt: 1, ...overrides };
+  return { id: 'run-1', goal: 'refactor auth', status: 'running', milestones, startedAt: 1, ...overrides };
 }
 
 test('a running team becomes rows with owner, attempt and check', () => {
   const view = teamRunView(
     teamState([
       task(),
-      task({ id: 't2', title: 'cover it', assignee: 'tests', status: 'running', attempts: 2, lastReport: null, creditsSpent: 0.5 }),
-      task({ id: 't3', title: 'review', assignee: 'reviewer', status: 'pending', attempts: 0, lastReport: null, patchesApplied: 0, creditsSpent: 0 })
+      task({ id: 't2', title: 'cover it', assignee: 'tests', status: 'running', attempts: 2, lastReport: null }),
+      task({ id: 't3', title: 'review', assignee: 'reviewer', status: 'pending', attempts: 0, lastReport: null, patchesApplied: 0 })
     ])
   );
   assert.ok(view);
@@ -168,22 +165,15 @@ test('nothing held back means no review line', () => {
   assert.equal(view?.reviewLine, null);
 });
 
-test('the budget label shows spent against the ceiling the state carries', () => {
-  const view = teamRunView(teamState([task({ creditsSpent: 7.44 })]));
-  assert.equal(view?.budgetLabel, '7.4 of 24 cr');
-  assert.equal(view?.spent, 7.44);
-  assert.equal(view?.budget, 24);
-});
-
-test('a budget stop is its own status and offers a resume', () => {
+test('a ceiling stop is its own status and offers a resume', () => {
   const view = teamRunView(
     teamState([task(), task({ id: 't2', status: 'pending' })], {
-      status: 'stopped-budget',
-      error: 'Stopped at the spend cap of 24. 1 task(s) did not run.'
+      status: 'stopped',
+      error: 'Stopped at the turn cap of 18. 1 task(s) did not run.'
     })
   );
-  assert.equal(view?.status, 'budget');
-  assert.match(view?.statusLine ?? '', /stopped at the spend cap/);
+  assert.equal(view?.status, 'stopped');
+  assert.equal(view?.error, 'Stopped at the turn cap of 18. 1 task(s) did not run.');
   assert.equal(view?.canResume, true);
   assert.equal(view?.canStop, false);
 });
@@ -238,18 +228,17 @@ test('runViewFor picks the engine the message belongs to', () => {
   assert.equal(runViewFor('autonomy', team, run)?.kind, 'run');
 });
 
-test('a milestone row reads its last attempt for cost and verdict', () => {
+test('a milestone row reads its last attempt for attempt count and verdict', () => {
   const rows = milestoneRows([
     milestone({
       status: 'failed',
       attempts: [
-        { index: 1, reply: '', patchesApplied: 0, patchFailures: [], verification: { verdict: 'failed', diagnostics: [], notes: ['nothing matched'] }, creditsSpent: 0.6, startedAt: 1 },
-        { index: 2, reply: '', patchesApplied: 1, patchFailures: [], verification: { verdict: 'failed', diagnostics: [], notes: [] }, creditsSpent: 0.7, startedAt: 2 }
+        { index: 1, reply: '', patchesApplied: 0, patchFailures: [], verification: { verdict: 'failed', diagnostics: [], notes: ['nothing matched'] }, startedAt: 1 },
+        { index: 2, reply: '', patchesApplied: 1, patchFailures: [], verification: { verdict: 'failed', diagnostics: [], notes: [] }, startedAt: 2 }
       ]
     })
   ]);
   assert.equal(rows[0].attempt, 'attempt 2');
-  assert.equal(rows[0].credits, 0.7);
   assert.equal(rows[0].check, 'failed');
   assert.equal(rows[0].blocker, 'the last attempt did not pass its check');
 });

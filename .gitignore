@@ -23,4 +23,9 @@ vibe_images/
 /security-audit.txt
 landing/landing-page-content.txt
 landing/AGENTS.md
+# Root scratch output and strategy notes must never reach the public repo.
+/*.txt
+/probe.png
+/doit.md
+/PLAN-BIGTASK.md
 

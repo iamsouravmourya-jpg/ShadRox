@@ -17,7 +17,6 @@ import {
 import { ADAPTERS, parseProviderId, resolveKeyAccess } from './_access.js';
 import { resolveCustomEndpoint } from './_endpoint.js';
 import { completeOnce } from './_completion.js';
-import { checkSharedKeySpend, clientIp, outputCeiling, rateLimitedMessage } from './_spendGuard.js';
 import type { ProviderId } from './_types.js';
 
 export const config = { maxDuration: 30 };
@@ -72,19 +71,12 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   const adapter = ADAPTERS[provider];
 
-  const resolved = resolveKeyAccess(provider, model, apiKey);
+  const resolved = resolveKeyAccess(apiKey);
   if ('error' in resolved) {
     sendError(res, 400, resolved.error);
     return;
   }
-  const { apiKey: spendKey, byok } = resolved.access;
-
-  const decision = checkSharedKeySpend('completion', clientIp(req), byok);
-  if ('retryAfterSeconds' in decision) {
-    res.setHeader('Retry-After', String(decision.retryAfterSeconds));
-    sendError(res, 429, rateLimitedMessage(decision.retryAfterSeconds));
-    return;
-  }
+  const { apiKey: spendKey } = resolved.access;
 
   if (!status.trim() && !diff.trim()) {
     sendError(res, 400, 'Working tree me koi change nahi hai — message generate karne ke liye kuch nahi hai.');
@@ -112,7 +104,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       systemInstruction: SYSTEM_INSTRUCTION,
       temperature: 0.3,
       thinking: 'low',
-      maxChars: Math.min(COMMIT_MAX_OUTPUT_CHARS, outputCeiling('completion', byok)),
+      maxChars: COMMIT_MAX_OUTPUT_CHARS,
       signal: abort.signal
     });
     const message = result.text
