@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { ArrowUpRight, Briefcase, HeartHandshake, MessageSquareWarning, Sparkles } from 'lucide-react'
+import { ArrowUpRight, Briefcase, Crown, GitBranch, HeartHandshake, MessageSquareWarning, Sparkles } from 'lucide-react'
 import { PageShell } from '@/components/landing/page-shell'
 import { Reveal } from '@/components/landing/reveal'
 import { contributors } from '@/lib/contributors'
@@ -15,6 +15,12 @@ export const metadata: Metadata = {
 const eyebrow = 'text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--ac)]'
 
 const COMPANY_LINKEDIN = 'https://www.linkedin.com/company/shadrox'
+
+const FOUNDER = {
+  name: 'Sourav Maurya',
+  linkedin: 'https://www.linkedin.com/in/sourav-maurya-45b272377',
+  github: 'https://github.com/iamsouravmourya-jpg',
+}
 
 function initials(name: string) {
   return name
@@ -66,8 +72,62 @@ export default function ContributorsPage() {
             </h2>
           </Reveal>
 
+          {/* ── Founder spotlight — first name on the wall, always ── */}
+          <Reveal delay={120} variant="scale">
+            <div className="relative mt-12 overflow-hidden rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-8">
+              <div
+                aria-hidden
+                className="pointer-events-none absolute -left-24 -top-28 size-72 rounded-full blur-3xl"
+                style={{ background: 'var(--glow)' }}
+              />
+              <div className="relative flex flex-col gap-6 sm:flex-row sm:items-center">
+                <span
+                  aria-hidden
+                  className="grid size-20 shrink-0 place-items-center rounded-full bg-[linear-gradient(135deg,var(--ac),var(--pink))] text-2xl font-bold text-white shadow-[0_10px_28px_var(--glow)]"
+                >
+                  {initials(FOUNDER.name)}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--bg2)] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--ac)]">
+                    <Crown className="size-3" strokeWidth={2} />
+                    The one who built it
+                  </p>
+                  <h3 className="mt-3 text-xl font-bold tracking-[-0.02em] text-[var(--ink)]">
+                    {FOUNDER.name}
+                  </h3>
+                  <p className="mt-1.5 max-w-[560px] text-sm leading-6 text-[var(--mut)]">
+                    Wrote the first line, designed every screen, and still ships the fixes.
+                    Everyone below helped — this one made the thing they helped with.
+                  </p>
+                  <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2">
+                    <a
+                      href={FOUNDER.linkedin}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="group inline-flex items-center gap-2 text-[13px] font-bold text-[var(--ac)] transition hover:gap-3"
+                    >
+                      <Briefcase className="size-4" strokeWidth={1.75} />
+                      LinkedIn
+                      <ArrowUpRight className="size-3.5 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+                    </a>
+                    <a
+                      href={FOUNDER.github}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="group inline-flex items-center gap-2 text-[13px] font-bold text-[var(--ac)] transition hover:gap-3"
+                    >
+                      <GitBranch className="size-4" strokeWidth={1.75} />
+                      GitHub
+                      <ArrowUpRight className="size-3.5 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Reveal>
+
           {contributors.length > 0 ? (
-            <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
               {contributors.map((person, i) => (
                 <Reveal key={person.name} as="article" delay={(i % 3) * 90} variant="scale" className="h-full">
                   <div className="feature-card flex h-full flex-col rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6">
@@ -97,14 +157,14 @@ export default function ContributorsPage() {
             </div>
           ) : (
             <Reveal delay={140} variant="scale">
-              <div className="relative mt-12 overflow-hidden rounded-3xl border border-dashed border-[var(--line)] bg-[var(--card)] p-8 text-center sm:p-12">
+              <div className="relative mt-8 overflow-hidden rounded-3xl border border-dashed border-[var(--line)] bg-[var(--card)] p-8 text-center sm:p-12">
                 <div
                   aria-hidden
                   className="pointer-events-none absolute -right-24 -top-28 size-72 rounded-full blur-3xl"
                   style={{ background: 'var(--glow)' }}
                 />
                 <p className="relative text-balance text-xl font-bold tracking-[-0.02em] text-[var(--ink)] sm:text-2xl">
-                  This wall is waiting for its first name.
+                  The first name is up. This wall is waiting for the next one.
                 </p>
                 <p className="relative mx-auto mt-3 max-w-md text-sm leading-7 text-[var(--mut)]">
                   No paid credits, no fake logos — only people who actually helped. Help ShadRox
