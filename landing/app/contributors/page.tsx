@@ -18,7 +18,7 @@ const COMPANY_LINKEDIN = 'https://www.linkedin.com/company/shadrox'
 
 const FOUNDER = {
   name: 'Sourav Maurya',
-  linkedin: 'https://www.linkedin.com/in/sourav-maurya-45b272377',
+  linkedin: 'https://www.linkedin.com/company/shadrox',
   github: 'https://github.com/iamsouravmourya-jpg',
 }
 
