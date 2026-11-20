@@ -22,7 +22,10 @@ import { ceilingReached, toolCallsReported, type WorkUsage } from '../autonomy/b
 import { countPending, findBlocked, nextRunnable } from '../autonomy/dag';
 import { buildRepairBrief } from '../autonomy/feedback';
 import type { DiagnosticLine, PlanError, TurnUnit, VerificationReport } from '../autonomy/types';
+import { dedupePaths, hasTrackedPath, mergeTrackedPaths, pathsEqual, resolveCanonicalPath } from '../paths';
+import { extractErrorMessage } from './coordinatorResilience';
 import { normalizeOwnedPath } from './ownership';
+import { selectTaskMetrics } from './runView';
 import {
   buildIntegrationInstruction,
   buildTaskInstruction,
@@ -66,6 +69,10 @@ export interface TeamDeps {
    * or `reviewer` (reads and reports). Anything else falls back to the coordinator.
    */
   integrationRole?: AgentRole;
+  /** Parsed package.json + tsconfig.json manifest injected into coordinator & specialist prompts. */
+  workspaceManifest?: string;
+  /** Optional pacing hook invoked before dispatching any coordinator/sub-agent LLM turn. */
+  beforeTurn?: (context: { phase: 'plan' | 'task' | 'integration'; taskId?: string }) => Promise<void> | void;
 }
 
 /**
@@ -145,8 +152,16 @@ function sharedContext(state: TeamState): string {
 /** The task's one-line contribution to the team's shared context. */
 function summarise(task: TeamTask, outcome: 'passed' | 'unverified' | 'failed'): string {
   const notes = task.lastReport?.notes ?? [];
+  const diagnostics = task.lastReport?.diagnostics ?? [];
   if (outcome === 'failed') {
-    return `"${task.title}" did not pass after ${task.attempts} attempt${task.attempts === 1 ? '' : 's'}: ${notes.join('; ') || 'no checker could run'}.`;
+    const diagText = diagnostics.length > 0
+      ? diagnostics
+          .slice(0, 3)
+          .map((d) => `${d.path}:${d.line} ${trim(d.message, 120)}`)
+          .join('; ')
+      : '';
+    const detail = [diagText, ...notes].filter(Boolean).join('; ') || 'checker failed';
+    return `"${task.title}" did not pass after ${task.attempts} attempt${task.attempts === 1 ? '' : 's'}: ${detail}.`;
   }
   if (outcome === 'unverified') {
     // Teammates build on this, so the note says what is actually true: the work
@@ -174,7 +189,7 @@ function summarise(task: TeamTask, outcome: 'passed' | 'unverified' | 'failed'):
  * summary both keep saying it was not proven.
  */
 export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> {
-  const files = deps.ports.listFiles();
+  const files = dedupePaths(deps.ports.listFiles());
   const state: TeamState = {
     id: `team-${deps.now()}`,
     goal,
@@ -186,21 +201,32 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
   deps.persist(state);
   deps.ports.onEvent({ type: 'team:log', text: `Coordinating: ${goal}` });
 
-  const planned = await deps.planTeam(goal, files, deps.budget);
-  const tasks = planned.tasks.map(newTask);
-  const errors = [...planned.errors, ...(planned.errors.length > 0 ? [] : deps.validate(tasks, deps.budget))];
-  if (errors.length > 0) {
-    state.status = 'failed';
-    state.error = describeErrors(errors);
-    deps.ports.onEvent({ type: 'team:done', status: 'failed' });
-    deps.persist(state);
-    return state;
-  }
+  try {
+    await deps.beforeTurn?.({ phase: 'plan' });
+    const planned = await deps.planTeam(goal, files, deps.budget);
+    const tasks = planned.tasks.map(newTask);
+    const errors = [...planned.errors, ...(planned.errors.length > 0 ? [] : deps.validate(tasks, deps.budget))];
+    if (errors.length > 0) {
+      state.status = 'failed';
+      state.error = describeErrors(errors);
+      state.summaryReport = {
+        overview: `Agent team failed during planning: ${state.error}`,
+        filesModified: [],
+        tasksCompleted: 0,
+        totalTasks: 0,
+        durationMs: Math.max(0, deps.now() - state.startedAt),
+        openIssues: [state.error]
+      };
+      deps.ports.onEvent({ type: 'team:log', text: `Planning failed: ${state.error}` });
+      deps.ports.onEvent({ type: 'team:done', status: 'failed' });
+      deps.persist(state);
+      return state;
+    }
 
-  state.tasks = tasks;
-  state.status = 'running';
-  deps.ports.onEvent({ type: 'team:planned', tasks });
-  deps.persist(state);
+    state.tasks = tasks;
+    state.status = 'running';
+    deps.ports.onEvent({ type: 'team:planned', tasks });
+    deps.persist(state);
 
   let checkpointed = false;
   /** File-changing tasks that finished without a check that could prove them. */
@@ -266,7 +292,11 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
       // not in the port: the app's chat path takes one instruction string, so the
       // team composes it here, where it alone knows who is speaking and what the
       // others have already reported.
-      const unit: TurnUnit = { ...next, instruction: buildTaskInstruction(next, sharedContext(state)) };
+      await deps.beforeTurn?.({ phase: 'task', taskId: next.id });
+      const unit: TurnUnit = {
+        ...next,
+        instruction: buildTaskInstruction(next, sharedContext(state), deps.workspaceManifest)
+      };
       // Held changes are not on disk; a repair turn that assumes they are
       // "fixes" imports against content only the review queue has seen.
       const heldBefore = next.pendingReview ?? [];
@@ -284,13 +314,19 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
         // turn keeps streaming after the user asked for it to end.
         signal: deps.turnSignal?.()
       });
-      next.touchedFiles = [...new Set([...(next.touchedFiles ?? []), ...(turn.touchedFiles ?? [])])];
-      next.filesRead = [...new Set([...(next.filesRead ?? []), ...(turn.filesRead ?? [])])];
-      next.pendingReview = [...new Set([...(next.pendingReview ?? []), ...(turn.pendingReview ?? [])])];
-      if (turn.pendingReview && turn.pendingReview.length > 0) {
-        deps.ports.onEvent({ type: 'task:review', id: next.id, paths: turn.pendingReview });
+      const canonicalTouched = (turn.touchedFiles ?? []).map((p) => resolveCanonicalPath(p, files));
+      const canonicalRead = (turn.filesRead ?? []).map((p) => resolveCanonicalPath(p, files));
+      const canonicalReview = (turn.pendingReview ?? []).map((p) => resolveCanonicalPath(p, files));
+      next.touchedFiles = mergeTrackedPaths(next.touchedFiles ?? [], canonicalTouched);
+      next.filesRead = mergeTrackedPaths(next.filesRead ?? [], canonicalRead);
+      next.pendingReview = mergeTrackedPaths(next.pendingReview ?? [], canonicalReview);
+      if (canonicalReview.length > 0) {
+        deps.ports.onEvent({ type: 'task:review', id: next.id, paths: canonicalReview });
       }
-      const report = await deps.ports.verify(next);
+      const report = await deps.ports.verify(next, {
+        patchesApplied: turn.patchesApplied,
+        changedFiles: turn.changedFiles ?? canonicalTouched.length
+      });
 
       next.lastReport = report;
       next.report = trim(turn.reply, REPORT_LIMIT);
@@ -361,9 +397,13 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
         break;
       }
 
+      const firstDiag = report.diagnostics[0];
+      const diagSummary = firstDiag
+        ? `${firstDiag.path}:${firstDiag.line} ${trim(firstDiag.message, 100)}`
+        : report.notes[0] ?? 'check returned failed';
       deps.ports.onEvent({
         type: 'team:log',
-        text: `"${next.title}" failed check ${attempt}/${deps.budget.maxAttemptsPerTask}.`
+        text: `"${next.title}" failed check ${attempt}/${deps.budget.maxAttemptsPerTask}: ${diagSummary}`
       });
     }
 
@@ -408,10 +448,12 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
   if (canIntegrate(state, deps)) await integrateRun(goal, state, deps);
 
   // The merge turn may write files of its own, so the file list is read after it.
-  const touchedFiles = Array.from(
-    new Set([...state.tasks.flatMap((t) => t.touchedFiles ?? []), ...(state.mergeReport?.files ?? [])])
-  );
-  const completedTasks = state.tasks.filter((t) => t.status === 'passed' || t.status === 'unverified').length;
+  const touchedFiles = dedupePaths([
+    ...state.tasks.flatMap((t) => t.touchedFiles ?? []),
+    ...(state.mergeReport?.files ?? [])
+  ]);
+  const taskMetrics = selectTaskMetrics(state.tasks);
+  const completedTasks = taskMetrics.passed;
   const testsPassed = state.tasks.filter((t) => t.assignee === 'tests' && t.status === 'passed').length;
   const testsRun = state.tasks.filter((t) => t.assignee === 'tests').length;
   const openIssues = state.tasks.filter((t) => t.status === 'failed' || t.status === 'blocked').map((t) => `${t.assignee}: ${t.title}`);
@@ -422,7 +464,7 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
       : `Agent team concluded with status "${state.status}": ${state.error ?? 'Review individual task reports.'}`,
     filesModified: touchedFiles,
     tasksCompleted: completedTasks,
-    totalTasks: state.tasks.length,
+    totalTasks: taskMetrics.total,
     testsPassed,
     testsRun,
     durationMs: Math.max(0, deps.now() - state.startedAt),
@@ -434,6 +476,33 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
   deps.persist(state);
   deps.ports.onEvent({ type: 'team:done', status: state.status });
   return state;
+  } catch (error) {
+    const message = extractErrorMessage(error);
+    for (const task of state.tasks) {
+      if (task.status === 'running') task.status = 'failed';
+    }
+    state.status = 'failed';
+    state.error = message;
+    const taskMetrics = selectTaskMetrics(state.tasks);
+    const touchedFiles = dedupePaths([
+      ...state.tasks.flatMap((t) => t.touchedFiles ?? []),
+      ...(state.mergeReport?.files ?? [])
+    ]);
+    state.summaryReport = {
+      overview: `Agent team failed: ${message}`,
+      filesModified: touchedFiles,
+      tasksCompleted: taskMetrics.passed,
+      totalTasks: taskMetrics.total,
+      testsPassed: state.tasks.filter((t) => t.assignee === 'tests' && t.status === 'passed').length,
+      testsRun: state.tasks.filter((t) => t.assignee === 'tests').length,
+      durationMs: Math.max(0, deps.now() - state.startedAt),
+      openIssues: [message]
+    };
+    deps.ports.onEvent({ type: 'team:log', text: `Coordinator fatal failure: ${message}` });
+    deps.persist(state);
+    deps.ports.onEvent({ type: 'team:done', status: 'failed' });
+    return state;
+  }
 }
 
 /** Whether this run has an end to merge at all. */
@@ -461,8 +530,8 @@ async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Pro
   const byRole = changedFilesByRole(state.tasks);
   const ownership = ownershipMap(state.tasks);
   const overlaps = writeOverlaps(state.tasks);
-  let mergedFiles = changedFileUnion(state.tasks);
-  let awaitingReview = [...new Set(state.tasks.flatMap((task) => task.pendingReview ?? []))];
+  let mergedFiles = dedupePaths(changedFileUnion(state.tasks));
+  let awaitingReview = dedupePaths(state.tasks.flatMap((task) => task.pendingReview ?? []));
   const notes: string[] = [];
 
   // Diagnostics arrive through the port a task's own check uses; the only thing
@@ -483,40 +552,48 @@ async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Pro
   let checked = before;
 
   if (!skipped) {
+    await deps.beforeTurn?.({ phase: 'integration', taskId: INTEGRATION_TASK_ID });
+    const baseInstruction = buildIntegrationInstruction({
+      goal,
+      role,
+      byRole,
+      ownership,
+      overlaps,
+      diagnostics: before.diagnostics,
+      awaitingReview
+    });
+    const instruction = deps.workspaceManifest?.trim()
+      ? `${baseInstruction}\n\n${deps.workspaceManifest.trim()}`
+      : baseInstruction;
     const unit: TurnUnit = {
       id: INTEGRATION_TASK_ID,
       title: INTEGRATION_TITLE,
-      instruction: buildIntegrationInstruction({
-        goal,
-        role,
-        byRole,
-        ownership,
-        overlaps,
-        diagnostics: before.diagnostics,
-        awaitingReview
-      }),
+      instruction,
       expectedFiles: mergedFiles
     };
-    const turn = await deps.ports.runTurn({ goal, milestone: unit });
+    const turn = await deps.ports.runTurn({ goal, milestone: unit, signal: deps.turnSignal?.() });
     ran = true;
     reply = trim(turn.reply, REPORT_LIMIT);
 
-    const extra = [...new Set((turn.touchedFiles ?? []).map(normalizeOwnedPath))]
-      .filter((file) => file.length > 0 && !mergedFiles.includes(file));
+    const extra = dedupePaths((turn.touchedFiles ?? []).map(normalizeOwnedPath))
+      .filter((file) => file.length > 0 && !hasTrackedPath(mergedFiles, file));
     if (extra.length > 0) {
       // A repair is part of the merge: it is attributed to the role that made it
       // and re-checked, because fixing one pair can break another.
       const mine = byRole.find((entry) => entry.role === role);
       if (mine) {
         mine.taskIds.push(INTEGRATION_TASK_ID);
-        mine.files.push(...extra);
+        mine.files = mergeTrackedPaths(mine.files, extra);
       } else {
         byRole.push({ role, taskIds: [INTEGRATION_TASK_ID], files: extra });
       }
-      mergedFiles = [...mergedFiles, ...extra];
+      mergedFiles = mergeTrackedPaths(mergedFiles, extra);
     }
-    awaitingReview = [...new Set([...awaitingReview, ...(turn.pendingReview ?? [])])];
-    checked = await deps.ports.verify({ id: INTEGRATION_TASK_ID, expectedFiles: mergedFiles });
+    awaitingReview = mergeTrackedPaths(awaitingReview, turn.pendingReview ?? []);
+    checked = await deps.ports.verify({ id: INTEGRATION_TASK_ID, expectedFiles: mergedFiles, touchedFiles: extra }, {
+      patchesApplied: turn.patchesApplied,
+      changedFiles: turn.changedFiles ?? extra.length
+    });
     if (turn.aborted) notes.push('the closing turn was interrupted mid-turn, so its repair may be partial.');
   } else {
     notes.push(
@@ -641,11 +718,9 @@ function reviewExplainsFailure(
   report: VerificationReport,
   held: string[]
 ): boolean {
-  const normalize = (path: string) => path.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
-  const heldSet = new Set(held.map(normalize));
   return (
-    unit.expectedFiles.some((file) => heldSet.has(normalize(file))) ||
-    report.diagnostics.some((line) => heldSet.has(normalize(line.path)))
+    unit.expectedFiles.some((file) => held.some((entry) => pathsEqual(entry, file, true))) ||
+    report.diagnostics.some((line) => held.some((entry) => pathsEqual(entry, line.path, true)))
   );
 }
 

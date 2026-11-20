@@ -163,6 +163,8 @@ export interface ChatMessage {
       testsRun?: number;
       durationMs?: number;
       openIssues?: string[];
+      mergeVerdict?: import('./agents/types').MergeVerdict;
+      mergeConflicts?: string[];
     };
   };
   /** Self-Healing Proof receipt showing verified failure and heal state. */

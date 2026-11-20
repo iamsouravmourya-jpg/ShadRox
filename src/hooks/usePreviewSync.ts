@@ -19,7 +19,7 @@ export interface PreviewSyncState {
  * Debounced reload trigger for the local static preview. Dev servers keep their
  * own HMR, so this intentionally only runs against static previews.
  */
-export function usePreviewSync({ revision, enabled, debounceMs = 140 }: UsePreviewSyncOptions): PreviewSyncState {
+export function usePreviewSync({ revision, enabled, debounceMs = 260 }: UsePreviewSyncOptions): PreviewSyncState {
   const [reloadKey, setReloadKey] = useState(0);
   const [lastReloadAt, setLastReloadAt] = useState<number | null>(null);
   const lastRevision = useRef(revision);

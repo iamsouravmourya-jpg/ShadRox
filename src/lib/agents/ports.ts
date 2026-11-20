@@ -24,7 +24,7 @@ export interface TeamPortsOptions {
 export function createTeamPorts(host: AutonomyHost, options: TeamPortsOptions): TeamPorts {
   return {
     runTurn: (request) => host.runTurn(request),
-    verify: (unit) => verifyMilestone(unit, host, options.rootPath),
+    verify: (unit, writes) => verifyMilestone(unit, host, options.rootPath, writes),
     listFiles: () => host.listFiles(),
     onEvent: options.onEvent,
     isCancellationRequested: options.isCancellationRequested,

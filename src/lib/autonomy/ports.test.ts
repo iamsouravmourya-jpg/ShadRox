@@ -324,3 +324,40 @@ test('a caller without a Pause button gets a port that cannot pause', () => {
   paused = true;
   assert.equal(withPause.isPauseRequested?.(), true, 'the panel flag reaches the driver through the port');
 });
+
+test('collectMilestoneDiagnostics matches Windows case-insensitive paths across expectedFiles and touchedFiles', () => {
+  const winDiagnostics = [
+    diag({ file: 'C:\\ws\\SRC\\Utils\\ratelimiter.ts', line: 9, message: "Cannot find module 'redis'." })
+  ];
+  const lines = collectMilestoneDiagnostics(
+    milestone({ expectedFiles: [], touchedFiles: ['src/utils/rateLimiter.ts'] }),
+    winDiagnostics,
+    'C:\\WS'
+  );
+  assert.equal(lines?.length, 1);
+  assert.equal(lines?.[0].path, 'src/utils/rateLimiter.ts');
+  assert.equal(lines?.[0].line, 10);
+});
+
+test('verifyMilestone passes target files to getDiagnostics and fails placeholder stubs via readFile', async () => {
+  let seenFiles: string[] | undefined;
+  const report = await verifyMilestone(
+    milestone({ expectedFiles: ['src/enroll.ts'] }),
+    host({
+      getDiagnostics: async (files) => {
+        seenFiles = files;
+        return [];
+      },
+      readFile: async () => "export const enroll = { courseTitle: '', // Retrieve course title if needed\n};"
+    }),
+    ROOT,
+    { patchesApplied: 1 }
+  );
+
+  assert.deepEqual(seenFiles, ['src/enroll.ts']);
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.diagnostics.length, 1);
+  assert.match(report.diagnostics[0].message, /Placeholder/i);
+  assert.match(report.notes.join(' '), /error diagnostic\(s\) found/);
+});
+

@@ -43,7 +43,7 @@ export interface ParsedToolBlock {
  * Intentionally does NOT close truncated strings/objects: if a stream was cut off
  * mid-argument, guessing missing fields would silently write corrupt files.
  */
-function cleanJsonText(raw: string): string {
+export function cleanJsonText(raw: string): string {
   let source = raw.trim();
   const fenced = source.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)(?:\r?\n```[ \t]*)?$/i);
   if (fenced) source = fenced[1].trim();

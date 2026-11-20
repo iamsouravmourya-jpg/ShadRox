@@ -12,6 +12,8 @@
  * without a workspace.
  */
 
+import { dedupePaths, hasTrackedPath } from '../paths';
+
 export type VerificationKind = 'verify' | 'problems' | 'command';
 
 export interface VerificationRecord {
@@ -98,16 +100,33 @@ export function resetTurns(): void {
   turns.clear();
 }
 
+export function hasTurnRead(turn: AgentTurnState, path: string): boolean {
+  return hasTrackedPath([...turn.reads], path);
+}
+
 export function noteRead(turn: AgentTurnState, path: string, contentHash?: string): void {
   turn.reads.add(path);
   if (contentHash !== undefined) turn.readHashes.set(path, contentHash);
 }
 
 export function noteWrite(turn: AgentTurnState, paths: string[], created: string[] = []): void {
-  for (const path of paths) turn.changed.add(path);
-  for (const path of created) {
-    turn.created.add(path);
-    turn.changed.add(path);
+  const existing = [...turn.changed];
+  for (const path of dedupePaths(paths)) {
+    if (!hasTrackedPath(existing, path)) {
+      turn.changed.add(path);
+      existing.push(path);
+    }
+  }
+  const existingCreated = [...turn.created];
+  for (const path of dedupePaths(created)) {
+    if (!hasTrackedPath(existingCreated, path)) {
+      turn.created.add(path);
+      existingCreated.push(path);
+    }
+    if (!hasTrackedPath(existing, path)) {
+      turn.changed.add(path);
+      existing.push(path);
+    }
   }
   turn.seq += 1;
   turn.lastMutationSeq = turn.seq;
@@ -143,7 +162,7 @@ export function satisfyingVerification(turn: AgentTurnState): VerificationRecord
     const record = turn.verifications[index];
     if (record.seq <= turn.lastMutationSeq) continue;
     if (record.kind === 'problems' && record.paths.length > 0) {
-      if (!changed.every((path) => record.paths.includes(path))) continue;
+      if (!changed.every((path) => hasTrackedPath(record.paths, path))) continue;
     }
     return record;
   }

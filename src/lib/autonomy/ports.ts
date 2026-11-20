@@ -11,6 +11,8 @@
  */
 
 import type { DesktopDiagnostic } from '../desktop';
+import { placeholderDiagnostics } from '../agent/placeholderLint';
+import { canonicalPathKey, dedupePaths, isCaseInsensitivePlatform } from '../paths';
 import type {
   AutonomyEvent,
   AutonomyPorts,
@@ -29,20 +31,24 @@ export interface AutonomyHost {
   /** Send one milestone instruction through the real chat path and apply its patches. */
   runTurn: (request: TurnRequest) => Promise<TurnResult>;
   /**
-   * A fresh workspace-wide diagnostics request (absolute file paths).
+   * A fresh workspace-wide or targeted diagnostics request (absolute file paths).
    *
    * `null` means no checker is attached at all — no folder open, no language
    * service. It must not be written as `[]`, because an empty array is a real
    * answer ("checked, found nothing"), and an empty answer would let a milestone
    * with no working checker be reported as passed.
    */
-  getDiagnostics: () => Promise<DesktopDiagnostic[] | null>;
+  getDiagnostics: (files?: string[]) => Promise<DesktopDiagnostic[] | null>;
   /** Workspace-relative paths on disk right now. */
   listFiles: () => string[];
   /** One model call that returns raw text (used for planning). */
   askPlan: (prompt: string) => Promise<string>;
   /** Run the milestone's proof command through the app's approval gate. */
   runCommand: (argv: string) => Promise<CommandOutcome>;
+  /** Optional file reader so the verifier can inspect written files for placeholder stubs. */
+  readFile?: (path: string) => Promise<string | null>;
+  /** Optional workspace dependency/tsconfig manifest summary injected into sub-agents. */
+  getWorkspaceManifest?: () => Promise<string | null>;
 }
 
 export interface AutonomyPortsOptions {
@@ -59,13 +65,20 @@ export function normalizeRelativePath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+/g, '/');
 }
 
+function isWindowsPathStyle(value: string): boolean {
+  return /^[a-z]:\//i.test(value);
+}
+
 /** Turn an absolute path into a workspace-relative one; falls back to the normalized absolute. */
 export function toWorkspaceRelative(absolutePath: string, rootPath: string): string {
   const file = normalizeRelativePath(absolutePath).replace(/\/+$/, '');
   const root = normalizeRelativePath(rootPath).replace(/\/+$/, '');
   if (!root) return file;
-  if (file === root) return '';
-  if (file.startsWith(`${root}/`)) return file.slice(root.length + 1);
+  const caseInsensitive = isCaseInsensitivePlatform() || isWindowsPathStyle(file) || isWindowsPathStyle(root);
+  const fileCmp = caseInsensitive ? file.toLowerCase() : file;
+  const rootCmp = caseInsensitive ? root.toLowerCase() : root;
+  if (fileCmp === rootCmp) return '';
+  if (fileCmp.startsWith(`${rootCmp}/`)) return file.slice(root.length + 1);
   return file;
 }
 
@@ -85,22 +98,36 @@ export function toDiagnosticLine(diagnostic: DesktopDiagnostic, relativePath: st
  * The error diagnostics for a milestone's files.
  *
  * `null` means nothing was checked: either the workspace has no checker, or the
- * milestone named no files. Both are the same to a user — no evidence — so both
- * come back null rather than as an empty list that reads like a clean bill.
+ * milestone named/touched no files. Both are the same to a user — no evidence —
+ * so both come back null rather than as an empty list that reads like a clean bill.
  */
 export function collectMilestoneDiagnostics(
   unit: VerifiableUnit,
   diagnostics: DesktopDiagnostic[] | null,
   rootPath: string
 ): DiagnosticLine[] | null {
-  if (diagnostics === null || unit.expectedFiles.length === 0) return null;
-  const wanted = new Set(unit.expectedFiles.map(normalizeRelativePath));
+  const caseInsensitive = isCaseInsensitivePlatform() || isWindowsPathStyle(normalizeRelativePath(rootPath));
+  const targetFiles = dedupePaths([...unit.expectedFiles, ...(unit.touchedFiles ?? [])], caseInsensitive);
+  if (diagnostics === null || targetFiles.length === 0) return null;
+
+  const wanted = new Map<string, string>();
+  for (const file of targetFiles) {
+    wanted.set(canonicalPathKey(file, caseInsensitive), normalizeRelativePath(file));
+  }
+
+  const seen = new Set<string>();
   const lines: DiagnosticLine[] = [];
   for (const diagnostic of diagnostics) {
     const relative = toWorkspaceRelative(diagnostic.file, rootPath);
-    if (!wanted.has(relative)) continue;
-    const line = toDiagnosticLine(diagnostic, relative);
-    if (line) lines.push(line);
+    const key = canonicalPathKey(relative, caseInsensitive);
+    const canonicalPath = wanted.get(key);
+    if (!canonicalPath) continue;
+    const line = toDiagnosticLine(diagnostic, canonicalPath);
+    if (!line) continue;
+    const dedupeKey = `${line.severity}:${key}:${line.line}:${line.column}:${line.message}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    lines.push(line);
   }
   return lines;
 }
@@ -115,6 +142,7 @@ function tail(text: string, limit = 4000): string {
  * Judge a milestone from diagnostics plus its optional proof command.
  *
  * - an error diagnostic         -> failed, and a green command cannot undo it
+ * - placeholder code lint error -> failed, forcing the next attempt to replace stubs
  * - the command exited non-zero -> diagnostic evidence, not a verdict: its exit
  *   code and output ride on the report for the next attempt's repair brief, but
  *   the compiler diagnostics decide. A fresh workspace's planner-invented
@@ -124,13 +152,6 @@ function tail(text: string, limit = 4000): string {
  * - a clean check or green cmd  -> passed
  * - the command was declined    -> the diagnostics verdict stands, with a note
  * - nothing checked it          -> unverified, never a silent pass
- *
- * `writes` is what the turn under judgment actually wrote. When it reports
- * zero patches and zero changed files, the report carries the promised
- * "touched nothing" note — a clean typecheck of bytes nobody edited proves the
- * workspace is clean, not that the milestone was done. The note never changes
- * the verdict: a read-only investigation milestone still passes or stays
- * unverified exactly as before, only honestly annotated.
  */
 export async function verifyMilestone(
   unit: VerifiableUnit,
@@ -140,14 +161,34 @@ export async function verifyMilestone(
 ): Promise<VerificationReport> {
   const notes: string[] = [];
   let diagnostics: DiagnosticLine[] | null = null;
+  const caseInsensitive = isCaseInsensitivePlatform() || isWindowsPathStyle(normalizeRelativePath(rootPath));
+  const targetFiles = dedupePaths([...unit.expectedFiles, ...(unit.touchedFiles ?? [])], caseInsensitive);
 
   try {
-    const answer = await host.getDiagnostics();
+    const answer = await host.getDiagnostics(targetFiles.length > 0 ? targetFiles : undefined);
     if (answer === null) notes.push('no type checker is attached to this workspace, so nothing was actually checked.');
     diagnostics = collectMilestoneDiagnostics(unit, answer, rootPath);
   } catch (error) {
     notes.push(`the type service did not answer: ${error instanceof Error ? error.message : String(error)}`);
     diagnostics = null;
+  }
+
+  // Zero-placeholder enforcement on written/expected source files.
+  if (targetFiles.length > 0 && typeof host.readFile === 'function') {
+    const placeholderLines: DiagnosticLine[] = [];
+    for (const file of targetFiles) {
+      try {
+        const content = await host.readFile(file);
+        if (typeof content === 'string') {
+          placeholderLines.push(...placeholderDiagnostics(file, content));
+        }
+      } catch {
+        /* ignore unreadable or missing files during static placeholder inspection */
+      }
+    }
+    if (placeholderLines.length > 0) {
+      diagnostics = [...(diagnostics ?? []), ...placeholderLines];
+    }
   }
 
   let command: CommandOutcome | undefined;
@@ -172,34 +213,27 @@ export async function verifyMilestone(
   }
 
   const commandRan = command !== undefined && !command.declinedReason;
-  // A command killed by its time limit proved nothing, whatever exit code the
-  // runner reported for it, so it can never carry a milestone to `passed`.
   const commandPassed = commandRan && command.exitCode === 0 && !command.timedOut;
-  // A non-zero exit alone is a diagnostic report, not a failure verdict: the
-  // planner invents proof commands (`npm test`, `tsc`) that a fresh workspace
-  // cannot satisfy yet. The exit code and captured output stay on the report
-  // (and flow into the next attempt's repair brief); only a timeout still
-  // counts against the task.
   const commandFailed = commandRan && command.timedOut;
-  const hasError = diagnostics?.some((line) => line.severity === 'error') ?? false;
+  const errorDiagnostics = diagnostics?.filter((line) => line.severity === 'error') ?? [];
+  const hasError = errorDiagnostics.length > 0;
 
-  // A failure is sticky: a green command never erases a type error the same
-  // milestone introduced, and a declined command never turns a failure green.
   let verdict: Verdict;
   if (hasError || commandFailed) {
     verdict = 'failed';
+    if (hasError) {
+      const first = errorDiagnostics[0];
+      notes.push(`${errorDiagnostics.length} error diagnostic(s) found (${first.path}:${first.line} ${first.message})`);
+    }
   } else if (diagnostics !== null || commandPassed) {
     verdict = 'passed';
   } else {
     verdict = 'unverified';
-    if (unit.expectedFiles.length === 0) {
+    if (targetFiles.length === 0) {
       notes.push('the milestone named no files, so there was nothing specific to check.');
     }
   }
 
-  // The caveat types.ts promises: a milestone that touched nothing. Attached
-  // whenever the host reported the turn's writes and both counts are zero —
-  // including a `passed`, which is exactly where silence used to hide it.
   if (writes && writes.patchesApplied === 0 && (writes.changedFiles ?? 0) === 0) {
     notes.push('the milestone touched nothing: the turn applied no patches and changed no files.');
   }

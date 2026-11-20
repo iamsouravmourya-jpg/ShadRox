@@ -624,3 +624,55 @@ test('a stopped team reports what it has instead of merging a half run', async (
   assert.equal(state.status, 'cancelled');
   assert.equal(state.mergeReport, undefined);
 });
+
+test('workspaceManifest is injected into both specialist instructions and integration prompt', async () => {
+  const h = harness({
+    tasks: [plannedTask({ id: 't1', expectedFiles: ['src/a.ts'] })],
+    errors: []
+  });
+  h.deps.workspaceManifest = 'WORKSPACE MANIFEST & DEPENDENCY CONSTRAINTS:\n- package.json dependencies: express@^4.21.0';
+  h.setTurn(writes({ t1: ['src/a.ts'] }));
+  const state = await h.run('build it');
+
+  assert.equal(state.status, 'done');
+  assert.match(h.turns[0].instruction, /express@\^4\.21\.0/);
+  assert.match(h.turns.at(-1)?.instruction ?? '', /express@\^4\.21\.0/);
+});
+
+test('fatal coordinator exception fails the team cleanly, preserves root reason in Execution trace, and matches selectTaskMetrics', async () => {
+  const h = harness({ tasks: [], errors: [] });
+  h.deps.planTeam = async () => {
+    throw new Error('HTTP 429 Quota exceeded on free tier');
+  };
+  const state = await h.run('build it');
+
+  assert.equal(state.status, 'failed');
+  assert.match(state.error ?? '', /HTTP 429 Quota exceeded/);
+  assert.equal(state.summaryReport?.tasksCompleted, 0);
+  assert.equal(state.summaryReport?.totalTasks, 0);
+  assert.equal(
+    h.events.some((event) => event.type === 'team:log' && /HTTP 429 Quota exceeded/.test(event.text)),
+    true
+  );
+});
+
+test('summaryReport.tasksCompleted matches passed count when tasks fail and formatted diagnostics appear in summary', async () => {
+  const h = harness({
+    tasks: [
+      plannedTask({ id: 't1', expectedFiles: ['src/a.ts'] }),
+      plannedTask({ id: 't2', assignee: 'tests', expectedFiles: ['src/b.ts'] })
+    ],
+    errors: []
+  });
+  h.setVerify((unit) => (unit.id === 't1' ? PASSED : FAILED));
+  const state = await h.run('build it');
+
+  assert.equal(state.status, 'failed');
+  assert.equal(state.summaryReport?.tasksCompleted, 1);
+  assert.equal(state.summaryReport?.totalTasks, 2);
+  assert.equal(
+    state.messages.some((message) => /src\/a\.ts:3 Cannot find name 'x'/.test(message.text)),
+    true
+  );
+});
+

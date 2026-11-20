@@ -855,9 +855,9 @@ function watchWorkspace(workspaceId, root) {
     ignoreInitial: true,
     ignored: (value) => {
       const relative = path.relative(root, value);
-      return relative.split(path.sep).some((part) => part.startsWith('.') || ['node_modules', 'dist', 'build', '.next', 'out', 'coverage', 'vendor'].includes(part));
+      return relative.split(path.sep).some((part) => part.startsWith('.') || ['node_modules', 'dist', 'build', '.next', 'out', 'coverage', 'vendor', 'shadrox-backups'].includes(part));
     },
-    awaitWriteFinish: { stabilityThreshold: 180, pollInterval: 50 }
+    awaitWriteFinish: { stabilityThreshold: 220, pollInterval: 60 }
   });
   const changes = new Map();
   let timer;
@@ -876,7 +876,7 @@ function watchWorkspace(workspaceId, root) {
     if (!relative || relative.startsWith('../')) return;
     changes.set(relative, { path: relative, kind: event });
     clearTimeout(timer);
-    timer = setTimeout(flush, 120);
+    timer = setTimeout(flush, 250);
   });
   watcher.on('error', (error) => console.warn('[workspace] watcher error', error));
   workspaceWatchers.set(workspaceId, watcher);
@@ -2558,6 +2558,31 @@ function registerIpcHandlers() {
   handleMachineSensitive('workspace:save-files', async (event, workspaceId, files) => {
     assertTrustedRenderer(event);
     return workspaceAccess.saveFiles(workspaceId, files);
+  });
+
+  handleMachineSensitive('workspace:backup-file', async (event, workspaceId, relativePath, content) => {
+    assertTrustedRenderer(event);
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    if (!workspace?.root) {
+      throw new Error('File backup requires an opened workspace.');
+    }
+    if (typeof relativePath !== 'string' || !relativePath.trim()) {
+      throw new Error('Backup path is required.');
+    }
+    if (typeof content !== 'string') {
+      throw new Error('Backup content must be a string.');
+    }
+    const cleanRel = relativePath.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+/, '');
+    if (!cleanRel || cleanRel.split('/').some((part) => !part || part === '.' || part === '..')) {
+      throw new Error('Invalid relative backup path.');
+    }
+    const workspaceHash = createHash('sha256').update(workspace.root).digest('hex').slice(0, 16);
+    const backupDir = path.join(app.getPath('userData'), 'file-backups', workspaceHash);
+    fs.mkdirSync(backupDir, { recursive: true });
+    const safeName = `${cleanRel.replace(/\//g, '__')}.${Date.now()}.bak`;
+    const backupPath = path.join(backupDir, safeName);
+    fs.writeFileSync(backupPath, content, 'utf8');
+    return { backupPath };
   });
 
   handleMachineSensitive('workspace:stage-files', async (event, workspaceId, files) => {

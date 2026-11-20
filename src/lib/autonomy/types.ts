@@ -220,6 +220,7 @@ export interface TurnUnit extends VerifiableUnit {
 export interface VerifiableUnit {
   id: string;
   expectedFiles: string[];
+  touchedFiles?: string[];
   verifyCommand?: string;
 }
 

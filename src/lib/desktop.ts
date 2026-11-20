@@ -744,6 +744,8 @@ export interface ShadRoxDesktopAPI {
   setTheme?: (mode: 'light' | 'dark') => Promise<void>;
   onWorkspaceChange: (listener: (event: WorkspaceChange) => void) => () => void;
   saveFiles: (workspaceId: string, files: DesktopWrite[]) => Promise<DesktopSaveResult>;
+  /** Stores pre-overwrite large-file backups under Electron userData so watched workspaces never reload. */
+  backupFile?: (workspaceId: string, path: string, content: string) => Promise<{ backupPath: string }>;
   stageFiles: (workspaceId: string, files: DesktopWrite[]) => Promise<StagedTransaction>;
   commitTransaction: (workspaceId: string, transactionId: string) => Promise<DesktopSaveResult>;
   discardTransaction: (workspaceId: string, transactionId: string) => Promise<void>;

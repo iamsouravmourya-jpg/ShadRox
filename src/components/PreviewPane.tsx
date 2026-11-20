@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   FolderOpen,
@@ -119,7 +119,71 @@ function previewPortOf(url: string | null): number | null {
   }
 }
 
-export function PreviewPane({
+interface PreviewIframeProps {
+  mode: 'local' | 'static';
+  reloadKey: string;
+  url?: string | null;
+  srcDocHtml?: string;
+  frameRef: (node: HTMLIFrameElement | null) => void;
+  onFramePaint?: (rect?: PreviewRect | null) => void;
+}
+
+const PreviewIframe = memo(
+  function PreviewIframe({ mode, reloadKey, url, srcDocHtml, frameRef, onFramePaint }: PreviewIframeProps) {
+    const localNodeRef = useRef<HTMLIFrameElement | null>(null);
+    const paintCbRef = useRef(onFramePaint);
+    paintCbRef.current = onFramePaint;
+
+    const assignRef = useCallback(
+      (node: HTMLIFrameElement | null) => {
+        localNodeRef.current = node;
+        frameRef(node);
+      },
+      [frameRef]
+    );
+
+    if (mode === 'local') {
+      return (
+        <iframe
+          key={reloadKey}
+          ref={assignRef}
+          title="ShadRox Local Project Preview"
+          src={url ?? undefined}
+          sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
+          className="block shrink-0 border-0 bg-base shadow-2xl"
+          style={{ width: '100%', height: '100%' }}
+          onLoad={() => {
+            const box = localNodeRef.current?.getBoundingClientRect();
+            paintCbRef.current?.(
+              box && box.width > 0 && box.height > 0
+                ? { x: box.x, y: box.y, width: box.width, height: box.height }
+                : null
+            );
+          }}
+        />
+      );
+    }
+
+    return (
+      <iframe
+        key={reloadKey}
+        title="ShadRox Live Preview"
+        srcDoc={srcDocHtml}
+        ref={assignRef}
+        sandbox="allow-scripts allow-forms allow-modals allow-popups"
+        className="block shrink-0 border-0 bg-base shadow-2xl"
+        style={{ width: '100%', height: '100%' }}
+      />
+    );
+  },
+  (prev, next) =>
+    prev.mode === next.mode &&
+    prev.reloadKey === next.reloadKey &&
+    prev.url === next.url &&
+    prev.srcDocHtml === next.srcDocHtml
+);
+
+export const PreviewPane = memo(function PreviewPane({
   document,
   capabilityMessage,
   viewport,
@@ -161,6 +225,9 @@ export function PreviewPane({
   const previewFrameRef = useRef<HTMLIFrameElement>(null);
   const setDocumentFrameRef = useCallback((node: HTMLIFrameElement | null) => {
     iframeRef.current = node;
+    previewFrameRef.current = node;
+  }, []);
+  const setLocalFrameRef = useCallback((node: HTMLIFrameElement | null) => {
     previewFrameRef.current = node;
   }, []);
   const displayedLogs = localPreviewAvailable
@@ -505,25 +572,12 @@ export function PreviewPane({
           // localStorage/IndexedDB access throws, breaking the previewed app itself.
           // Untrusted frames are locked out of the desktop bridge instead — see
           // electron/preload.cjs and assertTrustedRenderer in electron/main.cjs.
-          <iframe
-            key={effectiveReloadKey}
-            ref={previewFrameRef}
-            title="ShadRox Local Project Preview"
-            src={localPreviewState.url}
-            sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
-            className="block shrink-0 border-0 bg-base shadow-2xl"
-            style={{ width: '100%', height: '100%' }}
-            onLoad={() => {
-              // The box is reported with the paint so an acceptance grab crops
-              // the preview instead of the whole window. Viewport coordinates
-              // are the window's content coordinates in this layout.
-              const box = previewFrameRef.current?.getBoundingClientRect();
-              onFramePaint?.(
-                box && box.width > 0 && box.height > 0
-                  ? { x: box.x, y: box.y, width: box.width, height: box.height }
-                  : null
-              );
-            }}
+          <PreviewIframe
+            mode="local"
+            reloadKey={effectiveReloadKey}
+            url={localPreviewState.url}
+            frameRef={setLocalFrameRef}
+            onFramePaint={onFramePaint}
           />
         ) : localPreviewAvailable && previewProjects.length > 0 ? (
           <div className="w-full max-w-xl self-center px-6 py-8">
@@ -611,14 +665,11 @@ export function PreviewPane({
             </p>
           </div>
         ) : document ? (
-          <iframe
-            key={effectiveReloadKey}
-            title="ShadRox Live Preview"
-            srcDoc={document.html}
-            ref={setDocumentFrameRef}
-            sandbox="allow-scripts allow-forms allow-modals allow-popups"
-            className="block shrink-0 border-0 bg-base shadow-2xl"
-            style={{ width: '100%', height: '100%' }}
+          <PreviewIframe
+            mode="static"
+            reloadKey={effectiveReloadKey}
+            srcDocHtml={document.html}
+            frameRef={setDocumentFrameRef}
           />
         ) : isBundling ? (
           <div className="self-center px-6 py-8 text-center">
@@ -728,4 +779,4 @@ export function PreviewPane({
       </div>
     </div>
   );
-}
+});

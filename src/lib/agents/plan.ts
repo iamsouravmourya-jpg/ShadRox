@@ -16,6 +16,7 @@
 import { findCycles } from '../autonomy/dag';
 import { extractJsonArray, isSafeRelativePath } from '../autonomy/plan';
 import type { PlanError } from '../autonomy/types';
+import { repairCoordinatorPlanJson } from './coordinatorResilience';
 import { SPECIALIST_ROLES, isSpecialistRole } from './roles';
 import type { AgentRole, TeamBudget, TeamPlan, TeamTask } from './types';
 
@@ -65,22 +66,44 @@ function normalizeTask(raw: RawTask, index: number): TeamTask {
 
 /** Parse the coordinator's answer. Never throws; a bad answer is a plan error. */
 export function parseTeamPlan(text: string): TeamPlan {
+  let data: unknown;
+  let parsed = false;
+  let parseFailure = 'The coordinator reply contained no JSON array of tasks.';
+
   const json = extractJsonArray(text);
-  if (json === null) {
-    return {
-      tasks: [],
-      errors: [{ milestoneId: null, reason: 'unparseable', message: 'The coordinator reply contained no JSON array of tasks.' }]
-    };
+  if (json !== null) {
+    try {
+      data = JSON.parse(json);
+      parsed = true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      parseFailure = `The coordinator reply was not valid JSON: ${detail}`;
+    }
   }
 
-  let data: unknown;
-  try {
-    data = JSON.parse(json);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+  if (!parsed) {
+    const repaired = repairCoordinatorPlanJson(text);
+    if (repaired.ok) {
+      const candidate = repaired.value;
+      if (Array.isArray(candidate)) {
+        data = candidate;
+        parsed = true;
+      } else if (candidate && typeof candidate === 'object' && Array.isArray((candidate as { tasks?: unknown }).tasks)) {
+        data = (candidate as { tasks: unknown[] }).tasks;
+        parsed = true;
+      } else if (candidate && typeof candidate === 'object') {
+        return {
+          tasks: [],
+          errors: [{ milestoneId: null, reason: 'unparseable', message: 'The coordinator reply was JSON but not an array of tasks.' }]
+        };
+      }
+    }
+  }
+
+  if (!parsed) {
     return {
       tasks: [],
-      errors: [{ milestoneId: null, reason: 'unparseable', message: `The coordinator reply was not valid JSON: ${detail}` }]
+      errors: [{ milestoneId: null, reason: 'unparseable', message: parseFailure }]
     };
   }
 
@@ -173,10 +196,15 @@ export function validateTeamPlan(tasks: TeamTask[], budget: TeamBudget): PlanErr
 }
 
 /** The instruction handed to the model that must return the task JSON. */
-export function buildTeamPlannerPrompt(goal: string, files: string[], budget: TeamBudget): string {
+export function buildTeamPlannerPrompt(
+  goal: string,
+  files: string[],
+  budget: TeamBudget,
+  workspaceManifest?: string
+): string {
   const fileList = files.slice(0, 400).join('\n') || '(the workspace has no files yet)';
   const roster = SPECIALIST_ROLES.join(', ');
-  return [
+  const sections = [
     'You are the coordinator of a small local engineering team working inside one project folder.',
     'Split the goal below into an ordered list of tasks and return them as JSON.',
     '',
@@ -196,20 +224,26 @@ export function buildTeamPlannerPrompt(goal: string, files: string[], budget: Te
     '  "verifyCommand": "optional command to prove it" }',
     '',
     'Rules: ids are unique; dependsOn only references ids in this array; every path is repo-relative',
-    '(no leading slash, no ".."); omit verifyCommand when there is nothing to run; do not wrap the array in prose.',
-    '',
-    'FILES CURRENTLY IN THE WORKSPACE:',
-    fileList
-  ].join('\n');
+    '(no leading slash, no ".."); omit verifyCommand when there is nothing to run; do not wrap the array in prose.'
+  ];
+  if (workspaceManifest && workspaceManifest.trim()) {
+    sections.push('', workspaceManifest.trim());
+  }
+  sections.push('', 'FILES CURRENTLY IN THE WORKSPACE:', fileList);
+  return sections.join('\n');
 }
 
 /**
  * Builds the `planTeam` dep from the app's ask-plan function. The budget arrives
  * per call so the prompt always reflects the cap actually in force.
  */
-export function createTeamPlan(askPlan: (prompt: string) => Promise<string>) {
+export function createTeamPlan(
+  askPlan: (prompt: string) => Promise<string>,
+  getWorkspaceManifest?: () => Promise<string | null>
+) {
   return async (goal: string, files: string[], budget: TeamBudget): Promise<TeamPlan> => {
-    const reply = await askPlan(buildTeamPlannerPrompt(goal, files, budget));
+    const manifest = (await getWorkspaceManifest?.()) ?? undefined;
+    const reply = await askPlan(buildTeamPlannerPrompt(goal, files, budget, manifest));
     return parseTeamPlan(reply);
   };
 }

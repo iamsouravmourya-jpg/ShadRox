@@ -26,6 +26,7 @@ const shadroxDesktop = Object.freeze({
   setDirty: (dirty) => ipcRenderer.invoke('app:set-dirty', dirty),
   setTheme: (mode) => ipcRenderer.invoke('app:set-theme', mode),
   saveFiles: (id, files) => ipcRenderer.invoke('workspace:save-files', id, files),
+  backupFile: (id, path, content) => ipcRenderer.invoke('workspace:backup-file', id, path, content),
   stageFiles: (id, files) => ipcRenderer.invoke('workspace:stage-files', id, files),
   commitTransaction: (id, transactionId) => ipcRenderer.invoke('workspace:commit', id, transactionId),
   discardTransaction: (id, transactionId) => ipcRenderer.invoke('workspace:discard', id, transactionId),

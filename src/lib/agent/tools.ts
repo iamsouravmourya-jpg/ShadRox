@@ -12,8 +12,10 @@ import { describeFinish } from './finishTool';
 import { MCP_TOOL_PREFIX } from './mcpTools';
 import type { ExternalToolDefinition } from './mcpTools';
 import type { ToolEffect } from './runPolicy';
-import { getTurn, noteRead } from './turnState';
+import { getTurn, hasTurnRead, noteRead } from './turnState';
 import { createAgentCheckpoint, listAgentCheckpoints, restoreAgentCheckpoint } from './checkpoints';
+import { placeholderDiagnostics } from './placeholderLint';
+import { normalizeRepoPath } from '../paths';
 import { planVerification, parseVerifyOutput, formatVerifyReport, type VerifyError, type VerifyReport } from './verifyProject';
 import { parseGitignore, isIgnoredPath, type GitignoreRule } from './gitignore';
 import { PROJECT_MEMORY_TOOLS, PROJECT_MEMORY_SCHEMAS, handleMemoryRead, handleMemoryNote } from './projectMemory';
@@ -22,6 +24,18 @@ import { SEMANTIC_SEARCH_TOOLS, SEMANTIC_SEARCH_SCHEMA, handleSemanticSearch } f
 import { WEB_TOOLS, WEB_TOOL_SCHEMAS, handleWebSearch, handleFetchUrl, handlePreviewInspect } from './webTools';
 import { INTERACTION_TOOLS, INTERACTION_SCHEMAS, handleAskUser, handleSpawnSubagent } from './subagent';
 import { DIFF_REVIEW_TOOLS, DIFF_REVIEW_SCHEMA, handleDiffReview } from './diffReview';
+
+const fallbackFileBackups = new Map<string, string>();
+
+function storeFallbackBackup(workspaceId: string, path: string, content: string): string {
+  const key = `${workspaceId}:${normalizeRepoPath(path)}:${Date.now()}`;
+  fallbackFileBackups.set(key, content);
+  if (fallbackFileBackups.size > 24) {
+    const oldest = fallbackFileBackups.keys().next().value;
+    if (oldest) fallbackFileBackups.delete(oldest);
+  }
+  return key;
+}
 
 /**
  * The workspace tools an assistant turn may call to explore and change the
@@ -1122,7 +1136,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         // too large to have entered the context honestly, which is refused.
         const turn = getTurn(workspaceId);
         let autoReadNote = '';
-        if (turn && !turn.reads.has(normalized)) {
+        if (turn && !hasTurnRead(turn, normalized)) {
           if (current && current.content.length > AUTO_READ_LIMIT) {
             return refusal(`${path} is ${current.content.length} characters and was not read this turn, so it is too large to auto-read. read_file it first (a line range covering the change is enough), then retry ${call.name}.`);
           }
@@ -1141,16 +1155,17 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             if (risk) {
               return { ok: false, content: '', error: `${risk} Use edit_file with an exact original snippet for targeted changes instead.` };
             }
-            // Overwriting a large existing file keeps a backup beside the
-            // workspace's own history rail; a failed backup refuses the write.
+            // Overwriting a large existing file keeps a backup outside the
+            // watched workspace (Electron userData) so Vite/Next HMR never reloads.
             if (current.content.length >= LARGE_FILE_BACKUP_THRESHOLD) {
-              const backupPath = `shadrox-backups/${normalized.replace(/\//g, '__')}.${Date.now()}.bak`;
               try {
-                const backup = await desktop.saveFiles(workspaceId, [{ name: backupPath, content: current.content, expectedVersion: null }]);
-                if (backup.errors.length > 0 || backup.saved.length !== 1) {
-                  throw new Error(backup.errors[0]?.message ?? 'the backup save returned no confirmation');
+                if (typeof desktop.backupFile === 'function') {
+                  const backup = await desktop.backupFile(workspaceId, normalized, current.content);
+                  backupNote = ` Previous version (${current.content.length} chars) backed up outside workspace (${backup.backupPath}).`;
+                } else {
+                  const backupKey = storeFallbackBackup(workspaceId, normalized, current.content);
+                  backupNote = ` Previous version (${current.content.length} chars) backed up in session store (${backupKey}).`;
                 }
-                backupNote = ` Previous version (${current.content.length} chars) backed up to ${backupPath}.`;
               } catch (error) {
                 return { ok: false, content: '', error: `Not written — ${path} is a large existing file (${current.content.length} chars) and its backup failed: ${error instanceof Error ? error.message : String(error)}. Use edit_file for targeted changes instead.` };
               }
@@ -1195,6 +1210,16 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           return { ok: false, content: '', error: `Not written — the change could not be verified: ${error instanceof Error ? error.message : String(error)}` };
         }
 
+        const prePlaceholderIssues = placeholderDiagnostics(normalized, content);
+        if (prePlaceholderIssues.length > 0) {
+          const first = prePlaceholderIssues[0];
+          return {
+            ok: false,
+            content: '',
+            error: `Not written — ${first.path}:${first.line} ${first.message} (${prePlaceholderIssues.length} placeholder issue(s) found).`
+          };
+        }
+
         // Version-pinned atomic save: the bridge refuses a path outside the
         // workspace, a symlink, a read-only rule doc, or a file that changed
         // since the read above, and reads the saved bytes back to confirm.
@@ -1205,9 +1230,9 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         }
         const verb = call.name === 'edit_file' ? 'Edited' : current ? 'Rewrote' : 'Created';
         let detail = `${verb} ${path} — saved to disk and verified (${content.length} chars).${matchModeNote}${autoReadNote}${backupNote}`;
-        // An edit answers with the file's fresh compiler problems, so a broken
+        // Any script write/edit answers with the file's fresh compiler problems, so a broken
         // change is visible in the same observation instead of a round later.
-        if (call.name === 'edit_file' && typeof desktop.diagnostics === 'function') {
+        if ((call.name === 'edit_file' || /\.(?:[cm]?ts|tsx|[cm]?js|jsx)$/i.test(normalized)) && typeof desktop.diagnostics === 'function') {
           try {
             const diagnostics = await desktop.diagnostics(workspaceId, undefined, [normalized]);
             const errors = diagnostics.diagnostics.filter((entry) => entry.severity === 'error');
@@ -1236,7 +1261,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         // READ-BEFORE-WRITE for deletes too: the model must have seen what it is
         // removing. A small unread file is auto-read; a large one is refused.
         const turn = getTurn(workspaceId);
-        if (turn && !turn.reads.has(normalized)) {
+        if (turn && !hasTurnRead(turn, normalized)) {
           try {
             const file = await desktop.readFile(workspaceId, path);
             if (file.content.length > AUTO_READ_LIMIT) {
@@ -1344,7 +1369,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
               return { ok: false, content: '', error: `apply_patch: could not read ${path}: ${error instanceof Error ? error.message : String(error)}. NOTHING was written.` };
             }
           }
-          if (turn && !turn.reads.has(path)) {
+          if (turn && !hasTurnRead(turn, path)) {
             if (current && current.content.length > AUTO_READ_LIMIT) {
               return refusal(`${path} is ${current.content.length} characters and was not read this turn, so it is too large to auto-read. read_file it first, then retry apply_patch. NOTHING was written.`);
             }
@@ -1399,6 +1424,15 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         } catch (error) {
           return { ok: false, content: '', error: `Not written — the patch could not be verified: ${error instanceof Error ? error.message : String(error)}` };
         }
+        const prePatchPlaceholderIssues = writes.flatMap((write) => placeholderDiagnostics(write.path, write.content));
+        if (prePatchPlaceholderIssues.length > 0) {
+          const first = prePatchPlaceholderIssues[0];
+          return {
+            ok: false,
+            content: '',
+            error: `Not written — ${first.path}:${first.line} ${first.message} (${prePatchPlaceholderIssues.length} placeholder issue(s) found; NOTHING was written).`
+          };
+        }
         const staged = await desktop.stageFiles(workspaceId, writes.map((write) => ({
           name: write.path,
           content: write.content,
@@ -1415,11 +1449,25 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           return { ok: false, content: '', error: `apply_patch was not committed: ${message}.${rollback}` };
         }
         const created = writes.filter((write) => currents.get(write.path) === null).map((write) => write.path);
+        const writtenPaths = writes.map((write) => write.path);
+        let patchDetail = `apply_patch: ${hunks.length} hunk(s) across ${writes.length} file(s) committed atomically — ${writtenPaths.join(', ')}.${created.length > 0 ? ` Created: ${created.join(', ')}.` : ''}`;
+        const scriptPaths = writtenPaths.filter((p) => /\.(?:[cm]?ts|tsx|[cm]?js|jsx)$/i.test(p));
+        if (scriptPaths.length > 0 && typeof desktop.diagnostics === 'function') {
+          try {
+            const diagnostics = await desktop.diagnostics(workspaceId, undefined, scriptPaths);
+            const errors = diagnostics.diagnostics.filter((entry) => entry.severity === 'error');
+            if (errors.length > 0) {
+              patchDetail += `\nDiagnostics after patch (${errors.length} error(s)):\n${errors.slice(0, 10).map((entry) => `  ${entry.file}:${entry.line + 1} ${entry.message}`).join('\n')}`;
+            }
+          } catch {
+            /* diagnostics are a bonus */
+          }
+        }
         return {
           ok: true,
-          content: `apply_patch: ${hunks.length} hunk(s) across ${writes.length} file(s) committed atomically — ${writes.map((write) => write.path).join(', ')}.${created.length > 0 ? ` Created: ${created.join(', ')}.` : ''}`,
+          content: clip(patchDetail),
           changedFiles: writes.length,
-          changedPaths: writes.map((write) => write.path),
+          changedPaths: writtenPaths,
           createdPaths: created
         };
       }

@@ -7,6 +7,7 @@ import {
   autonomyRunView,
   milestoneRows,
   runViewFor,
+  selectTaskMetrics,
   teamRunView,
   teamRows
 } from './runView';
@@ -255,3 +256,53 @@ test('a run that is ready but has not written anything is planning, not running'
   assert.equal(view?.canStop, true);
   assert.match(view?.statusLine ?? '', /planned$/);
 });
+
+test('teamRunView honors explicit isRunning=false so Pause/Stop unmount even on stale running status', () => {
+  const view = teamRunView(teamState([task({ status: 'running' })], { status: 'running' }), { isRunning: false });
+  assert.equal(view?.canStop, false);
+});
+
+test('teamRunView deduplicates Windows case-insensitive review and touched file paths', () => {
+  const prev = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', {
+    value: { shadroxDesktop: { platform: 'win32' } },
+    configurable: true,
+    writable: true
+  });
+  try {
+    const view = teamRunView(
+      teamState([
+        task({
+          expectedFiles: ['src/utils/rateLimiter.ts', 'src/utils/ratelimiter.ts'],
+          touchedFiles: ['src\\utils\\RATELIMITER.ts'],
+          pendingReview: ['src/utils/auth.ts', 'src\\utils\\AUTH.ts']
+        })
+      ])
+    );
+    assert.equal(view?.awaitingReview.length, 1);
+    assert.equal(view?.rows[0].files.length, 1);
+  } finally {
+    if (prev) Object.defineProperty(globalThis, 'window', prev);
+    else delete (globalThis as { window?: unknown }).window;
+  }
+});
+
+test('selectTaskMetrics matches teamRunView passed and total tallies cleanly', () => {
+  const tasks = [
+    task({ id: 't1', status: 'passed' }),
+    task({ id: 't2', status: 'failed' }),
+    task({ id: 't3', status: 'blocked' }),
+    task({ id: 't4', status: 'unverified' }),
+    task({ id: 't5', status: 'pending' }),
+    task({ id: 't6', status: 'running' })
+  ];
+  const metrics = selectTaskMetrics(tasks);
+  assert.equal(metrics.passed, 1);
+  assert.equal(metrics.total, 6);
+  assert.equal(metrics.unverified, 1);
+  assert.equal(metrics.tallyText, '1/6 passed · 1 unverified');
+  const view = teamRunView(teamState(tasks, { status: 'failed' }));
+  assert.equal(view?.progressLabel, '1/6 tasks');
+  assert.match(view?.statusLine ?? '', /^1 of 6 tasks passed/);
+});
+

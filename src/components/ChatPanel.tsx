@@ -44,6 +44,7 @@ import { applyTemplate, PROMPT_TEMPLATES } from '../lib/promptTemplates';
 import type { ChatMessage, PatchSet, RefineMode, SemanticStatus, SettingsTab, WorkspaceFile } from '../lib/types';
 import type { CheckpointMeta } from '../lib/history';
 import type { CheckpointDiff } from '../lib/checkpointDiff';
+import { dedupePaths } from '../lib/paths';
 import { TimelineSlider } from './TimelineSlider';
 import { ShadRoxLogo } from './Logo';
 
@@ -345,47 +346,86 @@ function OrchestrationCard({
       </div>
 
       {/* Structured Executive Summary Report */}
-      {report && (
-        <div className="mt-3 rounded-lg border border-ok/30 bg-ok/10 p-2.5 space-y-2">
-          <div className="flex items-center justify-between gap-2 border-b border-ok/30 pb-1.5">
-            <span className="font-semibold text-ok text-xs flex items-center gap-1.5">
-              <Check className="w-3.5 h-3.5 text-ok" />
-              Executive Summary Report
-            </span>
-            <span className="font-mono text-[9.5px] text-ok">
-              {report.tasksCompleted}/{report.totalTasks} tasks passed
-            </span>
-          </div>
-          <p className="text-[10.5px] text-ink-2 leading-relaxed">{report.overview}</p>
-          <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-ink-3 pt-1">
-            <div className="rounded bg-base/30 p-1.5 border border-line">
-              <span className="text-ink-4 block text-[9px] uppercase">Files Modified</span>
-              <span className="text-ok font-bold">{report.filesModified.length} file(s)</span>
-            </div>
-            <div className="rounded bg-base/30 p-1.5 border border-line">
-              <span className="text-ink-4 block text-[9px] uppercase">Tests Executed</span>
-              <span className="text-accent font-bold">{report.testsPassed ?? 0} / {report.testsRun ?? 0}</span>
-            </div>
-          </div>
-          {report.filesModified.length > 0 && (
-            <div className="flex flex-wrap gap-1 pt-1">
-              {report.filesModified.map((file) => (
-                <span key={file} className="rounded bg-overlay border border-line px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3">
-                  {file}
+      {report && (() => {
+        const dedupedFiles = dedupePaths(report.filesModified);
+        const failedOrIncomplete =
+          orchestration.status === 'failed' ||
+          report.mergeVerdict === 'broken' ||
+          report.mergeVerdict === 'conflicts' ||
+          (report.totalTasks > 0 && report.tasksCompleted < report.totalTasks);
+        const cardTone = orchestration.status === 'failed' || report.mergeVerdict === 'broken'
+          ? 'border-danger/30 bg-danger/10'
+          : failedOrIncomplete
+            ? 'border-warn/30 bg-warn/10'
+            : 'border-ok/30 bg-ok/10';
+        const headerTone = orchestration.status === 'failed' || report.mergeVerdict === 'broken'
+          ? 'text-danger'
+          : failedOrIncomplete
+            ? 'text-warn'
+            : 'text-ok';
+        const borderTone = orchestration.status === 'failed' || report.mergeVerdict === 'broken'
+          ? 'border-danger/30'
+          : failedOrIncomplete
+            ? 'border-warn/30'
+            : 'border-ok/30';
+        const mergeBadgeTone =
+          report.mergeVerdict === 'clean'
+            ? 'border-ok/30 bg-ok/10 text-ok'
+            : report.mergeVerdict === 'broken' || report.mergeVerdict === 'conflicts'
+              ? 'border-danger/30 bg-danger/10 text-danger'
+              : 'border-warn/30 bg-warn/10 text-warn';
+
+        return (
+          <div className={`mt-3 rounded-lg border p-2.5 space-y-2 ${cardTone}`}>
+            <div className={`flex flex-wrap items-center justify-between gap-2 border-b pb-1.5 ${borderTone}`}>
+              <span className={`font-semibold text-xs flex items-center gap-1.5 ${headerTone}`}>
+                {failedOrIncomplete
+                  ? <AlertTriangle className={`w-3.5 h-3.5 ${headerTone}`} />
+                  : <Check className={`w-3.5 h-3.5 ${headerTone}`} />}
+                Executive Summary Report
+              </span>
+              <div className="flex items-center gap-1.5">
+                {report.mergeVerdict && (
+                  <span className={`rounded-full border px-1.5 py-px font-mono text-[9px] uppercase ${mergeBadgeTone}`}>
+                    Integration: {report.mergeVerdict}
+                  </span>
+                )}
+                <span className={`font-mono text-[9.5px] ${headerTone}`}>
+                  {report.tasksCompleted}/{report.totalTasks} tasks passed
                 </span>
-              ))}
+              </div>
             </div>
-          )}
-          {report.openIssues && report.openIssues.length > 0 && (
-            <div className="mt-1 border-t border-ok/30 pt-1 text-[10px] text-warn font-mono space-y-0.5">
-              <span className="text-ink-4 uppercase text-[9px]">Open Follow-ups:</span>
-              {report.openIssues.map((issue, idx) => (
-                <div key={idx}>• {issue}</div>
-              ))}
+            <p className="text-[10.5px] text-ink-2 leading-relaxed">{report.overview}</p>
+            <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-ink-3 pt-1">
+              <div className="rounded bg-base/30 p-1.5 border border-line">
+                <span className="text-ink-4 block text-[9px] uppercase">Files Modified</span>
+                <span className={`${headerTone} font-bold`}>{dedupedFiles.length} file(s)</span>
+              </div>
+              <div className="rounded bg-base/30 p-1.5 border border-line">
+                <span className="text-ink-4 block text-[9px] uppercase">Tests Executed</span>
+                <span className="text-accent font-bold">{report.testsPassed ?? 0} / {report.testsRun ?? 0}</span>
+              </div>
             </div>
-          )}
-        </div>
-      )}
+            {dedupedFiles.length > 0 && (
+              <div className="flex flex-wrap gap-1 pt-1">
+                {dedupedFiles.map((file) => (
+                  <span key={file} className="rounded bg-overlay border border-line px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3">
+                    {file}
+                  </span>
+                ))}
+              </div>
+            )}
+            {report.openIssues && report.openIssues.length > 0 && (
+              <div className={`mt-1 border-t pt-1 text-[10px] text-warn font-mono space-y-0.5 ${borderTone}`}>
+                <span className="text-ink-4 uppercase text-[9px]">Open Follow-ups:</span>
+                {report.openIssues.map((issue, idx) => (
+                  <div key={idx}>• {issue}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {orchestration.progress && orchestration.progress.length > 0 && (
         <details className="mt-2 pl-8">

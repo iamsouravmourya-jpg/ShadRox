@@ -16,10 +16,69 @@
  */
 
 import type { Milestone, MilestoneStatus, RunState, RunStatus } from '../autonomy/types';
+import { dedupePaths, hasTrackedPath } from '../paths';
 import { findAgent } from './roles';
 import type { TaskStatus, TeamState, TeamTask } from './types';
 
 export type RunViewStatus = 'planning' | 'running' | 'done' | 'failed' | 'paused' | 'stopped';
+
+export interface TaskMetrics {
+  passed: number;
+  unverified: number;
+  failed: number;
+  blocked: number;
+  stopped: number;
+  pending: number;
+  running: number;
+  total: number;
+  tallyText: string;
+}
+
+/**
+ * Single source of truth for team task & solo milestone counts used across
+ * UI card headers, RunViewModel summaries, and team Executive Summary Reports.
+ */
+export function selectTaskMetrics(
+  items: readonly { status: TaskStatus | MilestoneStatus }[]
+): TaskMetrics {
+  let passed = 0;
+  let unverified = 0;
+  let failed = 0;
+  let blocked = 0;
+  let stopped = 0;
+  let pending = 0;
+  let running = 0;
+
+  for (const item of items) {
+    switch (item.status) {
+      case 'passed':
+        passed += 1;
+        break;
+      case 'unverified':
+        unverified += 1;
+        break;
+      case 'failed':
+        failed += 1;
+        break;
+      case 'blocked':
+        blocked += 1;
+        break;
+      case 'stopped':
+        stopped += 1;
+        break;
+      case 'running':
+        running += 1;
+        break;
+      default:
+        pending += 1;
+        break;
+    }
+  }
+
+  const total = items.length;
+  const tallyText = `${passed}/${total} passed${unverified ? ` · ${unverified} unverified` : ''}`;
+  return { passed, unverified, failed, blocked, stopped, pending, running, total, tallyText };
+}
 
 export interface RunViewRow {
   id: string;
@@ -109,12 +168,8 @@ const NOUN: Record<RunViewModel['kind'], { unit: string; units: string }> = {
 };
 
 function filesOf(declared: readonly string[], touched: readonly string[], review: readonly string[]): string[] {
-  const merged: string[] = [];
-  for (const path of [...touched, ...declared]) {
-    if (!merged.includes(path)) merged.push(path);
-    if (merged.length >= MAX_VIEW_FILES) break;
-  }
-  return merged.filter((path) => !review.includes(path)).slice(0, MAX_VIEW_FILES);
+  const merged = dedupePaths([...touched, ...declared]);
+  return merged.filter((path) => !hasTrackedPath(review, path)).slice(0, MAX_VIEW_FILES);
 }
 
 /** The one thing a user needs from a red row: which other row is the reason. */
@@ -157,9 +212,8 @@ function checkFor(task: TeamTask | Milestone): string | null {
 }
 
 function countDone(rows: readonly RunViewRow[]): { done: number; total: number } {
-  const total = rows.length;
-  const done = rows.filter((row) => row.status === 'passed').length;
-  return { done, total };
+  const metrics = selectTaskMetrics(rows);
+  return { done: metrics.passed, total: metrics.total };
 }
 
 function reviewLineOf(paths: readonly string[]): string | null {
@@ -222,7 +276,7 @@ function assemble(
   error: string | undefined,
   options: RunViewOptions
 ): RunViewModel {
-  const awaitingReview = [...new Set(rows.flatMap((row) => row.review))];
+  const awaitingReview = dedupePaths(rows.flatMap((row) => row.review));
   const { done, total } = countDone(rows);
   const noun = NOUN[kind];
   const head = status === 'planning'
@@ -239,6 +293,9 @@ function assemble(
             ? `${done} of ${total} ${noun.units} passed`
             : `${done} of ${total} ${noun.units} planned`;
   const statusLine = error && status !== 'running' ? firstSentence(`${head} — ${error}`, 300) : head;
+  const canStop = options.isRunning !== undefined
+    ? options.isRunning && (status === 'running' || status === 'planning')
+    : (status === 'running' || status === 'planning');
   return {
     kind,
     status,
@@ -251,7 +308,7 @@ function assemble(
     awaitingReview,
     reviewLine: reviewLineOf(awaitingReview),
     trace: traceOf(options.log),
-    canStop: status === 'running' || status === 'planning' || options.isRunning === true,
+    canStop,
     canResume: resumable(status, rows),
     error: error ? firstSentence(error, 300) : null
   };

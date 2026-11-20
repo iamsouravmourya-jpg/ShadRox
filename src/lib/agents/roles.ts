@@ -132,7 +132,7 @@ export function teamAgentViews(state: TeamState | null): AgentView[] {
  * Compose the instruction one agent is handed for one task: who it is, what it
  * owns, the task itself, the files it may touch, and what the team already knows.
  */
-export function buildTaskInstruction(task: TeamTask, sharedContext: string): string {
+export function buildTaskInstruction(task: TeamTask, sharedContext: string, workspaceManifest?: string): string {
   const spec = findAgent(task.assignee);
   const files =
     task.expectedFiles.length > 0
@@ -149,6 +149,10 @@ export function buildTaskInstruction(task: TeamTask, sharedContext: string): str
     '',
     files
   ];
+
+  if (workspaceManifest && workspaceManifest.trim()) {
+    sections.push('', workspaceManifest.trim());
+  }
 
   if (sharedContext) {
     sections.push('', 'WHAT THE OTHER AGENTS REPORTED BEFORE THIS TASK:', sharedContext);

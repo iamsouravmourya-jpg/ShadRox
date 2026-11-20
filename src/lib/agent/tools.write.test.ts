@@ -249,3 +249,50 @@ test('edit_file safely matches unique multi-line indentation differences while r
 
   assert.equal(locateUniqueMatch('  const x = 1;\n', '    const x = 1;').status, 'not_found');
 });
+
+test('large existing file rewrite uses backupFile outside workspace and never writes shadrox-backups into disk', async () => {
+  const large = Array.from({ length: 850 }, (_, i) => `export const item_${i} = ${i};`).join('\n');
+  assert.ok(large.length >= 20_000);
+  const backups: Array<{ path: string; content: string }> = [];
+  const disk = diskStub({ 'src/large.ts': large });
+  const bridge = {
+    ...disk.bridge,
+    backupFile: async (_id: string, path: string, content: string) => {
+      backups.push({ path, content });
+      return { backupPath: `/userData/file-backups/${path}.bak` };
+    }
+  };
+  await withBridge(bridge, async () => {
+    const replacement = Array.from({ length: 850 }, (_, i) => `export const item_${i} = ${i + 1};`).join('\n');
+    const outcome = await runTool('ws', { name: 'write_file', args: { path: 'src/large.ts', content: replacement } });
+    assert.equal(outcome.ok, true);
+    assert.equal(backups.length, 1);
+    assert.equal(backups[0].path, 'src/large.ts');
+    assert.equal(disk.writes.some((w) => w.name.includes('shadrox-backups')), false);
+  });
+});
+
+test('write_file and edit_file reject placeholder stub code before saving', async () => {
+  const disk = diskStub({ 'src/api.ts': 'export const title = "Intro";\n' });
+  await withBridge(disk.bridge, async () => {
+    const badWrite = await runTool('ws', {
+      name: 'write_file',
+      args: { path: 'src/stub.ts', content: "export const data = { courseTitle: '', // Retrieve course title if needed\n};" }
+    });
+    assert.equal(badWrite.ok, false);
+    assert.match(badWrite.error as string, /Placeholder/i);
+    assert.equal(disk.writes.length, 0);
+
+    const badEdit = await runTool('ws', {
+      name: 'edit_file',
+      args: {
+        path: 'src/api.ts',
+        original: 'export const title = "Intro";',
+        updated: "export const title = ''; // TODO populate title"
+      }
+    });
+    assert.equal(badEdit.ok, false);
+    assert.match(badEdit.error as string, /Placeholder/i);
+    assert.equal(disk.writes.length, 0);
+  });
+});

@@ -58,6 +58,9 @@ import { analyzeProjectStack, formatArchitectureSummary } from './lib/agent/proj
 import { computeLoopContextBudgetChars } from './lib/agent/loopContext';
 import { executedToolCallCount, runAgentTurn } from './lib/agents/turnRunner';
 import { isProtectedAgentWritePath } from './lib/agents/applyPolicy';
+import { selectTaskMetrics } from './lib/agents/runView';
+import { formatWorkspaceManifestBlock, parseWorkspaceManifest } from './lib/agents/workspaceManifest';
+import { isRetryableCoordinatorError, withCoordinatorBackoff } from './lib/agents/coordinatorResilience';
 import { bundleDocument, bundleProject, canBundle, describeBundleError } from './lib/bundler';
 import {
   getDesktopBridge,
@@ -302,7 +305,7 @@ interface PickerReport {
   durationMs: number;
 }
 
-function orchestrationStatusOfRun(status: string): OrchestrationStatus {
+function orchestrationStatusOfRun(status: string, isRunning = true): OrchestrationStatus {
   switch (status) {
     case 'done':
       return 'done';
@@ -313,9 +316,14 @@ function orchestrationStatusOfRun(status: string): OrchestrationStatus {
       // and the card offers Resume only when it can.
       return 'paused';
     case 'cancelled':
+    case 'stopped':
       return 'stopped';
+    case 'planning':
+    case 'ready':
+    case 'running':
+      return isRunning ? 'running' : 'failed';
     default:
-      return 'running';
+      return isRunning ? 'running' : 'failed';
   }
 }
 
@@ -1975,6 +1983,33 @@ export default function App() {
     [byok.activeProvider, byok.baseUrl, byok.activeKey]
   );
 
+  const readWorkspaceConfigText = useCallback(
+    async (relativePath: string): Promise<string | null> => {
+      const target = normalizeSlashes(relativePath).toLowerCase();
+      const buffered = workspace.files.find((file) => normalizeSlashes(file.name).toLowerCase() === target);
+      if (buffered) return buffered.content;
+      if (nativeWorkspaceId && desktop) {
+        try {
+          return (await desktop.readFile(nativeWorkspaceId, relativePath)).content;
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    },
+    [workspace.files, nativeWorkspaceId, desktop]
+  );
+
+  const getWorkspaceManifest = useCallback(async (): Promise<string | null> => {
+    const pkgText = await readWorkspaceConfigText('package.json');
+    const tsconfigText =
+      (await readWorkspaceConfigText('tsconfig.json')) ??
+      (await readWorkspaceConfigText('tsconfig.app.json'));
+    const manifest = parseWorkspaceManifest(pkgText, tsconfigText);
+    if (!manifest.hasPackageJson && !manifest.hasTsconfig) return null;
+    return formatWorkspaceManifestBlock(manifest);
+  }, [readWorkspaceConfigText]);
+
   const buildSystemContext = useCallback(
     async (
       query: string,
@@ -2013,6 +2048,21 @@ export default function App() {
         }
         const arch = analyzeProjectStack(inventory.map((entry) => entry.path), pkgText);
         core.push(formatArchitectureSummary(arch), '');
+
+        const tsconfigEntry = contextFiles.find((file) => {
+          const lower = normalizeSlashes(file.name).toLowerCase();
+          return lower === 'tsconfig.json' || lower === 'tsconfig.app.json';
+        });
+        let tsconfigText: string | null = tsconfigEntry?.content ?? null;
+        if (tsconfigText === null && nativeWorkspaceId && desktop) {
+          tsconfigText =
+            (await readWorkspaceConfigText('tsconfig.json')) ??
+            (await readWorkspaceConfigText('tsconfig.app.json'));
+        }
+        const manifest = parseWorkspaceManifest(pkgText, tsconfigText);
+        if (manifest.hasPackageJson || manifest.hasTsconfig) {
+          core.push(formatWorkspaceManifestBlock(manifest), '');
+        }
       }
       const intentContext = intent.getContext({
         seeds: [
@@ -4473,14 +4523,14 @@ export default function App() {
     [workspace]
   );
 
-  /** One model call that returns raw text, used for planning. */
+  /** One model call that returns raw text, used for planning. Surfaces root upstream errors verbatim. */
   const askPlanText = useCallback(
     async (prompt: string): Promise<string> => {
       if (!byok.activeKey) {
         throw new Error('No API key found. Add one in Settings → Models & Keys.');
       }
       let text = '';
-      let failed = false;
+      let streamError: string | null = null;
       const controller = new AbortController();
       await streamChat(
         {
@@ -4496,14 +4546,17 @@ export default function App() {
           onDelta: (chunk) => {
             text += chunk;
           },
-          onError: () => {
-            failed = true;
+          onError: (message) => {
+            streamError = message || 'Upstream planner stream error';
           }
         }
-      ).catch(() => {
-        failed = true;
+      ).catch((cause: unknown) => {
+        if (!streamError) {
+          streamError = cause instanceof Error ? cause.message : String(cause);
+        }
       });
-      if (failed || !text.trim()) throw new Error('The planner did not return a plan.');
+      if (streamError) throw new Error(streamError);
+      if (!text.trim()) throw new Error('The planner returned an empty response.');
       return text;
     },
     [byok.activeKey, byok.activeProvider, byok.baseUrl, byok.selectedModel]
@@ -4584,20 +4637,36 @@ export default function App() {
               let text = '';
               let error: string | null = null;
               try {
-                await streamChat({
-                  provider: byok.activeProvider,
-                  baseUrl: byok.baseUrl,
-                  model: byok.selectedModel,
-                  apiKey: byok.activeKey,
-                  messages,
-                  systemInstruction: fit.systemInstruction,
-                  temperature: byok.temperature,
-                  thinking: mode.thinking,
-                  signal: request.signal
-                }, {
-                  onDelta: (chunk) => { text += chunk; },
-                  onError: (message) => { error = message; }
-                });
+                const attemptResult = await withCoordinatorBackoff(
+                  async () => {
+                    let roundText = '';
+                    let streamErr: string | null = null;
+                    await streamChat({
+                      provider: byok.activeProvider,
+                      baseUrl: byok.baseUrl,
+                      model: byok.selectedModel,
+                      apiKey: byok.activeKey,
+                      messages,
+                      systemInstruction: fit.systemInstruction,
+                      temperature: byok.temperature,
+                      thinking: mode.thinking,
+                      signal: request.signal
+                    }, {
+                      onDelta: (chunk) => { roundText += chunk; },
+                      onError: (message) => { streamErr = message; }
+                    });
+                    if (streamErr) {
+                      if (isRetryableCoordinatorError(streamErr)) {
+                        throw new Error(streamErr);
+                      }
+                      return { text: roundText, error: streamErr };
+                    }
+                    return { text: roundText, error: null };
+                  },
+                  { signal: request.signal }
+                );
+                text = attemptResult.text;
+                error = attemptResult.error;
               } catch (cause) {
                 error = cause instanceof Error ? cause.message : String(cause);
               }
@@ -4647,14 +4716,26 @@ export default function App() {
   const autonomyHost = useMemo<AutonomyHost>(
     () => ({
       runTurn: runAutonomousTurn,
-      getDiagnostics: async () => {
+      getDiagnostics: async (files) => {
         // `null` is the honest answer when no checker exists: returning [] here
         // used to read as "checked, found nothing" and hand milestones a pass
         // they had not earned.
         if (!desktop || !nativeWorkspaceId) return null;
-        const result = await desktop.diagnostics(nativeWorkspaceId);
+        const result = await desktop.diagnostics(nativeWorkspaceId, diagnosticsOverrides, files);
         return result.diagnostics;
       },
+      readFile: async (path) => {
+        const canonical = normalizeSlashes(path).toLowerCase();
+        const buffered = workspace.files.find((file) => normalizeSlashes(file.name).toLowerCase() === canonical);
+        if (buffered) return buffered.content;
+        if (!desktop || !nativeWorkspaceId) return null;
+        try {
+          return (await desktop.readFile(nativeWorkspaceId, path)).content;
+        } catch {
+          return null;
+        }
+      },
+      getWorkspaceManifest,
       listFiles: () => {
         const tree = workspace.workspace?.diskFileTree;
         if (tree && tree.length > 0) return tree.map((entry) => entry.path);
@@ -4694,7 +4775,16 @@ export default function App() {
         };
       }
     }),
-    [runAutonomousTurn, askPlanText, desktop, nativeWorkspaceId, workspace.workspace?.diskFileTree, workspace.files]
+    [
+      runAutonomousTurn,
+      askPlanText,
+      desktop,
+      nativeWorkspaceId,
+      diagnosticsOverrides,
+      getWorkspaceManifest,
+      workspace.workspace?.diskFileTree,
+      workspace.files
+    ]
   );
 
   const autonomy = useAutonomyRun({
@@ -4714,6 +4804,8 @@ export default function App() {
     host: autonomyHost,
     rootPath: workspaceRootPath,
     budget: DEFAULT_TEAM_BUDGET,
+    provider: byok.activeProvider,
+    isFreeTier: activeModel?.tier === 'free',
     onCheckpoint: async (goal) => {
       await autonomyCheckpoint(goal);
     }
@@ -4812,47 +4904,45 @@ export default function App() {
 
     const status: OrchestrationStatus = !matches
       ? 'failed'
-      : orchestrationStatusOfRun(state!.status);
+      : orchestrationStatusOfRun(state!.status, running);
 
     let content: string;
     let detail: string;
     if (active.kind === 'autonomy') {
       const milestones = autonomy.state?.milestones ?? [];
-      const passed = milestones.filter((milestone) => milestone.status === 'passed').length;
-      const unverified = milestones.filter((milestone) => milestone.status === 'unverified').length;
+      const metrics = selectTaskMetrics(milestones);
       const touched = milestones.filter((milestone) =>
         milestone.attempts.some((attempt) => attempt.patchesApplied > 0)
       ).length;
       // Unverified is named in the same breath as passed, never folded into it.
-      const tally = (total: number) => `${passed}/${total} passed${unverified ? ` · ${unverified} unverified` : ''}`;
+      const tally = metrics.tallyText;
       detail = matches
-        ? `${tally(milestones.length)}${touched ? ` · ${touched} touched files` : ''}`
+        ? `${tally}${touched ? ` · ${touched} touched files` : ''}`
         : 'The run did not start.';
       content = !matches
         ? 'The autonomous run could not start. Check the key and folder, then try again.'
         : status === 'done'
-          ? `Autonomous run finished: **${tally(milestones.length)}**.`
+          ? `Autonomous run finished: **${tally}**.`
           : status === 'stopped'
-            ? `Autonomous run stopped. **${tally(milestones.length)}** had settled.`
+            ? `Autonomous run stopped. **${tally}** had settled.`
             : status === 'paused'
-              ? `Autonomous run paused after **${tally(milestones.length)}**. Resume continues from the milestone it left off at.`
+              ? `Autonomous run paused after **${tally}**. Resume continues from the milestone it left off at.`
               : `Autonomous run failed${autonomy.state?.error ? `: ${autonomy.state.error.replace(/\.$/, '')}` : ''}.`;
     } else {
       const tasks = team.state?.tasks ?? [];
-      const passed = tasks.filter((task) => task.status === 'passed').length;
-      const unverified = tasks.filter((task) => task.status === 'unverified').length;
-      const tally = (total: number) => `${passed}/${total} passed${unverified ? ` · ${unverified} unverified` : ''}`;
+      const metrics = selectTaskMetrics(tasks);
+      const tally = metrics.tallyText;
       detail = matches
-        ? tally(tasks.length)
+        ? tally
         : 'The team did not start.';
       content = !matches
         ? 'The agent team could not start. Check the key and folder, then try again.'
         : status === 'done'
-          ? `Agent team finished: **${tally(tasks.length)}**.`
+          ? `Agent team finished: **${tally}**.`
           : status === 'stopped'
-            ? `Agent team stopped. **${tally(tasks.length)}** had settled.`
+            ? `Agent team stopped. **${tally}** had settled.`
             : status === 'paused'
-              ? `Agent team paused after **${tally(tasks.length)}**. A team plans once, so continuing means starting the goal again.`
+              ? `Agent team paused after **${tally}**. A team plans once, so continuing means starting the goal again.`
               : `Agent team failed${team.state?.error ? `: ${team.state.error.replace(/\.$/, '')}` : ''}.`;
     }
 
@@ -6062,25 +6152,59 @@ export default function App() {
     />
   );
 
+  const previewCapability = useMemo(
+    () => previewCapabilityMessage(workspace.activeFile ?? undefined),
+    [workspace.activeFile]
+  );
+  const handleChoosePreviewProject = useCallback(
+    (project: PreviewProjectCandidate) => {
+      void startLocalPreview(undefined, project);
+    },
+    [startLocalPreview]
+  );
+  const handleCancelProjectSelection = useCallback(() => setPreviewProjects([]), []);
+  const handleStartLocalPreview = useCallback(() => {
+    void startLocalPreview();
+  }, [startLocalPreview]);
+  const handleStopLocalPreview = useCallback(() => {
+    void stopLocalPreview();
+  }, [stopLocalPreview]);
+  const handleClearLocalPreviewLogs = useCallback(() => setLocalRuntimeLogs([]), []);
+  const handleDismissPreviewError = useCallback(() => setRuntimeError(null), []);
+  const handlePreviewRevealSource = useCallback(
+    (target: RevealSourceTarget) => {
+      void handleRevealSource(target);
+    },
+    [handleRevealSource]
+  );
+  const handleTogglePreviewFullscreen = useCallback(
+    () => setIsPreviewFullscreen((fullscreen) => !fullscreen),
+    []
+  );
+  const handleClosePreview = useCallback(() => {
+    setIsPreviewFullscreen(false);
+    setIsPreviewOpen(false);
+  }, []);
+
   const previewPane = (
     <PreviewPane
       document={previewDocument}
-      capabilityMessage={previewCapabilityMessage(workspace.activeFile ?? undefined)}
+      capabilityMessage={previewCapability}
       workspaceId={nativeWorkspaceId ?? undefined}
       backendEnabled={localRuntime.status !== 'idle'}
       localPreviewAvailable={localPreviewAvailable}
       localPreviewState={localRuntime}
       localPreviewLogs={localRuntimeLogs}
       previewProjects={previewProjects}
-      onChoosePreviewProject={(project) => void startLocalPreview(undefined, project)}
-      onCancelProjectSelection={() => setPreviewProjects([])}
-      onStartLocalPreview={() => void startLocalPreview()}
-      onStopLocalPreview={() => void stopLocalPreview()}
-      onClearLocalPreviewLogs={() => setLocalRuntimeLogs([])}
+      onChoosePreviewProject={handleChoosePreviewProject}
+      onCancelProjectSelection={handleCancelProjectSelection}
+      onStartLocalPreview={handleStartLocalPreview}
+      onStopLocalPreview={handleStopLocalPreview}
+      onClearLocalPreviewLogs={handleClearLocalPreviewLogs}
       viewport={viewport}
       onViewportChange={setViewport}
       runtimeError={runtimeError}
-      onDismissError={() => setRuntimeError(null)}
+      onDismissError={handleDismissPreviewError}
       onRuntimeError={setRuntimeError}
       isBundling={bundleState.status === 'loading'}
       bundleError={bundleState.status === 'error' ? bundleState.message : null}
@@ -6088,15 +6212,12 @@ export default function App() {
       autoReload={previewAutoReload}
       onToggleAutoReload={togglePreviewAutoReload}
       lastReloadAt={previewSync.lastReloadAt}
-      onRevealSource={(target) => void handleRevealSource(target)}
+      onRevealSource={handlePreviewRevealSource}
       onBehaviorEvent={handleBehaviorEvent}
       onFramePaint={acceptance.onFramePaint}
       fullscreen={isPreviewFullscreen}
-      onToggleFullscreen={() => setIsPreviewFullscreen((fullscreen) => !fullscreen)}
-      onClose={() => {
-        setIsPreviewFullscreen(false);
-        setIsPreviewOpen(false);
-      }}
+      onToggleFullscreen={handleTogglePreviewFullscreen}
+      onClose={handleClosePreview}
     />
   );
 
