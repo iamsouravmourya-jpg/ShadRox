@@ -175,6 +175,10 @@ interface ChatPanelProps {
   onRejectPlan?: (messageId: string) => void;
   /** Real-time status string emitted while the agent is planning, reading, editing, or testing. */
   activeStatusMessage?: string | null;
+  /** A pending ask_user question: the tool loop is paused until the user picks or dismisses. */
+  askUserPrompt?: { id: string; question: string; options: string[] } | null;
+  /** answer=null dismisses the question (the agent proceeds with a stated assumption). */
+  onAnswerAskUser?: (id: string, answer: string | null) => void;
 }
 
 const TIER_STYLES: Record<ModelTier, string> = {
@@ -1095,7 +1099,9 @@ export function ChatPanel({
   onDismissContextNotice,
   onApprovePlan,
   onRejectPlan,
-  activeStatusMessage = null
+  activeStatusMessage = null,
+  askUserPrompt = null,
+  onAnswerAskUser
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -1991,6 +1997,38 @@ export function ChatPanel({
 
       {/* Input Area & Prompt Box */}
       <div className="shrink-0 border-t border-line p-3 bg-base">
+
+        {/* ask_user: the tool loop is paused on this question until a pick or dismiss. */}
+        {askUserPrompt && onAnswerAskUser && (
+          <div className="mb-2 rounded-lg border border-accent-line bg-accent-soft px-3 py-2.5" role="dialog" aria-label="Agent question">
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-[12px] font-medium leading-snug text-ink">{askUserPrompt.question}</p>
+              <button
+                type="button"
+                onClick={() => onAnswerAskUser(askUserPrompt.id, null)}
+                aria-label="Dismiss question and let the agent decide"
+                className="shrink-0 rounded-md p-0.5 text-ink-4 hover:text-ink cursor-pointer"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {askUserPrompt.options.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => onAnswerAskUser(askUserPrompt.id, option)}
+                  className="rounded-lg border border-accent-line bg-base px-2.5 py-1 text-[11px] text-ink hover:bg-accent-soft cursor-pointer"
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[10px] text-ink-4">
+              The agent is paused until you choose. Dismissing lets it proceed with a stated assumption.
+            </p>
+          </div>
+        )}
 
         {/* Live Agent Phase / Activity Status */}
         {activeStatusMessage && (

@@ -23,6 +23,8 @@ export interface DirectoryEntry {
   name: string;
   path: string;
   kind: 'file' | 'directory';
+  /** Byte size for files; absent for directories and on older bridges. */
+  size?: number;
 }
 
 export interface DirectoryPage {
@@ -47,13 +49,29 @@ export interface ContentSearchOptions {
   limit?: number;
   /** Max matching lines one file contributes (default 3). */
   perFile?: number;
+  /** Context lines returned above/below each match (0-5, default 0). */
+  context?: number;
 }
 
 export interface ContentSearchResult {
-  matches: Array<{ path: string; line: number; column: number; preview: string }>;
+  matches: Array<{
+    path: string;
+    line: number;
+    column: number;
+    preview: string;
+    /** Present when the search asked for context; older bridges omit them. */
+    contextBefore?: string[];
+    contextAfter?: string[];
+  }>;
   truncated: boolean;
   filesScanned: number;
   error: string | null;
+  /** How many lines each file contributed (capped by perFile). */
+  matchesByFile?: Record<string, number>;
+  /** Total matching lines per file BEFORE the perFile cap — "N more matches". */
+  totalByFile?: Record<string, number>;
+  /** Directories never opened because a cap was hit. */
+  dirsSkipped?: string[];
 }
 
 export interface WorkspaceChange {

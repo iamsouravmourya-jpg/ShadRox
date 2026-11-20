@@ -139,6 +139,13 @@ const SPECIAL_CASES: MessageMatcher[] = [
     // aider: `insufficient credits` + `"code":402` is deterministic, never retry.
     test: (m) => /insufficient credits/i.test(m) && /(?:^|[^0-9])402(?:[^0-9]|$)/.test(m),
     name: 'InsufficientCredits'
+  },
+  {
+    // Gemini answers "Quota exceeded ... limit: 0" for models a free-tier key
+    // does not include. A zero quota never refills, so retrying only spends
+    // more of the day's request budget on the same refusal.
+    test: (m) => /quota/i.test(m) && /limit:\s*0(?:\D|$)/i.test(m),
+    name: 'QuotaExhausted'
   }
 ];
 
@@ -146,12 +153,15 @@ const SPECIAL_CASES: MessageMatcher[] = [
 const SPECIAL_DESCRIPTIONS: Record<string, string> = {
   APIConnectionError:
     'OpenRouter or the upstream API provider is down, overloaded or rate limiting your requests.',
-  InsufficientCredits: 'Insufficient credits with the API provider. Please add credits.'
+  InsufficientCredits: 'Insufficient credits with the API provider. Please add credits.',
+  QuotaExhausted:
+    'This key has no available quota for this model — waiting will not restore it. Switch models in Settings or check the plan/billing on the provider account.'
 };
 
 const SPECIAL_RETRY: Record<string, boolean> = {
   APIConnectionError: true,
-  InsufficientCredits: false
+  InsufficientCredits: false,
+  QuotaExhausted: false
 };
 
 /**
@@ -193,13 +203,7 @@ function exInfoFor(name: string, special: boolean): ExInfo {
  */
 export function classifyMessage(message: string): ExInfo {
   for (const matcher of SPECIAL_CASES) {
-    if (matcher.test(message)) {
-      // The OpenRouter quirk is an APIConnectionError; the credits case has
-      // its own pseudo-class name.
-      return matcher.name === 'APIConnectionError'
-        ? exInfoFor('APIConnectionError', true)
-        : exInfoFor('InsufficientCredits', true);
-    }
+    if (matcher.test(message)) return exInfoFor(matcher.name, true);
   }
   for (const matcher of MESSAGE_CLASSES) {
     if (matcher.test(message)) return exInfoFor(matcher.name, false);
@@ -225,11 +229,7 @@ export function classifyFailure(status: number | null | undefined, message?: str
   const text = message?.trim();
   if (text) {
     for (const matcher of SPECIAL_CASES) {
-      if (matcher.test(text)) {
-        return matcher.name === 'APIConnectionError'
-          ? exInfoFor('APIConnectionError', true)
-          : exInfoFor('InsufficientCredits', true);
-      }
+      if (matcher.test(text)) return exInfoFor(matcher.name, true);
     }
     // A status code outranks prose: a 401 with the word "connection" in the
     // body must not be promoted into the retryable APIConnectionError bucket.

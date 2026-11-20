@@ -165,3 +165,72 @@ test('BUG-12: temperature and stream_options rejections stack without re-adding 
   assert.deepEqual(result.droppedFeatures, ['temperature', 'stream_options']);
   assert.equal(result.attempts, 3);
 });
+
+const toolDef = [{
+  name: 'read_file',
+  description: 'Read one file.',
+  parameters: { type: 'object', properties: { path: { type: 'string' } } }
+}];
+
+/** The shape gateways use when they reject a model's tool support mid-stream. */
+const streamedError = (message: string) => sse([{ error: { message, type: 'invalid_request_error' } }]);
+
+test('a temperature rejection first does not strand the tools rung', async () => {
+  // Gateways name one unsupported field per rejection; the tools rung has to be
+  // re-checked after the temperature resend instead of being walked past.
+  const { captured, result, error } = await outbound((attempt) => {
+    if (attempt === 0) return rejected(400, 'temperature is not supported by this model');
+    if (attempt === 1) return rejected(400, '`tool calling` is not supported with this model');
+    return okWithUsage();
+  }, { toolDefinitions: toolDef });
+  assert.equal(error, null);
+  assert.equal(captured.length, 3);
+  assert.equal('temperature' in captured[1].body, false);
+  assert.ok(Array.isArray(captured[1].body.tools), 'only the temperature is dropped first');
+  assert.equal('tools' in captured[2].body, false);
+  assert.deepEqual(result.droppedFeatures, ['temperature', 'tools']);
+  assert.equal(result.tokens, 30);
+});
+
+test('a tools rejection inside a 200 stream buys one tools-off resend', async () => {
+  // Groq validates tool support at generation time, so the rejection arrives as
+  // an SSE `error` frame on an already-200 response — the HTTP ladder is blind.
+  const { captured, result, error } = await outbound(
+    (attempt) => attempt === 0
+      ? streamedError('`tool calling` is not supported with this model')
+      : okWithUsage(),
+    { toolDefinitions: toolDef }
+  );
+  assert.equal(error, null);
+  assert.equal(captured.length, 2);
+  assert.ok(Array.isArray(captured[0].body.tools), 'the first request still offers tools');
+  assert.equal('tools' in captured[1].body, false, 'the resend never offers them again');
+  assert.equal(captured[1].body.temperature, 0.5, 'only tools are dropped');
+  assert.deepEqual(result.droppedFeatures, ['tools']);
+  assert.equal(result.tokens, 30);
+});
+
+test('a tools-off resend never replays text the user already received', async () => {
+  // One content delta escaped before the rejection, so a resend would duplicate
+  // it: the error must surface instead.
+  const partial = sse([
+    { choices: [{ delta: { content: 'partial answer' } }] },
+    { error: { message: '`tool calling` is not supported with this model', type: 'invalid_request_error' } }
+  ]);
+  const { captured, error } = await outbound((attempt) => (attempt === 0 ? partial : okWithUsage()), {
+    toolDefinitions: toolDef
+  });
+  assert.equal(captured.length, 1);
+  assert.ok(error instanceof UpstreamError);
+  assert.match((error as UpstreamError).message, /tool calling/);
+});
+
+test('an unrelated in-stream error is not resent', async () => {
+  const { captured, error } = await outbound(
+    () => streamedError('Invalid API key provided'),
+    { toolDefinitions: toolDef }
+  );
+  assert.equal(captured.length, 1);
+  assert.ok(error instanceof UpstreamError);
+  assert.match((error as UpstreamError).message, /Invalid API key/);
+});

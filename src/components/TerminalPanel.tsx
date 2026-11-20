@@ -55,6 +55,108 @@ import {
 import { formatTerminalDockEvent, isSafeCommandLine, setTerminalRunRouter, subscribeTerminalDockEvents } from '../lib/terminal/echoChannel';
 import type { TerminalDockEvent } from '../lib/terminal/echoChannel';
 
+/**
+ * Renderer-side write pacing for the pty stream.
+ *
+ * xterm's internal write buffer is unbounded: under a heavy build (npm install
+ * logs) IPC chunks arrive faster than they parse, the buffer grows without
+ * limit and the whole dock — typing included — freezes. This queue keeps at
+ * most MAX_TERMINAL_WRITE_QUEUE_BYTES pending, writes one coalesced batch at a
+ * time and only starts the next batch from the previous write's callback, so
+ * the event loop (keyboard, IPC, painting) always gets a turn. A tiny write
+ * arriving on an idle queue — an interactive prompt — is written synchronously
+ * and never waits behind a timer or a batch. If a producer outruns even that,
+ * the OLDEST queued bytes are dropped (scrollback is bounded anyway) and a
+ * visible marker reports how much was skipped; nothing is dropped silently.
+ *
+ * Written in plain JS syntax (types live in the callers) so the regression
+ * tests can extract and evaluate it without a DOM, like main.test.cjs does.
+ */
+export const MAX_TERMINAL_WRITE_QUEUE_BYTES = 512 * 1024;
+export const TERMINAL_WRITE_BATCH_BYTES = 64 * 1024;
+/** The transcript ring scans each push per line; keep pushes small so a coalesced burst stays cheap. */
+const TRANSCRIPT_RECORD_SLICE = 4096;
+
+export function createTerminalWriteQueue(options) {
+  const write = options.write;
+  const record = options.record || (() => {});
+  const onExit = options.onExit || (() => {});
+  const schedule = options.schedule || ((fn) => setTimeout(fn, 0));
+  const maxQueueBytes = options.maxQueueBytes ?? MAX_TERMINAL_WRITE_QUEUE_BYTES;
+  const batchBytes = options.batchBytes ?? TERMINAL_WRITE_BATCH_BYTES;
+  const queue = [];
+  let queuedBytes = 0;
+  let droppedBytes = 0;
+  let inFlight = false;
+  let exitAfterWrite = null;
+  let disposed = false;
+
+  const finishWrite = () => {
+    inFlight = false;
+    if (exitAfterWrite) {
+      const exit = exitAfterWrite;
+      exitAfterWrite = null;
+      if (!disposed) onExit(exit.exitCode);
+    }
+    if (!disposed && queue.length > 0) schedule(drain);
+  };
+
+  const writeNow = (text) => {
+    inFlight = true;
+    record(text);
+    write(text, finishWrite);
+  };
+
+  const drain = () => {
+    if (disposed || inFlight || queue.length === 0) return;
+    let text = '';
+    if (droppedBytes > 0) {
+      text += `\r\n\x1b[90m[shadrox] skipped ${droppedBytes} bytes of output to keep the terminal responsive\x1b[0m\r\n`;
+      droppedBytes = 0;
+    }
+    while (queue.length > 0 && typeof queue[0] === 'string' && text.length < batchBytes) {
+      const chunk = queue.shift();
+      queuedBytes -= chunk.length;
+      text += chunk;
+    }
+    if (queue.length > 0 && typeof queue[0] !== 'string') exitAfterWrite = queue.shift();
+    if (text) { writeNow(text); return; }
+    if (exitAfterWrite) {
+      const exit = exitAfterWrite;
+      exitAfterWrite = null;
+      onExit(exit.exitCode);
+    }
+    if (queue.length > 0) schedule(drain);
+  };
+
+  return {
+    push(data) {
+      if (disposed || typeof data !== 'string' || data.length === 0) return;
+      // Fast path: an idle queue writes immediately, so a prompt with no
+      // trailing newline reaches the screen in the same turn it arrived.
+      if (!inFlight && queue.length === 0) { writeNow(data); return; }
+      queue.push(data);
+      queuedBytes += data.length;
+      while (queuedBytes > maxQueueBytes && queue.length > 1) {
+        const oldest = queue.shift();
+        if (typeof oldest === 'string') {
+          queuedBytes -= oldest.length;
+          droppedBytes += oldest.length;
+        }
+      }
+    },
+    pushExit(exitCode) {
+      if (disposed) return;
+      queue.push({ exitCode: exitCode ?? null });
+      if (!inFlight) schedule(drain);
+    },
+    drain,
+    stats() { return { queuedBytes, droppedBytes, items: queue.length, inFlight }; },
+    clear() { queue.length = 0; queuedBytes = 0; droppedBytes = 0; exitAfterWrite = null; },
+    dispose() { disposed = true; queue.length = 0; queuedBytes = 0; }
+  };
+}
+
 interface TerminalSurfaceHandle {
   terminal: XTerm;
   search: SearchAddon;
@@ -107,6 +209,17 @@ function TerminalSurface({
     let resizeFrame = 0;
     let spawnSequence = 0;
     const pendingOutput: TerminalOutput[] = [];
+    let pendingBytes = 0;
+    // Output can start streaming before createTerminal resolves; keep that
+    // window bounded too so a shell that floods at birth cannot grow it forever.
+    const holdPending = (output: TerminalOutput) => {
+      pendingOutput.push(output);
+      if (output.type === 'data' && output.data) pendingBytes += output.data.length;
+      while (pendingBytes > MAX_TERMINAL_WRITE_QUEUE_BYTES && pendingOutput.length > 1) {
+        const oldest = pendingOutput.shift();
+        if (oldest?.type === 'data' && oldest.data) pendingBytes -= oldest.data.length;
+      }
+    };
 
     const terminal = new XTerm({
       allowProposedApi: false,
@@ -142,31 +255,53 @@ function TerminalSurface({
       terminal.write('\x1b[90m[scrollback restored]\x1b[0m\r\n');
     }
 
-    const applyOutput = (output: TerminalOutput) => {
-      if (output.type === 'data' && output.data) {
-        const clean = terminalStateManager.feed(session.key, output.data);
-        appendTerminalTranscript(transcriptKey, clean);
-        terminal.write(clean);
-      }
-      if (output.type === 'exit') {
-        const line = `\r\n\x1b[90m[process exited with code ${output.exitCode ?? 'unknown'}]\x1b[0m\r\n`;
-        appendTerminalTranscript(transcriptKey, line);
-        terminal.write(line);
-        // The shell is gone: keep its id and every later keystroke is written to
-        // a dead session, which prints an error line forever. Restart re-spawns.
-        ptySessionId = null;
-        onStatus(session.key, 'exited');
+    // The shell-integration parser is fed for STATE only (cwd, running command,
+    // exit codes, silence). Its cleanText must never drive the display: it holds
+    // back any trailing ESC fragment that lacks a BEL/ST terminator — including
+    // complete CSI sequences like a colour reset or cursor move — until the NEXT
+    // chunk arrives. An interactive prompt ("enter first digit: ", "Overwrite?
+    // [y/N]") is exactly such a tail, and the next chunk never comes while the
+    // program waits on stdin, so the prompt stayed invisible. xterm's own parser
+    // handles those sequences correctly and silently consumes OSC 133/633/7, so
+    // the raw pty bytes go straight to the screen and the transcript.
+    const recordOutput = (text: string) => {
+      if (disposed) return;
+      terminalStateManager.feed(session.key, text);
+      for (let offset = 0; offset < text.length; offset += TRANSCRIPT_RECORD_SLICE) {
+        appendTerminalTranscript(transcriptKey, text.slice(offset, offset + TRANSCRIPT_RECORD_SLICE));
       }
     };
+
+    const applyExit = (exitCode: number | null) => {
+      if (disposed) return;
+      const line = `\r\n\x1b[90m[process exited with code ${exitCode ?? 'unknown'}]\x1b[0m\r\n`;
+      appendTerminalTranscript(transcriptKey, line);
+      terminal.write(line);
+      // The shell is gone: keep its id and every later keystroke is written to
+      // a dead session, which prints an error line forever. Restart re-spawns.
+      ptySessionId = null;
+      onStatus(session.key, 'exited');
+    };
+
+    const writeQueue = createTerminalWriteQueue({
+      write: (text: string, done: () => void) => {
+        if (disposed) { done(); return; }
+        terminal.write(text, done);
+      },
+      record: recordOutput,
+      onExit: applyExit,
+      schedule: (fn: () => void) => { window.setTimeout(fn, 0); }
+    });
 
     // main keys its pty map by this tab's own id, so output can be matched early.
     const unsubscribe = desktop.onTerminalOutput((output) => {
       if (disposed || output.workspaceId !== workspaceId || output.sessionId !== session.key) return;
       if (!ptySessionId) {
-        pendingOutput.push(output);
+        holdPending(output);
         return;
       }
-      applyOutput(output);
+      if (output.type === 'data' && output.data) writeQueue.push(output.data);
+      else if (output.type === 'exit') writeQueue.pushExit(output.exitCode ?? null);
     });
 
     const input = terminal.onData((data) => {
@@ -203,7 +338,11 @@ function TerminalSurface({
         onStatus(session.key, 'connected');
         terminal.write(`\x1b[32m${created.label}\x1b[0m · ${created.title}\r\n`);
         const waiting = pendingOutput.splice(0, pendingOutput.length);
-        for (const output of waiting) applyOutput(output);
+        pendingBytes = 0;
+        for (const output of waiting) {
+          if (output.type === 'data' && output.data) writeQueue.push(output.data);
+          else if (output.type === 'exit') writeQueue.pushExit(output.exitCode ?? null);
+        }
         fitAndResize();
       }).catch((error) => {
         if (disposed || sequence !== spawnSequence) return;
@@ -267,6 +406,10 @@ function TerminalSurface({
       ptySessionId = null;
       spawnSequence += 1;
       terminal.reset();
+      // The old shell's queued output must not print into the new one.
+      writeQueue.clear();
+      pendingOutput.length = 0;
+      pendingBytes = 0;
       dropTerminalTranscript(transcriptKey);
       // Reset first, then respawn: create is idempotent per tab key, so the old
       // shell has to be gone before the same key can mean a new one.
@@ -315,6 +458,7 @@ function TerminalSurface({
       unsubscribe();
       unsubscribeTheme();
       input.dispose();
+      writeQueue.dispose();
       host.removeEventListener('contextmenu', onContextMenu);
       // The shell itself stays alive while only the dock is hidden, so switching
       // back reattaches to the same session; a closed tab was killed by kill().

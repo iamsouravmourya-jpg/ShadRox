@@ -3,12 +3,22 @@ import { availableToolNames, classifyToolEffect, isControlTool, isKnownTool, MAX
 import type { McpToolHandle } from './mcpTools';
 import { parseToolBlocks, serializeCallKey, serializeResults, stripToolBlocks } from './toolProtocol';
 import { applyTaskUpdates, completionGuard, renderTaskPlan, type TaskPlan } from './taskPlan';
-import { FINISH_TOOL_NAME, parseFinishArguments } from './finishTool';
+import { FINISH_TOOL_NAME, parseFinishDetails, renderFinishSummary } from './finishTool';
 import { allowsEffect, type RunPolicy, type ToolEffect } from './runPolicy';
 import type { AttemptRecord, AttemptState } from '../taskUsage';
 import type { FailureReceipt } from '../repairProof';
 import { flightRecorder } from '../observability/flightRecorder';
 import { toolErrorCode } from '../observability/failureTaxonomy';
+import { getDesktopBridge } from '../desktop';
+import {
+  beginTurn, endTurn, hasMutations, isDocsOnlyTurn, changedPathList, noteRead, noteWrite, noteUnknownWrite,
+  noteVerification, needsVerification, satisfyingVerification, verificationDemand, type AgentTurnState
+} from './turnState';
+import { detectScaffoldIntent, detectAddPageIntent, scaffoldNudge, addPageNudge, previewNudge } from './scaffold';
+import { compactToolObservations } from './loopContext';
+import { createFailureRepeatTracker, failureNudge, failureBlockMessage } from './stuck';
+import { ensureTurnCheckpoint } from './checkpoints';
+import { isVerifyCommand } from './verifyProject';
 
 /**
  * Runs the tool rounds of one assistant turn.
@@ -40,6 +50,16 @@ const BUDGET_NOTE_SHARE = 0.8;
 export { MAX_CALLS_PER_ROUND };
 const FINAL_ASK =
   'Tool budget for this answer is finished. Write the final answer now using what you have read; name any file you did not get to instead of guessing about it.';
+
+/** A port conflict that killing cannot fix: the port is fixed in the project's own config. */
+const PORT_LOOP_ERROR = /port\s*\d*\s*(?:is\s+)?already\s+in\s+use|eaddrinuse|address\s+already\s+in\s+use/i;
+
+const PORT_LOOP_ADVICE =
+  'Killing or restarting processes cannot fix this: the port is fixed in the project\'s own code/config (vite.config, server.ts, .env, package.json), so every restart re-claims it and fails the same way. Stop killing ports — read the file that binds the port, change it to a free port (or serve the app through preview_control), and verify once.';
+
+function isPortLoopFailure(outcome: ToolOutcome): boolean {
+  return PORT_LOOP_ERROR.test(`${outcome.error ?? ''}\n${outcome.content}`);
+}
 
 const softBudgetNote = (round: number, maxRounds: number): string =>
   `Step budget nearly spent (${round}/${maxRounds} rounds used) — wrap up: land the remaining change, or call finish with what you have. Do not start new explorations.`;
@@ -292,17 +312,26 @@ const stuckAsk = (tried: string, steps: number): string =>
  * Control tools + activity shaping (unchanged semantics).
  * ------------------------------------------------------------------ */
 
-function controlOutcome(call: ToolCall, plan: TaskPlan, guardUsed: boolean): { outcome: ToolOutcome; plan: TaskPlan; finish?: { summary: string; blocked: string | null }; stop: boolean } {
+function controlOutcome(call: ToolCall, plan: TaskPlan, guardUsed: boolean, turn: AgentTurnState | null): { outcome: ToolOutcome; plan: TaskPlan; finish?: { summary: string; blocked: string | null }; stop: boolean } {
   if (call.name === FINISH_TOOL_NAME) {
-    const args = parseFinishArguments(call.args);
-    if (!args) {
+    const details = parseFinishDetails(call.args);
+    if (!details) {
       return { outcome: { ok: false, content: '', error: 'finish needs {"summary":"the answer for the user"}.' }, plan, stop: false };
     }
     const warning = completionGuard(plan, true);
     if (warning && !guardUsed) {
       return { outcome: { ok: false, content: '', error: warning }, plan, stop: false };
     }
-    return { outcome: { ok: true, content: 'Turn finished.' }, plan, finish: args, stop: true };
+    // The honesty fields resolve from what really happened: a docs-only turn is
+    // never "verified", a mutating turn is verified only by a check that ran
+    // after the last change, and the file list is the turn's real changed set.
+    const docsOnly = turn ? isDocsOnlyTurn(turn) : false;
+    const mutated = turn ? hasMutations(turn) : false;
+    const satisfying = turn ? satisfyingVerification(turn) : null;
+    const verified = docsOnly ? false : (details.verified ?? (mutated ? (satisfying?.ok ?? false) : true));
+    const filesChanged = turn ? changedPathList(turn) : (details.filesChanged ?? []);
+    const summary = renderFinishSummary(details, { verified, filesChanged, docsOnly });
+    return { outcome: { ok: true, content: 'Turn finished.' }, plan, finish: { summary, blocked: details.blocked }, stop: true };
   }
   const result = applyTaskUpdates(plan, call.args.tasks ?? call.args);
   if (result.error && result.plan === plan) {
@@ -361,7 +390,7 @@ interface CachedResult {
 export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResult> {
   const maxRounds = input.maxRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
   const softThreshold = Math.max(1, Math.ceil(maxRounds * BUDGET_NOTE_SHARE));
-  const messages = [...input.messages];
+  let messages = [...input.messages];
   const activity: ToolActivity[] = [];
   const policy = input.policy;
   const isAborted = (): boolean => input.aborted() || input.signal?.aborted === true;
@@ -369,6 +398,16 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   // The user's ask as issued, not the running transcript: observations and
   // nudges also arrive as `user` turns, so the intent is read once up front.
   const latestUserAsk = [...input.messages].reverse().find((turn) => turn.role === 'user')?.content ?? '';
+
+  // One tracked turn per workspace: the read-set, the changed-set and the
+  // verification records the read-before-write and forced-verify gates read.
+  // It pushes NO messages — the transcript the model sees is unchanged.
+  const turn = input.workspaceId
+    ? beginTurn(input.workspaceId, latestUserAsk, {
+      scaffold: detectScaffoldIntent(latestUserAsk),
+      addPage: detectAddPageIntent(latestUserAsk)
+    })
+    : null;
 
   // One flight-recorder run per turn. Every boundary below lands here; the
   // recorder is fail-open, so logging can never break or block the loop.
@@ -411,12 +450,14 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   const offeredExternal = (name: string): boolean => Boolean(external?.has(name));
   const externalNames = external ? external.describe().map((tool) => tool.name) : [];
   const tracker = createProgressTracker();
+  const failureTracker = createFailureRepeatTracker();
   let text = '';
   let round = 0;
   let capped = false;
   let guardUsed = false;
   let stuckNudged = false;
   let budgetNoteUsed = false;
+  let wrapNudgeUsed = false;
   let changedFilesTotal = 0;
   let finished: { summary: string; blocked: string | null } | null = null;
   let failureProof: FailureReceipt | null = null;
@@ -425,6 +466,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   // stop reason, the resumable summary and the recorder's stop event are
   // attached even on early exits and forceFinal.
   const stamp = (result: Omit<ToolLoopResult, 'changedFiles' | 'stopReason' | 'resume'> & { stopReason: ToolLoopStopReason }): ToolLoopResult => {
+    if (input.workspaceId) endTurn(input.workspaceId);
     const pendingIntent = (plan.find((item) => item.status !== 'done' && item.status !== 'blocked')?.subject ?? latestUserAsk).slice(0, 300);
     const resume: ToolLoopResumeState | undefined = RESUMABLE_STOPS.has(result.stopReason)
       ? {
@@ -528,13 +570,66 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     return await forceFinal(round, ask, 'stuck');
   };
 
+  /**
+   * The gates a finish must pass before the turn may end. Each is code-enforced,
+   * not prompt advice: a new-project ask that dumped one file, a page added into
+   * an existing file, an unverified preview, or a change nothing checked after it
+   * all refuse the finish with the exact next step. The stuck detector is the
+   * escape hatch if the model keeps refusing to satisfy a gate.
+   */
+  const finishGate = async (): Promise<ToolOutcome | null> => {
+    if (!turn) return null;
+    if (turn.scaffoldIntent && !turn.scaffoldNudged && turn.created.size < 2) {
+      turn.scaffoldNudged = true;
+      return { ok: false, content: '', error: scaffoldNudge(turn.created.size), refused: true };
+    }
+    if (turn.addPageIntent && !turn.addPageNudged && turn.created.size === 0 && turn.changed.size > 0) {
+      turn.addPageNudged = true;
+      return { ok: false, content: '', error: addPageNudge(), refused: true };
+    }
+    if (turn.scaffoldIntent && !turn.previewVerified && !turn.previewNudged
+      && [...turn.changed].some((path) => /\.html?$/i.test(path))) {
+      const desktop = getDesktopBridge();
+      if (desktop && typeof desktop.assertPreview === 'function') {
+        try {
+          const verdict = await desktop.assertPreview(turn.workspaceId);
+          if (verdict.ok) turn.previewVerified = true;
+          else {
+            turn.previewNudged = true;
+            return { ok: false, content: '', error: previewNudge(verdict.detail ?? `${verdict.errorCount} preview error(s)`), refused: true };
+          }
+        } catch {
+          /* preview unavailable in this build — never block a finish on it */
+        }
+      }
+    }
+    if (needsVerification(turn)) {
+      return { ok: false, content: '', error: verificationDemand(turn), refused: true };
+    }
+    return null;
+  };
+
   while (true) {
     if (isAborted()) return stamp({ text, rounds: round, activity, capped: false, error: null, plan, stopReason: 'aborted' });
+    // Context compaction: once the transcript passes ~70% of the budget, older
+    // tool observations are summarized to what was found/decided, keeping the
+    // most recent few intact. Below the trigger the array is returned unchanged.
+    const compacted = compactToolObservations(messages);
+    if (compacted.compacted > 0) {
+      messages = compacted.messages;
+      flightRecorder.record('context_assembled', { compacted: compacted.compacted, chars: messages.reduce((total, entry) => total + entry.content.length, 0) }, runId);
+    }
     // ONE soft note at 80% of the budget, before the next stream sees it.
     if (!budgetNoteUsed && round >= softThreshold && round < maxRounds) {
       budgetNoteUsed = true;
       messages.push({ role: 'system', content: softBudgetNote(round, maxRounds) });
       flightRecorder.record('budget_note', { round, maxRounds }, runId);
+    }
+    // A earlier wrap-up nudge at round 40 on long budgets: land and verify, stop
+    // exploring. Distinct text from the 80% note so the two never collide.
+    if (!wrapNudgeUsed && round >= 40 && round < maxRounds) {
+      wrapNudgeUsed = true;
+      messages.push({ role: 'system', content: `Round ${round} of ${maxRounds}: start landing the final changes and verify them; do not open new explorations.` });
     }
     const streamed = await streamWithAttempt(messages, round);
     if (isAborted()) return stamp({ text: streamed.text, rounds: round, activity, capped: false, error: null, plan, stopReason: 'aborted' });
@@ -555,6 +650,34 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         continue;
       }
       return stamp({ text, rounds: round, activity, capped: false, error: null, plan, stopReason: 'complete' });
+    }
+
+    // The turn's safety net, taken BEFORE any write lands (reply-edit fences
+    // included): pre-images of exactly the paths about to change, merged into
+    // one checkpoint. Fail-open — a bridge without loadFiles skips it entirely.
+    if (turn) {
+      const writePaths = new Set<string>();
+      for (const block of blocks) {
+        for (const call of block.calls) {
+          if (classifyToolEffect(call.name) === 'write') {
+            for (const path of pathsOf(call)) writePaths.add(path);
+          }
+          if (call.name === 'apply_patch' && Array.isArray(call.args.patches)) {
+            for (const hunk of call.args.patches) {
+              const path = normalizePath((hunk as Record<string, unknown> | null)?.path);
+              if (path) writePaths.add(path);
+            }
+          }
+        }
+      }
+      for (const match of streamed.text.matchAll(/```path=([^\n]+)/g)) {
+        const path = normalizePath(match[1].trim());
+        if (path) writePaths.add(path);
+      }
+      if (writePaths.size > 0) {
+        const desktop = getDesktopBridge();
+        if (desktop) await ensureTurnCheckpoint(turn, desktop, [...writePaths]);
+      }
     }
 
     // The round's edits reach disk before its calls run: a run_command or
@@ -588,6 +711,16 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
           }
         }
         const key = serializeCallKey(call);
+        // A call that failed the same way three times is blocked for the turn:
+        // repeating it cannot change the result, so the model is told to switch
+        // approach instead of spending another round on it.
+        if (failureTracker.isBlocked(key)) {
+          const message = failureBlockMessage(summarizeCall(call));
+          problems.push(message);
+          activity.push({ name: call.name, label: summarizeCall(call), ok: false, error: message, input: call.args, stage: 'failed', refused: true });
+          flightRecorder.record('tool_result', { tool: call.name, status: 'refused', refused: true, error_code: 'BLOCKED', error: message }, runId);
+          continue;
+        }
         // Duplicates are served from the cache, never refused. Control tools
         // (plan/finish) are stateful and always re-run; they are never cached.
         const entry = cache.get(key);
@@ -658,17 +791,28 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     }
 
     const runnable: number[] = [];
-    const outcomes: ToolOutcome[] = usable.map((call, index) => {
+    const outcomes: ToolOutcome[] = usable.map(() => ({ ok: false, content: '' }));
+    // Control calls run in order; a finish first passes the async gates (scaffold,
+    // add-page, preview, forced-verify) before the plan guard and structured render.
+    for (let index = 0; index < usable.length; index += 1) {
+      const call = usable[index];
       if (!isControlTool(call.name)) {
         runnable.push(index);
-        return { ok: false, content: '' };
+        continue;
       }
-      const handled = controlOutcome(call, plan, guardUsed);
+      if (call.name === FINISH_TOOL_NAME) {
+        const gate = await finishGate();
+        if (gate) {
+          outcomes[index] = gate;
+          continue;
+        }
+      }
+      const handled = controlOutcome(call, plan, guardUsed, turn);
       guardUsed = guardUsed || !handled.outcome.ok;
       plan = handled.plan;
       if (handled.finish) finished = handled.finish;
-      return handled.outcome;
-    });
+      outcomes[index] = handled.outcome;
+    }
     input.onPlan?.(plan);
 
     let batchDurationMs: number | undefined;
@@ -731,6 +875,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     // touched by content hash where one is known. Failed or refused calls are
     // never cached, so they stay retryable. Nothing here refuses a duplicate.
     let roundChangedFiles = 0;
+    const unchangedRereads = new Map<number, string>();
     usable.forEach((call, index) => {
       const outcome = outcomes[index];
       const errorCode = toolErrorCode(outcome);
@@ -742,6 +887,41 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         error_code: errorCode ?? null,
         error: outcome.ok ? undefined : outcome.error
       }, runId);
+      // Same-call-same-error tracking: the second identical failure nudges, the
+      // third blocks. Guard refusals never count; a successful disk write resets.
+      if (!isControlTool(call.name)) {
+        const verdict = failureTracker.note({
+          key: serializeCallKey(call), ok: outcome.ok, refused: outcome.refused,
+          error: outcome.error, content: outcome.content
+        });
+        if (verdict === 'nudge' || verdict === 'block') {
+          const base = verdict === 'nudge' ? failureNudge(summarizeCall(call)) : failureBlockMessage(summarizeCall(call));
+          problems.push(isPortLoopFailure(outcome) ? `${base} ${PORT_LOOP_ADVICE}` : base);
+        }
+      }
+      // Verification records land even when the check FAILED — a failed check
+      // still ran, and the finish gate demands that something ran after the last
+      // change (the verified flag reflects whether it passed).
+      if (turn && !outcome.refused && !isControlTool(call.name)) {
+        if (call.name === 'verify') {
+          noteVerification(turn, {
+            kind: 'verify', ok: outcome.ok, paths: [],
+            detail: outcome.verifyReport ? `${outcome.verifyReport.commandsRun.length} command(s), ${outcome.verifyReport.errors.length} error(s)` : 'verify'
+          });
+        } else if (call.name === 'problems' && outcome.ok) {
+          const count = parseProblemsCount(outcome.content);
+          if (count !== null) {
+            const checkPaths = call.args.changed_only === true ? [...turn.changed] : pathsOf(call);
+            noteVerification(turn, { kind: 'problems', ok: count === 0, paths: checkPaths, detail: 'problems' });
+          }
+        } else if (call.name === 'run_command') {
+          const exit = parseExitCode(outcome);
+          const command = typeof call.args.command === 'string' ? call.args.command : '';
+          if (exit !== null && isVerifyCommand(command)) {
+            noteVerification(turn, { kind: 'command', ok: exit === 0, paths: [], detail: command });
+          }
+        }
+      }
       if (!outcome.ok || isControlTool(call.name)) {
         if (call.name === 'run_command' && outcome.refused && /not approved|blocked|blacklist|not allowed/i.test(outcome.error ?? '')) {
           flightRecorder.record('command_decision', {
@@ -757,10 +937,28 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
       }
       const effect = classifyToolEffect(call.name);
       const paths = pathsOf(call);
-      // terminal_answer only submits prose to a waiting prompt; it mutates no file.
-      const mutating = call.name !== 'terminal_answer' && (effect === 'write' || effect === 'execute' || effect === 'external');
+      // terminal_answer only submits prose to a waiting prompt; verify runs the
+      // project's checks but is a check, not a mutation — counting it would make
+      // every verify demand another verify. Neither mutates the tracked turn.
+      const mutating = call.name !== 'terminal_answer' && call.name !== 'verify'
+        && (effect === 'write' || effect === 'execute' || effect === 'external');
       if (mutating) {
         epoch += 1;
+        if (effect === 'write') {
+          // Only a real disk write earns the fresh slate: earlier failure runs
+          // described a stale state, so a fix must unblock them. A successful
+          // kill or restart (execute) changes nothing the failed calls read —
+          // resetting there would erase the same-error counter every round and
+          // a kill/restart loop that keeps failing identically would never block.
+          failureTracker.reset();
+        }
+        if (turn) {
+          if (effect === 'write' && outcome.changedPaths && outcome.changedPaths.length > 0) {
+            noteWrite(turn, outcome.changedPaths, outcome.createdPaths ?? []);
+          } else {
+            noteUnknownWrite(turn);
+          }
+        }
         // delete_file counts its verified removal; run_command and MCP successes
         // cannot count files honestly, so each counts 1 as a conservative
         // progress unit — not a literal file count.
@@ -796,10 +994,14 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
       if (call.name === 'read_file' && paths.length > 0) {
         contentHash = hashText(outcome.content);
         const previous = pathHashes.get(paths[0]);
+        // A fresh re-read whose bytes match the last read adds no information;
+        // the observation says so instead of pretending the file was re-examined.
+        if (previous !== undefined && previous === contentHash) unchangedRereads.set(index, paths[0]);
         pathHashes.set(paths[0], contentHash);
         // A fresh read that disagrees with the last known fingerprint proves the
         // path moved (an external edit, a landed patch): drop its stale entries.
         if (previous !== undefined && previous !== contentHash) invalidatePath(paths[0]);
+        if (turn) noteRead(turn, paths[0], contentHash);
       }
       cache.set(serializeCallKey(call), { outcome, step: round, epoch, paths, effect, contentHash });
     });
@@ -816,7 +1018,12 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     const observation = serializeResults([
       ...usable.map((call, index) => {
         const { proof: _proof, ...rest } = outcomes[index];
-        return { name: call.name, ...rest };
+        const rereadPath = unchangedRereads.get(index);
+        return {
+          name: call.name,
+          ...rest,
+          content: rereadPath ? `[re-read: ${rereadPath} is unchanged since the last read this turn]\n${rest.content}` : rest.content
+        };
       }),
       // A cached duplicate is answered with its earlier result, honestly labelled.
       ...cachedHits.map(({ call, entry }) => ({

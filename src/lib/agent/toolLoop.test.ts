@@ -959,6 +959,46 @@ test('a command mutation invalidates cached observations through the epoch', asy
   });
 });
 
+test('a successful command no longer resets the same-error counter: a kill/restart loop still blocks', async () => {
+  await withBridge({
+    runCommand: async (_id: string, command: string) =>
+      command.includes('taskkill')
+        ? { stdout: 'SUCCESS: The process with PID 4242 has been terminated.', stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: 'Error: listen EADDRINUSE: address already in use 127.0.0.1:3001', exitCode: 1 }
+  }, async () => {
+    const dev = { name: 'run_command', args: { command: 'npm run dev' } };
+    const kill = { name: 'run_command', args: { command: 'taskkill /PID 4242 /F' } };
+    const model = scripted([
+      toolBlock([dev]),
+      toolBlock([kill]),
+      toolBlock([dev]),
+      toolBlock([kill]),
+      toolBlock([dev]),
+      'Stopping the loop.'
+    ]);
+    await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
+    assert.match(model.seen[3].at(-1).content, /failed the same way twice/,
+      'the second identical dev failure nudges even though a kill succeeded in between');
+    assert.match(model.seen[5].at(-1).content, /is blocked: it failed the same way three times/,
+      'the third identical dev failure blocks — the successful kill did not wipe the counter');
+  });
+});
+
+test('a port-in-use failure loop earns advice that killing cannot fix a fixed-port config', async () => {
+  await withBridge({
+    runCommand: async () => ({ stdout: '', stderr: 'WebSocket server error: Port 3001 is already in use', exitCode: 1 })
+  }, async () => {
+    const dev = { name: 'run_command', args: { command: 'npm run dev' } };
+    const model = scripted([toolBlock([dev]), toolBlock([dev]), 'I will change the port in the config instead.']);
+    const result = await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
+    const advice = model.seen[2].at(-1).content;
+    assert.match(advice, /failed the same way twice/, 'the second identical failure nudges');
+    assert.match(advice, /port is fixed in the project/, 'the nudge carries the port-loop advice');
+    assert.match(advice, /preview_control/, 'the advice names the preview alternative');
+    assert.equal(result.text, 'I will change the port in the config instead.');
+  });
+});
+
 test('a cached mutation neither re-runs nor re-counts changedFiles', async () => {
   let commands = 0;
   await withBridge({

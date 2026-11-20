@@ -151,44 +151,38 @@ export async function streamCustomEndpoint(
   let response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
   let payload = response.ok ? '' : await readErrorPayload(response);
 
-  // A gateway that forwards Claude but not Anthropic's content-part extension:
-  // drop the markers, keep the request. One replay of a rejected body costs
-  // nothing (it never reached a model), and the ordering discipline that
-  // implicit prefix caching needs survives the downgrade untouched.
-  if (!response.ok && withMarkers && rejectsCacheControl(payload)) {
-    withMarkers = false;
-    droppedFeatures.push('cache_control');
-    response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
-    payload = response.ok ? '' : await readErrorPayload(response);
-  }
-
-  if (!response.ok && withTools && (rejectsNativeTools(payload) || rejectsToolCall(payload))) {
-    withTools = false;
-    droppedFeatures.push('tools');
-    response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
-    payload = response.ok ? '' : await readErrorPayload(response);
-  }
-
-  // `temperature` is optional in the OpenAI spec and some inference servers
-  // reject it outright (local quant builds especially). One retry without it
-  // costs nothing and turns a hard failure into a working chat.
-  if (!response.ok && withTemperature && /temperature/i.test(payload)) {
-    withTemperature = false;
-    droppedFeatures.push('temperature');
-    response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
-    payload = response.ok ? '' : await readErrorPayload(response);
-  }
-
-  // Local OpenAI-compatible servers (vLLM, older Ollama, LM Studio) 400/422 on
-  // fields they do not know, and their error bodies do not always name the
-  // field — so ANY 400/422 while `stream_options` is still on buys one resend
-  // without it. Usage then degrades to the text estimate below. Auth-shaped
-  // bodies are excluded: a missing usage flag cannot fix a bad key, and
-  // 401/403 never enter this rung at all.
-  if (!response.ok && withStreamOptions && (response.status === 400 || response.status === 422) &&
-    !/api.?key|authorization|unauthorized|permission|unauthenticated|credential/i.test(payload)) {
-    withStreamOptions = false;
-    droppedFeatures.push('stream_options');
+  // Feature-drop ladder as a LOOP: gateways name one unsupported field per
+  // rejection, and fixing the earlier one reveals the next one, so every
+  // rejection re-checks all rungs against the new payload instead of walking a
+  // one-pass chain (which left later rungs — tools especially — unreachable).
+  for (let round = 0; round < 4 && !response.ok; round += 1) {
+    // A gateway that forwards Claude but not Anthropic's content-part extension:
+    // drop the markers, keep the request. One replay of a rejected body costs
+    // nothing (it never reached a model), and the ordering discipline that
+    // implicit prefix caching needs survives the downgrade untouched.
+    if (withMarkers && rejectsCacheControl(payload)) {
+      withMarkers = false;
+      droppedFeatures.push('cache_control');
+    } else if (withTools && (rejectsNativeTools(payload) || rejectsToolCall(payload))) {
+      withTools = false;
+      droppedFeatures.push('tools');
+    } else if (withTemperature && /temperature/i.test(payload)) {
+      // `temperature` is optional in the OpenAI spec and some inference servers
+      // reject it outright (local quant builds especially).
+      withTemperature = false;
+      droppedFeatures.push('temperature');
+    } else if (withStreamOptions && (response.status === 400 || response.status === 422) &&
+      !/api.?key|authorization|unauthorized|permission|unauthenticated|credential/i.test(payload)) {
+      // Local OpenAI-compatible servers (vLLM, older Ollama, LM Studio) 400/422
+      // on fields they do not know, and their error bodies do not always name
+      // the field — so ANY 400/422 while `stream_options` is still on buys one
+      // resend without it. Auth-shaped bodies are excluded: a missing usage flag
+      // cannot fix a bad key.
+      withStreamOptions = false;
+      droppedFeatures.push('stream_options');
+    } else {
+      break;
+    }
     response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
@@ -203,57 +197,95 @@ export async function streamCustomEndpoint(
   let fullText = '';
   let usage: TokenUsage = {};
   let finishReason: string | null = null;
-  const toolCalls = new OpenAiToolCallCollector();
+  let toolCalls = new OpenAiToolCallCollector();
+  // Set as soon as anything reaches the caller. Past that point a resend would
+  // duplicate output, so the tools-off recovery below must not fire.
+  let emitted = false;
 
-  const decoder = createSseDecoder(({ data }) => {
-    if (!data || data === '[DONE]') return;
+  const makeDecoder = () =>
+    createSseDecoder(({ data }) => {
+      if (!data || data === '[DONE]') return;
 
-    let parsed: any;
-    try {
-      parsed = JSON.parse(data);
-    } catch {
-      return;
-    }
-
-    if (parsed?.error?.message) {
-      throw new UpstreamError(
-        sanitizeErrorMessage(parsed.error.message, 'Custom endpoint stream error.'),
-        502
-      );
-    }
-
-    const choice = parsed?.choices?.[0];
-    const delta = choice?.delta;
-    if (delta) {
-      if (typeof delta.content === 'string' && delta.content) {
-        fullText += delta.content;
-        sink.delta(delta.content);
+      let parsed: any;
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        return;
       }
-      const reasoning = reasoningText(delta);
-      if (reasoning) sink.reasoning(reasoning);
-      toolCalls.add(delta.tool_calls);
+
+      if (parsed?.error?.message) {
+        throw new UpstreamError(
+          sanitizeErrorMessage(parsed.error.message, 'Custom endpoint stream error.'),
+          502
+        );
+      }
+
+      const choice = parsed?.choices?.[0];
+      const delta = choice?.delta;
+      if (delta) {
+        if (typeof delta.content === 'string' && delta.content) {
+          fullText += delta.content;
+          emitted = true;
+          sink.delta(delta.content);
+        }
+        const reasoning = reasoningText(delta);
+        if (reasoning) {
+          emitted = true;
+          sink.reasoning(reasoning);
+        }
+        toolCalls.add(delta.tool_calls);
+      }
+      if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason;
+      if (typeof parsed?.model === 'string' && parsed.model.trim()) {
+        servedModel = parsed.model.trim();
+      }
+      usage = mergeOpenAiUsage(usage, parsed?.usage);
+    });
+
+  const consume = async (stream: Response): Promise<void> => {
+    const decoder = makeDecoder();
+    try {
+      const reader = stream.body?.getReader();
+      if (!reader) throw new Error('Custom endpoint returned an empty stream.');
+      const textDecoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        decoder.push(textDecoder.decode(value, { stream: true }));
+      }
+      decoder.flush();
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (error instanceof UpstreamError) throw error;
+      throw new Error(sanitizeErrorMessage(error, 'Custom endpoint stream failed.'));
     }
-    if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason;
-    if (typeof parsed?.model === 'string' && parsed.model.trim()) {
-      servedModel = parsed.model.trim();
-    }
-    usage = mergeOpenAiUsage(usage, parsed?.usage);
-  });
+  };
 
   try {
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('Custom endpoint returned an empty stream.');
-    const textDecoder = new TextDecoder();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      decoder.push(textDecoder.decode(value, { stream: true }));
-    }
-    decoder.flush();
+    await consume(response);
   } catch (error) {
-    if (signal.aborted) throw error;
-    if (error instanceof UpstreamError) throw error;
-    throw new Error(sanitizeErrorMessage(error, 'Custom endpoint stream failed.'));
+    // Gateways in front of tool-incapable models reject at generation time and
+    // report it inside the 200 stream (Groq does the same), so the pre-flight
+    // ladder above never sees the rejection. Same tools-off resend, but only
+    // while no token escaped — after that a resend would repeat output.
+    const toolsRejected = error instanceof UpstreamError &&
+      (rejectsNativeTools(error.message) || rejectsToolCall(error.message));
+    if (signal.aborted || !withTools || emitted || !toolsRejected) throw error;
+
+    withTools = false;
+    droppedFeatures.push('tools');
+    response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
+    if (!response.ok) {
+      throw new UpstreamError(
+        sanitizeErrorMessage(await readErrorPayload(response), 'Custom endpoint ne request reject kar diya.'),
+        response.status
+      );
+    }
+    fullText = '';
+    usage = {};
+    finishReason = null;
+    toolCalls = new OpenAiToolCallCollector();
+    await consume(response);
   }
 
   const calls = toolCalls.values();

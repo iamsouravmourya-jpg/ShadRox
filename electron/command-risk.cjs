@@ -777,6 +777,14 @@ function classifyGit(argv, ctx, result) {
     result.tier = worstTier(result.tier, 'READ');
     return;
   }
+  if (sub === 'symbolic-ref') {
+    const positional = rest.filter((arg) => typeof arg === 'string' && !arg.startsWith('-'));
+    if (rest.includes('--delete') || rest.includes('--create-reflog') || positional.length > 1) {
+      result.tier = worstTier(result.tier, 'MUTATE');
+      result.reasons.push('`git symbolic-ref` (updates a ref)');
+      return;
+    }
+  }
   if (GIT_READ_SUBCOMMANDS.has(sub)) {
     // `git diff --output patch.txt` writes a file.
     const outputIndex = rest.findIndex((arg) => arg === '--output' || String(arg).startsWith('--output='));
@@ -1088,6 +1096,11 @@ function classifyInPlaceEditors(name, argv, ctx, result) {
     return true;
   }
   if (/^[gnm]?awk$/.test(name)) {
+    if (argv.some((arg) => typeof arg === 'string' && /\bsystem\s*\(/i.test(arg))) {
+      result.tier = worstTier(result.tier, 'MUTATE');
+      result.reasons.push('`awk system()` (executes a command)');
+      return true;
+    }
     const usesInplace = argv.some((arg, index) =>
       typeof arg === 'string' && (
         ((arg === '-i' || arg === '--include') && String(argv[index + 1] ?? '').startsWith('inplace'))
@@ -1285,7 +1298,15 @@ const HEAD_HANDLERS = {
   cargo: classifyCargo, go: classifyGo,
   curl: classifyCurl, wget: classifyWget,
   find: classifyFind,
-  fd: (argv, ctx, result) => { result.tier = worstTier(result.tier, 'READ'); },
+  fd: (argv, ctx, result) => {
+    const execFlag = argv.find((arg) => typeof arg === 'string' && ['-x', '-X', '--exec', '--exec-batch'].includes(arg));
+    if (execFlag) {
+      result.tier = worstTier(result.tier, 'MUTATE');
+      result.reasons.push(`\`fd ${execFlag}\` (executes a command)`);
+      return;
+    }
+    result.tier = worstTier(result.tier, 'READ');
+  },
   tee: classifyTee, 'tee-object': classifyTee,
   tar: classifyTar, dd: classifyDd,
   npx: (argv, ctx, result) => classifyNodePm('npm', ['exec', ...argv], ctx, result),

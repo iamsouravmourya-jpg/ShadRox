@@ -95,6 +95,11 @@ test('the cascade is ordered: verbatim first, then trimmed lines, then stripped'
   assert.equal(level(content, 'callC();'), 'not-found');
 });
 
+test('refuses a stripped match embedded in a larger line', () => {
+  const content = 'const value = callA();\n';
+  assert.equal(level(content, 'callA( ) ;'), 'not-found');
+});
+
 test('a block whose indentation drifted still lands, replacing whole lines', () => {
   const content = 'function f() {\n  return total / count;\n}\n';
   const result = applySearchReplaceBlocks(content, [

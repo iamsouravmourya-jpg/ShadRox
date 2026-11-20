@@ -17,13 +17,16 @@ import {
   isKnownTool,
   nativeToolDefinitions,
   runTool,
-  summarizeCall
+  summarizeCall,
+  waitForJobExit
 } from './tools';
+import { getDesktopBridge, type ShadRoxDesktopAPI } from '../desktop';
 import { globalProofLedger } from '../proofLedger';
 import { globalRepairSession } from '../repairSession';
 
 interface StubBridge {
-  runCommand: (workspaceId: string, command: string, notice?: string) => Promise<unknown>;
+  runCommand?: (workspaceId: string, command: string, notice?: string) => Promise<unknown>;
+  listDirectory?: (workspaceId: string, dir: string, cursor?: number | null) => Promise<unknown>;
   jobControl?: (workspaceId: string, request: Record<string, unknown>) => Promise<unknown>;
 }
 
@@ -45,11 +48,64 @@ function reset() {
   globalProofLedger.clear();
 }
 
-test('a round holds sixteen calls and job_control is a known execute tool', () => {
+test('a round holds sixteen calls and job_control reads without counting as a mutation', () => {
   assert.equal(MAX_CALLS_PER_ROUND, 16);
   assert.equal(isKnownTool('job_control'), true);
-  assert.equal(classifyToolEffect('job_control'), 'execute');
+  // A read: polling a job must not re-stale the verification the finish gate accepted.
+  assert.equal(classifyToolEffect('job_control'), 'read');
   assert.ok(TOOL_DEFINITIONS.some((tool) => tool.name === 'job_control'));
+});
+
+test('a verify that auto-backgrounds waits for the job and reports the real exit', async () => {
+  reset();
+  await withBridge({
+    listDirectory: () => Promise.resolve({ entries: [{ path: 'pytest.ini', kind: 'file' }], nextCursor: null }),
+    runCommand: (workspaceId, command) => {
+      assert.equal(command, 'python -m pytest -x -q');
+      return Promise.resolve({ stdout: 'collecting...', stderr: '', exitCode: null, timedOut: false, backgrounded: true, jobId: 'J1' });
+    },
+    jobControl: (workspaceId, request) => {
+      assert.equal(workspaceId, 'ws');
+      if (request.action === 'status') {
+        return Promise.resolve({ ok: true, jobId: 'J1', status: 'exited', exitCode: 0, timedOut: false });
+      }
+      return Promise.resolve({ ok: true, jobId: 'J1', text: '3 passed in 0.2s' });
+    }
+  }, async () => {
+    const outcome = await runTool('ws', { name: 'verify', args: {} });
+    assert.equal(outcome.ok, true, `verify should pass through the real exit, got: ${outcome.error ?? outcome.content}`);
+    assert.match(outcome.content, /python -m pytest -x -q/);
+    assert.doesNotMatch(outcome.content, /became background job/);
+    assert.doesNotMatch(outcome.content, /exited 0/, 'exit 0 with no failing tests is a pass, not an error line');
+  });
+});
+
+test('waitForJobExit returns the job outcome and gives up honestly when it never exits', async () => {
+  let polls = 0;
+  const exitedBridge: StubBridge = {
+    jobControl: (workspaceId, request) => {
+      if (request.action === 'status') {
+        polls += 1;
+        return Promise.resolve({ ok: true, jobId: 'J2', status: 'exited', exitCode: 2, timedOut: false });
+      }
+      return Promise.resolve({ ok: true, jobId: 'J2', text: '1 failed, 2 passed' });
+    }
+  };
+  await withBridge(exitedBridge, async () => {
+    const desktop = getDesktopBridge() as ShadRoxDesktopAPI;
+    const outcome = await waitForJobExit(desktop, 'ws', 'J2', 60_000);
+    assert.ok(outcome, 'an exited job resolves on the first poll');
+    assert.equal(outcome!.exitCode, 2);
+    assert.match(outcome!.text, /1 failed/);
+  });
+  assert.equal(polls, 1);
+
+  await withBridge({
+    jobControl: () => Promise.resolve({ ok: true, jobId: 'J9', status: 'running', exitCode: null, timedOut: false })
+  }, async () => {
+    const desktop = getDesktopBridge() as ShadRoxDesktopAPI;
+    assert.equal(await waitForJobExit(desktop, 'ws', 'J9', 250), null, 'a never-exiting job is reported unresolved, not failed');
+  });
 });
 
 test('job_control has a native schema with the full action set, chars and an optional range', () => {

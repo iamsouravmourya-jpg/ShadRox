@@ -323,7 +323,7 @@ test('foreground output is ANSI-stripped and capped to the tail', async () => {
   assert.equal(result.stderr, 'warn');
 });
 
-test('a silent foreground command auto-backgrounds at 30s with a job id and tail', async () => {
+test('a silent foreground command auto-backgrounds at 120s with a job id and tail', async () => {
   const harness = buildExecutor();
   const pending = harness.executeCommand('node long.js', 'C:\\proj', { workspaceId: 'w1' });
   const child = harness.spawns[0].child;
@@ -351,44 +351,37 @@ test('a silent foreground command auto-backgrounds at 30s with a job id and tail
   assert.ok(harness.events.some((event) => event.type === 'exit' && event.exitCode === 0));
 });
 
-test('the idle timer resets on ANY output; silence for 120s kills the tree', async () => {
+test('silence never kills a backgrounded job; the ceiling is its only bound', async () => {
   const harness = buildExecutor();
   const pending = harness.executeCommand('node long.js', 'C:\\proj', { workspaceId: 'w1' });
   const child = harness.spawns[0].child;
+  child.emitData('stdout', 'working...\n');
   harness.timers.advance(COMMAND_AUTO_BACKGROUND_MS);
   await pending;
-  // Output every 90s keeps the job alive well past a single idle window.
-  child.emitData('stdout', 'tick start\n');
-  for (let i = 0; i < 5; i += 1) {
-    harness.timers.advance(90_000);
-    child.emitData('stdout', `tick ${i}\n`);
-  }
+  assert.equal(harness.registry.get('J1').backgrounded, true);
+  // A quiet tsc/build job is healthy, not hung: silence is not evidence of a
+  // hang once the command is a job the agent polls and can stop. Idle-killing
+  // it returned healthy commands as failures.
+  harness.timers.advance(COMMAND_IDLE_TIMEOUT_MS * 3);
   assert.equal(harness.kills.length, 0);
   assert.equal(harness.registry.get('J1').status, 'running');
-  // Now go silent: the kill lands 120s after the LAST chunk, not the first.
-  harness.timers.advance(COMMAND_IDLE_TIMEOUT_MS - 1);
-  assert.equal(harness.kills.length, 0);
-  harness.timers.advance(1);
+  // Only the absolute ceiling may end it.
+  harness.timers.advance(JOB_CEILING_MS);
   assert.equal(harness.kills.length, 1);
-  const job = harness.registry.get('J1');
-  assert.equal(job.status, 'timed_out');
-  assert.equal(job.timedOut, true);
-  assert.ok(harness.events.some((event) => event.type === 'exit' && event.timedOut === true));
 });
 
-test('stderr output also resets the idle timer', async () => {
+test('stderr output reaches the job too, and its later silence never kills it', async () => {
   const harness = buildExecutor();
   const pending = harness.executeCommand('node long.js', 'C:\\proj', { workspaceId: 'w1' });
   const child = harness.spawns[0].child;
+  child.emitData('stderr', 'booting\n');
   harness.timers.advance(COMMAND_AUTO_BACKGROUND_MS);
   await pending;
-  child.emitData('stderr', 'booting\n');
   harness.timers.advance(100_000);
   child.emitData('stderr', 'still alive\n');
-  harness.timers.advance(COMMAND_IDLE_TIMEOUT_MS - 1);
+  harness.timers.advance(COMMAND_IDLE_TIMEOUT_MS * 2);
   assert.equal(harness.kills.length, 0);
-  harness.timers.advance(1);
-  assert.equal(harness.kills.length, 1);
+  assert.equal(harness.registry.get('J1').status, 'running');
 });
 
 test('a quiet dev server is healthy: idle silence never kills it', async () => {
@@ -523,9 +516,11 @@ test('the foreground tail handed to the model is bounded', async () => {
   assert.equal(result.stdout.length, JOB_TAIL_CHARS);
 });
 
-test('constants match the owner decisions: 120s idle, 30s auto-bg, 30min ceiling', () => {
-  assert.equal(COMMAND_IDLE_TIMEOUT_MS, 120_000);
-  assert.equal(COMMAND_AUTO_BACKGROUND_MS, 30_000);
+test('constants match the owner decisions: 300s idle, 120s auto-bg, 30min ceiling', () => {
+  // Idle must stay above auto-background so a quiet command always becomes a
+  // job (whose real exit the loop waits for) instead of being killed mid-run.
+  assert.equal(COMMAND_IDLE_TIMEOUT_MS, 300_000);
+  assert.equal(COMMAND_AUTO_BACKGROUND_MS, 120_000);
   assert.equal(JOB_CEILING_MS, 30 * 60_000);
   assert.equal(JOB_BUFFER_BYTES, 200 * 1024);
   assert.ok(JOB_READ_DEFAULT_CHARS > 0);

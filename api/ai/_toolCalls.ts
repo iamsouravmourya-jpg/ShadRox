@@ -113,9 +113,14 @@ export function geminiFunctionParameters(schema: Record<string, unknown>): Recor
   return cleaned;
 }
 
+// Native-function-calling providers accept up to 128 declarations; 64 keeps the
+// whole agent registry deliverable while still bounding a hostile request. The
+// old 32 silently broke every provider once the registry grew past it.
+const MAX_TOOL_DEFINITIONS = 64;
+
 export function nativeToolDefinitions(value: unknown): NativeToolDefinition[] | undefined {
   if (value === undefined || value === null) return undefined;
-  if (!Array.isArray(value) || value.length > 32) throw new Error('Invalid tool definitions.');
+  if (!Array.isArray(value) || value.length > MAX_TOOL_DEFINITIONS) throw new Error('Invalid tool definitions.');
   const definitions = value.map((entry) => {
     if (!entry || typeof entry !== 'object') throw new Error('Invalid tool definition.');
     const candidate = entry as Record<string, unknown>;

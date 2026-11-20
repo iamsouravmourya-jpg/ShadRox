@@ -764,6 +764,69 @@ function terminalDescriptor(sessionId, sessionInfo, workspace) {
   };
 }
 
+// Interactive terminal output forwarding. node-pty emits hundreds of tiny
+// chunks per second during a build; one IPC message per chunk floods the
+// renderer's main thread and freezes the dock. The FIRST chunk of a quiet
+// spell is forwarded immediately — an interactive prompt is a tiny write with
+// no newline and must never sit behind a timer — while sustained bursts are
+// coalesced on a short timer. Above a high-water mark the pty is paused so a
+// runaway producer cannot grow an unbounded IPC backlog; the flush resumes it.
+const TERMINAL_OUTPUT_COALESCE_MS = 8;
+const TERMINAL_OUTPUT_FLUSH_BYTES = 256 * 1024;
+const TERMINAL_OUTPUT_PAUSE_BYTES = 64 * 1024;
+
+function createTerminalOutputForwarder(send, options = {}) {
+  const coalesceMs = options.coalesceMs ?? TERMINAL_OUTPUT_COALESCE_MS;
+  const flushBytes = options.flushBytes ?? TERMINAL_OUTPUT_FLUSH_BYTES;
+  const pauseBytes = options.pauseBytes ?? TERMINAL_OUTPUT_PAUSE_BYTES;
+  const setTimer = options.setTimeout || setTimeout;
+  const clearTimer = options.clearTimeout || clearTimeout;
+  let pending = '';
+  let timer = null;
+  let paused = false;
+  let disposed = false;
+
+  const resumePty = () => {
+    if (!paused) return;
+    paused = false;
+    try { options.resume?.(); } catch { /* pty already gone */ }
+  };
+
+  const flush = () => {
+    if (timer !== null) { clearTimer(timer); timer = null; }
+    resumePty();
+    if (!pending) return;
+    const data = pending;
+    pending = '';
+    try { send(data); } catch { /* window gone */ }
+  };
+
+  return {
+    push(data) {
+      if (disposed || typeof data !== 'string' || data.length === 0) return;
+      pending += data;
+      if (timer === null) {
+        // Leading edge of a quiet spell: send now — a prompt with no newline
+        // must never wait — then open a short window in which further chunks
+        // coalesce instead of each riding its own IPC message.
+        const leading = pending;
+        pending = '';
+        try { send(leading); } catch { /* window gone */ }
+        timer = setTimer(flush, coalesceMs);
+        return;
+      }
+      if (pending.length >= flushBytes) { flush(); return; }
+      if (!paused && pending.length >= pauseBytes) {
+        paused = true;
+        try { options.pause?.(); } catch { /* flow control unsupported on this pty */ }
+      }
+    },
+    flush,
+    dispose() { flush(); disposed = true; },
+    pendingBytes() { return pending.length; }
+  };
+}
+
 function stopWorkspaceServices(workspaceId) {
   debugHost.stopWorkspace(workspaceId);
   typeScriptService.closeWorkspace(workspaceId);
@@ -775,6 +838,7 @@ function stopWorkspaceServices(workspaceId) {
   for (const [sessionId, sessionInfo] of terminalSessions) {
     if (sessionInfo.workspaceId !== workspaceId) continue;
     terminalSessions.delete(sessionId);
+    try { sessionInfo.forwarder?.dispose(); } catch { /* forwarder already settled */ }
     try { sessionInfo.terminal.kill(); } catch { /* process already exited */ }
   }
   // Closing a workspace must not leave its background jobs (dev servers, long
@@ -885,10 +949,14 @@ function tokenizeCommand(command) {
 // approval gate decides from that tier; timeouts are about SILENCE, not
 // wall-clock duration.
 
-/** Idle timeout: reset on ANY stdout/stderr; a silent child is killed. */
-const COMMAND_IDLE_TIMEOUT_MS = 120_000;
-/** After this much foreground waiting the command becomes a background job. */
-const COMMAND_AUTO_BACKGROUND_MS = 30_000;
+/** Idle timeout: reset on ANY stdout/stderr; a silent child is killed. Kept
+ *  above the auto-background wait so a quiet build always becomes a job —
+ *  never killed mid-foreground. */
+const COMMAND_IDLE_TIMEOUT_MS = 300_000;
+/** After this much foreground waiting the command becomes a background job.
+ *  30s auto-backgrounded healthy verifies (tsc, installs) whose real exit then
+ *  never reached the loop; 2 minutes covers the common case in the foreground. */
+const COMMAND_AUTO_BACKGROUND_MS = 120_000;
 /** Absolute ceiling for any job, output or not. */
 const JOB_CEILING_MS = 30 * 60_000;
 /** Ring buffer of the last output kept per job for job_control read_output. */
@@ -1201,7 +1269,10 @@ function executeCommand(command, cwd, meta = {}) {
       // A dev server (or any job already proven ready) logs once and then serves
       // quietly; silence is health, not a hang. Idle-killing it produced a white
       // preview. Such jobs are bounded only by the absolute ceiling.
-      if (job.devServer || job.ready) return;
+      // Same for every backgrounded job: the agent polls it and stop is one
+      // job_control call away, while killing a quiet tsc/build returned a
+      // healthy command as a failure.
+      if (job.backgrounded || job.devServer || job.ready) return;
       idleTimer = setTimeout(() => requestKill('idle'), COMMAND_IDLE_TIMEOUT_MS);
     };
 
@@ -1246,6 +1317,10 @@ function executeCommand(command, cwd, meta = {}) {
       if (settled || job.backgrounded) return;
       job.backgrounded = true;
       if (autoBgTimer) { clearTimeout(autoBgTimer); autoBgTimer = null; }
+      // The idle timer armed during the foreground wait outlives the
+      // backgrounding itself — clear it here, not just on the next data event,
+      // or a quiet build still dies at the idle limit after becoming a job.
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
       emitJobEvent({ type: 'backgrounded', jobId: job.id, workspaceId, command: text, tier: job.tier, reason });
       settle({
         stdout: stripAnsi(ring.tail(JOB_TAIL_CHARS)),
@@ -2553,9 +2628,17 @@ function registerIpcHandlers() {
       windowsHide: true
     });
     const sessionInfo = { workspaceId, mode: plan.mode, label: plan.label, launchCwd: workspace.root, terminal };
+    const forwarder = createTerminalOutputForwarder(
+      (data) => mainWindow?.webContents.send('terminal:output', { workspaceId, sessionId, type: 'data', data }),
+      { pause: () => terminal.pause(), resume: () => terminal.resume() }
+    );
+    sessionInfo.forwarder = forwarder;
     terminalSessions.set(sessionId, sessionInfo);
-    terminal.onData((data) => mainWindow?.webContents.send('terminal:output', { workspaceId, sessionId, type: 'data', data }));
+    terminal.onData((data) => forwarder.push(data));
     terminal.onExit(({ exitCode }) => {
+      // Flush the coalesced tail first: the last thing a command printed (often
+      // the prompt it died on) must reach the dock before the exit marker.
+      forwarder.dispose();
       terminalSessions.delete(sessionId);
       mainWindow?.webContents.send('terminal:output', { workspaceId, sessionId, type: 'exit', exitCode });
     });
@@ -2582,6 +2665,7 @@ function registerIpcHandlers() {
     const sessionInfo = terminalSessions.get(sessionId);
     if (!sessionInfo || sessionInfo.workspaceId !== workspaceId) return;
     terminalSessions.delete(sessionId);
+    sessionInfo.forwarder?.dispose();
     sessionInfo.terminal.kill();
   });
 

@@ -182,6 +182,18 @@ test('file mutations inside the workspace classify MUTATE', () => {
   }
 });
 
+test('read-shaped tools with execution or ref mutation require approval', () => {
+  for (const command of [
+    'fd --exec node -e "require(\\\\"fs\\\\").writeFileSync(\\\\"out.txt\\\\", \\\\"x\\\\")"',
+    'fd -x del file.txt',
+    "awk '{ system(\"del out.txt\") }' input.txt",
+    'git symbolic-ref HEAD refs/heads/feature',
+    'git symbolic-ref --delete HEAD'
+  ]) {
+    assert.equal(tier(command), 'MUTATE', `${command} should not auto-run`);
+  }
+});
+
 test('unknown commands fail safe to MUTATE, never auto-run', () => {
   for (const command of [
     'mysterybinary --flag',

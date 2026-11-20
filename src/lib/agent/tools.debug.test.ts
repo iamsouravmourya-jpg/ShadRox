@@ -17,13 +17,21 @@ test('debugger_state is a known built-in tool', () => {
   assert.equal(definition.parameters, 'none');
 });
 
-test('the tool registry now holds eighteen tools including the write tools, job_control and preview_control', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 18);
+test('the tool registry holds thirty-five tools including the write tools, job_control, preview_control and the upgrade tools', () => {
+  assert.equal(TOOL_DEFINITIONS.length, 35);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'debugger_state').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'write_file').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'edit_file').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'job_control').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'preview_control').length, 1);
+  for (const name of [
+    'apply_patch', 'verify', 'checkpoint', 'list_checkpoints', 'restore',
+    'memory_read', 'memory_note', 'find_references', 'go_to_definition', 'rename_symbol',
+    'semantic_search', 'web_search', 'fetch_url', 'preview_inspect', 'ask_user', 'spawn_subagent', 'diff_review'
+  ]) {
+    assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === name).length, 1, `${name} is registered once`);
+    assert.ok(nativeToolDefinitions().some((tool) => tool.name === name), `${name} is exposed to native providers`);
+  }
 });
 
 test('preview_control is exposed to native providers with an action enum', () => {

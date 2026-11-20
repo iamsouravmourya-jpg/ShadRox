@@ -197,21 +197,27 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
   let response = await send(messages, effort, maxOutputTokens, 1, withTools);
   let payload = response.ok ? '' : await readErrorPayload(response);
 
-  if (!response.ok && withTools && (rejectsNativeTools(payload) || rejectsToolCall(payload))) {
-    // Either the server does not speak native tools, or the model hallucinated
-    // a tool name and Groq 400'd the generation ("Tool call validation failed").
-    // Both recover the same way: resend without native tools and let the text
-    // protocol's unknown-tool repair teach the model the real names.
-    withTools = false;
-    droppedFeatures.push('tools');
-    response = await send(messages, effort, maxOutputTokens, 1, withTools);
-    payload = response.ok ? '' : await readErrorPayload(response);
-  }
-
-  if (!response.ok && effort && /reasoning/i.test(payload)) {
-    // Only some Groq models accept `reasoning_effort`; retry plainly otherwise.
-    effort = undefined;
-    droppedFeatures.push('reasoning_effort');
+  // The feature-drop ladder is a LOOP, not a one-pass chain: the provider names
+  // one unsupported field per rejection, and fixing the earlier one merely
+  // reveals the next (Groq reports `reasoning_effort` before `tool calling`).
+  // Each rejection must therefore re-check every rung against the new payload;
+  // as a straight chain the tools rung was already behind the cursor and the
+  // resend kept shipping all 35 tools until the turn died.
+  for (let round = 0; round < 3 && !response.ok; round += 1) {
+    if (withTools && (rejectsNativeTools(payload) || rejectsToolCall(payload))) {
+      // Either the server does not speak native tools, or the model hallucinated
+      // a tool name and Groq 400'd the generation ("Tool call validation failed").
+      // Both recover the same way: resend without native tools and let the text
+      // protocol's unknown-tool repair teach the model the real names.
+      withTools = false;
+      droppedFeatures.push('tools');
+    } else if (effort && /reasoning/i.test(payload)) {
+      // Only some Groq models accept `reasoning_effort`; retry plainly otherwise.
+      effort = undefined;
+      droppedFeatures.push('reasoning_effort');
+    } else {
+      break;
+    }
     response = await send(messages, effort, maxOutputTokens, 1, withTools);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
@@ -259,55 +265,97 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
   let fullText = '';
   let usage: TokenUsage = {};
   let finishReason: string | null = null;
-  const toolCalls = new OpenAiToolCallCollector();
+  let toolCalls = new OpenAiToolCallCollector();
+  // Set as soon as anything reaches the caller. Past that point a resend would
+  // duplicate output, so the tools-off recovery below must not fire.
+  let emitted = false;
 
-  const decoder = createSseDecoder(({ data }) => {
-    if (!data || data === '[DONE]') return;
+  const makeDecoder = () =>
+    createSseDecoder(({ data }) => {
+      if (!data || data === '[DONE]') return;
 
-    let parsed: any;
-    try {
-      parsed = JSON.parse(data);
-    } catch {
-      return;
-    }
-
-    if (parsed?.error?.message) {
-      throw new UpstreamError(sanitizeErrorMessage(parsed.error.message, 'Groq stream error.'), 502);
-    }
-
-    const choice = parsed?.choices?.[0];
-    const delta = choice?.delta;
-    if (delta) {
-      if (typeof delta.content === 'string' && delta.content) {
-        fullText += delta.content;
-        sink.delta(delta.content);
+      let parsed: any;
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        return;
       }
-      const reasoning = reasoningText(delta);
-      if (reasoning) sink.reasoning(reasoning);
-      toolCalls.add(delta.tool_calls);
+
+      if (parsed?.error?.message) {
+        throw new UpstreamError(sanitizeErrorMessage(parsed.error.message, 'Groq stream error.'), 502);
+      }
+
+      const choice = parsed?.choices?.[0];
+      const delta = choice?.delta;
+      if (delta) {
+        if (typeof delta.content === 'string' && delta.content) {
+          fullText += delta.content;
+          emitted = true;
+          sink.delta(delta.content);
+        }
+        const reasoning = reasoningText(delta);
+        if (reasoning) {
+          emitted = true;
+          sink.reasoning(reasoning);
+        }
+        toolCalls.add(delta.tool_calls);
+      }
+      if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason;
+      if (typeof parsed?.model === 'string' && parsed.model.trim()) {
+        servedModel = parsed.model.trim();
+      }
+      usage = mergeOpenAiUsage(usage, parsed?.usage);
+    });
+
+  const consume = async (stream: Response): Promise<void> => {
+    const decoder = makeDecoder();
+    try {
+      const reader = stream.body?.getReader();
+      if (!reader) throw new Error('Groq returned an empty stream.');
+      const textDecoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        decoder.push(textDecoder.decode(value, { stream: true }));
+      }
+      decoder.flush();
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (error instanceof UpstreamError) throw error;
+      // Scrub again: transport-level failures can quote the request.
+      throw new Error(sanitizeErrorMessage(error, 'Groq stream failed.'));
     }
-    if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason;
-    if (typeof parsed?.model === 'string' && parsed.model.trim()) {
-      servedModel = parsed.model.trim();
-    }
-    usage = mergeOpenAiUsage(usage, parsed?.usage);
-  });
+  };
 
   try {
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('Groq returned an empty stream.');
-    const textDecoder = new TextDecoder();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      decoder.push(textDecoder.decode(value, { stream: true }));
-    }
-    decoder.flush();
+    await consume(response);
   } catch (error) {
-    if (signal.aborted) throw error;
-    if (error instanceof UpstreamError) throw error;
-    // Scrub again: transport-level failures can quote the request.
-    throw new Error(sanitizeErrorMessage(error, 'Groq stream failed.'));
+    // Groq validates tool support when generation starts, not when the request
+    // is parsed: the rejection arrives as an in-stream `error` event on an
+    // already-200 response, so the pre-flight ladder above never saw it. The
+    // recovery is the same tools-off resend, but only while no token escaped —
+    // after that a resend would repeat text the user already received.
+    const toolsRejected = error instanceof UpstreamError &&
+      (rejectsNativeTools(error.message) || rejectsToolCall(error.message));
+    if (signal.aborted || !withTools || emitted || !toolsRejected) throw error;
+
+    withTools = false;
+    droppedFeatures.push('tools');
+    response = await send(messages, effort, maxOutputTokens, 1, withTools);
+    payload = response.ok ? '' : await readErrorPayload(response);
+    if (!response.ok) {
+      const message = response.status === 429
+        ? rateLimitHint(model, response)
+        : isRequestTooLarge(payload)
+          ? limitHint(model, groqLimits(payload))
+          : sanitizeErrorMessage(payload, 'Groq request failed.');
+      throw new UpstreamError(message, response.status);
+    }
+    fullText = '';
+    usage = {};
+    finishReason = null;
+    toolCalls = new OpenAiToolCallCollector();
+    await consume(response);
   }
 
   const calls = toolCalls.values();

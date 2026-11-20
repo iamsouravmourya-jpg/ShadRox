@@ -1051,8 +1051,25 @@ test('aider OpenRouter "choices" quirk classifies as a retryable connection erro
 
 test('aider insufficient-credits special case is never retried', () => {
   const info = classifyFailure(402, 'Groq API error: {"error":{"code":402}} insufficient credits');
+  assert.equal(info.name, 'InsufficientCredits');
   assert.equal(info.retry, false);
   assert.equal(info.description, 'Insufficient credits with the API provider. Please add credits.');
+});
+
+test('a zero-quota refusal is never retried and is not mistaken for a per-minute limit', () => {
+  // Gemini's free tier answers this for models the key does not include. The
+  // 429 status must not promote it into the retryable RateLimitError bucket.
+  const info = classifyFailure(
+    429,
+    'Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-2.5-pro'
+  );
+  assert.equal(info.name, 'QuotaExhausted');
+  assert.equal(info.retry, false);
+  assert.match(info.description ?? '', /Switch models/);
+  // A quota that refills (no zero limit named) stays an ordinary rate limit.
+  const refills = classifyFailure(429, 'Quota exceeded. Please retry in 28.5s.');
+  assert.equal(refills.name, 'RateLimitError');
+  assert.equal(refills.retry, true);
 });
 
 test('HTTP statuses map onto aider exception classes for Gemini/Groq/OpenAI-compat', () => {

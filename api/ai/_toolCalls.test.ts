@@ -53,6 +53,20 @@ test('native tool definitions are validated before forwarding upstream', () => {
   }]), /Invalid tool definition/);
 });
 
+test('the forwarded tool list matches the real agent registry, not a stale cap', async () => {
+  // The 35-tool registry must fit under the API guard: a count cap below the
+  // registry rejects every request on every provider with "Invalid tool
+  // definitions" and no model ever answers (v0.1.2 regression).
+  const registry = (await import('../../src/lib/agent/tools.js')).nativeToolDefinitions();
+  assert.deepEqual(nativeToolDefinitions(registry)?.length, registry.length);
+  const definition = (index: number) => ({
+    name: `tool_${index}`,
+    description: `Tool number ${index}.`,
+    parameters: { type: 'object', properties: { value: { type: 'string' } } }
+  });
+  assert.throws(() => nativeToolDefinitions(Array.from({ length: 65 }, (_, i) => definition(i))), /Invalid tool definitions/);
+});
+
 test('Gemini schemas drop unsupported keys and upper-case types', () => {
   const cleaned = geminiFunctionParameters({
     type: 'object',

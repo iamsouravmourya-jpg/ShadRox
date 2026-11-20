@@ -14,6 +14,11 @@ const IGNORED_DIRECTORIES = new Set([
   'node_modules', '.git', 'dist', 'dist_staging', 'dist_desktop', 'build', '.next', 'out', 'coverage',
   '.cache', '.vercel', '.turbo', 'vendor', '__pycache__'
 ]);
+/** Generated dependency manifests: content search skips them (find_files still lists them). */
+const LOCKFILES = new Set([
+  'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb', 'bun.lock',
+  'cargo.lock', 'poetry.lock', 'composer.lock', 'gemfile.lock', 'pipfile.lock'
+]);
 const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.avif',
   '.pdf', '.mp4', '.mov', '.webm', '.mp3', '.wav', '.zip', '.tar', '.gz',
@@ -108,6 +113,11 @@ function isEnvFile(clean) {
   return path.posix.basename(clean).startsWith('.env');
 }
 
+/** The agent's directory walk respects .gitignore, so it must be readable. */
+function isGitignoreFile(clean) {
+  return path.posix.basename(clean) === '.gitignore';
+}
+
 async function resolveWorkspaceDirectory(workspace, relativePath = '', create = false) {
   const clean = relativePath ? normalizeRelativePath(relativePath) : '';
   let current = workspace.root;
@@ -139,10 +149,10 @@ function hashContent(content) {
 async function resolveWorkspaceFile(workspace, relativePath) {
   const clean = normalizeRelativePath(relativePath);
   const hidden = clean.split('/').some((part) => part.startsWith('.') || IGNORED_DIRECTORIES.has(part));
-  if (hidden && !isShadroxConfigFile(clean) && !isProjectDocFile(clean) && !isEnvFile(clean)) {
+  if (hidden && !isShadroxConfigFile(clean) && !isProjectDocFile(clean) && !isEnvFile(clean) && !isGitignoreFile(clean)) {
     throw new Error('Hidden and generated project files are not available in the editor.');
   }
-  if ((isIgnoredFile(path.posix.basename(clean)) || isPreviewAsset(clean)) && !isProjectDocFile(clean)) {
+  if ((isIgnoredFile(path.posix.basename(clean)) || isPreviewAsset(clean)) && !isProjectDocFile(clean) && !isGitignoreFile(clean)) {
     throw new Error('Binary and generated files cannot be opened as text.');
   }
   const segments = clean.split('/');
@@ -498,6 +508,16 @@ function createWorkspaceAccess() {
       path: clean ? `${clean}/${entry.name}` : entry.name,
       kind: entry.isDirectory() ? 'directory' : 'file'
     }));
+    // Byte sizes let the agent judge a file before reading it. One bounded
+    // parallel stat pass per page; a file removed mid-listing just has no size.
+    await Promise.all(page.map(async (entry) => {
+      if (entry.kind !== 'file') return;
+      try {
+        entry.size = (await fs.stat(path.join(realDirectory, entry.name))).size;
+      } catch {
+        /* removed between listing and stat */
+      }
+    }));
     return { entries: page, nextCursor: offset + page.length < visible.length ? offset + page.length : null };
   }
 
@@ -654,6 +674,9 @@ function createWorkspaceAccess() {
     // One chatty README must never starve the rest of the repo out of the
     // global cap, so each file contributes at most `perFile` lines.
     const perFile = Math.min(Math.max(Number.isSafeInteger(options.perFile) ? options.perFile : 3, 1), 50);
+    // Context lines around each match, so the agent sees the code it is about
+    // to edit without a second read. Bounded hard: 0-5 lines each side.
+    const context = Math.min(Math.max(Number.isSafeInteger(options.context) ? options.context : 0, 0), 5);
     const namesOnly = options.namesOnly === true;
     const include = (Array.isArray(options.include)
       ? options.include
@@ -682,6 +705,7 @@ function createWorkspaceAccess() {
 
     const matches = [];
     const matchesByFile = new Map();
+    const totalByFile = new Map();
     let perFileCapped = 0;
     let visited = 0;
     let bytesRead = 0;
@@ -689,26 +713,38 @@ function createWorkspaceAccess() {
     const pushLineMatches = (childPath, content) => {
       const lines = content.split(/\r?\n/);
       let added = 0;
-      for (let index = 0; index < lines.length && matches.length < limit; index += 1) {
+      let total = 0;
+      for (let index = 0; index < lines.length; index += 1) {
         const hit = findIn(lines[index]);
         if (!hit) continue;
-        if (added >= perFile) { perFileCapped += 1; break; }
+        // The FULL per-file count keeps going past the cap: that is what lets
+        // the caller say "N more matches in this file — narrow the query".
+        total += 1;
+        if (added >= perFile || matches.length >= limit) continue;
         const start = Math.max(0, hit.index - 60);
-        matches.push({
+        const match = {
           path: childPath,
           line: index + 1,
           column: hit.index + 1,
           preview: lines[index].slice(start, hit.index + hit.length + 140).trim().slice(0, 240)
-        });
+        };
+        if (context > 0) {
+          match.contextBefore = lines.slice(Math.max(0, index - context), index);
+          match.contextAfter = lines.slice(index + 1, index + 1 + context);
+        }
+        matches.push(match);
         added += 1;
       }
       if (added > 0) matchesByFile.set(childPath, added);
+      if (total > 0) totalByFile.set(childPath, total);
+      if (added >= perFile && total > added) perFileCapped += 1;
       return matches.length >= limit;
     };
 
     if (workspace.mode !== 'folder') {
       for (const [childPath, absolute] of workspace.fileMap) {
         if (!matchesInclude(childPath, include)) continue;
+        if (!namesOnly && LOCKFILES.has(path.posix.basename(childPath).toLowerCase())) continue;
         if (namesOnly) {
           visited += 1;
           if (findIn(childPath)) matches.push({ path: childPath, line: 0, column: 0, preview: '' });
@@ -728,7 +764,14 @@ function createWorkspaceAccess() {
         if (content.includes('\u0000')) continue;
         if (pushLineMatches(childPath, content)) { capped = true; break; }
       }
-      return { matches, truncated: capped, filesScanned: visited, error: null };
+      return {
+        matches,
+        truncated: capped,
+        filesScanned: visited,
+        matchesByFile: Object.fromEntries(matchesByFile),
+        totalByFile: Object.fromEntries(totalByFile),
+        error: null
+      };
     }
 
     // Breadth-first: every top-level directory is opened before any of its
@@ -756,6 +799,7 @@ function createWorkspaceAccess() {
           continue;
         }
         if (!entry.isFile() || isIgnoredFile(entry.name) || isPreviewAsset(childPath)) continue;
+        if (!namesOnly && LOCKFILES.has(entry.name.toLowerCase())) continue;
         if (!matchesInclude(childPath, include)) continue;
         if (namesOnly) {
           visited += 1;
@@ -788,6 +832,7 @@ function createWorkspaceAccess() {
       truncated: capped || perFileCapped > 0,
       filesScanned: visited,
       matchesByFile: Object.fromEntries(matchesByFile),
+      totalByFile: Object.fromEntries(totalByFile),
       dirsSkipped,
       error: null
     };

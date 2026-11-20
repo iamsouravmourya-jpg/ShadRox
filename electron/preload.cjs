@@ -40,6 +40,7 @@ const shadroxDesktop = Object.freeze({
   runCommand: (id, command, riskNotice) => ipcRenderer.invoke('terminal:run-command', id, command, riskNotice),
   jobControl: (id, request) => ipcRenderer.invoke('job:control', id, request),
   assertPreview: (id, options) => ipcRenderer.invoke('preview:assert', id, options),
+  previewInspect: (id, request) => ipcRenderer.invoke('preview-inspect:run', id, request),
   gitRead: (id) => ipcRenderer.invoke('git:read', id),
   gitConflicts: (id) => ipcRenderer.invoke('git:conflicts', id),
   gitScmRead: (id) => ipcRenderer.invoke('git:scm-read', id),

@@ -6,6 +6,8 @@ export interface TaskItem {
   status: TaskStatus;
   evidence?: string;
   files?: string[];
+  /** What "done" means for this task; marking it done without evidence is challenged. */
+  acceptance?: string;
 }
 
 export type TaskPlan = TaskItem[];
@@ -67,11 +69,21 @@ interface RawTask {
   subject: string | null;
   status: TaskStatus | null;
   hadStatus: boolean;
+  acceptance: string | null;
+  evidence: string | null;
+  files: string[] | null;
+}
+
+function asFileList(value: unknown): string[] | null {
+  if (typeof value === 'string' && value.trim()) return [value.trim()];
+  if (!Array.isArray(value)) return null;
+  const list = value.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim())).map((entry) => entry.trim());
+  return list.length > 0 ? list : null;
 }
 
 function toRawTask(entry: unknown): RawTask | null {
   if (typeof entry === 'string') {
-    return { id: null, subject: asText(entry), status: null, hadStatus: false };
+    return { id: null, subject: asText(entry), status: null, hadStatus: false, acceptance: null, evidence: null, files: null };
   }
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
   const record = entry as Record<string, unknown>;
@@ -80,7 +92,10 @@ function toRawTask(entry: unknown): RawTask | null {
     id: firstText(record.id, record.key),
     subject: firstText(record.subject, record.title, record.name),
     status: asStatus(statusSource),
-    hadStatus: Boolean(statusSource)
+    hadStatus: Boolean(statusSource),
+    acceptance: firstText(record.acceptance, record.acceptance_criteria, record.done_when),
+    evidence: firstText(record.evidence, record.proof),
+    files: asFileList(record.files)
   };
 }
 
@@ -151,8 +166,18 @@ export function applyTaskUpdates(previous: TaskPlan, updates: unknown): TaskUpda
     const subject = clip(task.subject ?? target?.subject ?? '');
     const id = task.id ?? target?.id ?? uniqueId(slug(subject), plan);
     const status = task.status ?? target?.status ?? 'pending';
-    if (target) plan[index] = { id, subject, status };
-    else plan.push({ id, subject, status });
+    // An update carries only what it says: acceptance, evidence and files are
+    // preserved from the earlier entry unless the update replaces them, so a
+    // status flip can never silently drop the proof a task was done.
+    const next: TaskItem = { id, subject, status };
+    const acceptance = task.acceptance ?? target?.acceptance;
+    const evidence = task.evidence ?? target?.evidence;
+    const files = task.files ?? target?.files;
+    if (acceptance) next.acceptance = acceptance;
+    if (evidence) next.evidence = evidence;
+    if (files && files.length > 0) next.files = files;
+    if (target) plan[index] = next;
+    else plan.push(next);
   }
 
   const notes: string[] = [];
@@ -183,9 +208,21 @@ export function openTasks(plan: TaskPlan): TaskItem[] {
 export function completionGuard(plan: TaskPlan, wantsToFinish: boolean): string | null {
   if (!wantsToFinish) return null;
   const blockers = openTasks(plan).filter((item) => item.status !== 'blocked');
-  if (blockers.length === 0) return null;
-  const names = blockers.map((item) => `"${item.subject}" (${item.status})`).join(', ');
-  return `Your task list is not finished — still open: ${names}. `
-    + 'Call update_tasks again and mark each one done, or mark it blocked and put the one-line reason in its subject. '
-    + `Do not end the turn with a task left pending or doing. Current plan: ${renderTaskPlan(plan)}`;
+  // A task with an acceptance criterion is only done when something proves it:
+  // "done" with no evidence is a claim, and the guard asks for the proof once.
+  const unproven = plan.filter((item) => item.status === 'done' && item.acceptance && !item.evidence);
+  if (blockers.length === 0 && unproven.length === 0) return null;
+  const parts: string[] = [];
+  if (blockers.length > 0) {
+    const names = blockers.map((item) => `"${item.subject}" (${item.status})`).join(', ');
+    parts.push(`Your task list is not finished — still open: ${names}. `
+      + 'Call update_tasks again and mark each one done, or mark it blocked and put the one-line reason in its subject. '
+      + `Do not end the turn with a task left pending or doing. Current plan: ${renderTaskPlan(plan)}`);
+  }
+  if (unproven.length > 0) {
+    const names = unproven.map((item) => `"${item.subject}" (acceptance: ${item.acceptance})`).join(', ');
+    parts.push(`Marked done without evidence: ${names}. `
+      + 'Run the check each acceptance criterion names (verify, problems, a test command or a preview check) and call update_tasks with the result in "evidence", or set the task back to doing.');
+  }
+  return parts.join(' ');
 }

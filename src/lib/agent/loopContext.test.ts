@@ -1,0 +1,76 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { ChatTurn } from '../ai';
+import { serializeResults } from './toolProtocol';
+import {
+  compactToolObservations, summarizeObservation, isToolObservation, transcriptChars,
+  LOOP_CONTEXT_BUDGET_CHARS, COMPACT_TRIGGER_SHARE, KEEP_RECENT_OBSERVATIONS
+} from './loopContext';
+
+const observation = (text: string, name = 'read_file'): ChatTurn => ({
+  role: 'user',
+  content: serializeResults([{ name, ok: true, content: text }])
+});
+
+test('a short transcript is returned untouched, by reference', () => {
+  const messages: ChatTurn[] = [{ role: 'user', content: 'what is in a.ts?' }, observation('const a = 1;')];
+  const result = compactToolObservations(messages);
+  assert.equal(result.compacted, 0);
+  assert.equal(result.messages, messages, 'below the trigger the same array comes back');
+});
+
+test('the trigger is 70% of the budget', () => {
+  assert.equal(COMPACT_TRIGGER_SHARE, 0.7);
+  assert.equal(LOOP_CONTEXT_BUDGET_CHARS, 160_000);
+  assert.equal(KEEP_RECENT_OBSERVATIONS, 4);
+});
+
+test('old observations are summarized while the newest four stay verbatim', () => {
+  const big = 'x'.repeat(600);
+  const messages: ChatTurn[] = [{ role: 'user', content: 'build the thing' }];
+  const obsIndices: number[] = [];
+  for (let index = 0; index < 6; index += 1) {
+    messages.push({ role: 'assistant', content: `round ${index}` });
+    obsIndices.push(messages.length);
+    messages.push(observation(`${big} ${index}`));
+  }
+  // A tiny budget so the trigger is crossed cheaply; the logic is budget-relative.
+  const result = compactToolObservations(messages, 1_000);
+  assert.equal(result.compacted, 2, 'six observations minus the four kept = two compacted');
+  assert.match(result.messages[obsIndices[0]].content, /\[compacted observation/);
+  assert.match(result.messages[obsIndices[1]].content, /\[compacted observation/);
+  for (const index of obsIndices.slice(2)) {
+    assert.equal(result.messages[index].content, messages[index].content, 'the newest four are byte-identical');
+  }
+  assert.equal(result.messages[0].content, 'build the thing', 'the user ask is never compacted');
+  assert.ok(transcriptChars(result.messages) < transcriptChars(messages), 'compaction really shrinks the transcript');
+});
+
+test('a small observation is left alone even when old', () => {
+  const messages: ChatTurn[] = [{ role: 'user', content: 'ask' }];
+  for (let index = 0; index < 6; index += 1) {
+    messages.push({ role: 'assistant', content: 'r' });
+    messages.push(observation('tiny'));
+  }
+  const result = compactToolObservations(messages, 100);
+  assert.equal(result.compacted, 0, 'nothing reaches the minimum compactable size');
+  assert.equal(result.messages, messages);
+});
+
+test('summarizeObservation keeps one line per tool and the appended decision note', () => {
+  const content = `${serializeResults([
+    { name: 'read_file', ok: true, content: 'const a = 1;' },
+    { name: 'search_text', ok: false, content: '', error: 'No text matches for "foo".' }
+  ])}\n\nAlso: dropped.ts did not run this round.`;
+  const summary = summarizeObservation(content);
+  assert.match(summary, /read_file → ok: const a = 1;/);
+  assert.match(summary, /search_text → error: No text matches/);
+  assert.match(summary, /note: dropped\.ts did not run/);
+  assert.doesNotMatch(summary, /SHADROX_UNTRUSTED_DATA/, 'the data markers are stripped');
+});
+
+test('isToolObservation only flags user turns carrying a results fence', () => {
+  assert.equal(isToolObservation(observation('x')), true);
+  assert.equal(isToolObservation({ role: 'user', content: 'a plain question' }), false);
+  assert.equal(isToolObservation({ role: 'assistant', content: '```shadrox:results\n[]\n```' }), false);
+});

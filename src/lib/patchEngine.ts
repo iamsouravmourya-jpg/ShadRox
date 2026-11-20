@@ -336,6 +336,13 @@ export function locateBlock(content: string, original: string): BlockMatch {
   const start = content.lastIndexOf('\n', rawStart - 1) + 1;
   const lineEnd = content.indexOf('\n', rawEnd);
   const end = lineEnd === -1 ? content.length : lineEnd;
+  const before = content.slice(start, rawStart);
+  const after = content.slice(rawEnd, end);
+  if (!/^[ \t\r]*$/.test(before) || !/^[ \t\r]*$/.test(after)) {
+    return byLines === 'not-unique'
+      ? { status: 'not-unique', matches: 2 }
+      : { status: 'not-found', matches: 0 };
+  }
   return { status: 'found', range: { start, end }, matches: 1, via: 'stripped' };
 }
 

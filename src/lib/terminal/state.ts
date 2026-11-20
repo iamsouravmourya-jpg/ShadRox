@@ -20,6 +20,8 @@ export const HUNG_THRESHOLD_STORAGE_KEY = 'shadrox.terminal.hungSeconds';
  * "awaiting input" from inviting an answer into a busy stdin.
  */
 export const DEFAULT_AWAITING_INPUT_SECONDS = 10;
+/** Raw pty bytes kept per session so the agent can read interactive prompts. */
+const RAW_TAIL_LIMIT = 8000;
 
 export interface TerminalSettingStorage {
   getItem(key: string): string | null;
@@ -88,6 +90,7 @@ export function writeHungThresholdSetting(storage: TerminalSettingStorage | null
 class TerminalStateManager {
   private parsers = new Map<string, ShellIntegrationParser>();
   private runs = new Map<string, RunTracking>();
+  private rawTails = new Map<string, string>();
   private activeSessionId: string | null = null;
   private hungThresholdSeconds = DEFAULT_HUNG_THRESHOLD_SECONDS;
 
@@ -108,7 +111,23 @@ class TerminalStateManager {
     const parser = this.getOrCreateParser(sessionId);
     const { cleanText, events } = parser.feed(chunk);
     for (const event of events) this.trackEvent(sessionId, event.type);
+    const tail = (this.rawTails.get(sessionId) ?? '') + chunk;
+    this.rawTails.set(sessionId, tail.length > RAW_TAIL_LIMIT ? tail.slice(tail.length - RAW_TAIL_LIMIT) : tail);
     return cleanText;
+  }
+
+  /**
+   * Raw recent pty bytes, ANSI-stripped. The shell-integration parser holds back
+   * unterminated ESC tails, so an interactive prompt is only readable here.
+   */
+  public getOutputTail(sessionId: string | null, maxChars = 1600): string {
+    if (!sessionId) return '';
+    const raw = this.rawTails.get(sessionId) ?? '';
+    const plain = raw
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+      .replace(/\x1b[@-_]/g, '');
+    return plain.length > maxChars ? plain.slice(plain.length - maxChars) : plain;
   }
 
   /**
@@ -240,6 +259,7 @@ class TerminalStateManager {
   public dropSession(sessionId: string): void {
     this.parsers.delete(sessionId);
     this.runs.delete(sessionId);
+    this.rawTails.delete(sessionId);
     if (this.activeSessionId === sessionId) {
       const next = this.parsers.keys().next();
       this.activeSessionId = next.done ? null : next.value;

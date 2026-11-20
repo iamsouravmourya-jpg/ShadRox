@@ -1027,7 +1027,7 @@ function createPreviewRuntime({
     // as the project. The normal probe budget is cheap here: these run in
     // parallel and only slow the start by the one port that actually answers.
     const baselinePorts = new Set((await Promise.all(COMMON_DEV_PORTS.map(async (port) =>
-      await probeHttp(`http://127.0.0.1:${port}/`, 700) ? port : null
+      await isPortBusy(port) ? port : null
     ))).filter(Number.isInteger));
 
     // The intended port is the one the script pins for itself, or the
@@ -1248,7 +1248,7 @@ function createPreviewRuntime({
 
     const commonPorts = [...new Set([normalized.port, ...COMMON_DEV_PORTS])];
     const baselinePorts = new Set((await Promise.all(commonPorts.map(async (port) =>
-      await probeHttp(`http://127.0.0.1:${port}/`, 700) ? port : null
+      await isPortBusy(port) ? port : null
     ))).filter(Number.isInteger));
     if (baselinePorts.has(normalized.port)) {
       throw new Error(`Port ${normalized.port} is already serving another local process. Stop it or choose a different backend port.`);
@@ -1450,6 +1450,26 @@ function createPreviewRuntime({
     const owned = ownedPreviews(workspaceId).find((entry) => entry.id === identity);
     if (!owned) return false;
     return owned.kind === 'frontend' ? stopFrontend(workspaceId) : stopBackend(workspaceId);
+  }
+
+  // The preview inspector self-registers its IPC channel here (main.cjs is
+  // assembled elsewhere). Under plain `node --test`, require('electron')
+  // returns a string path with no ipcMain, so registration is skipped and the
+  // runtime behaves exactly as before.
+  try {
+    const electron = require('electron');
+    if (electron && electron.ipcMain) {
+      const { registerPreviewInspect } = require('./preview-inspect.cjs');
+      registerPreviewInspect({
+        ipcMain: electron.ipcMain,
+        app: electron.app,
+        BrowserWindow: electron.BrowserWindow,
+        nativeImage: electron.nativeImage,
+        getWorkspaceIdForUrl
+      });
+    }
+  } catch {
+    // Headless/test environment: no inspector channel, previews still work.
   }
 
   return { start, startStatic, startPlan, stop, stopBackend, stopAll, getWorkspaceIdForUrl, ownedPreviews, stopOwnedPreview };

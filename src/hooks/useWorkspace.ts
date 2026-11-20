@@ -23,7 +23,7 @@ import {
   type HandleEntry
 } from '../lib/workspace';
 import type { RecentEntry, WorkspaceFile, WorkspaceFileEntry, WorkspaceFolder } from '../lib/types';
-import { sanitizeProjectName } from '../../electron/project-scaffold.cjs';
+import { sanitizeProjectName } from '../lib/projectName';
 
 /** What happened to each file the assistant tried to write. */
 export interface ApplyPatchesResult {

@@ -106,3 +106,82 @@ export function stuckInstruction(signal: StuckSignal): string {
   return `${OPENING[signal.kind]} (${signal.detail}.) Stop calling tools and write the final answer now with what you have already read. `
     + 'Say plainly which files you did not get to instead of guessing about them, and propose the next concrete step rather than another search.';
 }
+
+/* ------------------------------------------------------------------ *
+ * Same-call-same-error tracking: the second identical failure earns a
+ * "change approach" nudge, the third blocks the call outright. A guard
+ * refusal is not a failed operation and never counts; a DIFFERENT error
+ * on the same call is new information and resets the run.
+ * ------------------------------------------------------------------ */
+
+export interface FailureObservation {
+  key: string;
+  ok: boolean;
+  refused?: boolean;
+  error?: string;
+  content?: string;
+}
+
+export type FailureVerdict = 'nudge' | 'block' | null;
+
+export function createFailureRepeatTracker() {
+  const runs = new Map<string, { signature: string; count: number }>();
+  const blocked = new Set<string>();
+
+  // Command failures embed per-run noise — a self-healing receipt id, the wall
+  // duration, and timestamps in server output — so two runs of the same failing
+  // command must be stripped down to their stable core or the "same error"
+  // comparison never matches and the repeat blocker stays dead forever.
+  const VOLATILE_FAILURE_NOISE =
+    /ran in the opened folder · \d+ ms|proof-\d+-[a-z0-9]+|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z?|\b\d{1,2}:\d{2}:\d{2}\b/gi;
+
+  const signatureOf = (entry: FailureObservation): string =>
+    (entry.error ?? entry.content ?? '')
+      .replace(VOLATILE_FAILURE_NOISE, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 400);
+
+  /** Feed one executed outcome; returns the verdict for THIS observation. */
+  const note = (entry: FailureObservation): FailureVerdict => {
+    if (entry.ok || entry.refused) return null;
+    const signature = signatureOf(entry);
+    const previous = runs.get(entry.key);
+    if (!previous || previous.signature !== signature) {
+      runs.set(entry.key, { signature, count: 1 });
+      return null;
+    }
+    previous.count += 1;
+    if (previous.count === 2) return 'nudge';
+    if (previous.count === 3) {
+      blocked.add(entry.key);
+      return 'block';
+    }
+    return null;
+  };
+
+  const isBlocked = (key: string): boolean => blocked.has(key);
+
+  /**
+   * A successful mutation means the turn moved: earlier failure runs (and
+   * blocks) described a stale disk state, so they clear. Without this, a
+   * verify that failed before a fix could stay blocked after the fix landed.
+   */
+  const reset = (): void => {
+    runs.clear();
+    blocked.clear();
+  };
+
+  return { note, isBlocked, reset };
+}
+
+export function failureNudge(label: string): string {
+  return `${label} failed the same way twice. Repeating it will not change the result — change approach: `
+    + 're-read the file to get its exact current text, narrow or fix the arguments, or use a different tool. '
+    + 'A third identical failure blocks the call for the rest of this turn.';
+}
+
+export function failureBlockMessage(label: string): string {
+  return `${label} is blocked: it failed the same way three times this turn. `
+    + 'Do not ask for it again — take a different approach (read the current file, change the arguments, or another tool) and say what you changed.';
+}

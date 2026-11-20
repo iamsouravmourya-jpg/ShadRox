@@ -12,6 +12,16 @@ import { describeFinish } from './finishTool';
 import { MCP_TOOL_PREFIX } from './mcpTools';
 import type { ExternalToolDefinition } from './mcpTools';
 import type { ToolEffect } from './runPolicy';
+import { getTurn, noteRead } from './turnState';
+import { createAgentCheckpoint, listAgentCheckpoints, restoreAgentCheckpoint } from './checkpoints';
+import { planVerification, parseVerifyOutput, formatVerifyReport, type VerifyError, type VerifyReport } from './verifyProject';
+import { parseGitignore, isIgnoredPath, type GitignoreRule } from './gitignore';
+import { PROJECT_MEMORY_TOOLS, PROJECT_MEMORY_SCHEMAS, handleMemoryRead, handleMemoryNote } from './projectMemory';
+import { CODE_INTEL_TOOLS, CODE_INTEL_SCHEMAS, handleFindReferences, handleGoToDefinition, handleRenameSymbol } from './codeIntel';
+import { SEMANTIC_SEARCH_TOOLS, SEMANTIC_SEARCH_SCHEMA, handleSemanticSearch } from './semanticIndex';
+import { WEB_TOOLS, WEB_TOOL_SCHEMAS, handleWebSearch, handleFetchUrl, handlePreviewInspect } from './webTools';
+import { INTERACTION_TOOLS, INTERACTION_SCHEMAS, handleAskUser, handleSpawnSubagent } from './subagent';
+import { DIFF_REVIEW_TOOLS, DIFF_REVIEW_SCHEMA, handleDiffReview } from './diffReview';
 
 /**
  * The workspace tools an assistant turn may call to explore and change the
@@ -49,11 +59,24 @@ export interface ToolOutcome {
   proof?: FailureReceipt;
   /** Files this call verified changed on disk; set only where the tool can count honestly. */
   changedFiles?: number;
+  /** The exact paths a write touched, so the turn state and checkpoint can track them. */
+  changedPaths?: string[];
+  /** Paths this call created (a rollback deletes them again). */
+  createdPaths?: string[];
+  /** The structured result of a verify call, for the loop's verification record. */
+  verifyReport?: VerifyReport;
 }
 
 const MAX_TOOL_OUTPUT_CHARS = 24_000;
 const MAX_PREVIEW_CHARS = 600;
 const MAX_SEARCH_RESULTS = 80;
+/** An unread file above this size is refused for writing until the model reads it. */
+const AUTO_READ_LIMIT = 120_000;
+/** Overwriting an existing file at least this large takes a backup first. */
+const LARGE_FILE_BACKUP_THRESHOLD = 20_000;
+/** run_command keeps the head and tail of each stream, never the silent middle. */
+const COMMAND_HEAD_CHARS = 6_000;
+const COMMAND_TAIL_CHARS = 6_000;
 
 /**
  * One round runs at most this many calls. Defined here — not in toolLoop.ts,
@@ -65,8 +88,8 @@ export const MAX_CALLS_PER_ROUND = 16;
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'list_directory',
-    description: 'List one directory of the opened folder. Empty path lists the root.',
-    parameters: 'path: string (workspace-relative, optional)'
+    description: 'List one directory of the opened folder with file sizes. Empty path lists the root. depth walks subdirectories too (max 3); .gitignore rules and generated folders are respected.',
+    parameters: 'path: string (workspace-relative, optional), depth?: number (1-3, default 1)'
   },
   {
     name: 'read_file',
@@ -92,8 +115,37 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'edit_file',
     description:
-      'Edit an existing file by replacing an exact original snippet with updated text. Saves to disk immediately during this turn.',
+      'Edit an existing file by replacing an exact original snippet with updated text. Saves to disk immediately during this turn. A file you have not read this turn is auto-read first (small files) or the edit is refused until you read it. On a miss the error shows the closest region on disk; after a successful edit the file\'s compiler problems come back with the result.',
     parameters: 'path: string (required, workspace-relative), original: string (required, exact snippet to replace), updated: string (required, replacement text)'
+  },
+  {
+    name: 'apply_patch',
+    description:
+      'Apply a list of {path, old, new} hunks across one or many files in ONE atomic transaction: either every hunk lands or nothing is written. old must match the file exactly once (empty old creates a new file). On a mismatch the failing hunk and the surrounding lines from disk come back and no file is touched. Prefer this for a coordinated multi-file change.',
+    parameters: 'patches: [{path: string, old: string, new: string}] (required, 1-50 hunks)'
+  },
+  {
+    name: 'verify',
+    description:
+      'Run the project\'s own checks: detects the project kind from package.json scripts and lockfiles (npm/pnpm/yarn/bun typecheck/build/test), pytest, cargo or go, runs them through the risk-tiered command runner, and returns structured errors (file:line message), failed tests and the commands run. Compiler diagnostics are included. Call this after changing files and before finish.',
+    parameters: 'none'
+  },
+  {
+    name: 'checkpoint',
+    description:
+      'Save a named checkpoint of the files this turn has read or changed, into the same history the chat timeline uses. A checkpoint is also taken automatically before the turn\'s first write. Restore asks the user to approve.',
+    parameters: 'label: string (optional, a short name for the checkpoint)'
+  },
+  {
+    name: 'list_checkpoints',
+    description: 'List this workspace\'s checkpoints, newest first, with ids, labels, dates and file counts.',
+    parameters: 'none'
+  },
+  {
+    name: 'restore',
+    description:
+      'Restore a checkpoint by id: files the run created are removed and stored contents are written back. The user approves the exact restore in a dialog first; a cancel changes nothing. Never claim a restore you did not see succeed.',
+    parameters: 'id: string (required, from list_checkpoints)'
   },
   {
     name: 'delete_file',
@@ -103,8 +155,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'problems',
-    description: 'Real compiler diagnostics for the project or for named files.',
-    parameters: 'paths?: string[] (workspace-relative; omit for the whole project)'
+    description: 'Real compiler diagnostics for the project or for named files. changed_only checks exactly the files this turn changed; severity filters to errors or warnings.',
+    parameters: 'paths?: string[] (workspace-relative; omit for the whole project), changed_only?: boolean, severity?: "error"|"warning"|"all"'
   },
   {
     name: 'git_state',
@@ -128,7 +180,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'terminal_state',
-    description: 'Read the live interactive terminal: current directory, the command that is running, the last exit code, how long the command has produced no output, whether it is waiting for input, and how the last failure is classified. Read-only. Does not type into the terminal.',
+    description: 'Read the live interactive terminal: current directory, the command that is running, the last exit code, how long the command has produced no output, whether it is waiting for input, how the last failure is classified, and the recent raw output (ANSI stripped) so you can READ the actual prompt instead of guessing. Read-only. Does not type into the terminal.',
     parameters: 'none'
   },
   {
@@ -148,20 +200,29 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'update_tasks',
-    description: 'Set or change the plan for this turn. Call it before starting a step and again when it ends.',
-    parameters: 'tasks: [{id?: string, subject: string, status: "pending"|"doing"|"done"|"blocked"}]'
+    description: 'Set or change the plan for this turn. Call it before starting a step and again when it ends. acceptance says what "done" means; a task marked done with an acceptance criterion needs evidence (the check result) or the finish guard asks for it.',
+    parameters: 'tasks: [{id?: string, subject: string, status: "pending"|"doing"|"done"|"blocked", acceptance?: string, evidence?: string, files?: string[]}]'
   },
   {
     name: 'finish',
-    description: 'End this turn. The summary is the answer the user reads.',
-    parameters: 'summary: string (required), blocked?: string (one-line reason the work is incomplete)'
-  }
+    description: 'End this turn. The summary is the answer the user reads. After any file change, finish is refused until verify/problems/build/test actually ran; set verified from what the check showed.',
+    parameters: 'summary: string (required), blocked?: string, files_changed?: string[], verified?: boolean, could_not_do?: string, how_to_test?: string'
+  },
+  ...PROJECT_MEMORY_TOOLS,
+  ...CODE_INTEL_TOOLS,
+  ...SEMANTIC_SEARCH_TOOLS,
+  ...WEB_TOOLS,
+  ...INTERACTION_TOOLS,
+  ...DIFF_REVIEW_TOOLS
 ];
 
 const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   list_directory: {
     type: 'object',
-    properties: { path: { type: 'string', description: 'Workspace-relative directory path; omit for the root.' } },
+    properties: {
+      path: { type: 'string', description: 'Workspace-relative directory path; omit for the root.' },
+      depth: { type: 'integer', description: 'How many directory levels to walk (1-3, default 1).' }
+    },
     additionalProperties: false
   },
   read_file: {
@@ -197,7 +258,9 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   problems: {
     type: 'object',
     properties: {
-      paths: { type: 'array', items: { type: 'string' }, description: 'Optional files to check.' }
+      paths: { type: 'array', items: { type: 'string' }, description: 'Optional files to check.' },
+      changed_only: { type: 'boolean', description: 'Check exactly the files this turn changed.' },
+      severity: { type: 'string', enum: ['error', 'warning', 'all'], description: 'Filter diagnostics by severity (default all).' }
     },
     additionalProperties: false
   },
@@ -267,6 +330,40 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
     required: ['path', 'original', 'updated'],
     additionalProperties: false
   },
+  apply_patch: {
+    type: 'object',
+    properties: {
+      patches: {
+        type: 'array',
+        description: 'Hunks applied in order, all-or-nothing across files.',
+        items: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Workspace-relative file path.' },
+            old: { type: 'string', description: 'Exact text to replace; empty creates a new file.' },
+            new: { type: 'string', description: 'Replacement text (full content when old is empty).' }
+          },
+          required: ['path', 'new'],
+          additionalProperties: false
+        }
+      }
+    },
+    required: ['patches'],
+    additionalProperties: false
+  },
+  verify: { type: 'object', properties: {}, additionalProperties: false },
+  checkpoint: {
+    type: 'object',
+    properties: { label: { type: 'string', description: 'A short name for the checkpoint.' } },
+    additionalProperties: false
+  },
+  list_checkpoints: { type: 'object', properties: {}, additionalProperties: false },
+  restore: {
+    type: 'object',
+    properties: { id: { type: 'string', description: 'Checkpoint id from list_checkpoints.' } },
+    required: ['id'],
+    additionalProperties: false
+  },
   delete_file: {
     type: 'object',
     properties: {
@@ -292,7 +389,10 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
           properties: {
             id: { type: 'string' },
             subject: { type: 'string' },
-            status: { type: 'string', enum: ['pending', 'doing', 'done', 'blocked'] }
+            status: { type: 'string', enum: ['pending', 'doing', 'done', 'blocked'] },
+            acceptance: { type: 'string', description: 'What "done" means for this task.' },
+            evidence: { type: 'string', description: 'The check result proving the acceptance criterion.' },
+            files: { type: 'array', items: { type: 'string' }, description: 'Paths this task touches.' }
           },
           required: ['subject', 'status'],
           additionalProperties: false
@@ -306,11 +406,21 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
     type: 'object',
     properties: {
       summary: { type: 'string', description: 'Final answer for the user.' },
-      blocked: { type: 'string', description: 'One-line reason the work is incomplete.' }
+      blocked: { type: 'string', description: 'One-line reason the work is incomplete.' },
+      files_changed: { type: 'array', items: { type: 'string' }, description: 'Paths this turn changed.' },
+      verified: { type: 'boolean', description: 'True only when a real check ran after the last change and you saw its result.' },
+      could_not_do: { type: 'string', description: 'What was left undone, plainly.' },
+      how_to_test: { type: 'string', description: 'One line the user can run or click to see the change.' }
     },
     required: ['summary'],
     additionalProperties: false
-  }
+  },
+  ...PROJECT_MEMORY_SCHEMAS,
+  ...CODE_INTEL_SCHEMAS,
+  semantic_search: SEMANTIC_SEARCH_SCHEMA,
+  ...WEB_TOOL_SCHEMAS,
+  ...INTERACTION_SCHEMAS,
+  diff_review: DIFF_REVIEW_SCHEMA
 };
 
 /** JSON schemas for provider-native calls; MCP tools remain on the text protocol. */
@@ -338,20 +448,42 @@ const NATIVE_TOOL_EFFECTS: Record<string, ToolEffect> = {
   read_file: 'read',
   write_file: 'write',
   edit_file: 'write',
+  apply_patch: 'write',
   find_files: 'read',
   search_text: 'read',
   problems: 'read',
+  verify: 'execute',
+  checkpoint: 'read',
+  list_checkpoints: 'read',
+  restore: 'write',
   git_state: 'read',
   terminal_state: 'read',
   debugger_state: 'read',
   outline: 'read',
   delete_file: 'write',
   run_command: 'execute',
-  job_control: 'execute',
+  // job_control and preview_inspect only read buffered state (list/status/
+  // read_output/stop/screenshot/console). Classifying them as 'execute' made
+  // every poll count as a disk mutation, which re-staled the very verification
+  // the finish gate had just accepted — the verify→job_control→verify loop.
+  job_control: 'read',
   preview_control: 'execute',
   terminal_answer: 'execute',
   update_tasks: 'control',
-  finish: 'control'
+  finish: 'control',
+  memory_read: 'read',
+  memory_note: 'write',
+  find_references: 'read',
+  go_to_definition: 'read',
+  rename_symbol: 'read',
+  semantic_search: 'read',
+  web_search: 'read',
+  fetch_url: 'read',
+  // Inspecting the preview reads a screenshot and console logs; it moves nothing.
+  preview_inspect: 'read',
+  ask_user: 'read',
+  spawn_subagent: 'execute',
+  diff_review: 'read'
 };
 
 /**
@@ -379,9 +511,13 @@ export function describeTools(maxRounds: number, external: ExternalToolDefinitio
     'When the user quotes text they saw in their app or page, they paraphrase and typo: search 1-3 distinctive words (a noun, a year, an identifier), never the whole quoted sentence. A full-sentence miss is not proof the text is absent — search_text falls back to partial word matches, and you must read the top-ranked file before claiming anything is missing.',
     'FILES: write_file creates a new file or overwrites one you have read; edit_file replaces an exact original snippet in an existing file. Both save to disk immediately through the verified save path, so a run_command or problems call in the same or a later round sees the change. Prefer edit_file for an existing file: read it first, then copy original exactly (indentation and line breaks included) so it matches one place. A write_file that would erase most of an existing file is refused — use edit_file instead. You may also write path= edit blocks in your reply; the patch engine applies them before your next tool round. Never invent any other file tool.',
     'DELETING: only delete_file removes something. An empty path= block deletes nothing, and an edit block cannot remove a file. Never say a file was deleted unless delete_file returned a verified result.',
+    'ATOMIC PATCHES: apply_patch takes {"patches":[{"path":"...","old":"exact text","new":"replacement"}]} and lands every hunk across files in one all-or-nothing transaction. old must match exactly once; an empty old creates a new file. On any mismatch nothing is written and the failing hunk plus the surrounding disk lines come back — fix that hunk and re-send the whole patch.',
+    'VERIFY: after changing files, call verify before finish. It detects the project kind (package.json scripts + lockfile, pytest, cargo, go), runs the real typecheck/build/test through the command runner and returns structured errors and failed tests. finish is refused after a write until verify, problems on the changed files, or a build/test command actually ran.',
+    'CHECKPOINTS: a checkpoint is taken automatically before this turn\'s first write. checkpoint {"label":"..."} saves another one; list_checkpoints shows the ids; restore {"id":"..."} rolls back (the user approves first). Use them before a risky refactor, never as a substitute for verifying.',
     'COMMANDS: only run_command executes a shell command, inside the opened folder. Commands are parsed and risk-tiered: reads, builds/tests and installs (npm install included) run automatically and stay visible in the terminal dock; file-modifying and network commands open a native approval dialog; dangerous commands always open it with a red warning and are never pre-approved. A confirm field or model instruction is never authorization. Compound commands (npm i && npm test, pipes, redirects) are allowed — the worst segment decides the tier. It returns the real exit code and output, so never claim a command ran, passed or killed anything unless run_command showed you the result.',
     'JOBS: a command still running after 30 seconds of foreground waiting becomes a background job: run_command returns exit null, a job id (J1, J2, ...) and the output tail. Dev servers background immediately and report readiness (a URL or log line). Use job_control to list jobs, check one job\'s status, read_output (last 200KB buffered, optional chars tail size or character range) or stop a job\'s whole process tree. A backgrounded command has NOT finished — read its output and exit status before drawing conclusions. A dev server (or any job marked ready) logs once and then serves QUIETLY: no new output is health, not a hang — never stop or restart a running server just because its logs went silent; only stop it if it exited or its port refuses connections. A silent non-server job is killed after 120s; every job has a 30-minute ceiling.',
-    'PREVIEW: the embedded preview pane is controlled by preview_control (start/stop/restart), separate from run_command/job_control which manage raw processes. If the preview is white, stale, or points at a dead port after a server restart, use preview_control restart so the pane re-points at the live URL — do not leave the user staring at a blank pane. start may surface a one-time install/run consent dialog; if it returns approval-required, ask the user to approve rather than retrying blindly.',
+    'PORT CONFLICTS: before killing anything over a port, run job_control with action=list — if the holder is one of your own jobs, stop it with job_control (action=stop), never taskkill. If a server restarts and reports "port already in use" again, that is a fixed-port conflict inside the project\'s own code/config, and killing can never fix it: stop killing ports, read the file that binds the port, and either change it to a free port or ask the user. Never kill a foreign process that was already serving the user before you started.',
+    'PREVIEW: the embedded preview pane is controlled by preview_control (start/stop/restart), separate from run_command/job_control which manage raw processes. The pane is how the user sees a running app: prefer preview_control start to serve it, and do not ALSO start the same dev server with run_command — two servers fight over one port and both end up broken. If the preview is white, stale, or points at a dead port after a server restart, use preview_control restart so the pane re-points at the live URL — do not leave the user staring at a blank pane. start may surface a one-time install/run consent dialog; if it returns approval-required, ask the user to approve rather than retrying blindly.',
     'TERMINAL: terminal_state reads the interactive shell (cwd, running command, last exit, silence, whether it waits for input). It never types. terminal_answer is the only way to type, and the user approves the exact bytes in a dialog first — say so, and never claim an answer was sent when the tool refused.',
     'DEBUGGER: debugger_state reads a session paused in the debugger — the stopped frame and bounded locals. It refuses when nothing is paused, and it never resumes, steps or edits; those stay the user\'s controls. Never claim a variable value you did not see in its result.',
     'When you have enough to answer, write the answer as normal text (with any path= edit blocks) and emit no tool block.',
@@ -425,6 +561,62 @@ function asBoolean(value: unknown): boolean | undefined {
 function clip(content: string): string {
   if (content.length <= MAX_TOOL_OUTPUT_CHARS) return content;
   return `${content.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n… output cut at ${MAX_TOOL_OUTPUT_CHARS} characters. Narrow the request (a line range, an include pattern, fewer files).`;
+}
+
+/** Head+tail cap: the start (errors, headers) and the end (summary, exit) survive. */
+function capCommandSection(text: string): string {
+  if (text.length <= COMMAND_HEAD_CHARS + COMMAND_TAIL_CHARS) return text;
+  const omitted = text.length - COMMAND_HEAD_CHARS - COMMAND_TAIL_CHARS;
+  return `${text.slice(0, COMMAND_HEAD_CHARS)}\n… [${omitted} characters omitted from the middle — narrow the command or read the job output] …\n${text.slice(-COMMAND_TAIL_CHARS)}`;
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * The disk region most similar to a snippet that failed to match: the line
+ * sharing the longest common prefix with any snippet line, ±5 lines around it.
+ * This is what turns "not found" into a self-correcting error.
+ */
+function closestRegion(content: string, snippet: string): { line: number; excerpt: string } | null {
+  const lines = content.split('\n');
+  const snippetLines = snippet.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 8);
+  if (snippetLines.length === 0 || lines.length === 0) return null;
+  let best = -1;
+  let bestScore = 0;
+  const scanLimit = Math.min(lines.length, 4000);
+  for (let index = 0; index < scanLimit; index += 1) {
+    const diskLine = lines[index].trim();
+    if (!diskLine) continue;
+    for (const snippetLine of snippetLines) {
+      let score = 0;
+      const max = Math.min(diskLine.length, snippetLine.length);
+      while (score < max && diskLine[score] === snippetLine[score]) score += 1;
+      if (score > bestScore) {
+        bestScore = score;
+        best = index;
+      }
+    }
+  }
+  if (best < 0 || bestScore < 4) return null;
+  const from = Math.max(0, best - 5);
+  const to = Math.min(lines.length, best + 6);
+  const excerpt = lines.slice(from, to).map((line, index) => `${from + index + 1}| ${line}`).join('\n');
+  return { line: best + 1, excerpt: excerpt.slice(0, 1600) };
+}
+
+/** The 1-based lines where a snippet occurs, capped so a huge file stays cheap. */
+function occurrenceLines(content: string, snippet: string, cap = 5): number[] {
+  const lines: number[] = [];
+  let index = content.indexOf(snippet);
+  while (index >= 0 && lines.length < cap) {
+    lines.push(content.slice(0, index).split('\n').length);
+    index = content.indexOf(snippet, index + 1);
+  }
+  return lines;
 }
 
 const ENV_SECRET_KEY = /(KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASS|PRIVATE|CREDENTIAL|SIGNATURE|DATABASE_URL|_DSN|AUTH)/i;
@@ -481,6 +673,10 @@ export function summarizeCall(call: ToolCall): string {
   }
   if (call.name === 'preview_control') {
     return `preview_control · ${asString(call.args.action) ?? 'start'}`;
+  }
+  if (call.name === 'apply_patch') {
+    const patches = Array.isArray(call.args.patches) ? call.args.patches : [];
+    return `apply_patch · ${patches.length} hunk${patches.length === 1 ? '' : 's'}`;
   }
   if (call.name === 'terminal_answer') {
     const text = asString(call.args.text) ?? '';
@@ -574,6 +770,40 @@ export function availableToolNames(external: string[] = []): string {
   return [...TOOL_DEFINITIONS.map((tool) => tool.name), ...shown].join(', ') + tail;
 }
 
+/**
+ * Waits for a backgrounded command job to exit and returns its real outcome.
+ * A verify that auto-backgrounded is not a failure — the honest answer is the
+ * job's eventual exit code. Waiting (bounded) beats declaring green code broken
+ * and sending the loop into a repair dance for a build that was succeeding.
+ */
+export async function waitForJobExit(
+  desktop: ShadRoxDesktopAPI,
+  workspaceId: string,
+  jobId: string | null,
+  waitMs = 6 * 60_000
+): Promise<{ exitCode: number; timedOut: boolean; text: string } | null> {
+  if (!jobId || typeof desktop.jobControl !== 'function') return null;
+  const deadline = Date.now() + waitMs;
+  // Poll first, then sleep — a job that already exited is answered by one IPC.
+  // The cadence adapts so short waits (tests) do not wait 4s between polls.
+  const interval = Math.min(4_000, Math.max(250, Math.floor(waitMs / 10)));
+  while (Date.now() < deadline) {
+    const status = await desktop.jobControl(workspaceId, { action: 'status', jobId });
+    if (!status || status.ok !== true) return null;
+    if (status.exitCode !== null && status.exitCode !== undefined) {
+      const output = await desktop.jobControl(workspaceId, { action: 'read_output', jobId, chars: 24_000 });
+      return {
+        exitCode: status.exitCode,
+        timedOut: status.timedOut ?? false,
+        text: typeof output?.text === 'string' ? output.text : ''
+      };
+    }
+    if (Date.now() + interval >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, interval));
+  }
+  return null;
+}
+
 export async function runTool(workspaceId: string, call: ToolCall): Promise<ToolOutcome> {
   const nativeArgError = (call.args as Record<string, unknown>).__nativeArgumentError;
   if (typeof nativeArgError === 'string') return refusal(nativeArgError);
@@ -584,9 +814,46 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
   try {
     switch (call.name) {
       case 'list_directory': {
-        const page = await desktop.listDirectory(workspaceId, asString(call.args.path) ?? '', asNumber(call.args.cursor));
-        const lines = page.entries.map((entry) => `${entry.kind === 'directory' ? 'd' : 'f'} ${entry.path}`);
-        return { ok: true, content: clip(`${lines.length} entries${page.nextCursor !== null ? ' (this page only — call again with the next cursor)' : ''}\n${lines.join('\n')}`) };
+        const depth = Math.min(Math.max(asNumber(call.args.depth) ?? 1, 1), 3);
+        const rootPath = asString(call.args.path) ?? '';
+        // .gitignore is read once per call and fail-open: a folder without one
+        // (or a bridge that cannot read it) lists exactly what it listed before.
+        let rules: GitignoreRule[] = [];
+        try {
+          const ignoreFile = await desktop.readFile(workspaceId, '.gitignore');
+          rules = parseGitignore(ignoreFile.content);
+        } catch {
+          /* no .gitignore readable */
+        }
+        const MAX_WALK_ENTRIES = 400;
+        const MAX_WALK_DIRS = 60;
+        const lines: string[] = [];
+        let capped = false;
+        let dirsVisited = 0;
+        const queue: Array<{ dir: string; level: number; cursor?: number }> = [
+          { dir: rootPath, level: 1, cursor: asNumber(call.args.cursor) }
+        ];
+        while (queue.length > 0) {
+          if (dirsVisited >= MAX_WALK_DIRS || lines.length >= MAX_WALK_ENTRIES) { capped = true; break; }
+          const { dir, level, cursor } = queue.shift() as { dir: string; level: number; cursor?: number };
+          dirsVisited += 1;
+          let nextCursor: number | null | undefined = cursor ?? 0;
+          // Follow every page of this directory so depth walks are not cut at 200.
+          while (nextCursor !== null && nextCursor !== undefined) {
+            const page = await desktop.listDirectory(workspaceId, dir, nextCursor);
+            for (const entry of page.entries) {
+              if (lines.length >= MAX_WALK_ENTRIES) { capped = true; break; }
+              if (isIgnoredPath(rules, entry.path, entry.kind === 'directory')) continue;
+              const size = entry.kind === 'file' && typeof entry.size === 'number' ? ` (${formatBytes(entry.size)})` : '';
+              lines.push(`${entry.kind === 'directory' ? 'd' : 'f'} ${entry.path}${size}`);
+              if (entry.kind === 'directory' && level < depth) {
+                queue.push({ dir: entry.path, level: level + 1 });
+              }
+            }
+            nextCursor = page.nextCursor;
+          }
+        }
+        return { ok: true, content: clip(`${lines.length} entries${capped ? ' (walk capped — narrow the path or depth)' : ''}\n${lines.join('\n')}`) };
       }
       case 'read_file': {
         const path = asString(call.args.path);
@@ -629,7 +896,10 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           query,
           include,
           regex,
-          limit: asNumber(call.args.limit)
+          limit: asNumber(call.args.limit),
+          // ±2 context lines: the model sees the code around a hit without a
+          // second read. Older bridges ignore the option and return no context.
+          context: 2
         });
         if (result.error) return refusal(result.error);
         if (result.matches.length === 0) {
@@ -638,12 +908,25 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           return { ok: true, content: `No text matches for "${query}". If the user quoted this text from memory, retry with 1-3 distinctive words (a noun, a year, an identifier) instead of the whole sentence.` };
         }
         const grouped = new Map<string, string[]>();
+        const shownByFile = new Map<string, number>();
         for (const match of result.matches) {
           const bucket = grouped.get(match.path) ?? [];
-          bucket.push(`${match.line}:${match.column} ${match.preview.trim()}`);
+          const parts: string[] = [];
+          for (const line of match.contextBefore ?? []) parts.push(`      | ${line}`);
+          parts.push(`  ${match.line}:${match.column} ${match.preview.trim()}`);
+          for (const line of match.contextAfter ?? []) parts.push(`      | ${line}`);
+          bucket.push(parts.join('\n'));
           grouped.set(match.path, bucket);
+          shownByFile.set(match.path, (shownByFile.get(match.path) ?? 0) + 1);
         }
-        const body = [...grouped].map(([path, lines]) => `${path}\n${lines.map((line) => `  ${line}`).join('\n')}`).join('\n');
+        const body = [...grouped].map(([path, blocks]) => {
+          const total = result.totalByFile?.[path];
+          const shown = shownByFile.get(path) ?? blocks.length;
+          const more = typeof total === 'number' && total > shown
+            ? `\n  … ${total - shown} more matches in this file — narrow the query or add an include pattern`
+            : '';
+          return `${path}\n${blocks.join('\n')}${more}`;
+        }).join('\n');
         return { ok: true, content: clip(`${body}${result.truncated ? '\n(truncated — refine the query or add an include pattern)' : ''}`) };
       }
       case 'write_file':
@@ -669,7 +952,21 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           }
         }
 
+        // READ-BEFORE-WRITE: inside a tracked turn, a write to a file the model
+        // never read uses the read above as its auto-read — unless the file is
+        // too large to have entered the context honestly, which is refused.
+        const turn = getTurn(workspaceId);
+        let autoReadNote = '';
+        if (turn && !turn.reads.has(normalized)) {
+          if (current && current.content.length > AUTO_READ_LIMIT) {
+            return refusal(`${path} is ${current.content.length} characters and was not read this turn, so it is too large to auto-read. read_file it first (a line range covering the change is enough), then retry ${call.name}.`);
+          }
+          noteRead(turn, normalized);
+          if (current) autoReadNote = ` Auto-read ${path} before writing (it had not been read this turn).`;
+        }
+
         let content: string;
+        let backupNote = '';
         if (call.name === 'write_file') {
           if (typeof call.args.content !== 'string') return refusal('write_file needs content: the full file text as a string.');
           content = call.args.content;
@@ -677,6 +974,20 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             const risk = assessRewriteRisk(path, content, current.content);
             if (risk) {
               return { ok: false, content: '', error: `${risk} Use edit_file with an exact original snippet for targeted changes instead.` };
+            }
+            // Overwriting a large existing file keeps a backup beside the
+            // workspace's own history rail; a failed backup refuses the write.
+            if (current.content.length >= LARGE_FILE_BACKUP_THRESHOLD) {
+              const backupPath = `shadrox-backups/${normalized.replace(/\//g, '__')}.${Date.now()}.bak`;
+              try {
+                const backup = await desktop.saveFiles(workspaceId, [{ name: backupPath, content: current.content, expectedVersion: null }]);
+                if (backup.errors.length > 0 || backup.saved.length !== 1) {
+                  throw new Error(backup.errors[0]?.message ?? 'the backup save returned no confirmation');
+                }
+                backupNote = ` Previous version (${current.content.length} chars) backed up to ${backupPath}.`;
+              } catch (error) {
+                return { ok: false, content: '', error: `Not written — ${path} is a large existing file (${current.content.length} chars) and its backup failed: ${error instanceof Error ? error.message : String(error)}. Use edit_file for targeted changes instead.` };
+              }
             }
           }
         } else {
@@ -689,10 +1000,13 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           }
           const first = current.content.indexOf(original);
           if (first < 0) {
-            return { ok: false, content: '', error: `The original snippet was not found in ${path}. Read the file again and copy its exact current text — including indentation and line breaks — into original.` };
+            const region = closestRegion(current.content, original);
+            const hint = region ? `\nClosest region on disk (around line ${region.line}):\n${region.excerpt}` : '';
+            return { ok: false, content: '', error: `The original snippet was not found in ${path}. Read the file again and copy its exact current text — including indentation and line breaks — into original.${hint}` };
           }
           if (current.content.indexOf(original, first + 1) >= 0) {
-            return { ok: false, content: '', error: `The original snippet appears more than once in ${path}. Include more surrounding lines so it matches exactly one place.` };
+            const lines = occurrenceLines(current.content, original);
+            return { ok: false, content: '', error: `The original snippet appears more than once in ${path} (lines ${lines.join(', ')}). Include more surrounding lines so it matches exactly one place.` };
           }
           if (original === updated) {
             return { ok: true, content: `${path}: original and updated are identical — nothing to change.` };
@@ -721,13 +1035,51 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           return { ok: false, content: '', error: `${path} was not saved: ${message}` };
         }
         const verb = call.name === 'edit_file' ? 'Edited' : current ? 'Rewrote' : 'Created';
-        return { ok: true, content: `${verb} ${path} — saved to disk and verified (${content.length} chars).`, changedFiles: 1 };
+        let detail = `${verb} ${path} — saved to disk and verified (${content.length} chars).${autoReadNote}${backupNote}`;
+        // An edit answers with the file's fresh compiler problems, so a broken
+        // change is visible in the same observation instead of a round later.
+        if (call.name === 'edit_file' && typeof desktop.diagnostics === 'function') {
+          try {
+            const diagnostics = await desktop.diagnostics(workspaceId, undefined, [normalized]);
+            const errors = diagnostics.diagnostics.filter((entry) => entry.severity === 'error');
+            detail += errors.length > 0
+              ? `\nDiagnostics after edit (${errors.length} error(s)):\n${errors.slice(0, 10).map((entry) => `  ${entry.file}:${entry.line + 1} ${entry.message}`).join('\n')}`
+              : '\nNo compiler problems in this file after the edit.';
+          } catch {
+            /* diagnostics are a bonus, never a blocker */
+          }
+        }
+        return {
+          ok: true,
+          content: clip(detail),
+          changedFiles: 1,
+          changedPaths: [normalized],
+          createdPaths: current ? [] : [normalized]
+        };
       }
       case 'delete_file': {
         const path = asString(call.args.path);
         if (!path) return refusal('delete_file needs a path.');
         if (asBoolean(call.args.confirm) !== true) {
           return refusal('delete_file needs confirm: true. Only delete when the user asked for this exact file.');
+        }
+        const normalized = path.replace(/\\/g, '/').replace(/^\.\//, '');
+        // READ-BEFORE-WRITE for deletes too: the model must have seen what it is
+        // removing. A small unread file is auto-read; a large one is refused.
+        const turn = getTurn(workspaceId);
+        if (turn && !turn.reads.has(normalized)) {
+          try {
+            const file = await desktop.readFile(workspaceId, path);
+            if (file.content.length > AUTO_READ_LIMIT) {
+              return refusal(`${path} is ${file.content.length} characters and was not read this turn, so it is too large to auto-read. read_file it first (a line range is enough), then retry delete_file.`);
+            }
+            noteRead(turn, normalized);
+          } catch (error) {
+            if (isNotFoundError(error)) {
+              return { ok: false, content: '', error: `${path} does not exist on disk, so there is nothing to delete.` };
+            }
+            return { ok: false, content: '', error: `Could not read ${path} before deleting: ${error instanceof Error ? error.message : String(error)}` };
+          }
         }
         // `confirm: true` is the model saying it is sure, which is not approval.
         // A delete is the one tool with no undo inside the chat, so a person has
@@ -757,7 +1109,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           return { ok: false, content: '', error: `${deleted.path} is still on disk after the delete call. Nothing was removed.` };
         }
         if (absence === 'absent') {
-          return { ok: true, content: `Deleted ${deleted.kind} ${deleted.path} — verified gone from disk.`, changedFiles: 1 };
+          return { ok: true, content: `Deleted ${deleted.kind} ${deleted.path} — verified gone from disk.`, changedFiles: 1, changedPaths: [normalized] };
         }
         return {
           ok: false,
@@ -766,12 +1118,264 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         };
       }
       case 'problems': {
-        const paths = asStringArray(call.args.paths);
+        const turn = getTurn(workspaceId);
+        const changedOnly = asBoolean(call.args.changed_only) === true;
+        if (changedOnly && (!turn || turn.changed.size === 0)) {
+          return { ok: true, content: 'No files changed this turn, so there is nothing to check.' };
+        }
+        const paths = changedOnly && turn ? [...turn.changed] : asStringArray(call.args.paths);
+        const severity = asString(call.args.severity);
+        if (severity && !['error', 'warning', 'all'].includes(severity)) {
+          return refusal('problems severity must be "error", "warning" or "all".');
+        }
         const result = await desktop.diagnostics(workspaceId, undefined, paths);
-        if (result.diagnostics.length === 0) return { ok: true, content: 'No compiler problems reported.' };
-        const lines = result.diagnostics.slice(0, 200).map((diagnostic) =>
+        const filtered = severity && severity !== 'all' ? result.diagnostics.filter((entry) => entry.severity === severity) : result.diagnostics;
+        if (filtered.length === 0) return { ok: true, content: 'No compiler problems reported.' };
+        const lines = filtered.slice(0, 200).map((diagnostic) =>
           `${diagnostic.severity} ${diagnostic.file}:${diagnostic.line + 1} ${diagnostic.message}`);
-        return { ok: true, content: clip(`${result.diagnostics.length} problem(s)${result.truncated ? ' (list truncated)' : ''}\n${lines.join('\n')}`) };
+        return { ok: true, content: clip(`${filtered.length} problem(s)${result.truncated ? ' (list truncated)' : ''}\n${lines.join('\n')}`) };
+      }
+      case 'apply_patch': {
+        const raw = Array.isArray(call.args.patches) ? call.args.patches
+          : Array.isArray(call.args.hunks) ? call.args.hunks : null;
+        if (!raw || raw.length === 0) return refusal('apply_patch needs patches: a non-empty array of {path, old, new} hunks.');
+        if (raw.length > 50) return refusal('apply_patch takes at most 50 hunks per call; split the patch into smaller calls.');
+        if (typeof desktop.stageFiles !== 'function' || typeof desktop.commitTransaction !== 'function') {
+          return refusal('apply_patch needs the atomic transaction channels (stageFiles/commitTransaction), which this bridge does not provide. Use edit_file/write_file instead.');
+        }
+        const hunks: Array<{ path: string; old: string; next: string }> = [];
+        for (let index = 0; index < raw.length; index += 1) {
+          const entry = raw[index] && typeof raw[index] === 'object' ? (raw[index] as Record<string, unknown>) : null;
+          const path = entry ? asString(entry.path) : null;
+          if (!entry || !path) return refusal(`apply_patch hunk ${index + 1} needs a path.`);
+          const normalized = path.replace(/\\/g, '/').replace(/^\.\//, '');
+          if (!normalized || normalized.startsWith('/') || /^[a-z]:/i.test(normalized)
+            || normalized.split('/').some((part) => !part || part === '.' || part === '..')) {
+            return refusal(`apply_patch hunk ${index + 1} (${path}) needs a workspace-relative path inside the opened folder.`);
+          }
+          if (isProtectedAgentWritePath(normalized)) {
+            return refusal(`${path}: agent edits to plugin and automation manifests are blocked.`);
+          }
+          const old = typeof entry.old === 'string' ? entry.old : '';
+          const replacement = typeof entry.new === 'string' ? entry.new : typeof entry.content === 'string' ? entry.content : null;
+          if (replacement === null) return refusal(`apply_patch hunk ${index + 1} (${path}) needs new: the replacement text as a string.`);
+          hunks.push({ path: normalized, old, next: replacement });
+        }
+
+        // One read per unique path, doubling as the read-before-write auto-read.
+        const turn = getTurn(workspaceId);
+        const currents = new Map<string, { content: string; version: string } | null>();
+        for (const path of new Set(hunks.map((hunk) => hunk.path))) {
+          let current: { content: string; version: string } | null = null;
+          try {
+            const file = await desktop.readFile(workspaceId, path);
+            current = { content: file.content, version: file.version };
+          } catch (error) {
+            if (!isNotFoundError(error)) {
+              return { ok: false, content: '', error: `apply_patch: could not read ${path}: ${error instanceof Error ? error.message : String(error)}. NOTHING was written.` };
+            }
+          }
+          if (turn && !turn.reads.has(path)) {
+            if (current && current.content.length > AUTO_READ_LIMIT) {
+              return refusal(`${path} is ${current.content.length} characters and was not read this turn, so it is too large to auto-read. read_file it first, then retry apply_patch. NOTHING was written.`);
+            }
+            noteRead(turn, path);
+          }
+          currents.set(path, current);
+        }
+
+        // Every hunk applies in memory first: a mismatch anywhere aborts the
+        // whole patch before a single byte reaches the staging rail.
+        const working = new Map<string, string>();
+        const contentOf = (path: string): string | null =>
+          working.has(path) ? (working.get(path) as string) : currents.get(path)?.content ?? null;
+        for (let index = 0; index < hunks.length; index += 1) {
+          const hunk = hunks[index];
+          const base = contentOf(hunk.path);
+          const atomicNote = 'NOTHING was written — the whole patch is atomic.';
+          if (hunk.old === '') {
+            if (base !== null) {
+              return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): old is empty (create a new file) but the file already exists. ${atomicNote} Use a non-empty old snippet to edit it.` };
+            }
+            working.set(hunk.path, hunk.next);
+            continue;
+          }
+          if (base === null) {
+            return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): the file does not exist on disk. ${atomicNote} Use old: "" to create it.` };
+          }
+          const first = base.indexOf(hunk.old);
+          if (first < 0) {
+            const region = closestRegion(base, hunk.old);
+            const hint = region ? `\nClosest region on disk (around line ${region.line}):\n${region.excerpt}` : '';
+            return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): old text not found. ${atomicNote}\nFailing old text:\n${hunk.old.slice(0, 800)}${hint}` };
+          }
+          if (base.indexOf(hunk.old, first + 1) >= 0) {
+            const lines = occurrenceLines(base, hunk.old);
+            return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): old text appears more than once (lines ${lines.join(', ')}). ${atomicNote} Include more surrounding lines so it matches exactly one place.` };
+          }
+          working.set(hunk.path, base.slice(0, first) + hunk.next + base.slice(first + hunk.old.length));
+        }
+
+        const writes = [...working.entries()]
+          .filter(([path, content]) => content !== (currents.get(path)?.content ?? null))
+          .map(([path, content]) => ({ path, content }));
+        if (writes.length === 0) {
+          return { ok: true, content: 'apply_patch: every hunk was a no-op — nothing to change.' };
+        }
+        try {
+          const verdict = await desktop.verifyChangeSet(workspaceId, writes);
+          if (!verdict.ok) {
+            const issue = verdict.issues.find((entry) => entry.severity === 'error') ?? verdict.issues[0];
+            return { ok: false, content: '', error: issue ? `Not written — ${issue.path}:${issue.line + 1} ${issue.message}` : 'Not written — the patch failed pre-apply verification.' };
+          }
+        } catch (error) {
+          return { ok: false, content: '', error: `Not written — the patch could not be verified: ${error instanceof Error ? error.message : String(error)}` };
+        }
+        const staged = await desktop.stageFiles(workspaceId, writes.map((write) => ({
+          name: write.path,
+          content: write.content,
+          expectedVersion: currents.get(write.path)?.version ?? null
+        })));
+        const committed = await desktop.commitTransaction(workspaceId, staged.transactionId);
+        if (committed.errors.length > 0 || committed.saved.length !== writes.length) {
+          const message = committed.errors[0]?.message ?? 'the commit returned no confirmation';
+          const rollback = committed.rolledBack
+            ? ' The partial write was rolled back; every file is at its pre-patch content.'
+            : committed.rollbackErrors && committed.rollbackErrors.length > 0
+              ? ` ROLLBACK INCOMPLETE: ${committed.rollbackErrors.map((entry) => `${entry.name}: ${entry.message}`).join('; ')}. Check these files before writing again.`
+              : '';
+          return { ok: false, content: '', error: `apply_patch was not committed: ${message}.${rollback}` };
+        }
+        const created = writes.filter((write) => currents.get(write.path) === null).map((write) => write.path);
+        return {
+          ok: true,
+          content: `apply_patch: ${hunks.length} hunk(s) across ${writes.length} file(s) committed atomically — ${writes.map((write) => write.path).join(', ')}.${created.length > 0 ? ` Created: ${created.join(', ')}.` : ''}`,
+          changedFiles: writes.length,
+          changedPaths: writes.map((write) => write.path),
+          createdPaths: created
+        };
+      }
+      case 'verify': {
+        let packageJson: string | null = null;
+        try {
+          packageJson = (await desktop.readFile(workspaceId, 'package.json')).content;
+        } catch {
+          /* no package.json — other manifests decide */
+        }
+        const rootEntries: string[] = [];
+        try {
+          let cursor: number | null | undefined = 0;
+          while (cursor !== null && cursor !== undefined && rootEntries.length < 400) {
+            const page = await desktop.listDirectory(workspaceId, '', cursor);
+            for (const entry of page.entries) rootEntries.push(entry.path.split('/').pop() ?? entry.path);
+            cursor = page.nextCursor;
+          }
+        } catch {
+          /* root listing unavailable — plan from package.json alone */
+        }
+        const plan = planVerification({ packageJson, rootEntries });
+        const errors: VerifyError[] = [];
+        const failedTests: string[] = [];
+        const commandsRun: string[] = [];
+        let allOk = true;
+        for (const command of plan.commands) {
+          publishTerminalDockEvent({ kind: 'command', command, source: 'assistant' });
+          const started = Date.now();
+          let result = await desktop.runCommand(workspaceId, command, commandApprovalNotice(command));
+          publishTerminalDockEvent({
+            kind: 'result', command, source: 'assistant', exitCode: result.exitCode,
+            durationMs: Date.now() - started, stdout: result.stdout, stderr: result.stderr
+          });
+          if (result.deniedReason) {
+            allOk = false;
+            errors.push({ file: '(command)', line: 0, msg: `${command} not run: ${result.deniedReason}` });
+            break;
+          }
+          // A verify that outlived the foreground wait is NOT a failure. Wait for
+          // the job's real exit and judge that; only an unbounded still-running
+          // job stays unresolved, reported as such instead of "verify again".
+          if (result.backgrounded || result.exitCode === null) {
+            const finished = await waitForJobExit(desktop, workspaceId, result.jobId ?? null);
+            if (!finished) {
+              allOk = false;
+              errors.push({ file: '(command)', line: 0, msg: `${command} is still running in the background (job ${result.jobId ?? 'unknown'}) — read it with job_control and re-verify once it exits.` });
+              break;
+            }
+            result = { ...result, exitCode: finished.exitCode, timedOut: finished.timedOut, stdout: finished.text, stderr: '', backgrounded: false };
+            publishTerminalDockEvent({
+              kind: 'result', command, source: 'assistant', exitCode: result.exitCode,
+              durationMs: Date.now() - started, stdout: result.stdout, stderr: ''
+            });
+          }
+          commandsRun.push(command);
+          const parsed = parseVerifyOutput([result.stdout, result.stderr].filter(Boolean).join('\n'));
+          errors.push(...parsed.errors);
+          failedTests.push(...parsed.failedTests);
+          if (result.exitCode !== 0) {
+            allOk = false;
+            if (parsed.errors.length === 0 && parsed.failedTests.length === 0) {
+              errors.push({ file: '(command)', line: 0, msg: `${command} exited ${result.exitCode}` });
+            }
+            break;
+          }
+        }
+        // Compiler diagnostics are part of every verify: changed files when the
+        // turn tracked them, the whole project otherwise.
+        let diagnosticsRan = false;
+        if (typeof desktop.diagnostics === 'function') {
+          try {
+            const turn = getTurn(workspaceId);
+            const paths = turn && turn.changed.size > 0 ? [...turn.changed] : undefined;
+            const diagnostics = await desktop.diagnostics(workspaceId, undefined, paths);
+            diagnosticsRan = true;
+            for (const entry of diagnostics.diagnostics.filter((item) => item.severity === 'error').slice(0, 60)) {
+              errors.push({ file: entry.file, line: entry.line + 1, msg: entry.message });
+            }
+          } catch {
+            /* diagnostics unavailable — command results still count */
+          }
+        }
+        if (commandsRun.length === 0 && !diagnosticsRan && errors.length === 0) {
+          const report: VerifyReport = { ok: false, errors: [], failedTests: [], commandsRun: [] };
+          const message = 'verify: no checks available — no project manifest with runnable scripts was found and compiler diagnostics are unavailable. Run a build or test with run_command instead.';
+          return { ok: false, content: message, error: message, verifyReport: report };
+        }
+        const ok = allOk && errors.length === 0 && failedTests.length === 0;
+        const report: VerifyReport = { ok, errors: errors.slice(0, 60), failedTests: failedTests.slice(0, 30), commandsRun };
+        const content = formatVerifyReport(report, plan.kind);
+        return ok ? { ok: true, content, verifyReport: report } : { ok: false, content, error: content, verifyReport: report };
+      }
+      case 'checkpoint': {
+        if (typeof desktop.loadFiles !== 'function') {
+          return refusal('checkpoint needs the loadFiles bridge channel, which this build does not provide.');
+        }
+        const turn = getTurn(workspaceId);
+        const paths = turn ? [...new Set([...turn.reads, ...turn.changed])].slice(0, 200) : [];
+        if (paths.length === 0) {
+          return refusal('checkpoint: nothing to snapshot yet — read or change files first, then checkpoint.');
+        }
+        const loaded = await desktop.loadFiles(workspaceId, paths, { maxBytesPerFile: 512 * 1024, maxTotalBytes: 2 * 1024 * 1024 });
+        const label = asString(call.args.label) ?? 'Agent checkpoint';
+        const meta = await createAgentCheckpoint(workspaceId, label, loaded.files.map((file) => ({ name: file.name, content: file.content })));
+        if (!meta) {
+          return { ok: false, content: '', error: 'The checkpoint could not be saved: workspace history is unavailable or the workspace path is unknown.' };
+        }
+        return { ok: true, content: `Checkpoint "${meta.label}" saved (${meta.fileCount} files, id ${meta.id}). Restore it with restore {"id":"${meta.id}"} — the user approves first.` };
+      }
+      case 'list_checkpoints': {
+        const { path, checkpoints } = await listAgentCheckpoints(workspaceId);
+        if (!path) return { ok: false, content: '', error: 'The workspace path is unknown, so its checkpoint history cannot be opened.' };
+        if (checkpoints.length === 0) return { ok: true, content: 'No checkpoints saved for this workspace yet.' };
+        const lines = checkpoints.slice(0, 30).map((entry) =>
+          `${entry.id} · ${entry.label} · ${new Date(entry.createdAt).toLocaleString()} · ${entry.fileCount} files${entry.machine ? ' · machine' : ''}`);
+        return { ok: true, content: clip(`${checkpoints.length} checkpoint(s), newest first:\n${lines.join('\n')}`) };
+      }
+      case 'restore': {
+        const id = asString(call.args.id);
+        if (!id) return refusal('restore needs id: the checkpoint id from list_checkpoints.');
+        const result = await restoreAgentCheckpoint(workspaceId, desktop, id);
+        if (result.ok) return { ok: true, content: result.message };
+        return { ok: false, content: result.message, error: result.message, refused: /did not approve/i.test(result.message) };
       }
       case 'git_state': {
         const status = await desktop.gitRead(workspaceId);
@@ -820,9 +1424,10 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         }
         const body = [
           `$ ${command}`,
-          result.stdout.trim() || '(no stdout)',
-          ...(result.stderr.trim() ? [`[stderr]\n${result.stderr.trim()}`] : []),
+          capCommandSection(result.stdout.trim()) || '(no stdout)',
+          ...(result.stderr.trim() ? [`[stderr]\n${capCommandSection(result.stderr.trim())}`] : []),
           `exit ${result.exitCode}`,
+          `ran in the opened folder · ${Date.now() - started} ms`,
           'The command ran on disk; this output is the real result.'
         ].join('\n');
         if (result.exitCode !== 0) {
@@ -961,7 +1566,9 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             ? `last failure: ${summary.lastFailure.class} — ${summary.lastFailure.explanation}; hints: ${summary.lastFailure.repairHints.join('; ')}`
             : 'last failure: (none)'
         ];
-        return { ok: true, content: lines.join('\n') };
+        const tail = terminalStateManager.getOutputTail(summary.activeSessionId);
+        if (tail.trim()) lines.push(`recent output (ANSI stripped, read the prompt before answering):\n${tail}`);
+        return { ok: true, content: clip(lines.join('\n')) };
       }
       case 'terminal_answer': {
         const text = asString(call.args.text);
@@ -1013,6 +1620,30 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         const lines = symbols.slice(0, 300).map((symbol) => `${symbol.kind} ${symbol.name} @${symbol.line + 1}`);
         return { ok: true, content: clip(lines.join('\n') || 'No symbols found.') };
       }
+      case 'memory_read':
+        return handleMemoryRead(workspaceId, call.args);
+      case 'memory_note':
+        return handleMemoryNote(workspaceId, call.args);
+      case 'find_references':
+        return handleFindReferences(workspaceId, call.args);
+      case 'go_to_definition':
+        return handleGoToDefinition(workspaceId, call.args);
+      case 'rename_symbol':
+        return handleRenameSymbol(workspaceId, call.args);
+      case 'semantic_search':
+        return handleSemanticSearch(workspaceId, call.args);
+      case 'web_search':
+        return handleWebSearch(workspaceId, call.args);
+      case 'fetch_url':
+        return handleFetchUrl(workspaceId, call.args);
+      case 'preview_inspect':
+        return handlePreviewInspect(workspaceId, call.args);
+      case 'ask_user':
+        return handleAskUser(workspaceId, call.args);
+      case 'spawn_subagent':
+        return handleSpawnSubagent(workspaceId, call.args);
+      case 'diff_review':
+        return handleDiffReview(workspaceId, call.args);
       default:
         return refusal(`Tool "${call.name}" is not implemented.`);
     }

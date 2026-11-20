@@ -30,5 +30,13 @@ if (files.length === 0) {
 }
 
 console.log(`run-tests: ${files.length} test files`);
-const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', ...files], { cwd: root, stdio: 'inherit' });
+// A per-test timeout keeps one stuck test from hanging the whole suite, and
+// bounded concurrency avoids port races between the preview/terminal tests.
+const timeout = Number(process.env.SHADROX_TEST_TIMEOUT ?? 120000);
+const concurrency = Number(process.env.SHADROX_TEST_CONCURRENCY ?? 4);
+const result = spawnSync(process.execPath, [
+  '--import', 'tsx', '--test', '--test-force-exit',
+  `--test-timeout=${timeout}`, `--test-concurrency=${concurrency}`,
+  ...files
+], { cwd: root, stdio: 'inherit' });
 process.exit(result.status ?? 1);

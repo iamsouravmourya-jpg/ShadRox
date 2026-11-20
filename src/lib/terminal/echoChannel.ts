@@ -97,9 +97,13 @@ export function formatTerminalDockEvent(event: TerminalDockEvent): string {
   const reset = '\x1b[0m';
   const duration = formatDuration(event.durationMs);
   const succeeded = event.exitCode === 0 && !event.signal;
+  // exitCode null on a result event means the command auto-backgrounded — its
+  // real exit arrives in a later event. Red "exit unknown" read as a failure.
   const status = event.signal
     ? `\x1b[91mterminated by ${sanitizeEchoLine(event.signal, 40)}\x1b[0m`
-    : `${succeeded ? '\x1b[92m' : '\x1b[91m'}exit ${event.exitCode ?? 'unknown'}\x1b[0m`;
+    : event.exitCode === null || event.exitCode === undefined
+      ? `${dim}running in the background${reset}`
+      : `${succeeded ? '\x1b[92m' : '\x1b[91m'}exit ${event.exitCode}\x1b[0m`;
   const parts = [
     `\r\n${dim}[${sourceLabel(event.source)} ran] ${command}${duration ? ` (${duration})` : ''}${reset}\r\n`
   ];
