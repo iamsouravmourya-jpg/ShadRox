@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, protocol, safeStorage, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, net: electronNet, protocol, safeStorage, session, shell } = require('electron');
 const { exec, execFile, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -77,8 +77,21 @@ const { createMachineReceipt } = require('./machine-receipt.cjs');
 const { createDebugHost } = require('./debug-host.cjs');
 
 const PREVIEW_SCHEME = 'shadrox-preview';
+const APP_SCHEME = 'shadrox-app';
+const APP_ORIGIN = `${APP_SCHEME}://localhost`;
 const APP_BACKGROUND = '#090a0d';
 const TITLE_BAR_HEIGHT = 48;
+const RENDERER_CSP = [
+  "default-src 'self'", "base-uri 'self'", "object-src 'none'",
+  "frame-ancestors 'none'", "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob: http: https:",
+  "font-src 'self' data: http: https:", "connect-src 'self' https: http://127.0.0.1:* http://localhost:*",
+  // The preview iframe is the user's own dev server on an arbitrary loopback
+  // port, which 'self' (the app origin) does not cover: without frame-src it
+  // falls back to default-src and the preview renders blank.
+  "frame-src 'self' http://127.0.0.1:* http://localhost:* shadrox-preview:",
+  "worker-src 'self' blob:"
+].join('; ');
 
 app.setAppUserModelId('com.shadrox.desktop');
 // The renderer owns the persisted choice and syncs it via app:set-theme at
@@ -95,16 +108,30 @@ if (process.platform === 'win32') {
   app.commandLine.appendSwitch('enable-unsafe-swiftshader');
 }
 
-protocol.registerSchemesAsPrivileged([{
-  scheme: PREVIEW_SCHEME,
-  privileges: {
-    standard: true,
-    secure: true,
-    supportFetchAPI: true,
-    corsEnabled: true,
-    stream: true
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: PREVIEW_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true
+    }
+  },
+  {
+    // Serves the packaged ShadRox UI from the asar, bypassing the Chromium
+    // network sandbox that blocks loopback on some Windows configurations.
+    scheme: APP_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true
+    }
   }
-}]);
+]);
 
 const workspaceAccess = createWorkspaceAccess();
 const workspaceConsent = createWorkspaceConsent({
@@ -296,20 +323,9 @@ function installPreviewRequestGuard() {
 }
 
 function installRendererCsp() {
-  const csp = [
-    "default-src 'self'", "base-uri 'self'", "object-src 'none'",
-    "frame-ancestors 'none'", "script-src 'self' 'unsafe-inline'",
-    "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob: http: https:",
-    "font-src 'self' data: http: https:", "connect-src 'self' https: http://127.0.0.1:* http://localhost:*",
-    // The preview iframe is the user's own dev server on an arbitrary loopback
-    // port, which 'self' (the app origin) does not cover: without frame-src it
-    // falls back to default-src and the preview renders blank.
-    "frame-src 'self' http://127.0.0.1:* http://localhost:* shadrox-preview:",
-    "worker-src 'self' blob:"
-  ].join('; ');
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     if (rendererOrigin && details.url.startsWith(rendererOrigin)) {
-      callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [csp] } });
+      callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [RENDERER_CSP] } });
       return;
     }
     callback({});
@@ -728,6 +744,81 @@ async function handlePreviewRequest(request) {
   }
 }
 
+async function serveAppApiRequest(request, url) {
+  if (!backend?.origin) {
+    return previewErrorResponse(503, 'The local backend is not ready yet.');
+  }
+  const target = new URL(`${url.pathname}${url.search}`, backend.origin);
+  const headers = new Headers(request.headers);
+  headers.delete('host');
+  headers.delete('content-length');
+  const init = { method: request.method, headers };
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    init.body = await request.arrayBuffer();
+  }
+  try {
+    return await electronNet.fetch(target.toString(), init);
+  } catch (error) {
+    return previewErrorResponse(502, `The local backend is unreachable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function serveAppStaticRequest(request, url) {
+  let relativePath;
+  try {
+    relativePath = decodeURIComponent(url.pathname);
+  } catch {
+    return previewErrorResponse(400, 'The requested path is not valid URL encoding.');
+  }
+  if (relativePath.includes('\0') || relativePath.includes('..') || relativePath.includes('\\')) {
+    return previewErrorResponse(403, 'The requested path is not allowed.');
+  }
+  const distRoot = path.join(app.getAppPath(), 'dist');
+  let filePath = path.resolve(distRoot, `.${relativePath}`);
+  if (filePath !== distRoot && !filePath.startsWith(`${distRoot}${path.sep}`)) {
+    return previewErrorResponse(403, 'The requested file is outside the app bundle.');
+  }
+  let stat = null;
+  try {
+    stat = await fs.promises.stat(filePath);
+  } catch {
+    stat = null;
+  }
+  if (!stat?.isFile()) {
+    if (path.extname(filePath) === '') filePath = path.join(distRoot, 'index.html');
+    else return previewErrorResponse(404, 'Not found.');
+  }
+  const stream = fs.createReadStream(filePath);
+  const headers = {
+    'Cache-Control': 'no-store',
+    'Content-Type': getPreviewMimeType(filePath),
+    'X-Content-Type-Options': 'nosniff'
+  };
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === '.html' || extension === '.htm') {
+    headers['Content-Security-Policy'] = RENDERER_CSP;
+  }
+  return new Response(Readable.toWeb(stream), { headers });
+}
+
+function installAppProtocol() {
+  protocol.handle(APP_SCHEME, async (request) => {
+    let url;
+    try {
+      url = new URL(request.url);
+    } catch {
+      return previewErrorResponse(400, 'The app URL is invalid.');
+    }
+    try {
+      if (url.pathname.startsWith('/api/')) return await serveAppApiRequest(request, url);
+      return await serveAppStaticRequest(request, url);
+    } catch (error) {
+      console.error('[desktop] App protocol request failed:', error);
+      return previewErrorResponse(500, 'The app file could not be served.');
+    }
+  });
+}
+
 async function startProtocolPreview(workspaceId, workspaceRoot, reportStatus, projectRoot = workspaceRoot) {
   await previewRuntime.stop(workspaceId);
   const entry = await findStaticPreviewFile(projectRoot);
@@ -907,11 +998,12 @@ function storePort(port) {
 
 async function startPackagedBackend() {
   require('bytenode');
-  const { startServer } = require(path.join(app.getAppPath(), 'server.jsc'));
+  const appPath = app.getAppPath();
+  const { startServer } = require(path.join(appPath, 'server.jsc'));
   const options = {
     mode: 'production',
     host: '127.0.0.1',
-    staticDirectory: path.join(app.getAppPath(), 'dist')
+    staticDirectory: path.join(appPath, 'dist')
   };
 
   // The renderer origin must stay stable between launches: localStorage and
@@ -3497,7 +3589,7 @@ async function createWindow() {
   if (!rendererOrigin) {
     if (app.isPackaged) {
       backend = await startPackagedBackend();
-      rendererOrigin = backend.origin;
+      rendererOrigin = APP_ORIGIN;
     } else {
       rendererOrigin = process.env.ELECTRON_RENDERER_URL || 'http://localhost:3000';
     }
@@ -3630,6 +3722,7 @@ app.whenReady().then(async () => {
   installPreviewRequestGuard();
   installRendererCsp();
   protocol.handle(PREVIEW_SCHEME, handlePreviewRequest);
+  installAppProtocol();
   locateGitExecutable();
   registerIpcHandlers();
   registerSecureStoreHandlers();

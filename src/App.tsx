@@ -6086,17 +6086,6 @@ export default function App() {
 
   const hasKey = Boolean(byok.activeKey);
 
-  if (auth.status !== 'signed-in' && auth.status !== 'unconfigured') {
-    return (
-      <AuthScreen
-        status={auth.status}
-        busy={auth.busy}
-        error={auth.error}
-        onSignIn={() => void auth.signIn()}
-      />
-    );
-  }
-
   const settingsDrawer = (
     <SettingsDrawer
       isOpen={isSettingsOpen}
@@ -6220,6 +6209,17 @@ export default function App() {
       onClose={handleClosePreview}
     />
   );
+
+  if (auth.status !== 'signed-in' && auth.status !== 'unconfigured') {
+    return (
+      <AuthScreen
+        status={auth.status}
+        busy={auth.busy}
+        error={auth.error}
+        onSignIn={() => void auth.signIn()}
+      />
+    );
+  }
 
   if (activeStage === 'STAGE_2') {
     return (
