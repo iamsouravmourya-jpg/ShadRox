@@ -135,3 +135,29 @@ test('preview_control refuses a cancelled consent instead of claiming a running 
     }
   );
 });
+
+test('preview_control status reports URL, port, recent logs, and runtime error verdict without mutating', async () => {
+  await withBridge(
+    {
+      getPreviewStatus: async () => ({
+        status: 'ready',
+        url: 'http://127.0.0.1:5173/',
+        port: 5173,
+        script: 'dev',
+        hmr: true,
+        lastError: null,
+        recentOutput: 'VITE v6.0.0 ready in 120 ms'
+      }),
+      assertPreview: async () => ({ ok: false, errorCount: 1, detail: 'Uncaught ReferenceError: foo is not defined' })
+    },
+    async () => {
+      const outcome = await runTool('ws', { name: 'preview_control', args: { action: 'status' } });
+      assert.equal(outcome.ok, true);
+      assert.match(outcome.content, /status: ready/);
+      assert.match(outcome.content, /port: 5173/);
+      assert.match(outcome.content, /hmr: on/);
+      assert.match(outcome.content, /VITE v6\.0\.0 ready/);
+      assert.match(outcome.content, /ReferenceError: foo is not defined/);
+    }
+  );
+});

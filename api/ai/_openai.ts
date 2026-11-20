@@ -286,7 +286,7 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
       }
 
       const choice = parsed?.choices?.[0];
-      const delta = choice?.delta;
+      const delta = choice?.delta ?? choice?.message;
       if (delta) {
         if (typeof delta.content === 'string' && delta.content) {
           fullText += delta.content;

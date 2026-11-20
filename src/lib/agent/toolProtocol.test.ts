@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   parseToolBlocks,
+  repairAndParseNativeToolArgs,
   serializeCallKey,
   serializeResults,
   stripToolBlocks,
@@ -298,4 +299,38 @@ test('native calls re-fenced with \\u0060-escaped backticks round-trip through t
   assert.equal(blocks.length, 1);
   assert.equal(blocks[0].error, null);
   assert.deepEqual(blocks[0].calls, normalized);
+});
+
+test('self-heals trailing commas, comments, unescaped newlines in strings, and arguments aliases', () => {
+  const messy = fence(`\`\`\`json
+// comment
+[
+  {"name": "write_file", "arguments": {"path": "a.txt", "content": "line 1
+line 2"},},
+]
+\`\`\``);
+  const blocks = parseToolBlocks(messy);
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].error, null);
+  assert.deepEqual(blocks[0].calls, [
+    { name: 'write_file', args: { path: 'a.txt', content: 'line 1\nline 2' } }
+  ]);
+});
+
+test('parses and strips XML <tool_call> wrappers emitted by Ollama/Qwen/Hermes models', () => {
+  const reply = 'Checking the file now.\n<tool_call>\n{"name": "read_file", "arguments": {"path": "package.json",}}\n</tool_call>\nDone.';
+  const blocks = parseToolBlocks(reply);
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].error, null);
+  assert.deepEqual(blocks[0].calls, [{ name: 'read_file', args: { path: 'package.json' } }]);
+  const stripped = stripToolBlocks(reply);
+  assert.doesNotMatch(stripped, /tool_call/);
+  assert.match(stripped, /Checking the file now\./);
+  assert.match(stripped, /Done\./);
+});
+
+test('repairAndParseNativeToolArgs repairs trailing commas and single quotes while rejecting truncated JSON', () => {
+  assert.deepEqual(repairAndParseNativeToolArgs("{'path': 'src/App.tsx',}"), { path: 'src/App.tsx' });
+  const truncated = repairAndParseNativeToolArgs('{"path": "src/App.tsx", "content": "unterminated');
+  assert.match(String(truncated.__nativeArgumentError ?? ''), /incomplete or invalid JSON/);
 });

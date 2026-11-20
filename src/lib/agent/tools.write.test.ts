@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { classifyToolEffect, describeTools, runTool } from './tools';
+import { classifyToolEffect, describeTools, locateUniqueMatch, runTool } from './tools';
 
 function withBridge(stub: Record<string, unknown>, body: () => Promise<void>) {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
@@ -202,4 +202,50 @@ test('write tools are write-effect and documented in the prompt', () => {
   assert.match(prompt, /edit_file/);
   assert.doesNotMatch(prompt, /there is no create_file, write_file or edit_file tool/, 'the prompt must not deny the tools it lists');
   assert.match(prompt, /read and write access/);
+});
+
+test('edit_file matches uniquely across CRLF differences and trailing whitespace', async () => {
+  const disk = diskStub({ 'src/crlf.ts': 'const a = 1;  \r\nconst b = 2;\r\n' });
+  await withBridge(disk.bridge, async () => {
+    const outcome = await runTool('ws', {
+      name: 'edit_file',
+      args: { path: 'src/crlf.ts', original: 'const a = 1;\nconst b = 2;', updated: 'const a = 10;\r\nconst b = 2;' }
+    });
+    assert.equal(outcome.ok, true);
+    assert.match(outcome.content, /normalization/);
+    assert.equal(disk.files.get('src/crlf.ts')?.content, 'const a = 10;\r\nconst b = 2;\r\n');
+  });
+});
+
+test('edit_file safely matches unique multi-line indentation differences while refusing ambiguous matches', async () => {
+  const source = 'function run() {\n    const x = 1;\n    return x + 1;\n}\n';
+  const disk = diskStub({ 'src/indent.ts': source });
+  await withBridge(disk.bridge, async () => {
+    const ok = await runTool('ws', {
+      name: 'edit_file',
+      args: {
+        path: 'src/indent.ts',
+        original: 'const x = 1;\nreturn x + 1;',
+        updated: '    const x = 2;\n    return x + 2;'
+      }
+    });
+    assert.equal(ok.ok, true);
+    assert.match(ok.content, /indent-normalized/);
+    assert.equal(disk.files.get('src/indent.ts')?.content, 'function run() {\n    const x = 2;\n    return x + 2;\n}\n');
+  });
+
+  const duplicateDisk = diskStub({
+    'src/dup.ts': 'if (a) {\n  const x = 1;\n  return x;\n}\nif (b) {\n    const x = 1;\n    return x;\n}\n'
+  });
+  await withBridge(duplicateDisk.bridge, async () => {
+    const refused = await runTool('ws', {
+      name: 'edit_file',
+      args: { path: 'src/dup.ts', original: 'const x = 1;\nreturn x;', updated: 'const x = 2;' }
+    });
+    assert.equal(refused.ok, false);
+    assert.match(refused.error as string, /more than once/);
+    assert.equal(duplicateDisk.writes.length, 0);
+  });
+
+  assert.equal(locateUniqueMatch('  const x = 1;\n', '    const x = 1;').status, 'not_found');
 });

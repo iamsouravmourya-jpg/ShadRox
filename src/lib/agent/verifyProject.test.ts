@@ -94,3 +94,21 @@ test('formatVerifyReport renders ok and failed states with the next step', () =>
   assert.match(failed, /t1/);
   assert.match(failed, /run verify again/);
 });
+
+test('pretty tsc keeps error message and Next.js / Vite / module resolution errors parse cleanly', () => {
+  const pretty = parseVerifyOutput("src/b.ts:7:1 - error TS2304: Cannot find name 'foo'.");
+  assert.equal(pretty.errors[0].msg, "TS2304: Cannot find name 'foo'.");
+
+  const nextErr = parseVerifyOutput('./src/app/page.tsx:14:9\nType error: Property \'title\' does not exist on type \'{}\'.');
+  assert.equal(nextErr.errors[0].file, './src/app/page.tsx');
+  assert.equal(nextErr.errors[0].line, 14);
+  assert.match(nextErr.errors[0].msg, /Type error: Property 'title'/);
+
+  const viteErr = parseVerifyOutput('file: src/App.tsx:22:3');
+  assert.equal(viteErr.errors[0].file, 'src/App.tsx');
+  assert.equal(viteErr.errors[0].line, 22);
+
+  const missingMod = parseVerifyOutput("Error: Cannot find module './missing'\nModule not found: Can't resolve 'lucide-react' in 'src/components'");
+  assert.ok(missingMod.errors.some((e) => e.msg.includes("Cannot find module './missing'")));
+  assert.ok(missingMod.errors.some((e) => e.file === 'src/components' && e.msg.includes("Cannot resolve module 'lucide-react'")));
+});

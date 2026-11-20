@@ -106,15 +106,21 @@ export async function streamCustomEndpoint(
   // `prompt_cache_key` is documented by OpenAI's own API and by nothing else in
   // ShadRox's provider set, so a Groq/OpenRouter/local server body never grows
   // an unknown field.
-  const cacheKey = supportsPromptCacheKey(url) ? promptCacheKeyValue(plan) : undefined;
+  const baseCacheKey = supportsPromptCacheKey(url) ? promptCacheKeyValue(plan) : undefined;
 
-  const body = (withTemperature: boolean, withTools: boolean, withMarkers: boolean, withStreamOptions: boolean) =>
+  const body = (
+    withTemperature: boolean,
+    withTools: boolean,
+    withMarkers: boolean,
+    withStreamOptions: boolean,
+    withCacheKey: boolean
+  ) =>
     JSON.stringify({
       model,
       messages: buildMessages(request, withMarkers),
       ...(withTemperature ? { temperature } : {}),
       max_tokens: maxOutputTokens,
-      ...(cacheKey ? { prompt_cache_key: cacheKey } : {}),
+      ...(withCacheKey && baseCacheKey ? { prompt_cache_key: baseCacheKey } : {}),
       stream: true,
       ...(withStreamOptions ? { stream_options: { include_usage: true } } : {}),
       ...(withTools && request.toolDefinitions?.length
@@ -128,7 +134,14 @@ export async function streamCustomEndpoint(
         : {})
     });
 
-  const send = (withTemperature: boolean, fetchAttempts: number, withTools: boolean, withMarkers: boolean, withStreamOptions: boolean) =>
+  const send = (
+    withTemperature: boolean,
+    fetchAttempts: number,
+    withTools: boolean,
+    withMarkers: boolean,
+    withStreamOptions: boolean,
+    withCacheKey: boolean
+  ) =>
     fetchUpstream(
       url,
       {
@@ -137,7 +150,7 @@ export async function streamCustomEndpoint(
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json'
         },
-        body: body(withTemperature, withTools, withMarkers, withStreamOptions)
+        body: body(withTemperature, withTools, withMarkers, withStreamOptions, withCacheKey)
       },
       signal,
       fetchAttempts,
@@ -148,14 +161,15 @@ export async function streamCustomEndpoint(
   let withMarkers = mode === 'cache_control';
   let withTemperature = true;
   let withStreamOptions = true;
-  let response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
+  let withCacheKey = Boolean(baseCacheKey);
+  let response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions, withCacheKey);
   let payload = response.ok ? '' : await readErrorPayload(response);
 
   // Feature-drop ladder as a LOOP: gateways name one unsupported field per
   // rejection, and fixing the earlier one reveals the next one, so every
   // rejection re-checks all rungs against the new payload instead of walking a
   // one-pass chain (which left later rungs — tools especially — unreachable).
-  for (let round = 0; round < 4 && !response.ok; round += 1) {
+  for (let round = 0; round < 5 && !response.ok; round += 1) {
     // A gateway that forwards Claude but not Anthropic's content-part extension:
     // drop the markers, keep the request. One replay of a rejected body costs
     // nothing (it never reached a model), and the ordering discipline that
@@ -163,6 +177,9 @@ export async function streamCustomEndpoint(
     if (withMarkers && rejectsCacheControl(payload)) {
       withMarkers = false;
       droppedFeatures.push('cache_control');
+    } else if (withCacheKey && /prompt_cache_key/i.test(payload)) {
+      withCacheKey = false;
+      droppedFeatures.push('prompt_cache_key');
     } else if (withTools && (rejectsNativeTools(payload) || rejectsToolCall(payload))) {
       withTools = false;
       droppedFeatures.push('tools');
@@ -183,7 +200,7 @@ export async function streamCustomEndpoint(
     } else {
       break;
     }
-    response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
+    response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions, withCacheKey);
     payload = response.ok ? '' : await readErrorPayload(response);
   }
 
@@ -221,7 +238,7 @@ export async function streamCustomEndpoint(
       }
 
       const choice = parsed?.choices?.[0];
-      const delta = choice?.delta;
+      const delta = choice?.delta ?? choice?.message;
       if (delta) {
         if (typeof delta.content === 'string' && delta.content) {
           fullText += delta.content;
@@ -274,7 +291,7 @@ export async function streamCustomEndpoint(
 
     withTools = false;
     droppedFeatures.push('tools');
-    response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions);
+    response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions, withCacheKey);
     if (!response.ok) {
       throw new UpstreamError(
         sanitizeErrorMessage(await readErrorPayload(response), 'Custom endpoint ne request reject kar diya.'),

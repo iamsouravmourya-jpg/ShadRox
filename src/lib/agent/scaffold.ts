@@ -32,30 +32,30 @@ export function detectAddPageIntent(ask: string): boolean {
 }
 
 export const SCAFFOLD_RULE =
-  'NEW PROJECTS: when the user asks to build a site/app/page in a new or empty folder, never answer with one dumped HTML file. '
-  + 'Plan the structure with update_tasks, then create real separate files: index.html, styles.css, script.js and an assets/ folder. '
-  + 'Draw the logo yourself as inline SVG or an .svg file you write — never fetch one, never leave a placeholder. '
-  + 'Build section by section (header/hero, features, footer), link the CSS and JS from the HTML, then start the preview and check it renders before finish. '
-  + 'A landing page is at least 3 files; one giant HTML file is a failed answer.';
+  'NEW PROJECTS: when the user asks to build a site/app/page in a new or empty folder, inspect package.json and folder structure first and never answer with one dumped HTML file. '
+  + 'Plan the modular structure with update_tasks: for a framework app create typed modular components, config and styles (Vercel/Git-deployable); for a static site create real separate files: index.html, styles.css, script.js and an assets/ folder. '
+  + 'Draw logos yourself as inline SVG or an .svg file you write — never fetch one, never leave a placeholder. '
+  + 'Build section by section (header/hero, features, footer), wire routes/assets cleanly, run build/typecheck verification, then start the preview and check it renders before finish. '
+  + 'A landing page or web app is at least 3 files; one giant HTML file is a failed answer.';
 
 export const ADD_PAGE_RULE =
-  'ADDING A PAGE: "add a page/section" to an existing site means a NEW html file (about.html, contact.html, ...) plus links to it from the existing pages\' navigation. '
+  'ADDING A PAGE: "add a page/section" means a NEW route/component matching the existing framework router OR a NEW html file (about.html, contact.html, ...) plus navigation links to it from the existing pages. '
   + 'Never append the new page into the existing giant HTML file, and never leave the new page unlinked.';
 
 /** The one-time finish refusal a one-file scaffold attempt earns. */
 export function scaffoldNudge(createdCount: number): string {
   return `finish refused: this is a new-project request, but only ${createdCount} file${createdCount === 1 ? ' was' : 's were'} created. `
     + SCAFFOLD_RULE
-    + ' Create the remaining files now (styles.css, script.js, the SVG logo), link them from index.html, verify, then call finish again.';
+    + ' Create the remaining modular files now (components/modules or styles.css, script.js, SVG assets), wire them cleanly, verify build/types, then call finish again.';
 }
 
 export function addPageNudge(): string {
   return 'finish refused: the user asked to add a page, but no new file was created. '
     + ADD_PAGE_RULE
-    + ' Create the new page file, add navigation links to it from the existing pages, verify, then call finish again.';
+    + ' Create the new page/route file, add navigation links to it from the existing pages, verify, then call finish again.';
 }
 
 export function previewNudge(detail: string): string {
   return `finish refused: the new site has not been checked in the preview (${detail}). `
-    + 'Use preview_control {"action":"start"} (or restart) so the pane points at the live site, fix anything it reports, then call finish again.';
+    + 'Use preview_control {"action":"status"} or {"action":"start"} (or restart) so the pane points at the live site, inspect/fix anything it reports, then call finish again.';
 }

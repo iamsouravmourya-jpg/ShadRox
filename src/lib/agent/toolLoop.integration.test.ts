@@ -350,3 +350,73 @@ test('the flight recorder ends a real turn with a stop event and a clean-run sum
   assert.equal(types.at(-1), 'stop');
   flightRecorder.reset();
 });
+
+test('malformed tool blocks emit parameter signature hints and stop cleanly after 3 consecutive failures', async () => {
+  const badBlock = '```shadrox:tools\n[{"name": "edit_file", "args": {broken}}\n```';
+  const model = scripted([badBlock, badBlock, badBlock, 'Stopped gracefully without looping forever.']);
+  const result = await runToolRounds({
+    messages: baseMessages,
+    workspaceId: null,
+    aborted: () => false,
+    stream: model.stream
+  });
+  assert.match(model.seen[1].at(-1).content, /Expected parameter signatures:/);
+  assert.match(model.seen[1].at(-1).content, /- edit_file\(path: string/);
+  assert.equal(result.stopReason, 'stuck');
+  assert.equal(result.text, 'Stopped gracefully without looping forever.');
+});
+
+test('preview_control status after verify does not stale verification on finish', async () => {
+  await withWorkspace(async (workspace) => {
+    fs.writeFileSync(path.join(workspace.root, 'package.json'), JSON.stringify({ scripts: { build: 'node -e "process.exit(0)"' } }));
+    const stub = {
+      ...workspace.bridge,
+      saveFiles: async (_id: string, files: Array<{ name: string; content: string }>) => {
+        for (const f of files) fs.writeFileSync(path.join(workspace.root, f.name), f.content);
+        return { saved: files.map((f) => f.name), errors: [] };
+      },
+      verifyChangeSet: async () => ({ ok: true, checked: 1, issues: [], skipped: [] }),
+      getPreviewStatus: async () => ({ status: 'ready', url: 'http://127.0.0.1:5173/', port: 5173, hmr: true }),
+      assertPreview: async () => ({ ok: true, errorCount: 0 })
+    };
+    await withBridge(stub, async () => {
+      const model = scripted([
+        toolBlock([{ name: 'write_file', args: { path: 'app.ts', content: 'export const ok = true;\n' } }]),
+        toolBlock([{ name: 'verify', args: {} }]),
+        toolBlock([{ name: 'preview_control', args: { action: 'status' } }]),
+        toolBlock([{ name: 'finish', args: { summary: 'Verified and checked preview status.' } }])
+      ]);
+      const result = await runToolRounds({ messages: baseMessages, workspaceId: 'ws', aborted: () => false, stream: model.stream });
+      assert.equal(result.stopReason, 'finish');
+      assert.match(result.finish?.summary ?? '', /Verified and checked preview status\./);
+    });
+  });
+});
+
+test('loopContextBudgetChars triggers earlier compaction on small-window models', async () => {
+  await withWorkspace(async (workspace) => {
+    for (let i = 0; i < 6; i += 1) {
+      fs.writeFileSync(path.join(workspace.root, `f${i}.txt`), `content-${i}-` + 'x'.repeat(500));
+    }
+    const model = scripted([
+      toolBlock([readCall('f0.txt')]),
+      toolBlock([readCall('f1.txt')]),
+      toolBlock([readCall('f2.txt')]),
+      toolBlock([readCall('f3.txt')]),
+      toolBlock([readCall('f4.txt')]),
+      toolBlock([readCall('f5.txt')]),
+      'Read all files cleanly.'
+    ]);
+    await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      loopContextBudgetChars: 1_200,
+      stream: model.stream
+    });
+    assert.ok(
+      model.seen[6].some((msg) => msg.content.includes('[compacted observation')),
+      'expected earlier observations to compact under a tight model budget'
+    );
+  });
+});

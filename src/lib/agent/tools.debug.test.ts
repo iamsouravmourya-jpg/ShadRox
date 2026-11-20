@@ -38,7 +38,7 @@ test('preview_control is exposed to native providers with an action enum', () =>
   const entry = nativeToolDefinitions().find((tool) => tool.name === 'preview_control');
   assert.ok(entry, 'a built-in without a native schema is invisible to function-calling providers');
   const schema = entry.parameters as { properties: { action: { enum: string[] } }; required: string[] };
-  assert.deepEqual(schema.properties.action.enum, ['start', 'stop', 'restart']);
+  assert.deepEqual(schema.properties.action.enum, ['start', 'stop', 'restart', 'status']);
   assert.deepEqual(schema.required, ['action']);
 });
 

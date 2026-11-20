@@ -721,6 +721,43 @@ function createPreviewRuntime({
   // Backend plans run beside a frontend preview, so they get their own map and
   // their own output channel instead of colliding in `processes`.
   const backendProcesses = new Map();
+  // Bounded per-workspace status and recent ANSI-stripped output for preview_control status.
+  const statusStates = new Map();
+
+  function recordStatus(workspaceId, type, message, extra = null) {
+    if (typeof workspaceId !== 'string' || !workspaceId) return;
+    const prev = statusStates.get(workspaceId) ?? {
+      status: 'idle',
+      url: null,
+      port: null,
+      script: null,
+      hmr: false,
+      lastError: null,
+      recentOutput: ''
+    };
+    const clean = String(message ?? '').replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
+    const combined = clean ? `${prev.recentOutput}${prev.recentOutput && !prev.recentOutput.endsWith('\n') ? '\n' : ''}${clean}`.slice(-6000) : prev.recentOutput;
+    let status = prev.status;
+    let lastError = prev.lastError;
+    if (type === 'ready') {
+      status = 'ready';
+      lastError = null;
+    } else if (type === 'stopped') {
+      status = 'stopped';
+    } else if (type === 'error') {
+      status = 'error';
+      lastError = clean.trim().slice(0, 600);
+    } else if (type === 'status' || type === 'install') {
+      if (status === 'idle' || status === 'stopped' || status === 'error') status = 'starting';
+    }
+    statusStates.set(workspaceId, {
+      ...prev,
+      status,
+      lastError,
+      recentOutput: combined,
+      ...(extra ?? {})
+    });
+  }
 
   // Dev servers emit thousands of tiny stdout chunks. Forwarding each one over
   // IPC made the renderer and the main process spend their time on messages
@@ -747,8 +784,9 @@ function createPreviewRuntime({
     outputTimer.unref?.();
   }
 
-  function emit(workspaceId, type, message) {
+  function emit(workspaceId, type, message, extra = null) {
     const text = String(message);
+    recordStatus(workspaceId, type, text, extra);
     if (type === 'stdout' || type === 'stderr') {
       queueOutput(`${workspaceId}:out:${type}`, onOutput, { workspaceId, type, message: text });
       return;
@@ -906,8 +944,13 @@ function createPreviewRuntime({
       throw new Error('Static preview server failed to bind a local port.');
     }
     const url = `http://127.0.0.1:${address.port}/`;
-    processes.set(workspaceId, { server, url });
-    emit(workspaceId, 'ready', `Static project served at ${url}`);
+    processes.set(workspaceId, { server, url, script: 'static', hmr: false });
+    emit(workspaceId, 'ready', `Static project served at ${url}`, {
+      url,
+      port: address.port,
+      script: 'static',
+      hmr: false
+    });
     return { url, script: 'static' };
   }
 
@@ -925,7 +968,7 @@ function createPreviewRuntime({
         record.server.close((error) => {
           if (error) reject(error);
           else {
-            emit(workspaceId, 'stopped', 'Local preview stopped.');
+            emit(workspaceId, 'stopped', 'Local preview stopped.', { url: null, port: null, hmr: false });
             resolve(true);
           }
         });
@@ -1072,10 +1115,10 @@ function createPreviewRuntime({
       portOverride ? { PORT: String(portOverride) } : undefined,
       { skipLoopbackHost: isNextCommand }
     );
-    const record = { child, url: null, rejectReady: null };
+    const record = { child, url: null, rejectReady: null, script: script.name, hmr: hasHmrSupport(script.command) };
     processes.set(workspaceId, record);
     recordOrphanChild(orphansFile, child.pid, root);
-    emit(workspaceId, 'status', `Running "${manager} run ${script.name}"...`);
+    emit(workspaceId, 'status', `Running "${manager} run ${script.name}"...`, { url: null, port: null, script: script.name, hmr: record.hmr });
 
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -1115,8 +1158,10 @@ function createPreviewRuntime({
                 clearInterval(probeTimer);
                 record.url = finalUrl;
                 record.rejectReady = null;
-                emit(workspaceId, 'ready', `Local preview is responding at ${finalUrl}`);
-                resolve({ url: finalUrl, port: portOfUrl(finalUrl), script: script.name, hmr: hasHmrSupport(script.command) });
+                const finalPort = portOfUrl(finalUrl);
+                const hmr = hasHmrSupport(script.command);
+                emit(workspaceId, 'ready', `Local preview is responding at ${finalUrl}`, { url: finalUrl, port: finalPort, script: script.name, hmr });
+                resolve({ url: finalUrl, port: finalPort, script: script.name, hmr });
               })();
             }, 350);
           }
@@ -1192,7 +1237,12 @@ function createPreviewRuntime({
           record.url = existingNextUrl;
           record.rejectReady = null;
           processes.delete(workspaceId);
-          emit(workspaceId, 'ready', `Reusing the existing project server at ${existingNextUrl}`);
+          emit(workspaceId, 'ready', `Reusing the existing project server at ${existingNextUrl}`, {
+            url: existingNextUrl,
+            port: portOfUrl(existingNextUrl),
+            script: script.name,
+            hmr: true
+          });
           if (!wasSettled) resolve({ url: existingNextUrl, port: portOfUrl(existingNextUrl), script: script.name, hmr: true });
           return;
         }
@@ -1211,7 +1261,7 @@ function createPreviewRuntime({
           .join(' ')
           .slice(0, 400);
         const message = `Project process exited with code ${code ?? 'unknown'}.${tail ? ` ${tail}` : ''}`;
-        emit(workspaceId, 'error', message);
+        emit(workspaceId, 'error', message, { url: null, port: null, hmr: false });
         if (!settled) fail(new Error(message));
         processes.delete(workspaceId);
       });
@@ -1472,7 +1522,30 @@ function createPreviewRuntime({
     // Headless/test environment: no inspector channel, previews still work.
   }
 
-  return { start, startStatic, startPlan, stop, stopBackend, stopAll, getWorkspaceIdForUrl, ownedPreviews, stopOwnedPreview };
+  function getStatus(workspaceId) {
+    const frontend = processes.get(workspaceId);
+    const backend = backendProcesses.get(workspaceId);
+    const state = statusStates.get(workspaceId);
+    const frontendUrl = frontend?.url ?? state?.url ?? null;
+    const backendUrl = backend?.url ?? null;
+    const status = frontend
+      ? (frontend.url ? 'ready' : 'starting')
+      : (state?.status ?? 'idle');
+    return {
+      running: Boolean(frontend?.url || backend?.url || status === 'ready'),
+      status,
+      url: frontendUrl,
+      port: frontendUrl ? portOfUrl(frontendUrl) : (state?.port ?? null),
+      script: frontend?.script ?? state?.script ?? null,
+      hmr: Boolean(frontend?.hmr ?? state?.hmr),
+      backendUrl,
+      backendPort: backendUrl ? portOfUrl(backendUrl) : null,
+      lastError: state?.lastError ?? null,
+      recentOutput: state?.recentOutput ?? ''
+    };
+  }
+
+  return { start, startStatic, startPlan, stop, stopBackend, stopAll, getWorkspaceIdForUrl, ownedPreviews, stopOwnedPreview, getStatus };
 }
 
 module.exports = {

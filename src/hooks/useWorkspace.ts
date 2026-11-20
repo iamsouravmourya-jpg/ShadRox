@@ -432,7 +432,12 @@ export function useWorkspace(): UseWorkspaceResult {
         assets: directory.assets
       });
     } catch (error) {
-      if ((error as { name?: string })?.name === 'AbortError') return;
+      const errName = (error as { name?: string })?.name;
+      if (errName === 'AbortError') return;
+      if (errName === 'SecurityError') {
+        setStatusMessage('Folder picker is blocked inside embedded frames. Use "New project", "New file", or drag & drop files instead.');
+        return;
+      }
       setStatusMessage('Could not open folder. Please try again.');
     } finally {
       setIsBusy(false);
@@ -483,7 +488,12 @@ export function useWorkspace(): UseWorkspaceResult {
         { handles: picked.handles }
       );
     } catch (error) {
-      if ((error as { name?: string })?.name === 'AbortError') return;
+      const errName = (error as { name?: string })?.name;
+      if (errName === 'AbortError') return;
+      if (errName === 'SecurityError') {
+        setStatusMessage('File picker is blocked inside embedded frames. Use "New project", "New file", or drag & drop files instead.');
+        return;
+      }
       setStatusMessage('Could not open files. Please try again.');
     } finally {
       setIsBusy(false);

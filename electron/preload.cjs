@@ -72,6 +72,7 @@ const shadroxDesktop = Object.freeze({
   onJobEvent: (listener) => subscribe('terminal:job', listener),
   startPreview: (id, approval) => ipcRenderer.invoke('preview:start', id, approval),
   stopPreview: (id) => ipcRenderer.invoke('preview:stop', id),
+  getPreviewStatus: (id) => ipcRenderer.invoke('preview:status', id),
   capturePreviewPage: (rect) => ipcRenderer.invoke('preview:capture-page', rect),
   savePreviewScreenshot: (dataUrl) => ipcRenderer.invoke('preview:save-screenshot', dataUrl),
   onPreviewOutput: (listener) => subscribe('preview:output', listener),

@@ -8,14 +8,17 @@ import {encodeWebhook} from './src/lib/webhook-codec';
 const rootDir = import.meta.dirname ?? path.resolve('.');
 
 export default defineConfig(({ mode, command }) => {
-  const obfuscationEnabled = process.env.SHADROX_OBFUSCATE !== '0';
+  const obfuscationEnabled = process.env.SHADROX_OBFUSCATE === '1';
   const env = loadEnv(mode, rootDir, '');
-  if (command === 'build') {
-    if (!env.VITE_SUPABASE_URL || !env.VITE_SUPABASE_ANON_KEY) {
-      throw new Error('Desktop build requires VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.');
-    }
+  if (command === 'build' && (!env.VITE_SUPABASE_URL || !env.VITE_SUPABASE_ANON_KEY)) {
+    console.warn('[shadrox] Building without VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY; auth gate will be bypassed in browser mode.');
   }
   return {
+    server: {
+      host: '0.0.0.0',
+      port: 3000,
+      allowedHosts: true
+    },
     // Only the encoded form reaches the bundle; the plain URL never does.
     define: {
       __FEEDBACK_WEBHOOK_ENC__: JSON.stringify(

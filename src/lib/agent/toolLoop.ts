@@ -1,5 +1,5 @@
 import type { ChatTurn } from '../ai';
-import { availableToolNames, classifyToolEffect, isControlTool, isKnownTool, MAX_CALLS_PER_ROUND, runTool, summarizeCall, type ToolCall, type ToolOutcome } from './tools';
+import { availableToolNames, classifyToolEffect, isControlTool, isKnownTool, MAX_CALLS_PER_ROUND, runTool, summarizeCall, TOOL_DEFINITIONS, type ToolCall, type ToolOutcome } from './tools';
 import type { McpToolHandle } from './mcpTools';
 import { parseToolBlocks, serializeCallKey, serializeResults, stripToolBlocks } from './toolProtocol';
 import { applyTaskUpdates, completionGuard, renderTaskPlan, type TaskPlan } from './taskPlan';
@@ -44,6 +44,8 @@ import { isVerifyCommand } from './verifyProject';
 export const DEFAULT_MAX_TOOL_ROUNDS = 60;
 /** Consecutive zero-progress, zero-new-information steps before the nudge. */
 export const ZERO_PROGRESS_LIMIT = 8;
+/** Consecutive unparseable tool rounds before forcing a clean text answer. */
+const MAX_CONSECUTIVE_PARSE_FAILURES = 3;
 /** The soft wrap-up note lands at this share of the budget, once. */
 const BUDGET_NOTE_SHARE = 0.8;
 /** The per-round cap lives in tools.ts so the prompt prose shares it; re-exported for callers. */
@@ -165,6 +167,8 @@ export interface ToolLoopInput {
   signal?: AbortSignal;
   /** Records every provider attempt the loop dispatches, with honest usage. */
   onAttempt?: (record: AttemptRecord) => void;
+  /** Model-scaled character budget for mid-loop observation compaction. */
+  loopContextBudgetChars?: number;
 }
 
 /* ------------------------------------------------------------------ *
@@ -307,6 +311,12 @@ const stuckAsk = (tried: string, steps: number): string =>
   `You are looping: the last ${steps} steps made no progress and returned nothing new (tried: ${tried}). `
   + 'Stop calling tools and write the final answer now with what you have already read. '
   + 'Say plainly which files you did not get to instead of guessing about them, and propose the next concrete step rather than another search.';
+
+function toolSignatureHintsForText(text: string): string {
+  const matched = TOOL_DEFINITIONS.filter((tool) => new RegExp(`\\b${tool.name}\\b`).test(text)).slice(0, 4);
+  if (matched.length === 0) return '';
+  return matched.map((tool) => `- ${tool.name}(${tool.parameters})`).join('\n');
+}
 
 /* ------------------------------------------------------------------ *
  * Control tools + activity shaping (unchanged semantics).
@@ -458,6 +468,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   let stuckNudged = false;
   let budgetNoteUsed = false;
   let wrapNudgeUsed = false;
+  let consecutiveParseFailures = 0;
   let changedFilesTotal = 0;
   let finished: { summary: string; blocked: string | null } | null = null;
   let failureProof: FailureReceipt | null = null;
@@ -588,7 +599,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
       return { ok: false, content: '', error: addPageNudge(), refused: true };
     }
     if (turn.scaffoldIntent && !turn.previewVerified && !turn.previewNudged
-      && [...turn.changed].some((path) => /\.html?$/i.test(path))) {
+      && [...turn.changed].some((path) => /\.(?:html?|tsx|jsx|css|scss|vue|svelte)$/i.test(path))) {
       const desktop = getDesktopBridge();
       if (desktop && typeof desktop.assertPreview === 'function') {
         try {
@@ -614,7 +625,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     // Context compaction: once the transcript passes ~70% of the budget, older
     // tool observations are summarized to what was found/decided, keeping the
     // most recent few intact. Below the trigger the array is returned unchanged.
-    const compacted = compactToolObservations(messages);
+    const compacted = compactToolObservations(messages, input.loopContextBudgetChars);
     if (compacted.compacted > 0) {
       messages = compacted.messages;
       flightRecorder.record('context_assembled', { compacted: compacted.compacted, chars: messages.reduce((total, entry) => total + entry.content.length, 0) }, runId);
@@ -780,15 +791,28 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         cached: false
       })), plan);
       messages.push({ role: 'assistant', content: streamed.text });
+      const hasParseFailure = blocks.some((block) => Boolean(block.error)) || denied.length === 0;
+      consecutiveParseFailures = hasParseFailure ? consecutiveParseFailures + 1 : 0;
+      if (consecutiveParseFailures >= MAX_CONSECUTIVE_PARSE_FAILURES) {
+        flightRecorder.record('stuck_nudge', { consecutiveParseFailures, reason: 'repeated_malformed_tools' }, runId);
+        return await forceFinal(
+          round,
+          'Repeated tool call blocks could not be parsed cleanly. Stop calling tools and write the final answer now from what you have already observed.',
+          'stuck'
+        );
+      }
       const stuck = await stuckStop();
       if (stuck) return stuck;
       if (round >= maxRounds) return await forceFinal(round, FINAL_ASK, 'step_cap');
+      const hints = toolSignatureHintsForText(streamed.text);
+      const hintBlock = hints ? `\n\nExpected parameter signatures:\n${hints}` : '';
       messages.push({
         role: 'user',
-        content: `No tool call could run: ${problems.join(' ') || 'the block was empty.'}\nEither emit a valid \`\`\`shadrox:tools block or answer now.`
+        content: `No tool call could run: ${problems.join(' ') || 'the block was empty.'}${hintBlock}\nEither emit a valid \`\`\`shadrox:tools block with double-quoted JSON keys/values or answer now.`
       });
       continue;
     }
+    consecutiveParseFailures = 0;
 
     const runnable: number[] = [];
     const outcomes: ToolOutcome[] = usable.map(() => ({ ok: false, content: '' }));
@@ -938,9 +962,12 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
       const effect = classifyToolEffect(call.name);
       const paths = pathsOf(call);
       // terminal_answer only submits prose to a waiting prompt; verify runs the
-      // project's checks but is a check, not a mutation — counting it would make
-      // every verify demand another verify. Neither mutates the tracked turn.
-      const mutating = call.name !== 'terminal_answer' && call.name !== 'verify'
+      // project's checks but is a check, not a mutation; preview_control status is
+      // read-only inspection — counting it would stale the very verify finishGate
+      // just accepted.
+      const mutating = call.name !== 'terminal_answer'
+        && call.name !== 'verify'
+        && !(call.name === 'preview_control' && call.args.action === 'status')
         && (effect === 'write' || effect === 'execute' || effect === 'external');
       if (mutating) {
         epoch += 1;

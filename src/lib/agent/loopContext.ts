@@ -14,12 +14,29 @@ import type { ChatTurn } from '../ai';
  */
 
 export const LOOP_CONTEXT_BUDGET_CHARS = 160_000;
+export const MIN_LOOP_CONTEXT_BUDGET_CHARS = 20_000;
 export const COMPACT_TRIGGER_SHARE = 0.7;
 /** The newest observations stay verbatim — they are the working evidence. */
 export const KEEP_RECENT_OBSERVATIONS = 4;
 const SUMMARY_ENTRY_CHARS = 160;
 const SUMMARY_MESSAGE_CHARS = 1_800;
 const MIN_COMPACT_CHARS = 400;
+
+/**
+ * Computes an appropriate character budget for intermediate tool-loop
+ * transcripts from the active model's context window so smaller/free BYOK
+ * models compact stale file dumps before overflowing their window.
+ */
+export function computeLoopContextBudgetChars(
+  contextWindowTokens: number,
+  reservedOutputTokens = 4_096,
+  systemInstructionChars = 0
+): number {
+  const usableTokens = Math.max(2_000, contextWindowTokens - Math.max(512, reservedOutputTokens));
+  const systemTokens = Math.ceil(Math.max(0, systemInstructionChars) / 4);
+  const loopTokens = Math.max(5_000, Math.floor((usableTokens - systemTokens) * 0.75));
+  return Math.max(MIN_LOOP_CONTEXT_BUDGET_CHARS, Math.min(LOOP_CONTEXT_BUDGET_CHARS, loopTokens * 4));
+}
 
 const OBSERVATION_FENCE = /```shadrox:results\r?\n([\s\S]*?)\r?\n```/;
 const DATA_MARKERS = /\[\[SHADROX_UNTRUSTED_DATA_(?:BEGIN|END)\]\]/g;

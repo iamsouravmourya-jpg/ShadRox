@@ -53,7 +53,9 @@ import { setProjectMemoryRoot, buildProjectMemoryContext } from './lib/agent/pro
 import { setCodeIntelRoot } from './lib/agent/codeIntel';
 import { CHAT_PROMPT_CORE, TOOL_DISCIPLINE_RULES } from './lib/agent/promptDiscipline';
 import { expandChatMentions } from './lib/chat/contextMentions';
-import { parseToolBlocks, stripToolBlocks } from './lib/agent/toolProtocol';
+import { parseToolBlocks, repairAndParseNativeToolArgs, stripToolBlocks } from './lib/agent/toolProtocol';
+import { analyzeProjectStack, formatArchitectureSummary } from './lib/agent/projectBrain';
+import { computeLoopContextBudgetChars } from './lib/agent/loopContext';
 import { executedToolCallCount, runAgentTurn } from './lib/agents/turnRunner';
 import { isProtectedAgentWritePath } from './lib/agents/applyPolicy';
 import { bundleDocument, bundleProject, canBundle, describeBundleError } from './lib/bundler';
@@ -1999,6 +2001,19 @@ export default function App() {
       const mcpNotes = discoveryNotes(mcpDiscovery);
 
       const core = [...CHAT_PROMPT_CORE, ...TOOL_DISCIPLINE_RULES, ''];
+      if (folder || inventory.length > 0) {
+        const pkgEntry = contextFiles.find((file) => normalizeSlashes(file.name).toLowerCase() === 'package.json');
+        let pkgText: string | null = pkgEntry?.content ?? null;
+        if (pkgText === null && nativeWorkspaceId && desktop) {
+          try {
+            pkgText = (await desktop.readFile(nativeWorkspaceId, 'package.json')).content;
+          } catch {
+            /* package.json optional */
+          }
+        }
+        const arch = analyzeProjectStack(inventory.map((entry) => entry.path), pkgText);
+        core.push(formatArchitectureSummary(arch), '');
+      }
       const intentContext = intent.getContext({
         seeds: [
           ...(workspace.activeFile?.name ? [workspace.activeFile.name] : []),
@@ -2034,6 +2049,9 @@ export default function App() {
           '- Always write the file name in the fence line. This is how changes reach the editor and the disk.',
           '- Briefly explain changes before outputting code blocks.'
         );
+        if (nativeWorkspaceId) {
+          core.push('- Prefer structured workspace tools (`write_file`, `edit_file`, `apply_patch`, `verify`, `preview_control`) over large inline code fences, and verify before calling `finish`.');
+        }
         if (pathOnly > 0) {
           core.push(nativeWorkspaceId
             ? `- ${pathOnly} file(s) are listed by path only, without contents. Run the read_file tool on one before writing ORIGINAL text into it — never guess its lines.`
@@ -4024,18 +4042,10 @@ export default function App() {
               )));
             },
             onToolCalls: (calls) => {
-              const normalized = calls.map((call) => {
-                let args: Record<string, unknown>;
-                try {
-                  const parsed: unknown = JSON.parse(call.arguments);
-                  args = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-                    ? parsed as Record<string, unknown>
-                    : { __nativeArgumentError: 'Arguments must be a JSON object.' };
-                } catch {
-                  args = { __nativeArgumentError: 'The tool arguments were incomplete or invalid JSON — likely the reply was cut off by the output limit. Re-issue this call with complete arguments.' };
-                }
-                return { name: call.name, args };
-              });
+              const normalized = calls.map((call) => ({
+                name: call.name,
+                args: repairAndParseNativeToolArgs(call.arguments)
+              }));
               // JSON.stringify escapes newlines as \n, so a line-start ``` can
               // never appear inside the serialized JSON; escaping backticks as
               // \u0060 keeps even an inline ``` out of the fence (defense in
@@ -4229,6 +4239,11 @@ export default function App() {
         policy: { mode: submission?.envelope?.permissionMode ?? permissionMode },
         signal: controller.signal,
         onAttempt: recordAttempt,
+        loopContextBudgetChars: computeLoopContextBudgetChars(
+          contextWindow,
+          resolveBudgetCapabilities(byok.activeProvider, byok.selectedModel).maxOutput ?? DEFAULT_MAX_OUTPUT,
+          fit.systemInstruction?.length ?? 0
+        ),
         stream: streamOnce,
         applyRoundPatches,
         onRound: (_round, text) => {
@@ -4534,6 +4549,11 @@ export default function App() {
           systemInstruction: fit.systemInstruction,
           maxToolRounds: DEFAULT_MAX_TOOL_ROUNDS,
           policy: runPolicy,
+          loopContextBudgetChars: computeLoopContextBudgetChars(
+            contextWindow,
+            resolveBudgetCapabilities(byok.activeProvider, byok.selectedModel).maxOutput ?? DEFAULT_MAX_OUTPUT,
+            fit.systemInstruction?.length ?? 0
+          ),
           ports: {
             workspaceId: nativeWorkspaceId,
             external: mcpToolHandleRef.current ?? undefined,
@@ -5976,7 +5996,7 @@ export default function App() {
 
   const hasKey = Boolean(byok.activeKey);
 
-  if (auth.status !== 'signed-in') {
+  if (auth.status !== 'signed-in' && auth.status !== 'unconfigured') {
     return (
       <AuthScreen
         status={auth.status}

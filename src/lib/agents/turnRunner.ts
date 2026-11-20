@@ -90,6 +90,8 @@ export interface AgentTurnInput {
   /** The request's permission mode and target scope, threaded into the tool loop. */
   policy?: RunPolicy;
   /** Per-attempt usage provenance, forwarded to the tool loop when it records one. */
+  /** Model-scaled character budget for mid-loop observation compaction. */
+  loopContextBudgetChars?: number;
   onAttempt?: (record: AttemptRecord) => void;
   onActivity?: (activity: ToolActivity[]) => void;
   onRound?: (round: number, text: string) => void;
@@ -316,7 +318,8 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
     onPlan: input.onPlan,
     policy: input.policy,
     signal: input.signal,
-    onAttempt: input.onAttempt
+    onAttempt: input.onAttempt,
+    loopContextBudgetChars: input.loopContextBudgetChars
   });
 
   const filesRead = filesReadFromActivity(loop.activity);

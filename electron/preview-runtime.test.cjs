@@ -968,3 +968,24 @@ test('a foreign lockfile makes the npm fallback non-polluting and announced', as
   assert.deepEqual(matching.args, ['install']);
   assert.equal(matching.notice, null);
 });
+
+test('tracks structured preview status, port, HMR flag, and output tail via getStatus', async (context) => {
+  const base = await findFreePortRun(1);
+  const root = await writeProject(await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-preview-status-')), `vite --port ${base}`);
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  const { spawnProcess } = createFakeDevSpawner(base);
+  const runtime = createPreviewRuntime({ spawnProcess, readyTimeout: 4000 });
+  context.after(() => runtime.stopAll());
+
+  assert.equal(runtime.getStatus('status-ws').status, 'idle');
+  await runtime.start('status-ws', root);
+  const ready = runtime.getStatus('status-ws');
+  assert.equal(ready.status, 'ready');
+  assert.equal(ready.port, base);
+  assert.equal(ready.hmr, true);
+  assert.equal(ready.url, `http://127.0.0.1:${base}/`);
+
+  await runtime.stop('status-ws');
+  const stopped = runtime.getStatus('status-ws');
+  assert.equal(stopped.status, 'stopped');
+});

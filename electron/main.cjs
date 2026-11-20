@@ -2815,6 +2815,14 @@ function registerIpcHandlers() {
     return previewRuntime.stop(workspaceId);
   });
 
+  handleMachineSensitive('preview:status', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    if (typeof workspaceId !== 'string' || !workspaceId) {
+      return { running: false, status: 'idle', url: null, port: null, script: null, hmr: false, backendUrl: null, backendPort: null, lastError: null, recentOutput: '' };
+    }
+    return previewRuntime.getStatus(workspaceId);
+  });
+
   handleMachineSensitive('preview:assert', async (event, workspaceId, options) => {
     assertTrustedRenderer(event);
     if (typeof workspaceId !== 'string' || !workspaceId) {

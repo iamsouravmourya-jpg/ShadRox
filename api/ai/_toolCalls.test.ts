@@ -239,3 +239,50 @@ test('a Gemini native function call survives the SSE parser as a complete tool c
   assert.equal(calls[0][0].name, 'create_file');
   assert.deepEqual(JSON.parse(calls[0][0].arguments), { path: 'src/a.ts', content: 'const a = 1;' });
 });
+
+test('OpenAiToolCallCollector separates distinct call ids when proxies omit index and serializes object arguments', () => {
+  const collector = new OpenAiToolCallCollector();
+  collector.add([
+    { id: 'call_one', function: { name: 'read_file', arguments: { path: 'a.ts' } as unknown as string } },
+    { id: 'call_two', function: { name: 'list_directory', arguments: { path: 'src' } as unknown as string } }
+  ]);
+  assert.deepEqual(collector.values(), [
+    { id: 'call_one', name: 'read_file', arguments: '{"path":"a.ts"}' },
+    { id: 'call_two', name: 'list_directory', arguments: '{"path":"src"}' }
+  ]);
+});
+
+test('Groq and custom endpoints recover tool calls sent on non-delta choice.message frames', async () => {
+  const { calls, sink } = collectingSink();
+  const nonDelta = sseResponse([
+    frame({
+      choices: [{
+        message: { tool_calls: [{ id: 'c_msg', function: { name: 'create_file', arguments: '{"path":"x.ts","content":"ok"}' } }] },
+        finish_reason: 'tool_calls'
+      }]
+    })
+  ]);
+  const res = await withFetch(nonDelta, () =>
+    streamCustomEndpoint(baseRequest({ provider: 'custom', model: 'qwen/qwen-2.5-coder-32b', baseUrl: 'https://openrouter.ai/api/v1' }), sink));
+  assert.equal(res.finishReason, 'tool_calls');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0].id, 'c_msg');
+  assert.equal(calls[0][0].arguments, '{"path":"x.ts","content":"ok"}');
+});
+
+test('Gemini preserves string-encoded functionCall.args instead of resetting them to {}', async () => {
+  const { calls, sink } = collectingSink();
+  const response = sseResponse([
+    frame({
+      candidates: [{
+        content: { parts: [{ functionCall: { id: 'g_1', name: 'create_file', args: '{"path":"src/g.ts","content":"ok"}' } }] },
+        finishReason: 'STOP'
+      }]
+    })
+  ]);
+  await withFetch(response, () =>
+    streamGemini(baseRequest({ provider: 'gemini', model: 'gemini-2.5-flash' }), sink));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0].id, 'g_1');
+  assert.deepEqual(JSON.parse(calls[0][0].arguments), { path: 'src/g.ts', content: 'ok' });
+});

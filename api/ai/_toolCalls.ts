@@ -15,14 +15,27 @@ export class OpenAiToolCallCollector {
     for (const [fallbackIndex, item] of raw.entries()) {
       if (!item || typeof item !== 'object') continue;
       const call = item as Record<string, unknown>;
-      const index = Number.isSafeInteger(call.index) ? Number(call.index) : fallbackIndex;
+      let index: number;
+      if (Number.isSafeInteger(call.index)) {
+        index = Number(call.index);
+      } else if (typeof call.id === 'string' && call.id) {
+        const existing = [...this.calls.entries()].find(([, entry]) => entry.id === call.id);
+        if (existing) index = existing[0];
+        else index = this.calls.has(fallbackIndex) ? this.calls.size : fallbackIndex;
+      } else {
+        index = fallbackIndex;
+      }
       const fn = call.function && typeof call.function === 'object'
         ? call.function as Record<string, unknown>
         : {};
       const current = this.calls.get(index) ?? { id: '', name: '', arguments: '' };
       if (typeof call.id === 'string') current.id += call.id;
       if (typeof fn.name === 'string') current.name += fn.name;
-      if (typeof fn.arguments === 'string') current.arguments += fn.arguments;
+      if (typeof fn.arguments === 'string') {
+        current.arguments += fn.arguments;
+      } else if (fn.arguments && typeof fn.arguments === 'object') {
+        current.arguments += JSON.stringify(fn.arguments);
+      }
       this.calls.set(index, current);
     }
   }

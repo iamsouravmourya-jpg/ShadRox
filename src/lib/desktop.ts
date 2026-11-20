@@ -463,6 +463,19 @@ export interface PreviewVerdict {
   assertedSelectors?: string[];
 }
 
+export interface DesktopPreviewStatus {
+  running: boolean;
+  status: 'idle' | 'starting' | 'ready' | 'error' | 'stopped';
+  url: string | null;
+  port: number | null;
+  script: string | null;
+  hmr: boolean;
+  backendUrl?: string | null;
+  backendPort?: number | null;
+  lastError: string | null;
+  recentOutput: string;
+}
+
 export type DesktopScreenshotCapture =
   | { ok: true; dataUrl: string; error?: undefined }
   | { ok: false; error: string; dataUrl?: undefined };
@@ -861,6 +874,7 @@ export interface ShadRoxDesktopAPI {
   onTerminalOutput: (listener: (event: TerminalOutput) => void) => () => void;
   startPreview: (workspaceId: string, approval?: { manifestHash?: string; approved?: boolean; projectPath?: string; projectKind?: 'node' | 'static' }) => Promise<DesktopPreviewStartResult>;
   stopPreview: (workspaceId: string) => Promise<boolean>;
+  getPreviewStatus?: (workspaceId: string) => Promise<DesktopPreviewStatus>;
   onPreviewOutput: (listener: (output: DesktopPreviewOutput) => void) => () => void;
   listMcpServers: () => Promise<McpServerConfig[]>;
   saveMcpServer: (server: McpServerConfig) => Promise<McpServerConfig[]>;

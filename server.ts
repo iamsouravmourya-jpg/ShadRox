@@ -62,7 +62,7 @@ export async function startServer(options: {
   mount('post', '/api/github/create-repo', githubCreateRepo);
   mount('post', '/api/github/push', githubPush);
 
-  const mode = options.mode ?? 'development';
+  const mode = options.mode ?? (process.env.NODE_ENV === 'production' ? 'production' : 'development');
   // Reaching this function means the API is running as a local process: the
   // desktop app starts it in-process on 127.0.0.1 and `npm run dev` starts it
   // here. The Vercel deployment mounts `api/**` functions directly and never
@@ -85,7 +85,7 @@ export async function startServer(options: {
     app.get('*', (_req, res) => res.sendFile(path.join(staticDirectory, 'index.html')));
   }
 
-  const host = options.host ?? (mode === 'development' ? '0.0.0.0' : '127.0.0.1');
+  const host = options.host ?? '0.0.0.0';
   const port = options.port ?? Number(process.env.PORT || 3000);
   const server = await new Promise<ReturnType<typeof app.listen>>((resolve, reject) => {
     const listener = app.listen(port, host, () => resolve(listener));

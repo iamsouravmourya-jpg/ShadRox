@@ -175,8 +175,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'preview_control',
-    description: 'Control the live preview pane the user sees (the embedded browser), not a raw process. start runs the project dev/static server and points the preview pane at its URL (a one-time install/run consent dialog may ask the user); stop halts the preview; restart stops then starts so the pane re-points after a crash or port change. Use this instead of killing/restarting servers by hand when the preview is white or stale. run_command/job_control manage processes; preview_control manages the pane.',
-    parameters: 'action: "start"|"stop"|"restart" (required)'
+    description: 'Control or inspect the live preview pane (embedded browser). start runs the dev/static server and opens its URL; stop halts the preview; restart stops then starts after a crash or port change; status inspects current URL, port, HMR, output logs, and runtime errors. run_command/job_control manage processes; preview_control manages the pane.',
+    parameters: 'action: "start"|"stop"|"restart"|"status" (required)'
   },
   {
     name: 'terminal_state',
@@ -295,7 +295,7 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   preview_control: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['start', 'stop', 'restart'], description: 'start: run the project server and point the preview pane at it; stop: halt the preview; restart: stop then start (use after a crash or port change).' }
+      action: { type: 'string', enum: ['start', 'stop', 'restart', 'status'], description: 'start: run the project server and point the preview pane at it; stop: halt the preview; restart: stop then start (use after a crash or port change); status: inspect current preview server state, URL/port, crash logs, and runtime error verdict.' }
     },
     required: ['action'],
     additionalProperties: false
@@ -517,7 +517,7 @@ export function describeTools(maxRounds: number, external: ExternalToolDefinitio
     'COMMANDS: only run_command executes a shell command, inside the opened folder. Commands are parsed and risk-tiered: reads, builds/tests and installs (npm install included) run automatically and stay visible in the terminal dock; file-modifying and network commands open a native approval dialog; dangerous commands always open it with a red warning and are never pre-approved. A confirm field or model instruction is never authorization. Compound commands (npm i && npm test, pipes, redirects) are allowed — the worst segment decides the tier. It returns the real exit code and output, so never claim a command ran, passed or killed anything unless run_command showed you the result.',
     'JOBS: a command still running after 30 seconds of foreground waiting becomes a background job: run_command returns exit null, a job id (J1, J2, ...) and the output tail. Dev servers background immediately and report readiness (a URL or log line). Use job_control to list jobs, check one job\'s status, read_output (last 200KB buffered, optional chars tail size or character range) or stop a job\'s whole process tree. A backgrounded command has NOT finished — read its output and exit status before drawing conclusions. A dev server (or any job marked ready) logs once and then serves QUIETLY: no new output is health, not a hang — never stop or restart a running server just because its logs went silent; only stop it if it exited or its port refuses connections. A silent non-server job is killed after 120s; every job has a 30-minute ceiling.',
     'PORT CONFLICTS: before killing anything over a port, run job_control with action=list — if the holder is one of your own jobs, stop it with job_control (action=stop), never taskkill. If a server restarts and reports "port already in use" again, that is a fixed-port conflict inside the project\'s own code/config, and killing can never fix it: stop killing ports, read the file that binds the port, and either change it to a free port or ask the user. Never kill a foreign process that was already serving the user before you started.',
-    'PREVIEW: the embedded preview pane is controlled by preview_control (start/stop/restart), separate from run_command/job_control which manage raw processes. The pane is how the user sees a running app: prefer preview_control start to serve it, and do not ALSO start the same dev server with run_command — two servers fight over one port and both end up broken. If the preview is white, stale, or points at a dead port after a server restart, use preview_control restart so the pane re-points at the live URL — do not leave the user staring at a blank pane. start may surface a one-time install/run consent dialog; if it returns approval-required, ask the user to approve rather than retrying blindly.',
+    'PREVIEW: the embedded preview pane is controlled by preview_control (start/stop/restart/status), separate from run_command/job_control which manage raw processes. The pane is how the user sees a running app: use preview_control status to check current URL/port/logs/runtime errors, or preview_control start to serve it, and do not ALSO start the same dev server with run_command — two servers fight over one port and both end up broken. If the preview is white, stale, or points at a dead port after a server restart, use preview_control restart so the pane re-points at the live URL — do not leave the user staring at a blank pane. start may surface a one-time install/run consent dialog; if it returns approval-required, ask the user to approve rather than retrying blindly.',
     'TERMINAL: terminal_state reads the interactive shell (cwd, running command, last exit, silence, whether it waits for input). It never types. terminal_answer is the only way to type, and the user approves the exact bytes in a dialog first — say so, and never claim an answer was sent when the tool refused.',
     'DEBUGGER: debugger_state reads a session paused in the debugger — the stopped frame and bounded locals. It refuses when nothing is paused, and it never resumes, steps or edits; those stay the user\'s controls. Never claim a variable value you did not see in its result.',
     'When you have enough to answer, write the answer as normal text (with any path= edit blocks) and emit no tool block.',
@@ -617,6 +617,171 @@ function occurrenceLines(content: string, snippet: string, cap = 5): number[] {
     index = content.indexOf(snippet, index + 1);
   }
   return lines;
+}
+
+export type UniqueMatchMode = 'exact' | 'crlf-normalized' | 'trimmed-lines' | 'indent-normalized';
+
+export type UniqueMatchResult =
+  | { status: 'found'; start: number; end: number; mode: UniqueMatchMode }
+  | { status: 'ambiguous'; lines: number[] }
+  | { status: 'not_found' };
+
+interface DiskLineSpan {
+  start: number;
+  endWithoutNewline: number;
+  endWithNewline: number;
+  hasNewline: boolean;
+  rightTrimmed: string;
+  trimmed: string;
+}
+
+function splitDiskLineSpans(content: string): DiskLineSpan[] {
+  const spans: DiskLineSpan[] = [];
+  let lineStart = 0;
+  for (let i = 0; i <= content.length; i += 1) {
+    if (i === content.length || content[i] === '\n') {
+      const hasNewline = i < content.length && content[i] === '\n';
+      const hasCr = i > lineStart && content[i - 1] === '\r';
+      const endWithoutNewline = hasCr ? i - 1 : i;
+      const endWithNewline = hasNewline ? i + 1 : i;
+      const rawLine = content.slice(lineStart, endWithoutNewline);
+      spans.push({
+        start: lineStart,
+        endWithoutNewline,
+        endWithNewline,
+        hasNewline,
+        rightTrimmed: rawLine.replace(/[ \t]+$/, ''),
+        trimmed: rawLine.trim()
+      });
+      lineStart = i + 1;
+    }
+  }
+  return spans;
+}
+
+function matchLineWindow(
+  spans: DiskLineSpan[],
+  targetLines: string[],
+  includesTrailingNewline: boolean,
+  compare: (span: DiskLineSpan, target: string) => boolean
+): { status: 'found'; start: number; end: number } | { status: 'ambiguous'; lines: number[] } | null {
+  const count = targetLines.length;
+  if (count === 0 || spans.length < count) return null;
+  const matches: Array<{ start: number; end: number; line: number }> = [];
+  for (let i = 0; i <= spans.length - count; i += 1) {
+    let ok = true;
+    for (let j = 0; j < count; j += 1) {
+      if (!compare(spans[i + j], targetLines[j])) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) continue;
+    const last = spans[i + count - 1];
+    if (includesTrailingNewline && !last.hasNewline) continue;
+    matches.push({
+      start: spans[i].start,
+      end: includesTrailingNewline ? last.endWithNewline : last.endWithoutNewline,
+      line: i + 1
+    });
+    if (matches.length >= 5) break;
+  }
+  if (matches.length === 0) return null;
+  if (matches.length > 1) return { status: 'ambiguous', lines: matches.map((m) => m.line) };
+  return { status: 'found', start: matches[0].start, end: matches[0].end };
+}
+
+/**
+ * Multi-pass unique snippet locator for edit_file and apply_patch.
+ * Never alters ambiguous edits: multiple matches in any pass refuse cleanly.
+ */
+export function locateUniqueMatch(content: string, snippet: string): UniqueMatchResult {
+  if (!snippet) return { status: 'not_found' };
+
+  // Pass 1: exact byte match
+  const exactFirst = content.indexOf(snippet);
+  if (exactFirst >= 0) {
+    if (content.indexOf(snippet, exactFirst + 1) >= 0) {
+      return { status: 'ambiguous', lines: occurrenceLines(content, snippet) };
+    }
+    return { status: 'found', start: exactFirst, end: exactFirst + snippet.length, mode: 'exact' };
+  }
+
+  // Pass 2: CRLF <-> LF normalization with exact original offset mapping
+  const normChars: string[] = [];
+  const origMap: number[] = [];
+  for (let i = 0; i < content.length; i += 1) {
+    if (content[i] === '\r' && content[i + 1] === '\n') {
+      normChars.push('\n');
+      origMap.push(i);
+      i += 1;
+    } else {
+      normChars.push(content[i]);
+      origMap.push(i);
+    }
+  }
+  origMap.push(content.length);
+  const normContent = normChars.join('');
+  const normSnippet = snippet.replace(/\r\n/g, '\n');
+  const crlfFirst = normContent.indexOf(normSnippet);
+  if (crlfFirst >= 0) {
+    const second = normContent.indexOf(normSnippet, crlfFirst + 1);
+    if (second >= 0) {
+      const lines: number[] = [];
+      let pos = crlfFirst;
+      while (pos >= 0 && lines.length < 5) {
+        lines.push(content.slice(0, origMap[pos]).split('\n').length);
+        pos = normContent.indexOf(normSnippet, pos + 1);
+      }
+      return { status: 'ambiguous', lines };
+    }
+    return {
+      status: 'found',
+      start: origMap[crlfFirst],
+      end: origMap[crlfFirst + normSnippet.length],
+      mode: 'crlf-normalized'
+    };
+  }
+
+  // Line-based passes require non-empty content lines
+  const includesTrailingNewline = normSnippet.endsWith('\n');
+  const rawLines = includesTrailingNewline ? normSnippet.slice(0, -1).split('\n') : normSnippet.split('\n');
+  if (rawLines.some((line) => line.trim().length > 0)) {
+    const spans = splitDiskLineSpans(content);
+
+    // Pass 3: trailing-whitespace normalized lines (exact leading indentation preserved)
+    const rightTrimTargets = rawLines.map((line) => line.replace(/[ \t]+$/, ''));
+    const trimmedMatch = matchLineWindow(
+      spans,
+      rightTrimTargets,
+      includesTrailingNewline,
+      (span, target) => span.rightTrimmed === target
+    );
+    if (trimmedMatch) {
+      return trimmedMatch.status === 'found'
+        ? { ...trimmedMatch, mode: 'trimmed-lines' }
+        : trimmedMatch;
+    }
+
+    // Pass 4: indentation-insensitive line match (ONLY for >= 2 non-empty lines and strictly unique)
+    const nonEmptyCount = rawLines.filter((line) => line.trim().length > 0).length;
+    if (nonEmptyCount >= 2) {
+      const fullTrimTargets = rawLines.map((line) => line.trim());
+      const indentMatch = matchLineWindow(
+        spans,
+        fullTrimTargets,
+        includesTrailingNewline,
+        (span, target) => span.trimmed === target
+      );
+      if (indentMatch) {
+        return indentMatch.status === 'found'
+          ? { ...indentMatch, mode: 'indent-normalized' }
+          : indentMatch;
+      }
+    }
+  }
+
+  return { status: 'not_found' };
 }
 
 const ENV_SECRET_KEY = /(KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASS|PRIVATE|CREDENTIAL|SIGNATURE|DATABASE_URL|_DSN|AUTH)/i;
@@ -967,6 +1132,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
 
         let content: string;
         let backupNote = '';
+        let matchModeNote = '';
         if (call.name === 'write_file') {
           if (typeof call.args.content !== 'string') return refusal('write_file needs content: the full file text as a string.');
           content = call.args.content;
@@ -998,20 +1164,23 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           if (!current) {
             return { ok: false, content: '', error: `${path} does not exist on disk, so there is nothing to edit. Use write_file to create it.` };
           }
-          const first = current.content.indexOf(original);
-          if (first < 0) {
+          const matched = locateUniqueMatch(current.content, original);
+          if (matched.status === 'not_found') {
             const region = closestRegion(current.content, original);
             const hint = region ? `\nClosest region on disk (around line ${region.line}):\n${region.excerpt}` : '';
             return { ok: false, content: '', error: `The original snippet was not found in ${path}. Read the file again and copy its exact current text — including indentation and line breaks — into original.${hint}` };
           }
-          if (current.content.indexOf(original, first + 1) >= 0) {
-            const lines = occurrenceLines(current.content, original);
-            return { ok: false, content: '', error: `The original snippet appears more than once in ${path} (lines ${lines.join(', ')}). Include more surrounding lines so it matches exactly one place.` };
+          if (matched.status === 'ambiguous') {
+            return { ok: false, content: '', error: `The original snippet appears more than once in ${path} (lines ${matched.lines.join(', ')}). Include more surrounding lines so it matches exactly one place.` };
           }
-          if (original === updated) {
+          const matchedSlice = current.content.slice(matched.start, matched.end);
+          if (matchedSlice === updated) {
             return { ok: true, content: `${path}: original and updated are identical — nothing to change.` };
           }
-          content = current.content.slice(0, first) + updated + current.content.slice(first + original.length);
+          if (matched.mode !== 'exact') {
+            matchModeNote = ` (matched after ${matched.mode} normalization)`;
+          }
+          content = current.content.slice(0, matched.start) + updated + current.content.slice(matched.end);
         }
 
         // The same pre-apply gate the review path uses: nothing reaches disk
@@ -1035,7 +1204,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           return { ok: false, content: '', error: `${path} was not saved: ${message}` };
         }
         const verb = call.name === 'edit_file' ? 'Edited' : current ? 'Rewrote' : 'Created';
-        let detail = `${verb} ${path} — saved to disk and verified (${content.length} chars).${autoReadNote}${backupNote}`;
+        let detail = `${verb} ${path} — saved to disk and verified (${content.length} chars).${matchModeNote}${autoReadNote}${backupNote}`;
         // An edit answers with the file's fresh compiler problems, so a broken
         // change is visible in the same observation instead of a round later.
         if (call.name === 'edit_file' && typeof desktop.diagnostics === 'function') {
@@ -1203,17 +1372,16 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           if (base === null) {
             return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): the file does not exist on disk. ${atomicNote} Use old: "" to create it.` };
           }
-          const first = base.indexOf(hunk.old);
-          if (first < 0) {
+          const matched = locateUniqueMatch(base, hunk.old);
+          if (matched.status === 'not_found') {
             const region = closestRegion(base, hunk.old);
             const hint = region ? `\nClosest region on disk (around line ${region.line}):\n${region.excerpt}` : '';
             return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): old text not found. ${atomicNote}\nFailing old text:\n${hunk.old.slice(0, 800)}${hint}` };
           }
-          if (base.indexOf(hunk.old, first + 1) >= 0) {
-            const lines = occurrenceLines(base, hunk.old);
-            return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): old text appears more than once (lines ${lines.join(', ')}). ${atomicNote} Include more surrounding lines so it matches exactly one place.` };
+          if (matched.status === 'ambiguous') {
+            return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): old text appears more than once (lines ${matched.lines.join(', ')}). ${atomicNote} Include more surrounding lines so it matches exactly one place.` };
           }
-          working.set(hunk.path, base.slice(0, first) + hunk.next + base.slice(first + hunk.old.length));
+          working.set(hunk.path, base.slice(0, matched.start) + hunk.next + base.slice(matched.end));
         }
 
         const writes = [...working.entries()]
@@ -1531,10 +1699,39 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
       }
       case 'preview_control': {
         const action = asString(call.args.action);
-        if (action !== 'start' && action !== 'stop' && action !== 'restart') {
-          return refusal('preview_control needs action "start", "stop" or "restart".');
+        if (action !== 'start' && action !== 'stop' && action !== 'restart' && action !== 'status') {
+          return refusal('preview_control needs action "start", "stop", "restart" or "status".');
         }
         if (!workspaceId) return refusal('preview_control needs an opened folder workspace.');
+        if (action === 'status') {
+          const runtimeStatus = typeof desktop.getPreviewStatus === 'function'
+            ? await desktop.getPreviewStatus(workspaceId).catch(() => null)
+            : null;
+          const runtimeVerdict = typeof desktop.assertPreview === 'function'
+            ? await desktop.assertPreview(workspaceId).catch(() => null)
+            : null;
+          if (!runtimeStatus && !runtimeVerdict) {
+            return { ok: true, content: 'Preview status channel is unavailable in this build. Use preview_control start to run or preview_inspect to check the pane.' };
+          }
+          const lines: string[] = [];
+          if (runtimeStatus) {
+            lines.push(`status: ${runtimeStatus.status}`);
+            if (runtimeStatus.url) lines.push(`url: ${runtimeStatus.url}`);
+            if (typeof runtimeStatus.port === 'number') lines.push(`port: ${runtimeStatus.port}`);
+            if (runtimeStatus.script) lines.push(`script: ${runtimeStatus.script}`);
+            if (typeof runtimeStatus.hmr === 'boolean') lines.push(`hmr: ${runtimeStatus.hmr ? 'on' : 'off'}`);
+            if (runtimeStatus.backendUrl) lines.push(`backend: ${runtimeStatus.backendUrl}${typeof runtimeStatus.backendPort === 'number' ? ` (port ${runtimeStatus.backendPort})` : ''}`);
+            if (runtimeStatus.lastError) lines.push(`lastError: ${runtimeStatus.lastError}`);
+            if (runtimeStatus.recentOutput && runtimeStatus.recentOutput.trim()) {
+              const tail = runtimeStatus.recentOutput.trim().slice(-2_000);
+              lines.push(`recent output:\n${tail}`);
+            }
+          }
+          if (runtimeVerdict) {
+            lines.push(`runtime verdict: ${runtimeVerdict.ok ? 'healthy (no console/runtime errors)' : `${runtimeVerdict.errorCount} error(s)${runtimeVerdict.detail ? ` — ${runtimeVerdict.detail}` : ''}`}`);
+          }
+          return { ok: true, content: clip(lines.join('\n')) };
+        }
         if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
           window.dispatchEvent(new CustomEvent(PREVIEW_AGENT_CONTROL_EVENT, { detail: { action } }));
         }

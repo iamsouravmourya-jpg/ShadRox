@@ -3,8 +3,8 @@ import test from 'node:test';
 import type { ChatTurn } from '../ai';
 import { serializeResults } from './toolProtocol';
 import {
-  compactToolObservations, summarizeObservation, isToolObservation, transcriptChars,
-  LOOP_CONTEXT_BUDGET_CHARS, COMPACT_TRIGGER_SHARE, KEEP_RECENT_OBSERVATIONS
+  compactToolObservations, computeLoopContextBudgetChars, summarizeObservation, isToolObservation, transcriptChars,
+  LOOP_CONTEXT_BUDGET_CHARS, MIN_LOOP_CONTEXT_BUDGET_CHARS, COMPACT_TRIGGER_SHARE, KEEP_RECENT_OBSERVATIONS
 } from './loopContext';
 
 const observation = (text: string, name = 'read_file'): ChatTurn => ({
@@ -73,4 +73,11 @@ test('isToolObservation only flags user turns carrying a results fence', () => {
   assert.equal(isToolObservation(observation('x')), true);
   assert.equal(isToolObservation({ role: 'user', content: 'a plain question' }), false);
   assert.equal(isToolObservation({ role: 'assistant', content: '```shadrox:results\n[]\n```' }), false);
+});
+
+test('computeLoopContextBudgetChars scales safely with small and large context windows', () => {
+  const small = computeLoopContextBudgetChars(8_192, 2_048, 8_000);
+  assert.ok(small >= MIN_LOOP_CONTEXT_BUDGET_CHARS && small < LOOP_CONTEXT_BUDGET_CHARS);
+  const large = computeLoopContextBudgetChars(128_000, 8_192, 16_000);
+  assert.equal(large, LOOP_CONTEXT_BUDGET_CHARS);
 });

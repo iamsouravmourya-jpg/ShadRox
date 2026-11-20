@@ -190,9 +190,11 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
         if (typeof functionCall?.name === 'string' && functionCall.name) {
           const args = functionCall.args && typeof functionCall.args === 'object' && !Array.isArray(functionCall.args)
             ? JSON.stringify(functionCall.args)
-            : '{}';
+            : typeof functionCall.args === 'string' && functionCall.args.trim()
+              ? functionCall.args
+              : '{}';
           toolCalls.push({
-            id: `gemini_${toolCalls.length}`,
+            id: typeof functionCall.id === 'string' && functionCall.id ? functionCall.id : `gemini_${toolCalls.length}`,
             name: functionCall.name,
             arguments: args
           });

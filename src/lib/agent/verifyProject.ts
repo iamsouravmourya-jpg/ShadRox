@@ -115,13 +115,35 @@ export function parseVerifyOutput(text: string): { errors: VerifyError[]; failed
   for (const match of text.matchAll(/^(.+?)\((\d+),(\d+)\):\s*error\s+(TS\d+:.*)$/gm)) {
     pushError(match[1], Number(match[2]), match[4]);
   }
-  // tsc pretty / esbuild: src/a.ts:12:5 - error TS2322: ...
+  // tsc pretty / esbuild / vite: src/a.ts:12:5 - error TS2322: ...
   for (const match of text.matchAll(/^(.+?):(\d+):(\d+)\s*-\s*error\s+(.*)$/gm)) {
-    pushError(match[1], Number(match[2]), match[3]);
+    pushError(match[1], Number(match[2]), match[4]);
+  }
+  // Next.js build output: "./src/app/page.tsx:12:5\nType error: ..."
+  const rawLines = text.split(/\r?\n/);
+  for (let i = 0; i < rawLines.length; i += 1) {
+    const nextLoc = rawLines[i].match(/^\s*(\.?\/?[^\s:]+\.[cm]?[jt]sx?):(\d+):(\d+)\s*$/);
+    if (nextLoc && rawLines[i + 1]) {
+      const nextMsg = rawLines[i + 1].trim();
+      if (/^(?:Type error|Syntax error|Error):/i.test(nextMsg)) {
+        pushError(nextLoc[1], Number(nextLoc[2]), nextMsg);
+      }
+    }
+  }
+  // Vite / Rollup / esbuild location lines: "file: /path/src/App.tsx:12:5" or "[vite] ... error ..."
+  for (const match of text.matchAll(/^(?:file:\s*)([^\s:]+\.(?:[cm]?[jt]sx?|css|scss|vue|svelte)):(\d+):(\d+)/gmi)) {
+    pushError(match[1], Number(match[2]), 'build/syntax error');
+  }
+  // Webpack / Next / Vite module resolution failures
+  for (const match of text.matchAll(/Module not found:\s*(?:Error:\s*)?Can't resolve '([^']+)' in '([^']+)'/g)) {
+    pushError(match[2], 1, `Cannot resolve module '${match[1]}'`);
+  }
+  for (const match of text.matchAll(/Error:\s*Cannot find module '([^']+)'/g)) {
+    pushError('(runtime)', 1, `Cannot find module '${match[1]}'`);
   }
   // eslint stylish: a file header line, then "  12:5  error  message  rule".
   let currentFile = '';
-  for (const line of text.split(/\r?\n/)) {
+  for (const line of rawLines) {
     const header = line.match(/^([A-Za-z]:[\\/][^\s].*|\/[^\s].*|[^\s][^\s]*\.[cm]?[jt]sx?)\s*$/);
     if (header) {
       currentFile = header[1];
