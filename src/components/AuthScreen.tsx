@@ -112,7 +112,7 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
                 htmlFor="auth-terms"
                 className="mt-3 flex w-full cursor-pointer select-none items-start gap-2.5 rounded-lg px-0.5 py-1"
               >
-                <span className="mt-px flex h-4 w-4 shrink-0 items-center justify-center">
+                <span className="pointer-events-none mt-px flex h-4 w-4 shrink-0 items-center justify-center">
                   <input
                     id="auth-terms"
                     ref={termsRef}
