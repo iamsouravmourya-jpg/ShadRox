@@ -158,12 +158,6 @@ export default function BetaTermsPage() {
           <Reveal delay={120}>
             <div className="mt-16 border-t border-[var(--line)] pt-8">
               <p className="text-sm leading-6 text-[var(--mut)]">
-                Questions about these terms? Contact us at{' '}
-                <a href="mailto:hello@shadrox.com" className="text-[var(--ac)] underline">
-                  hello@shadrox.com
-                </a>
-              </p>
-              <p className="mt-4 text-sm leading-6 text-[var(--mut)]">
                 See our{' '}
                 <Link href="/privacy" className="text-[var(--ac)] underline">
                   Privacy Policy
