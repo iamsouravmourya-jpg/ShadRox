@@ -208,6 +208,31 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     parameters: 'none'
   },
   {
+    name: 'debug_set_breakpoint',
+    description: 'Set or update breakpoints in a file.',
+    parameters: 'path: string (required, workspace-relative), lines: number[] (required, 1-based line numbers)'
+  },
+  {
+    name: 'debug_get_call_stack',
+    description: 'Get the current call stack frames when the debugger is paused.',
+    parameters: 'none'
+  },
+  {
+    name: 'debug_inspect_variables',
+    description: 'Inspect variables in scopes for a stack frame.',
+    parameters: 'frameId?: number (optional stack frame id)'
+  },
+  {
+    name: 'debug_evaluate_expression',
+    description: 'Evaluate an expression in the current paused stack frame context.',
+    parameters: 'expression: string (required), frameId?: number (optional)'
+  },
+  {
+    name: 'debug_step_execution',
+    description: 'Step execution control in the debugger.',
+    parameters: 'action: "continue" | "stepOver" | "stepInto" | "stepOut" | "pause" (required)'
+  },
+  {
     name: 'outline',
     description: 'Symbols defined in a file, with line numbers.',
     parameters: 'path: string (required)'
@@ -325,6 +350,40 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
     additionalProperties: false
   },
   debugger_state: { type: 'object', properties: {}, additionalProperties: false },
+  debug_set_breakpoint: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Workspace-relative path.' },
+      lines: { type: 'array', items: { type: 'integer' }, description: 'Line numbers.' }
+    },
+    required: ['path', 'lines'],
+    additionalProperties: false
+  },
+  debug_get_call_stack: { type: 'object', properties: {}, additionalProperties: false },
+  debug_inspect_variables: {
+    type: 'object',
+    properties: {
+      frameId: { type: 'integer', description: 'Stack frame ID.' }
+    },
+    additionalProperties: false
+  },
+  debug_evaluate_expression: {
+    type: 'object',
+    properties: {
+      expression: { type: 'string', description: 'Expression to evaluate.' },
+      frameId: { type: 'integer', description: 'Stack frame ID.' }
+    },
+    required: ['expression'],
+    additionalProperties: false
+  },
+  debug_step_execution: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['continue', 'stepOver', 'stepInto', 'stepOut', 'pause'], description: 'Step action.' }
+    },
+    required: ['action'],
+    additionalProperties: false
+  },
   write_file: {
     type: 'object',
     properties: {
@@ -1857,6 +1916,65 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           }
         }
         return { ok: true, content: clip(lines.join('\n')) };
+      }
+      case 'debug_set_breakpoint': {
+        const debug = desktop.debug;
+        if (!debug) return refusal('The debugger is unavailable in this build.');
+        const filePath = asString(call.args.path);
+        const lines = Array.isArray(call.args.lines) ? call.args.lines.map(Number) : [];
+        if (!filePath) return refusal('debug_set_breakpoint needs path.');
+        const result = await debug.setBreakpoints(workspaceId, filePath, lines);
+        return { ok: true, content: clip(JSON.stringify(result, null, 2)) };
+      }
+      case 'debug_get_call_stack': {
+        const debug = desktop.debug;
+        if (!debug) return refusal('The debugger is unavailable in this build.');
+        const state = await debug.state(workspaceId);
+        if (state.status !== 'stopped') return refusal('The debugger is not paused.');
+        const frames = await debug.stack(workspaceId);
+        return { ok: true, content: clip(JSON.stringify(frames, null, 2)) };
+      }
+      case 'debug_inspect_variables': {
+        const debug = desktop.debug;
+        if (!debug) return refusal('The debugger is unavailable in this build.');
+        const state = await debug.state(workspaceId);
+        if (state.status !== 'stopped') return refusal('The debugger is not paused.');
+        const frames = await debug.stack(workspaceId);
+        const frameId = typeof call.args.frameId === 'number' ? call.args.frameId : frames[0]?.id;
+        if (!frameId) return refusal('No stack frame available.');
+        const scopes = await debug.scopes(workspaceId, frameId);
+        const varsByScope = [];
+        for (const scope of scopes) {
+          const variables = await debug.variables(workspaceId, scope.variablesReference);
+          varsByScope.push({ scope: scope.name, variables });
+        }
+        return { ok: true, content: clip(JSON.stringify(varsByScope, null, 2)) };
+      }
+      case 'debug_evaluate_expression': {
+        const debug = desktop.debug;
+        if (!debug) return refusal('The debugger is unavailable in this build.');
+        const expr = asString(call.args.expression);
+        if (!expr) return refusal('debug_evaluate_expression needs expression.');
+        const state = await debug.state(workspaceId);
+        if (state.status !== 'stopped') return refusal('The debugger is not paused.');
+        const frames = await debug.stack(workspaceId);
+        const frameId = typeof call.args.frameId === 'number' ? call.args.frameId : frames[0]?.id;
+        if (!frameId) return refusal('No stack frame available.');
+        const res = await debug.evaluate(workspaceId, frameId, expr);
+        return { ok: true, content: clip(JSON.stringify(res, null, 2)) };
+      }
+      case 'debug_step_execution': {
+        const debug = desktop.debug;
+        if (!debug) return refusal('The debugger is unavailable in this build.');
+        const action = asString(call.args.action);
+        let nextState;
+        if (action === 'continue') nextState = await debug.continue(workspaceId);
+        else if (action === 'stepOver') nextState = await debug.next(workspaceId);
+        else if (action === 'stepInto') nextState = await debug.stepIn(workspaceId);
+        else if (action === 'stepOut') nextState = await debug.stepOut(workspaceId);
+        else if (action === 'pause') nextState = await debug.pause(workspaceId);
+        else return refusal(`Unknown step action: ${action}`);
+        return { ok: true, content: clip(JSON.stringify(nextState, null, 2)) };
       }
       case 'outline': {
         const path = asString(call.args.path);

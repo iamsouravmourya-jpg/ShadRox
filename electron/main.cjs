@@ -75,6 +75,8 @@ const { createMachineDelta, LIMITS: MACHINE_LIMITS } = require('./machine-delta.
 const { createMachineGit } = require('./machine-git.cjs');
 const { createMachineReceipt } = require('./machine-receipt.cjs');
 const { createDebugHost } = require('./debug-host.cjs');
+const { scanJunk } = require('./junk-scanner.cjs');
+const activeJunkScans = new Map();
 
 const PREVIEW_SCHEME = 'shadrox-preview';
 const APP_SCHEME = 'shadrox-app';
@@ -3544,6 +3546,55 @@ function registerIntegrationHandlers() {
     assertTrustedRenderer(event);
     automationWebhookWorkspaceId = null;
     if (automationWebhook) await automationWebhook.stop();
+  });
+
+  ipcMain.handle('workspace:scan-junk', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    if (!workspace || typeof workspace.root !== 'string') {
+      throw new Error('Unknown workspace for junk scan.');
+    }
+    const existingCancel = activeJunkScans.get(workspaceId);
+    if (existingCancel) {
+      try { existingCancel(); } catch {}
+      activeJunkScans.delete(workspaceId);
+    }
+    const result = await scanJunk(workspace.root, (progress) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('workspace:junk-scan-progress', { workspaceId, ...progress });
+      }
+    });
+    if (result && typeof result.cancel === 'function') {
+      activeJunkScans.set(workspaceId, result.cancel);
+    }
+    return result;
+  });
+
+  ipcMain.handle('workspace:cancel-junk-scan', async (event, workspaceId) => {
+    assertTrustedRenderer(event);
+    const cancel = activeJunkScans.get(workspaceId);
+    if (cancel) {
+      try { cancel(); } catch {}
+      activeJunkScans.delete(workspaceId);
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle('workspace:trash-item', async (event, workspaceId, fullPath) => {
+    assertTrustedRenderer(event);
+    const workspace = workspaceAccess.getWorkspace(workspaceId);
+    if (!workspace || typeof workspace.root !== 'string') {
+      throw new Error('Unknown workspace.');
+    }
+    const absolute = path.isAbsolute(fullPath) ? path.resolve(fullPath) : path.resolve(workspace.root, fullPath);
+    if (!isPathInsideDirectory(workspace.root, absolute)) {
+      throw new Error('Path traversal violation: target is outside workspace root.');
+    }
+    if (!fs.existsSync(absolute)) {
+      throw new Error('File or folder does not exist.');
+    }
+    await shell.trashItem(absolute);
+    return { path: absolute, ok: true };
   });
 }
 

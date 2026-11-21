@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ArrowLeft, Bug, FolderOpen, FolderTree, GitBranch, History, Loader2, LogOut, MonitorPlay, Search, Settings, Terminal, UserRound, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Bug, FolderOpen, FolderTree, GitBranch, History, Loader2, LogOut, MonitorPlay, Search, Settings, Terminal, Trash2, UserRound, X } from 'lucide-react';
 import { ShadRoxLogo } from './components/Logo';
 import { Stage2Hub } from './components/Stage2Hub';
 import { ThemeToggle } from './components/ThemeToggle';
@@ -9,6 +9,7 @@ import { ChatPanel, type PastedText, type PinnedSymbol } from './components/Chat
 import { FeedbackPanel } from './components/FeedbackPanel';
 import { QuickOpen } from './components/QuickOpen';
 import { ScmPanel } from './components/ScmPanel';
+import { JunkScannerPane } from './components/JunkScannerPane';
 import type { Command } from './lib/commands';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { useWorkspace } from './hooks/useWorkspace';
@@ -560,6 +561,7 @@ export default function App() {
   const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false);
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
   const [isScmPanelOpen, setIsScmPanelOpen] = useState(false);
+  const [isJunkScannerOpen, setIsJunkScannerOpen] = useState(false);
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [diskToast, setDiskToast] = useState<string | null>(null);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
@@ -6141,6 +6143,14 @@ export default function App() {
     />
   );
 
+  const junkScannerPanel = desktop && nativeWorkspaceId ? (
+    <JunkScannerPane
+      desktop={desktop}
+      workspaceId={nativeWorkspaceId}
+      onClose={() => setIsJunkScannerOpen(false)}
+    />
+  ) : null;
+
   const previewCapability = useMemo(
     () => previewCapabilityMessage(workspace.activeFile ?? undefined),
     [workspace.activeFile]
@@ -6467,6 +6477,25 @@ export default function App() {
             }`}
           >
             <Search className="h-[18px] w-[18px]" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setIsPreviewFullscreen(false);
+              setIsPreviewOpen(false);
+              setIsSearchPanelOpen(false);
+              setIsScmPanelOpen(false);
+              setIsJunkScannerOpen((open) => !open);
+            }}
+            aria-pressed={isJunkScannerOpen}
+            title={isJunkScannerOpen ? 'Close Junk Scanner' : 'Junk & Dead-Code Scanner'}
+            className={`flex h-9 w-9 items-center justify-center rounded-xl transition-colors cursor-pointer ${
+              isJunkScannerOpen
+                ? 'bg-accent-soft text-accent'
+                : 'text-ink-4 hover:bg-overlay-2 hover:text-ink'
+            }`}
+          >
+            <Trash2 className="h-[18px] w-[18px]" />
           </button>
           <button
             type="button"
@@ -6809,7 +6838,7 @@ export default function App() {
                               }
                             : undefined}
                           sidebarPanel={groupIndex === 0
-                            ? isScmPanelOpen ? scmPanel : isSearchPanelOpen ? searchPanel : undefined
+                            ? isScmPanelOpen ? scmPanel : isSearchPanelOpen ? searchPanel : isJunkScannerOpen ? junkScannerPanel : undefined
                             : undefined}
                         />
                       );
@@ -6826,6 +6855,7 @@ export default function App() {
                 workspaceId={nativeWorkspaceId}
                 controller={debug}
                 onOpenFrame={(file, line, column) => void navigateToPath(file, line, column)}
+                onAskAiToDebug={(summary) => setInput(summary)}
                 onClose={() => setIsDebugPanelOpen(false)}
               />
             </div>

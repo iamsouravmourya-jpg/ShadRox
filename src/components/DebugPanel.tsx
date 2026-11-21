@@ -4,6 +4,7 @@ import {
   ArrowDown,
   ArrowRight,
   ArrowUp,
+  Bug,
   ChevronDown,
   ChevronRight,
   Loader2,
@@ -22,6 +23,7 @@ interface DebugPanelProps {
   controller: DebugController;
   /** Opens a stopped frame through the app's one navigation path. */
   onOpenFrame: (file: string, line?: number, column?: number) => void;
+  onAskAiToDebug?: (summary: string) => void;
   onClose: () => void;
 }
 
@@ -145,7 +147,7 @@ function VariablesBranch({
  * command palette and editor chip use. When no configuration exists the panel
  * says exactly how to add one instead of offering a dead Start button.
  */
-export function DebugPanel({ desktop, workspaceId, controller, onOpenFrame, onClose }: DebugPanelProps) {
+export function DebugPanel({ desktop, workspaceId, controller, onOpenFrame, onAskAiToDebug, onClose }: DebugPanelProps) {
   const {
     available,
     config,
@@ -438,6 +440,22 @@ export function DebugPanel({ desktop, workspaceId, controller, onOpenFrame, onCl
                   {output}
                 </pre>
               </>
+            )}
+            {isStopped && onAskAiToDebug && (
+              <div className="border-t border-line p-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const topFrame = frames[0];
+                    const summary = `Please help debug this runtime crash / breakpoint pause:\nStop Reason: ${state.stopReason || 'breakpoint'}\nActive Frame: ${topFrame ? `${topFrame.file}:${topFrame.line} (${topFrame.name})` : 'unknown'}\nMessage: ${state.message || 'none'}\nOutput tail:\n${output.slice(-1000)}`;
+                    onAskAiToDebug(summary);
+                  }}
+                  className="w-full flex items-center justify-center gap-1.5 rounded-md bg-accent/15 px-3 py-1.5 text-xs font-semibold text-accent transition-colors hover:bg-accent/25 cursor-pointer"
+                >
+                  <Bug className="h-3.5 w-3.5" />
+                  Ask ShadRox AI to Debug
+                </button>
+              </div>
             )}
           </div>
         </div>

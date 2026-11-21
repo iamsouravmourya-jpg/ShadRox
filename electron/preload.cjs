@@ -95,6 +95,10 @@ const shadroxDesktop = Object.freeze({
   onAutomationTrigger: (listener) => subscribe('automation:trigger', listener),
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   onUpdaterStatus: (listener) => subscribe('updater:status', listener),
+  scanJunk: (workspaceId) => ipcRenderer.invoke('workspace:scan-junk', workspaceId),
+  cancelJunkScan: (workspaceId) => ipcRenderer.invoke('workspace:cancel-junk-scan', workspaceId),
+  onJunkScanProgress: (listener) => subscribe('workspace:junk-scan-progress', listener),
+  trashItem: (workspaceId, fullPath) => ipcRenderer.invoke('workspace:trash-item', workspaceId, fullPath),
   // The signed proof chain. Receipts recorded here are appended to the
   // main-process ledger before the call resolves, and `receipts` replays that
   // ledger after a restart.
