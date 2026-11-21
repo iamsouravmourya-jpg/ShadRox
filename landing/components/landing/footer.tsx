@@ -13,6 +13,7 @@ const cols = [
       { label: 'How it works',    href: '/how-it-works' },
       { label: 'Preview support', href: '/preview-support' },
       { label: 'Privacy',         href: '/privacy' },
+      { label: 'Terms of Service', href: '/beta-terms' },
     ],
   },
   {
