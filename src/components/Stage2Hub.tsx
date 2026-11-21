@@ -134,14 +134,10 @@ export function Stage2Hub({
       <header className="titlebar window-controls-inset relative shrink-0 z-10 flex h-12 items-center justify-between px-6 border-b border-line">
         <ShadRoxWordmark />
 
-        <div className="flex items-center gap-2">
-          <div className="hidden md:flex items-center gap-2 rounded-full px-3 py-1.5 text-[11px] text-ink-3 border border-line bg-overlay backdrop-blur-xl">
-            <span
-              className="inline-block w-1.5 h-1.5 rounded-full bg-accent"
-              style={{ boxShadow: '0 0 6px var(--accent)' }}
-            />
-            Local — runs on this device
-          </div>
+        <div className="flex items-center gap-3">
+          <span className="hidden md:inline text-[11px] font-medium text-ink-4">
+            Runs locally on this device
+          </span>
 
           <ThemeToggle />
 
@@ -180,20 +176,10 @@ export function Stage2Hub({
             content overflows, keeping the heading reachable by scroll. */}
         <div className="m-auto w-full max-w-xl flex flex-col items-center text-center py-10">
 
-          {/* Pill badge */}
-          <div className="mb-6 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.16em] border border-accent-line bg-accent-soft text-accent">
-            <span className="relative flex size-1.5">
-              <span
-                className="absolute inline-flex size-full rounded-full opacity-75 bg-accent"
-                style={{ animation: 'app-ping 1.4s cubic-bezier(0,0,0.2,1) infinite' }}
-              />
-              <span
-                className="relative inline-flex size-1.5 rounded-full bg-accent"
-                style={{ boxShadow: '0 0 8px var(--accent)' }}
-              />
-            </span>
-            Desktop beta · Windows &amp; browser
-          </div>
+          {/* Unboxed release metadata */}
+          <p className="mb-4 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-accent tabular-nums">
+            Desktop beta · v0.1.3 · Windows &amp; Browser
+          </p>
 
           {/* Heading */}
           <h1 className="text-3xl sm:text-4xl font-semibold tracking-[-0.045em] leading-[1.1] text-ink">
@@ -207,7 +193,7 @@ export function Stage2Hub({
           <button
             type="button"
             onClick={onOpenSettings}
-            className={`mt-4 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] transition-all duration-150 cursor-pointer border hover:brightness-110 active:scale-[0.98] ${
+            className={`mt-4 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 rounded-full px-3.5 py-1.5 text-[11px] font-medium transition-all duration-150 cursor-pointer border hover:brightness-110 active:scale-[0.98] ${
               hasKey
                 ? 'border-ok/30 bg-ok/10 text-ok'
                 : 'border-accent-line bg-accent-soft text-accent'
@@ -388,13 +374,13 @@ export function Stage2Hub({
                             {/[\\/]/.test(entry.path) ? entry.path : 'Location saved in an older version — reopen once to refresh'}
                           </span>
                         </span>
-                        <span className="text-[11px] shrink-0 text-ink-5">
+                        <span className="text-[11px] shrink-0 text-ink-4 tabular-nums">
                           {entry.kind === 'folder'
                             ? entry.fileCount > 0 ? `${entry.fileCount} files` : 'Folder'
                             : `${entry.fileCount} file${entry.fileCount === 1 ? '' : 's'}`}
                         </span>
                       </span>
-                      <span className="text-[11px] shrink-0 ml-4 text-ink-5">
+                      <span className="text-[11px] shrink-0 ml-4 text-ink-4 tabular-nums">
                         {formatRelativeTime(entry.openedAt)}
                       </span>
                     </button>
@@ -402,7 +388,8 @@ export function Stage2Hub({
                       type="button"
                       onClick={() => onRemoveRecent(entry.id)}
                       title="Remove from history"
-                      className="shrink-0 rounded-md p-1 text-ink-5 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 cursor-pointer"
+                      aria-label={`Remove ${entry.name} from history`}
+                      className="shrink-0 rounded-md p-1 text-ink-4 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 focus-visible:opacity-100 cursor-pointer"
                     >
                       <X className="w-3 h-3" />
                     </button>

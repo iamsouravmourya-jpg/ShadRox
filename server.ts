@@ -85,7 +85,7 @@ export async function startServer(options: {
     app.get('*', (_req, res) => res.sendFile(path.join(staticDirectory, 'index.html')));
   }
 
-  const host = options.host ?? '0.0.0.0';
+  const host = options.host ?? (process.env.HOST?.trim() || '127.0.0.1');
   const port = options.port ?? Number(process.env.PORT || 3000);
   const server = await new Promise<ReturnType<typeof app.listen>>((resolve, reject) => {
     const listener = app.listen(port, host, () => resolve(listener));
@@ -101,7 +101,7 @@ export async function startServer(options: {
     throw new Error('Local backend did not bind to a TCP port.');
   }
 
-  const origin = `http://${host === '0.0.0.0' ? 'localhost' : host}:${address.port}`;
+  const origin = `http://${host === '0.0.0.0' || host === '::' ? 'localhost' : host}:${address.port}`;
   console.log(`ShadRox ${mode} server running at ${origin}`);
 
   return {

@@ -1,24 +1,27 @@
 'use client'
 
-import { LayoutDashboard, SunMedium, MessageSquare } from 'lucide-react'
+import { BugPlay, FolderSearch, GitCompareArrows } from 'lucide-react'
 import { APP_VERSION } from '@/lib/download'
 import { Reveal } from './reveal'
 
 const notes = [
   {
-    icon: LayoutDashboard,
-    title: 'One workspace, less noise',
-    text: 'A rebuilt hub for opening folders and files, and a composer with exactly three run modes — Ask, Plan and Agent — so the boundary of what the next turn may touch is always visible.',
+    icon: BugPlay,
+    kicker: '01. Debugger',
+    title: 'Bundled zero-config Node debugger',
+    text: 'Microsoft\'s js-debug adapter now ships directly inside ShadRox — launch Node, TypeScript, Vite, or Next.js targets out of the box, pause on breakpoints, inspect locals, and send crashes straight to AI chat.',
   },
   {
-    icon: SunMedium,
-    title: 'Day and night, nothing else',
-    text: 'One toggle switches between the light and dark themes. Until you pick a side the app follows your OS; after that your choice is remembered.',
+    icon: FolderSearch,
+    kicker: '02. Hygiene',
+    title: 'Offline junk & dead-code scanner',
+    text: 'Scans large repositories asynchronously at zero API cost, preserves serverless, edge, worker, Prisma, and Drizzle entry points, classifies High Confidence vs Needs Review files, and sends removals safely to OS Trash.',
   },
   {
-    icon: MessageSquare,
-    title: 'Feedback that reaches the maker',
-    text: 'The top-bar Feedback button sends only the message you type — marked as a bug or a feature — with the date, straight to a private Google Sheet. No account details, no diagnostics.',
+    icon: GitCompareArrows,
+    kicker: '03. Autonomous Repair',
+    title: 'Source-aware retries & missing-target checks',
+    text: 'Failed TypeScript checks now inject line-numbered failing source and exported signatures of local imports into autonomous repair turns, while non-existent modification targets fail loudly before edits drift.',
   },
 ]
 
@@ -28,29 +31,34 @@ export function WhatsNew() {
       <div className="container-page">
         <Reveal>
           <p className="eyebrow mb-3 text-center">
-            Release notes
+            Release v{APP_VERSION}
           </p>
         </Reveal>
         <Reveal delay={80}>
           <h2 className="mx-auto mb-4 max-w-[820px] text-center text-[clamp(1.875rem,3.8vw,3.25rem)] font-bold leading-[1.08] tracking-[-0.04em] text-[var(--ink)]">
             New in v{APP_VERSION} —{' '}
-            <em className="font-normal italic text-[var(--ac)]">calmer by default.</em>
+            <em className="font-normal italic text-[var(--ac)]">sharper under pressure.</em>
           </h2>
         </Reveal>
         <Reveal delay={160}>
-          <p className="mx-auto mb-12 max-w-[620px] text-center text-base leading-7 text-[var(--mut)]">
-            A rebuilt workspace, three honest run modes, day and night themes, and a feedback
-            path that carries only your message — still free, still BYOK.
+          <p className="mx-auto mb-12 max-w-[640px] text-center text-base leading-7 text-[var(--mut)]">
+            Zero-config debugging out of the box, an offline static reachability scanner for dead
+            code, and autonomous repair turns grounded in exact source lines and local contracts.
           </p>
         </Reveal>
 
         <div className="grid gap-4 md:grid-cols-3">
-          {notes.map(({ icon: Icon, title, text }, i) => (
+          {notes.map(({ icon: Icon, kicker, title, text }, i) => (
             <Reveal key={title} delay={i * 100} className="h-full">
               <article className="feature-card flex h-full flex-col rounded-2xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-7">
-                <span className="grid size-11 place-items-center rounded-xl border border-[var(--line)] bg-[var(--bg2)]">
-                  <Icon className="size-5 text-[var(--ac)]" strokeWidth={1.75} aria-hidden />
-                </span>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="grid size-11 place-items-center rounded-xl border border-[var(--line)] bg-[var(--bg2)]">
+                    <Icon className="size-5 text-[var(--ac)]" strokeWidth={1.75} aria-hidden />
+                  </span>
+                  <span className="font-mono text-[11px] font-semibold text-[var(--mut)]">
+                    {kicker}
+                  </span>
+                </div>
                 <h3 className="mt-5 text-[16px] font-bold leading-snug tracking-[-0.02em] text-[var(--ink)]">
                   {title}
                 </h3>
@@ -61,16 +69,17 @@ export function WhatsNew() {
         </div>
 
         <Reveal delay={200}>
-          <p className="mx-auto mt-8 max-w-[760px] rounded-2xl border border-[var(--line)] bg-[var(--card)] px-5 py-4 text-center text-[13px] leading-6 text-[var(--mut)]">
-            Every shell command asks first, with a plain-language risk notice. Free during beta —
-            bring your own key.{' '}
+          <div className="mx-auto mt-8 flex max-w-[780px] flex-wrap items-center justify-center gap-x-3 gap-y-2 rounded-2xl border border-[var(--line)] bg-[var(--card)] px-5 py-4 text-center text-[13px] leading-6 text-[var(--mut)]">
+            <span>
+              Every shell command asks first with a plain-language risk notice. Still free, still BYOK.
+            </span>
             <a
-              href={`https://github.com/iamsouravmourya-jpg/ShadRox/releases/tag/v${APP_VERSION}`}
-              className="font-semibold text-[var(--ac)] underline-offset-2 hover:underline"
+              href="/releases"
+              className="font-semibold text-[var(--ac)] underline-offset-2 hover:underline whitespace-nowrap"
             >
-              Full release notes →
+              Read full v{APP_VERSION} release notes →
             </a>
-          </p>
+          </div>
         </Reveal>
       </div>
     </section>

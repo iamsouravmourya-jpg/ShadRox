@@ -4,7 +4,7 @@ import { ArrowRight, Download } from 'lucide-react'
 import { APP_VERSION, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import { WorkspaceMockup } from './workspace-mockup'
 
-const trust = ['Local files', 'Provider-powered AI', 'Google sign-in']
+const trust = ['Local files on disk', 'BYOK · Gemini, Groq, Ollama', 'Bundled debugger', 'Google sign-in']
 
 export function Hero() {
   return (
@@ -22,34 +22,34 @@ export function Hero() {
       </div>
 
       <div className="mx-auto max-w-[860px] text-center">
-        {/* Eyebrow */}
+        {/* Clean unboxed typographic release kicker — no pill or pulsing dot */}
         <div className="hero-rise" style={{ '--rise-delay': '0ms' } as React.CSSProperties}>
-          <div className="inline-flex items-center gap-2.5 rounded-full border border-[var(--line)] bg-[var(--card)] px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--mut)] shadow-[0_1px_2px_var(--shadow)]">
-            <span className="relative flex size-1.5">
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400/60" />
-              <span className="relative inline-flex size-1.5 rounded-full bg-emerald-500" />
-            </span>
-            Desktop beta · Windows · v{APP_VERSION}
-          </div>
+          <p className="inline-flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1 font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--ac)]">
+            <span>Desktop beta</span>
+            <span aria-hidden className="text-[var(--line)]">/</span>
+            <span>Windows 10 &amp; 11</span>
+            <span aria-hidden className="text-[var(--line)]">/</span>
+            <span className="tabular-nums">v{APP_VERSION}</span>
+          </p>
         </div>
 
         {/* Headline */}
         <h1
-          className="hero-rise mt-7 text-[clamp(2.4rem,7.4vw,5.25rem)] font-bold leading-[1.02] tracking-[-0.045em] text-[var(--ink)]"
+          className="hero-rise mt-6 text-[clamp(2.4rem,7.4vw,5.25rem)] font-bold leading-[1.02] tracking-[-0.045em] text-[var(--ink)]"
           style={{ '--rise-delay': '80ms' } as React.CSSProperties}
         >
           <span className="block">Your project, code, AI and preview</span>
           <span className="text-gradient block">in one workspace.</span>
         </h1>
 
-        {/* Supporting copy — from README */}
+        {/* Supporting copy */}
         <p
-          className="hero-rise mx-auto mt-6 max-w-[600px] text-pretty text-[15px] leading-7 text-[var(--mut)] sm:text-[17px]"
+          className="hero-rise mx-auto mt-6 max-w-[620px] text-pretty text-[15px] leading-7 text-[var(--mut)] sm:text-[17px]"
           style={{ '--rise-delay': '160ms' } as React.CSSProperties}
         >
-          Open a project folder and work with its files, code editor, AI chat, live previews,
-          Git tools and terminal together in one desktop app. Your project stays on your
-          computer; AI only gets the prompt and context you choose to send.
+          Open a project folder and work with its files, code editor, autonomous AI agents, bundled
+          Node debugger, offline dead-code scanner, live preview, Git tools, and terminal in one
+          desktop app. Your code stays on your computer.
         </p>
 
         {/* CTAs */}
@@ -57,12 +57,12 @@ export function Hero() {
           className="hero-rise mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row"
           style={{ '--rise-delay': '240ms' } as React.CSSProperties}
         >
-          <a href={WINDOWS_DOWNLOAD_URL} className="cta-primary group w-full sm:w-auto">
+          <a href={WINDOWS_DOWNLOAD_URL} className="cta-primary group w-full whitespace-nowrap shrink-0 sm:w-auto">
             <Download className="size-4" aria-hidden />
             Download for Windows
           </a>
-          <a href="#flow" className="cta-ghost group w-full sm:w-auto">
-            See how it works
+          <a href="#new" className="cta-ghost group w-full whitespace-nowrap shrink-0 sm:w-auto">
+            See what&apos;s new in v{APP_VERSION}
             <ArrowRight
               className="size-4 text-[var(--mut)] transition-transform duration-300 group-hover:translate-x-0.5 group-hover:text-[var(--ink)]"
               aria-hidden
@@ -71,20 +71,18 @@ export function Hero() {
         </div>
 
         <p
-          className="hero-rise mt-5 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[12px] font-medium text-[var(--mut)]"
+          className="hero-rise mt-5 flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1 text-[12px] font-medium text-[var(--mut)]"
           style={{ '--rise-delay': '320ms' } as React.CSSProperties}
         >
-          <span>Windows 10 / 11</span>
-          <span aria-hidden className="size-0.5 rounded-full bg-[var(--line)]" />
-          <span>64-bit</span>
-          <span aria-hidden className="size-0.5 rounded-full bg-[var(--line)]" />
+          <span>64-bit Windows installer</span>
+          <span aria-hidden className="text-[var(--line)]">·</span>
           <span>Bring your own key</span>
-          <span aria-hidden className="size-0.5 rounded-full bg-[var(--line)]" />
-          <span>Update checks</span>
+          <span aria-hidden className="text-[var(--line)]">·</span>
+          <span>AGPL-3.0 open source</span>
         </p>
       </div>
 
-      {/* Product mock — soft frame */}
+      {/* Product mockup */}
       <div
         className="hero-rise relative mt-14 lg:mt-20"
         style={{ '--rise-delay': '380ms' } as React.CSSProperties}
@@ -98,7 +96,7 @@ export function Hero() {
           <WorkspaceMockup />
         </div>
 
-        {/* Quiet trust row */}
+        {/* Quiet unboxed metadata strip */}
         <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-[12px] text-[var(--mut)]">
           {trust.map((item, i) => (
             <span key={item} className="inline-flex items-center gap-4">
@@ -110,7 +108,7 @@ export function Hero() {
       </div>
 
       <p className="mt-8 text-center text-[12px] text-[var(--mut)]">
-        Beta software · Features and availability may change.
+        Beta software · Review AI diffs before accepting and keep Git backups for important work.
       </p>
     </section>
   )

@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 import {
   MessagesSquare, FileCode2, SearchCode, Command,
   Eye, Terminal, GitBranch, Replace, History, ArrowRight,
+  BugPlay, FolderSearch,
 } from 'lucide-react'
 import { Reveal } from './reveal'
 import { cn } from '@/lib/utils'
@@ -22,8 +23,8 @@ const mono = 'font-mono text-[11px]'
 const features: Feature[] = [
   {
     icon: MessagesSquare,
-    title: 'AI chat & queue',
-    text: 'Use Gemini, Groq or any OpenAI-compatible endpoint with your own BYOK key. Queue follow-up messages while a turn is running, review proposed diffs before applying, and dictate prompts by voice. File notes report the real apply outcome, and long code blocks stay collapsed until you open them.',
+    title: 'AI chat & autonomous queue',
+    text: 'Use Gemini, Groq, or any OpenAI-compatible endpoint (including Ollama and LM Studio) with your own BYOK key. Queue follow-up messages while a turn runs, review proposed diffs before applying, and escalate multi-file goals to verified milestones.',
     wide: 'from-md',
     visual: (
       <div className="mt-6 grid max-w-[280px] gap-1.5 sm:mt-0">
@@ -34,6 +35,16 @@ const features: Feature[] = [
         <div className={`rounded-xl rounded-bl-md bg-emerald-500/10 px-3 py-2 text-emerald-700 dark:text-emerald-400 ${mono}`}>{'+ loading={!ready}'}</div>
       </div>
     ),
+  },
+  {
+    icon: BugPlay,
+    title: 'Bundled Node debugger',
+    text: 'Ships with Microsoft js-debug out of the box. Infer Node, TypeScript, Vite, or Next.js launch targets automatically, set breakpoints, step frames, inspect locals, and send pauses straight to AI chat.',
+  },
+  {
+    icon: FolderSearch,
+    title: 'Offline junk & dead-code scanner',
+    text: 'Zero-API static dependency graph walks large workspaces in the background, preserves serverless, edge, worker, Prisma, and Drizzle entries, classifies High Confidence vs Needs Review, and moves safely to OS Trash.',
   },
   {
     icon: FileCode2,
@@ -48,33 +59,33 @@ const features: Feature[] = [
   {
     icon: Command,
     title: 'Palette & Ctrl+K',
-    text: 'Fuzzy-find files, workspace symbols and commands from one palette. Select any code and press Ctrl+K for an inline AI edit with ghost-text completions.',
+    text: 'Fuzzy-find files, workspace symbols, and commands from one palette. Select any code and press Ctrl+K for an inline AI edit with ghost-text completions.',
   },
   {
     icon: Eye,
     title: 'Local preview',
-    text: 'Preview static sites, Vite, Next.js, Nuxt, Astro, Angular, SvelteKit and Node-based projects, plus detected Python, Go, PHP, Java and .NET backends.',
+    text: 'Preview static sites, Vite, Next.js, Nuxt, Astro, Angular, SvelteKit, and Node projects with runtime error capture and click-to-source jump.',
   },
   {
     icon: Terminal,
     title: 'Integrated terminal',
-    text: 'Multiple terminal sessions with resizable split panes rooted in your workspace. Assistant-initiated commands use a separate approval-gated path.',
+    text: 'Multiple terminal sessions with resizable split panes rooted in your workspace. Assistant-initiated commands use a separate risk-tiered approval gate.',
   },
   {
     icon: GitBranch,
-    title: 'Source control',
-    text: 'Inspect staged and unstaged changes, preview diffs, stage or unstage, switch branches, resolve conflicts, and commit with AI-generated messages.',
-    wide: 'from-lg',
+    title: 'Source control & checkpoints',
+    text: 'Inspect staged and unstaged changes, resolve conflicts cleanly, commit with AI-generated messages, or rewind files and local Git position to an earlier checkpoint.',
+    wide: 'from-md',
   },
   {
     icon: Replace,
     title: 'Search & replace',
-    text: 'Search files on disk and in open buffers, review every match, and replace selected or all occurrences.',
+    text: 'Search files on disk and in open buffers with case-sensitive, whole-word, or regex controls, and replace selected or all occurrences.',
   },
   {
     icon: History,
-    title: 'Checkpoints',
-    text: 'Review assistant checkpoints and restore earlier workspace content when an experiment goes sideways.',
+    title: 'Signed edit receipts',
+    text: 'Every agent mutation is recorded in a hash-chained local proof ledger with atomic rollback support if an experiment goes sideways.',
   },
 ]
 
@@ -94,9 +105,9 @@ export function Features() {
           </h2>
         </Reveal>
         <Reveal delay={160}>
-          <p className="mx-auto mb-14 max-w-[600px] text-center text-base leading-7 text-[var(--mut)]">
-            Editor, AI chat, preview, Git tools and terminal live side by side — writing,
-            reviewing, running and committing stay in one flow.
+          <p className="mx-auto mb-14 max-w-[620px] text-center text-base leading-7 text-[var(--mut)]">
+            Editor, AI agent teams, bundled debugger, dead-code scanner, live preview, Git tools,
+            and terminal live side by side in one local-first workspace.
           </p>
         </Reveal>
 
@@ -129,7 +140,7 @@ export function Features() {
             </Reveal>
           ))}
 
-          {/* Single closing link to the full capability list */}
+          {/* Closing link to full capability sheet */}
           <Reveal delay={80} className="h-full md:col-span-2 lg:col-span-1">
             <Link
               href="/features"
@@ -147,7 +158,7 @@ export function Features() {
                   See every capability
                 </h3>
                 <p className="mt-2 text-[13.5px] leading-6 text-[var(--mut)]">
-                  The full, itemised list — grouped by the job.
+                  The full, itemised breakdown grouped by how you build.
                 </p>
                 <span className="mt-4 inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--ac)]">
                   Browse features

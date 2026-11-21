@@ -375,3 +375,52 @@ test('verifyMilestone passes target files to getDiagnostics and fails placeholde
   assert.match(report.notes.join(' '), /error diagnostic\(s\) found/);
 });
 
+test('verifyMilestone attaches failing source lines and imported contracts on failure and renders them in buildRepairBrief', async () => {
+  const consumerSource = [
+    "import { verifyUser } from './auth';",
+    'export function run() {',
+    '  const user = verifyUser("tok");',
+    '  return user.id;',
+    '}'
+  ].join('\n');
+  const authSource = 'export async function verifyUser(token: string): Promise<{ id: string }> { return { id: token }; }\n';
+
+  const report = await verifyMilestone(
+    milestone({ expectedFiles: ['src/consumer.ts'] }),
+    host({
+      listFiles: () => ['src/consumer.ts', 'src/auth.ts'],
+      getDiagnostics: async () => [
+        diag({
+          file: '/ws/src/consumer.ts',
+          line: 3,
+          character: 9,
+          message: "Property 'id' does not exist on type 'Promise<{ id: string }>'."
+        })
+      ],
+      readFile: async (p) => {
+        if (p === 'src/consumer.ts') return consumerSource;
+        if (p === 'src/auth.ts') return authSource;
+        return null;
+      },
+      getExportedContracts: async (paths) =>
+        paths.includes('src/auth.ts')
+          ? [{ file: 'src/auth.ts', exports: [{ name: 'verifyUser', kind: 'function', signature: 'function verifyUser(token: string): Promise<{ id: string }>' }] }]
+          : []
+    }),
+    ROOT,
+    { patchesApplied: 1 }
+  );
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureContext?.length, 1);
+  assert.equal(report.failureContext?.[0].path, 'src/consumer.ts');
+  assert.match(report.failureContext?.[0].numberedSource ?? '', /3 \|   const user = verifyUser\("tok"\);/);
+  assert.equal(report.failureContext?.[0].importedContracts[0]?.path, 'src/auth.ts');
+
+  const brief = buildRepairBrief(milestone({ expectedFiles: ['src/consumer.ts'] }), report, [], 1);
+  assert.match(brief, /CURRENT FAILING FILE CONTEXT & IMPORTED SIGNATURES:/);
+  assert.match(brief, /from src\/auth\.ts:/);
+  assert.match(brief, /Promise<\{ id: string \}>/);
+});
+
+

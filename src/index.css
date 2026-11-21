@@ -118,9 +118,9 @@
   --line-2: rgb(23 24 28 / 0.17);
   --text: #16171c;
   --text-2: #33353d;
-  --text-3: #565a66;
-  --text-4: #787d8a;
-  --text-5: #9ba0ad;
+  --text-3: #4b505c;
+  --text-4: #606572;
+  --text-5: #787e8d;
   --accent: #7c3aed;
   --accent-strong: #7c3aed;
   --accent-soft: rgb(124 58 237 / 0.09);
@@ -241,7 +241,7 @@
 }
 
 .window-controls-inset {
-  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+  padding-right: max(1.25rem, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)));
 }
 
 html[data-platform='darwin'] .titlebar {
@@ -362,10 +362,6 @@ html[data-platform='darwin'] .titlebar {
 @keyframes gradient-pan {
   0%, 100% { background-position: 0% 50%; }
   50% { background-position: 100% 50%; }
-}
-
-@keyframes app-ping {
-  75%, 100% { transform: scale(2); opacity: 0; }
 }
 
 /* Global motion dampener: honour the OS "reduce motion" setting for

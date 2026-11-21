@@ -18,9 +18,6 @@ export const metadata: Metadata = {
   alternates: { canonical: '/preview-support' },
 }
 
-const chipClass =
-  'font-mono text-[11px] rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 text-[var(--mut)]'
-
 const steps = [
   {
     icon: FolderSearch,
@@ -188,12 +185,16 @@ export default function PreviewSupportPage() {
                         {num}
                       </span>
                       <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
-                          <Icon className="size-4 shrink-0 text-[var(--ac)]" strokeWidth={1.75} />
-                          <h3 className="text-[15px] font-bold leading-snug text-[var(--ink)]">
-                            {title}
-                          </h3>
-                          <span className={chipClass}>{chip}</span>
+                        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                          <div className="flex items-center gap-2.5">
+                            <Icon className="size-4 shrink-0 text-[var(--ac)]" strokeWidth={1.75} />
+                            <h3 className="text-[15px] font-bold leading-snug text-[var(--ink)]">
+                              {title}
+                            </h3>
+                          </div>
+                          <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--ac)]">
+                            {chip}
+                          </span>
                         </div>
                         <p className="mt-2 text-[13px] leading-6 text-[var(--mut)]">{text}</p>
                       </div>
@@ -245,13 +246,9 @@ export default function PreviewSupportPage() {
                       {note}
                     </p>
                   )}
-                  <div className="mt-auto flex flex-wrap gap-1.5 pt-4">
-                    {chips.map((chip) => (
-                      <span key={chip} className={chipClass}>
-                        {chip}
-                      </span>
-                    ))}
-                  </div>
+                  <p className="mt-auto border-t border-[var(--line)] pt-3.5 font-mono text-[11px] leading-5 text-[var(--mut)]">
+                    {chips.join(' · ')}
+                  </p>
                 </div>
               </Reveal>
             ))}
@@ -270,11 +267,9 @@ export default function PreviewSupportPage() {
                   rendered page, flip to the markup to fix a heading or a link, and flip
                   back — without opening another tool.
                 </p>
-                <div className="mt-5 flex flex-wrap gap-1.5">
-                  <span className={chipClass}>README.md</span>
-                  <span className={chipClass}>Preview</span>
-                  <span className={chipClass}>Source</span>
-                </div>
+                <p className="mt-4 font-mono text-[11px] text-[var(--mut)]">
+                  README.md · Preview · Source
+                </p>
                 <p className="mt-6 inline-flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--ac)]">
                   <MousePointerClick className="size-3.5" strokeWidth={2} />
                   Try the toggle

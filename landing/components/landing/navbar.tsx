@@ -96,16 +96,16 @@ export function Navbar() {
       )}
     >
       <AnnBar />
-      <nav className="container-page flex items-center justify-between gap-4 py-3.5">
+      <nav className="container-page flex items-center justify-between gap-8 py-3.5">
         <Logo />
 
         {/* Desktop links */}
-        <div className="hidden items-center gap-0.5 text-sm text-[var(--mut)] md:flex">
+        <div className="hidden items-center gap-6 text-sm text-[var(--mut)] md:flex">
           {links.map((l) => (
             <Link
               key={l.href}
               href={l.href}
-              className="nav-link rounded-full px-3.5 py-2 font-medium transition-colors hover:bg-[var(--bg2)] hover:text-[var(--ink)]"
+              className="nav-link whitespace-nowrap shrink-0 py-1.5 font-medium transition-colors hover:text-[var(--ink)]"
             >
               {l.label}
             </Link>
@@ -113,11 +113,11 @@ export function Navbar() {
         </div>
 
         {/* Right actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2.5">
           <ThemeToggle />
           <a
             href={WINDOWS_DOWNLOAD_URL}
-            className="cta-primary cta-sm hidden sm:inline-flex"
+            className="cta-primary cta-sm hidden whitespace-nowrap shrink-0 sm:inline-flex"
           >
             <Download className="size-3.5" aria-hidden />
             Download

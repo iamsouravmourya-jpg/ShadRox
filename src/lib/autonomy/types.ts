@@ -78,10 +78,32 @@ export interface CommandOutcome {
   declinedReason?: string;
 }
 
+export interface FailureImportContract {
+  /** Repo-relative path to the imported local module. */
+  path: string;
+  /** Exported signatures exposed by the local module. */
+  signatures: string[];
+}
+
+export interface FailureFileContext {
+  /** Repo-relative path to the failing file. */
+  path: string;
+  /** Line-numbered source lines for exact repair context. */
+  numberedSource: string;
+  /** Exported type/function signatures from local modules imported by this file. */
+  importedContracts: FailureImportContract[];
+}
+
 export interface VerificationReport {
   verdict: Verdict;
   diagnostics: DiagnosticLine[];
   command?: CommandOutcome;
+  /**
+   * Bounded line-numbered source of failing files plus exported signatures of
+   * their local imports, attached on failed checks so repair turns fix mismatches
+   * immediately instead of repeating the same type error.
+   */
+  failureContext?: FailureFileContext[];
   /**
    * Every reason this verdict might not mean what it appears to — a skipped
    * command, a workspace with no type checker, a milestone that touched nothing.

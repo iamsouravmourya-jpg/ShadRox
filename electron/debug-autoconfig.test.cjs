@@ -76,12 +76,30 @@ test('inferLaunchConfigs detects Next.js via config file or dependency', () => {
   assert.ok(inferLaunchConfigs(byDep).some((c) => c.name === 'Next.js Dev Server'));
 });
 
-test('inferLaunchConfigs offers Python entries and nothing for an empty workspace', () => {
+test('inferLaunchConfigs gates Python entries on debugpy availability and emits hint when unavailable', () => {
   const py = makeWorkspace({ 'main.py': 'print(1)\n' });
-  const configs = inferLaunchConfigs(py);
-  assert.equal(configs.length, 1);
-  assert.equal(configs[0].name, 'Python Main Script');
-  assert.equal(configs[0].program, 'main.py');
+  const withoutDebugpy = inferLaunchConfigs(py, {
+    resolvePython: () => null
+  });
+  assert.deepEqual(withoutDebugpy, []);
+
+  const readWithoutDebugpy = readLaunchConfigs(py, []);
+  if (readWithoutDebugpy.configurations.length === 0) {
+    assert.equal(readWithoutDebugpy.found, false);
+    assert.match(readWithoutDebugpy.hint ?? '', /debugpy/i);
+    assert.match(readWithoutDebugpy.hint ?? '', /shadrox\.debug\.json/i);
+  }
+
+  const withDebugpy = inferLaunchConfigs(py, {
+    resolvePython: (cmd) => (cmd === 'python3' ? '/usr/bin/python3' : null),
+    pythonRunner: () => ({ status: 0 })
+  });
+  assert.equal(withDebugpy.length, 1);
+  assert.equal(withDebugpy[0].name, 'Python Main Script');
+  assert.equal(withDebugpy[0].type, 'python');
+  assert.equal(withDebugpy[0].program, 'main.py');
+  assert.equal(withDebugpy[0].adapterCommand, '/usr/bin/python3');
+  assert.deepEqual(withDebugpy[0].adapterArgs, ['-m', 'debugpy.adapter']);
 
   const empty = makeWorkspace({ 'README.md': 'nothing here' });
   assert.deepEqual(inferLaunchConfigs(empty), []);
@@ -120,10 +138,21 @@ test('readLaunchConfigs infers configurations when shadrox.debug.json is absent'
   assert.equal(result.resolved.length, 1, 'resolved entries exist so start() can launch them');
 });
 
-test('readLaunchConfigs reports the adapter install hint when inference cannot normalize', () => {
-  // Program exists but no js-debug adapter anywhere in the workspace.
+test('readLaunchConfigs resolves bundled @vscode/js-debug out of the box when workspace has no node_modules adapter', () => {
   const root = makeWorkspace({ 'src/index.js': 'x' });
   const result = readLaunchConfigs(root);
+  assert.equal(result.found, true);
+  assert.equal(result.inferred, true);
+  assert.equal(result.error, null);
+  assert.equal(result.configurations.length, 1);
+  assert.equal(result.resolved.length, 1);
+  assert.match(result.resolved[0].resolvedAdapterCommand, /dapDebugServer\.js$/);
+});
+
+test('readLaunchConfigs reports the adapter install hint when no workspace or bundled adapter exists', () => {
+  // Program exists, no workspace adapter, and bundledRoots disabled.
+  const root = makeWorkspace({ 'src/index.js': 'x' });
+  const result = readLaunchConfigs(root, []);
   assert.equal(result.found, true);
   assert.equal(result.inferred, true);
   assert.equal(result.configurations.length, 0);

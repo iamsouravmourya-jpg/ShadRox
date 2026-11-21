@@ -2,23 +2,24 @@
 
 import {
   FolderTree, MessageSquare, Eye, TerminalSquare,
-  Sparkles, GitBranch, FileCode2, Boxes, History,
-  Command, Replace, KeyRound,
+  GitBranch, FileCode2, Boxes, History,
+  Command, Replace, KeyRound, BugPlay, FolderSearch,
 } from 'lucide-react'
 
 const items = [
   { icon: FolderTree,     label: 'Local project files' },
   { icon: FileCode2,      label: 'CodeMirror 6 editor' },
-  { icon: MessageSquare,  label: 'AI chat & queue' },
-  { icon: Eye,            label: 'In-app preview' },
+  { icon: MessageSquare,  label: 'BYOK AI chat & queue' },
+  { icon: BugPlay,        label: 'Bundled Node debugger' },
+  { icon: FolderSearch,   label: 'Offline junk scanner' },
+  { icon: Eye,            label: 'In-app live preview' },
   { icon: TerminalSquare, label: 'Project terminal' },
-  { icon: Sparkles,       label: 'Gemini & Groq' },
   { icon: GitBranch,      label: 'Git source control' },
   { icon: Command,        label: 'Command palette' },
-  { icon: KeyRound,       label: 'BYOK · Local keys' },
-  { icon: Boxes,          label: 'Node-based web projects' },
+  { icon: KeyRound,       label: 'Gemini · Groq · Ollama' },
+  { icon: Boxes,          label: 'Autonomous team runs' },
   { icon: Replace,        label: 'Workspace search & replace' },
-  { icon: History,        label: 'Workspace checkpoints' },
+  { icon: History,        label: 'Rewindable checkpoints' },
 ]
 
 export function Marquee() {

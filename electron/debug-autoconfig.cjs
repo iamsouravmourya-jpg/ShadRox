@@ -15,8 +15,11 @@
  * start is worse than no button at all.
  */
 
-const fs = require('node:fs');
-const path = require('node:path');
+const isNodeRuntime = typeof process !== 'undefined' && Boolean(process.versions?.node);
+const fs = isNodeRuntime ? require('node:fs') : null;
+const path = isNodeRuntime ? require('node:path') : null;
+const childProcess = isNodeRuntime ? require('node:child_process') : null;
+const previewRuntime = isNodeRuntime ? require('./preview-runtime.cjs') : null;
 
 const SKIP_DIRS = new Set([
   'node_modules', '.git', '.hg', '.svn', 'dist', 'build', 'out', '.next', '.nuxt',
@@ -61,12 +64,80 @@ function readPackageJson(root) {
   }
 }
 
+function detectPythonEntry(names) {
+  if (names.has('main.py')) return 'main.py';
+  if (names.has('app.py')) return 'app.py';
+  return null;
+}
+
+function hasPythonSource(names) {
+  if (detectPythonEntry(names)) return true;
+  for (const name of names) {
+    if (/\.py$/i.test(name)) return true;
+  }
+  return false;
+}
+
+/**
+ * Check whether an installed system Python interpreter (outside the workspace)
+ * has `debugpy` available. Never executes Python scripts inside the workspace.
+ */
+function probePythonDebugpy(root, runner, resolvePython) {
+  if (!isNodeRuntime) {
+    return {
+      available: false,
+      pythonCommand: null,
+      reason: 'Python capability probe requires the desktop Node runtime.'
+    };
+  }
+  const resolver = typeof resolvePython === 'function'
+    ? resolvePython
+    : (previewRuntime && typeof previewRuntime.resolveExecutable === 'function'
+        ? (cmd) => previewRuntime.resolveExecutable(cmd, { root })
+        : null);
+  const pythonCommand = resolver ? (resolver('python3') || resolver('python')) : null;
+  if (!pythonCommand) {
+    return {
+      available: false,
+      pythonCommand: null,
+      reason: 'Python interpreter not found on PATH.'
+    };
+  }
+  const execProbe = typeof runner === 'function'
+    ? runner
+    : (cmd, args) => childProcess.spawnSync(cmd, args, {
+        timeout: 1500,
+        stdio: 'ignore',
+        windowsHide: true
+      });
+  try {
+    const result = execProbe(pythonCommand, ['-c', 'import debugpy']);
+    if (result && result.status === 0) {
+      return { available: true, pythonCommand, reason: null };
+    }
+  } catch {
+    // treat probe failure as unavailable
+  }
+  return {
+    available: false,
+    pythonCommand,
+    reason: 'The Python "debugpy" module is not installed.'
+  };
+}
+
+function detectPythonDebugHint(names, pythonProbe) {
+  if (!hasPythonSource(names)) return null;
+  if (pythonProbe && pythonProbe.available) return null;
+  const target = detectPythonEntry(names) || [...names].find((n) => /\.py$/i.test(n)) || 'Python files';
+  return `Python files detected (${target}), but "debugpy" is unavailable. Install debugpy (pip install debugpy) or configure adapterCommand in shadrox.debug.json to debug Python.`;
+}
+
 /**
  * Pure inference over a file-name set. `fileExists(rel)` lets callers check
  * paths the walk skipped (node_modules binaries, dist entries); `pkg` is the
  * parsed package.json when the caller has it.
  */
-function inferLaunchConfigsFromNames(names, fileExists, pkg) {
+function inferLaunchConfigsFromNames(names, fileExists, pkg, options = {}) {
   const has = (rel) => names.has(rel);
   const exists = typeof fileExists === 'function' ? fileExists : () => false;
   const configs = [];
@@ -131,26 +202,26 @@ function inferLaunchConfigsFromNames(names, fileExists, pkg) {
     });
   }
 
-  // Python entry point. The js-debug adapter cannot execute Python itself;
-  // the config is still offered because workspaces that install a
-  // Python-capable adapterCommand override get a working launch, and without
-  // one the session fails with the adapter's own honest error.
-  const pythonProgram = has('main.py') ? 'main.py' : has('app.py') ? 'app.py' : null;
-  if (pythonProgram) {
+  // Python entry point: gated on a real debugpy capability check so we never
+  // offer a broken js-debug launch config for .py projects.
+  const pythonProgram = detectPythonEntry(names);
+  const pythonProbe = options && options.pythonDebugpy ? options.pythonDebugpy : null;
+  if (pythonProgram && pythonProbe && pythonProbe.available && pythonProbe.pythonCommand) {
     configs.push({
       name: 'Python Main Script',
-      type: 'node',
+      type: 'python',
       request: 'launch',
       program: pythonProgram,
-      adapterCommand: 'js-debug-adapter'
+      adapterCommand: pythonProbe.pythonCommand,
+      adapterArgs: ['-m', 'debugpy.adapter']
     });
   }
 
   return configs;
 }
 
-/** Filesystem-backed inference for the main process. */
-function inferLaunchConfigs(root) {
+/** Filesystem-backed inference with optional capability hint for the main process. */
+function inferLaunchResult(root, options = {}) {
   const names = new Set(collectWorkspaceFiles(root));
   const fileExists = (rel) => {
     try {
@@ -159,11 +230,29 @@ function inferLaunchConfigs(root) {
       return false;
     }
   };
-  return inferLaunchConfigsFromNames(names, fileExists, readPackageJson(root));
+  const pythonNeeded = hasPythonSource(names);
+  const pythonProbe = pythonNeeded
+    ? (options.pythonDebugpy ?? probePythonDebugpy(root, options.pythonRunner, options.resolvePython))
+    : null;
+  const configurations = inferLaunchConfigsFromNames(names, fileExists, readPackageJson(root), {
+    pythonDebugpy: pythonProbe
+  });
+  const hint = detectPythonDebugHint(names, pythonProbe);
+  return { configurations, hint };
+}
+
+/** Filesystem-backed inference for the main process. */
+function inferLaunchConfigs(root, options = {}) {
+  return inferLaunchResult(root, options).configurations;
 }
 
 module.exports = {
   collectWorkspaceFiles,
+  detectPythonDebugHint,
+  detectPythonEntry,
+  hasPythonSource,
   inferLaunchConfigs,
-  inferLaunchConfigsFromNames
+  inferLaunchConfigsFromNames,
+  inferLaunchResult,
+  probePythonDebugpy
 };

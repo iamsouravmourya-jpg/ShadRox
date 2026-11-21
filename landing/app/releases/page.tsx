@@ -4,11 +4,10 @@ import {
   Download,
   ArrowRight,
   ArrowUpRight,
-  Sparkles,
   CalendarDays,
-  LayoutDashboard,
-  SunMedium,
-  MessageSquare,
+  Bug,
+  Eraser,
+  ShieldCheck,
   RefreshCw,
   BellRing,
   Archive,
@@ -20,7 +19,7 @@ import { APP_VERSION, WINDOWS_DOWNLOAD_URL, GITHUB_REPO, RELEASES_URL } from '@/
 export const metadata: Metadata = {
   title: 'ShadRox — Releases',
   description:
-    'What is new in ShadRox v0.1.2: a rebuilt workspace hub, three clear run modes, day and night themes, and feedback that goes straight to the maker. See how updates work and where older installers went.',
+    'What is new in ShadRox v0.1.3: bundled zero-config Node debugger (@vscode/js-debug), 100% offline junk and dead-code scanner with confidence triage and OS Trash move, and source-aware autonomous repair with explicit missing-target checks.',
   alternates: { canonical: '/releases' },
 }
 
@@ -28,19 +27,19 @@ const RELEASE_TAG_URL = `${GITHUB_REPO}/releases/tag/v${APP_VERSION}`
 
 const highlights = [
   {
-    icon: LayoutDashboard,
-    title: 'A hub that stays out of the way',
-    text: 'Open a folder, a single file, or start an empty project from one small hub. The composer keeps three run modes — Ask, Plan and Agent — so the next turn never does more than you can see.',
+    icon: Bug,
+    title: 'Bundled zero-config Node debugger',
+    text: '@vscode/js-debug ships inside ShadRox with an automatic stdio-to-TCP bridge — inspect variables, pause on breakpoints, and view call stacks on local scripts without installing VS Code or extra extensions.',
   },
   {
-    icon: SunMedium,
-    title: 'Day and night, one toggle',
-    text: 'Light and dark themes only — no hidden third mode. ShadRox follows your OS until you pick a side, then remembers your choice.',
+    icon: Eraser,
+    title: 'Offline junk & dead-code scanner',
+    text: 'A local static dependency walker scans 10,000+ files off the UI thread, whitelists serverless functions, workers, Prisma, and Drizzle schemas, classifies findings into High Confidence or Needs Review, and sends removals safely to OS Trash.',
   },
   {
-    icon: MessageSquare,
-    title: 'Feedback with nothing attached',
-    text: 'The Feedback button sends only your message and a server-side date to a private Google Sheet, filed under Bug or Feature. No email, no account id, no diagnostics.',
+    icon: ShieldCheck,
+    title: 'Contract-aware autonomous repair',
+    text: 'When a milestone fails TypeScript verification, retry prompts inject the failing source lines and imported local type signatures directly, and autonomous teams verify requested target files exist before dispatching.',
   },
 ]
 
@@ -122,36 +121,28 @@ export default function ReleasesPage() {
               />
 
               <div className="relative">
-                {/* Version header */}
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="inline-flex items-center rounded-full bg-[linear-gradient(110deg,var(--ac),var(--pink))] px-4 py-1.5 font-mono text-sm font-bold text-white shadow-[0_8px_24px_var(--glow)]">
-                    v{APP_VERSION}
-                  </span>
-                  <span
-                    className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.16em]"
-                    style={{
-                      borderColor: 'color-mix(in srgb, var(--ac) 40%, transparent)',
-                      color: 'var(--ac)',
-                      background: 'color-mix(in srgb, var(--ac) 10%, transparent)',
-                    }}
-                  >
-                    <Sparkles className="size-3.5" />
-                    Latest
-                  </span>
-                  <span className="ml-auto inline-flex items-center gap-1.5 text-xs font-medium text-[var(--mut)]">
+                {/* Version metadata */}
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] pb-4 font-mono text-xs tabular-nums">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <span className="font-bold text-[var(--ac)]">v{APP_VERSION}</span>
+                    <span className="text-[var(--mut)]">/</span>
+                    <span className="uppercase tracking-[0.16em] text-[var(--ink2)]">Latest release</span>
+                  </div>
+                  <span className="inline-flex items-center gap-1.5 text-[var(--mut)]">
                     <CalendarDays className="size-3.5" />
                     November 2026
                   </span>
                 </div>
 
                 <h2 className="mt-6 max-w-[700px] text-balance text-[clamp(26px,3.6vw,42px)] font-bold tracking-[-0.04em] leading-[1.1] text-[var(--ink)]">
-                  A calmer workspace,{' '}
-                  <em className="font-normal italic text-[var(--ac)]">a clearer run.</em>
+                  Bundled debugger, offline scanner,{' '}
+                  <em className="font-normal italic text-[var(--ac)]">sharper repairs.</em>
                 </h2>
-                <p className="mt-4 max-w-[660px] text-sm leading-7 text-[var(--mut)]">
-                  v{APP_VERSION} rebuilds the hub around three run modes, adds day and night themes,
-                  and gives feedback a direct path to the maker — still free, still BYOK, with no
-                  plans and no checkout.
+                <p className="mt-4 max-w-[680px] text-sm leading-7 text-[var(--mut)]">
+                  Building on the v0.1.2 workspace hub and day/night themes, v{APP_VERSION} bundles
+                  Microsoft&apos;s Node debugger out of the box, ships an offline workspace
+                  junk &amp; dead-code scanner with OS Trash recovery, and sharpens autonomous
+                  TypeScript repairs — still free, still BYOK, with zero billing.
                 </p>
 
                 {/* Highlights */}

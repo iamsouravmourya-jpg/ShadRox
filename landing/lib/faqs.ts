@@ -56,6 +56,14 @@ export const faqs = [
     a: 'ShadRox is a solo project built by Sourav Maurya, a 19-year-old full-stack developer and AI engineer based in Delhi, India. There is no company behind it — the app, the website, and the GitHub repo are all maintained by one person.',
   },
   {
+    q: 'Does the Junk & Dead-Code Scanner upload my code anywhere?',
+    a: 'No. In v0.1.3 the scanner walks your workspace locally in a non-blocking background pass, preserves serverless, edge, worker, Prisma, and Drizzle entry points, classifies High Confidence vs Needs Review files, and sends deleted items to the OS Trash / Recycle Bin.',
+  },
+  {
+    q: 'Do I have to install a debugger separately?',
+    a: 'No. ShadRox v0.1.3 bundles Microsoft\'s js-debug adapter directly inside the app and infers Node.js, TypeScript, Vite, and Next.js launch configs automatically when shadrox.debug.json is absent.',
+  },
+  {
     q: 'Where does feedback go?',
     a: 'The Feedback button in the app sends only the message you type — tagged as a bug or a feature — plus the date, into the maker\'s private Google Sheet in three columns: date, bug and feature. Nothing else is attached — no email, account details, app version, platform, code, file names or diagnostics — and no ShadRox server sits in this path.',
   },

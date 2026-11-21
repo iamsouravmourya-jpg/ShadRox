@@ -53,21 +53,23 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
 
   return (
     <div className="w-full h-screen bg-base text-ink flex flex-col titlebar">
-      <div className="h-12 shrink-0 flex items-center justify-between px-4">
+      <div className="h-12 shrink-0 flex items-center justify-between border-b border-line px-5">
         <span className="flex items-center gap-2">
           <ShadRoxLogo className="w-4 h-4 text-accent" />
           <span className="text-xs font-semibold tracking-[-0.02em]">ShadRox</span>
         </span>
-        <span className="text-[10px] font-mono uppercase tracking-wider text-ink-4">Desktop beta · Windows</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-3 tabular-nums">
+          Desktop beta · v0.1.3 · Windows
+        </span>
       </div>
 
-      <div className="flex-1 min-h-0 flex items-center justify-center px-6 pb-16">
-        <div className="w-full max-w-sm">
-          <div className="mb-8 text-center">
-            <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-2xl border border-accent-line bg-accent-soft">
+      <div className="flex-1 min-h-0 flex items-center justify-center px-6 pb-12">
+        <div className="w-full max-w-sm rounded-2xl border border-line bg-surface p-7 shadow-[var(--shadow-panel)]">
+          <div className="mb-7 text-center">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-accent-line bg-accent-soft">
               <ShadRoxLogo className="w-6 h-6 text-accent" />
             </div>
-            <h1 className="text-2xl font-semibold tracking-[-0.03em]">Sign in to ShadRox</h1>
+            <h1 className="text-2xl font-semibold tracking-[-0.03em] text-ink">Sign in to ShadRox</h1>
             <p className="mt-2 text-sm leading-relaxed text-ink-3">
               One Google account for the beta. Your projects and API keys stay on this device; AI requests go from here straight to
               the provider you choose.
@@ -174,12 +176,12 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
             </p>
           )}
 
-          <div className="mt-8 flex items-start gap-2 rounded-xl border border-line bg-overlay px-3 py-3 text-[11px] leading-relaxed text-ink-4">
-            <ShieldCheck className="w-4 h-4 shrink-0 text-ok/70" />
+          <div className="mt-7 flex items-start gap-2.5 rounded-xl border border-line bg-overlay px-3.5 py-3 text-[11px] leading-relaxed text-ink-3">
+            <ShieldCheck className="mt-0.5 w-4 h-4 shrink-0 text-ok" />
             <span>
-              Sign-in creates only your account row (email and name). ShadRox's servers never receive your code, your project
+              Sign-in creates only your account row (email and name). ShadRox&apos;s servers never receive your code, your project
               files, or your BYOK key (Gemini, Groq, or your own endpoint) — but the prompt and the project context you send do go
-              to the AI provider you pick, under that provider's own terms.
+              to the AI provider you pick, under that provider&apos;s own terms.
             </span>
           </div>
         </div>

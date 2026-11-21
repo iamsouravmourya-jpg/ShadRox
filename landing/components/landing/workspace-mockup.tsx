@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef } from 'react'
-import { Eye, Sparkles, Terminal } from 'lucide-react'
+import { Bot, Eye, Terminal } from 'lucide-react'
 
 export function WorkspaceMockup() {
   const shellRef = useRef<HTMLDivElement | null>(null)
@@ -38,8 +38,8 @@ export function WorkspaceMockup() {
           <i className="size-2.5 rounded-full bg-amber-300/80" />
           <i className="size-2.5 rounded-full bg-emerald-400/80" />
         </div>
-        <span className="font-mono">ShadRox — my-project</span>
-        <span className="ml-auto rounded-md border border-white/10 px-2 py-1 text-zinc-400">Ctrl+K</span>
+        <span className="font-mono">ShadRox v0.1.3 — my-project</span>
+        <span className="ml-auto font-mono text-zinc-400">Ctrl+K</span>
       </div>
 
       {/* Body: explorer | editor | chat */}
@@ -79,13 +79,12 @@ export function WorkspaceMockup() {
             <p><span className="text-[#6b6880] select-none mr-3">9</span>{'}'}</p>
           </div>
 
-          {/* Status line */}
-          <div className="absolute bottom-0 left-0 right-0 flex items-center gap-2 border-t border-white/8 bg-[linear-gradient(90deg,#8b93a7,#6a4de0,#3ec8ea)] px-3 py-1.5 font-mono text-[9px] text-white sm:left-0 sm:right-[180px] lg:right-[210px]">
+          <div className="absolute bottom-0 left-0 right-0 flex items-center gap-2 border-t border-white/8 bg-[linear-gradient(90deg,#8b93a7,#6a4de0,#3ec8ea)] px-3 py-1.5 font-mono text-[9px] text-white tabular-nums sm:left-0 sm:right-[180px] lg:right-[210px]">
             <span>⎇ main</span>
             <span className="opacity-60">·</span>
             <span>0 errors</span>
             <span className="opacity-60">·</span>
-            <span>TypeScript</span>
+            <span>js-debug ready</span>
             <span className="opacity-60">·</span>
             <span>Preview :5173</span>
           </div>
@@ -94,7 +93,7 @@ export function WorkspaceMockup() {
         {/* AI chat */}
         <aside className="hidden border-l border-white/8 bg-[#0e1016] p-3 text-[10px] text-zinc-500 sm:block">
           <div className="mb-3 flex items-center gap-2 text-zinc-300">
-            <Sparkles className="size-3 text-violet-300" />
+            <Bot className="size-3 text-violet-300" />
             <span>AI chat</span>
           </div>
           <div className="justify-self-end ml-auto max-w-[90%] rounded-xl bg-[linear-gradient(135deg,#6a4de0,#3ec8ea)] px-3 py-2 text-[10px] leading-4 text-white mb-2">

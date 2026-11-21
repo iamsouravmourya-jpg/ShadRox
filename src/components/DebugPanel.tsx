@@ -337,6 +337,16 @@ export function DebugPanel({ desktop, workspaceId, controller, onOpenFrame, onAs
         </div>
       )}
 
+      {config.hint && !config.error && (
+        <div
+          role="status"
+          className="flex shrink-0 items-start gap-1.5 border-b border-warn/30 bg-warn/10 px-2.5 py-1.5 text-[10.5px] text-warn"
+        >
+          <AlertCircle className="mt-[1px] h-3 w-3 shrink-0" />
+          <span className="min-w-0 flex-1 break-words">{config.hint}</span>
+        </div>
+      )}
+
       {!available ? (
         <div className="flex flex-1 items-center justify-center px-4 text-center text-[11px] text-ink-4">
           The debugger needs the desktop app; this build has no main-process host.
@@ -344,15 +354,17 @@ export function DebugPanel({ desktop, workspaceId, controller, onOpenFrame, onAs
       ) : !config.found ? (
         <div className="flex-1 overflow-auto px-3 py-2.5">
           <p className="text-[11px] text-ink-3">
-            No debug configuration. Add <span className="font-mono text-accent">shadrox.debug.json</span> at the
+            No debuggable entry point detected. Add <span className="font-mono text-accent">shadrox.debug.json</span> at the
             workspace root:
           </p>
           <pre className="mt-1.5 select-all overflow-x-auto rounded-lg border border-line bg-base-2/70 px-2.5 py-2 font-mono text-[10.5px] leading-5 text-ink-3">
             {example}
           </pre>
           <p className="mt-1.5 text-[10px] text-ink-4">
-            Needs <span className="font-mono">@vscode/js-debug</span> installed in the workspace. Breakpoints are set
-            by clicking the editor gutter once a configuration exists.
+            Uses ShadRox&apos;s bundled <span className="font-mono">@vscode/js-debug</span> adapter automatically for
+            Node/TypeScript (or configure <span className="font-mono">debugpy</span> / a custom{' '}
+            <span className="font-mono">adapterCommand</span> in <span className="font-mono">shadrox.debug.json</span>{' '}
+            for Python). Click the editor gutter to toggle breakpoints.
           </p>
         </div>
       ) : config.error ? (
@@ -367,10 +379,11 @@ export function DebugPanel({ desktop, workspaceId, controller, onOpenFrame, onAs
           </p>
           {config.inferred && (
             <p className="text-[10px] text-ink-5">
-              Auto-detected from workspace files — add <span className="font-mono">shadrox.debug.json</span> to customize.
+              Zero-config debug target ({config.configurations[0]?.type === 'python' ? 'debugpy' : 'bundled @vscode/js-debug'}) — add{' '}
+              <span className="font-mono">shadrox.debug.json</span> to customize.
             </p>
           )}
-          <p className="text-[10px] text-ink-5">
+          <p className="text-[10px] tabular-nums text-ink-5">
             {Object.values(controller.breakpoints).reduce((total, lines) => total + lines.length, 0)} breakpoint(s) set.
           </p>
         </div>

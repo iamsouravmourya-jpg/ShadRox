@@ -10,15 +10,15 @@ import { CapabilitySheet } from './capability-sheet'
 export const metadata: Metadata = {
   title: 'ShadRox — Features',
   description:
-    'Editor, AI chat, local preview, Git and terminal in one Windows workspace. The full capability sheet: CodeMirror 6 editing, @-mention context, MCP servers, approval-gated runs, rewindable checkpoints and GitHub push.',
+    'Editor, AI chat, bundled Node debugger, offline junk scanner, local preview, Git and terminal in one Windows workspace. CodeMirror 6 editing, @-mention context, MCP servers, approval-gated runs, checkpoints and GitHub push.',
   alternates: { canonical: '/features' },
 }
 
 const included = [
-  'Editor, AI chat, preview, Git tools and terminal in one window',
+  'Editor, AI chat, bundled Node debugger, offline junk scanner, preview, Git and terminal',
   'Free bring-your-own-key tier — you pay your provider, ShadRox adds no cap',
   'Google sign-in at first launch, then your own provider key',
-  'Multi-step runs, teams, plugins and automations — included, still beta',
+  'Multi-step runs, autonomous teams, plugins and automations — included, still beta',
 ]
 
 export default function FeaturesPage() {

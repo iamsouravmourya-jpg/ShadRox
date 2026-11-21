@@ -12,7 +12,6 @@ import {
   Repeat,
   ScanSearch,
   ShieldCheck,
-  Sparkles,
   SquareTerminal,
   Trash2,
   TriangleAlert,
@@ -28,7 +27,7 @@ import { CommandApprovalDemo } from './command-approval-demo'
 export const metadata: Metadata = {
   title: 'ShadRox — The agent',
   description:
-    'A bounded, reviewable AI agent: 14 built-in tools, default-deny command approval, honest edit reports and checkpoints that restore files and Git position. Agent, autonomous run and team features are beta.',
+    'A bounded, reviewable AI agent: 40 built-in tools, default-deny command approval, contract-aware TypeScript repairs, target-file guards and checkpoints that restore files and Git position.',
   alternates: { canonical: '/agent' },
 }
 
@@ -53,9 +52,9 @@ type LoopFact = {
 const loopFacts: LoopFact[] = [
   {
     icon: Wrench,
-    value: '14',
+    value: '40',
     label: 'built-in tools',
-    sub: 'A fixed toolkit for reading, searching, editing and verifying.',
+    sub: 'A fixed toolkit for reading, searching, editing, debugging and verifying.',
   },
   {
     icon: Repeat,
@@ -106,20 +105,17 @@ const fileNotes = [
   {
     file: 'src/app.tsx',
     status: 'applied',
-    chip: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-    dot: 'bg-emerald-500',
+    tone: 'text-emerald-700 dark:text-emerald-400',
   },
   {
     file: 'src/lib/api.ts',
     status: 'awaiting review',
-    chip: 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-400',
-    dot: 'bg-amber-500',
+    tone: 'text-amber-700 dark:text-amber-400',
   },
   {
     file: 'README.md',
     status: 'not applied',
-    chip: 'border-rose-500/25 bg-rose-500/10 text-rose-700 dark:text-rose-400',
-    dot: 'bg-rose-500',
+    tone: 'text-rose-700 dark:text-rose-400',
   },
 ]
 
@@ -209,16 +205,9 @@ export default function AgentPage() {
                 <p className="mb-4 text-xs leading-5 text-[var(--mut)]">
                   Routine verification is no exception:
                 </p>
-                <div className="flex flex-wrap gap-2">
-                  {VERIFY_EXAMPLES.map((cmd) => (
-                    <span
-                      key={cmd}
-                      className="rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--ink2)]"
-                    >
-                      {cmd}
-                    </span>
-                  ))}
-                </div>
+                <p className="rounded-xl border border-[var(--line)] bg-[var(--bg2)] px-4 py-3 font-mono text-[11px] leading-6 text-[var(--ink2)]">
+                  {VERIFY_EXAMPLES.join(' · ')}
+                </p>
 
                 <div className="my-6 h-px bg-[var(--line)]" />
 
@@ -246,31 +235,30 @@ export default function AgentPage() {
           <Reveal variant="scale">
             <div className="grid gap-10 rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-8 lg:grid-cols-2 lg:gap-14 lg:p-10">
               <div>
-                <span className="mb-4 inline-flex items-center gap-1.5 rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--ac)]">
-                  <Sparkles className="size-3" strokeWidth={2} />
-                  New in v{APP_VERSION}
-                </span>
+                <p className="mb-3 font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--ac)]">
+                  Updated in v{APP_VERSION}
+                </p>
                 <h2 className="text-[clamp(24px,3vw,34px)] font-bold tracking-[-0.03em] leading-[1.15] text-[var(--ink)]">
-                  Honest{' '}
-                  <em className="font-normal italic text-[var(--ac)]">edit reports.</em>
+                  Honest edits,{' '}
+                  <em className="font-normal italic text-[var(--ac)]">contract-aware repair.</em>
                 </h2>
                 <p className="mt-4 text-sm leading-7 text-[var(--mut)]">
-                  A truncated or malformed edit block never disappears quietly. It becomes an
-                  explicit failure, and ShadRox gets one repair retry using the exact current
-                  file contents.
+                  Malformed blocks never disappear silently. When TypeScript diagnostics fail during
+                  an autonomous run, repair retries receive the failing file&apos;s source lines and
+                  imported local contracts — and teams check explicit target paths before dispatch.
                 </p>
                 <ul className="mt-6 space-y-3">
                   <li className="flex gap-3 text-sm leading-6 text-[var(--ink2)]">
                     <span className="mt-[9px] size-1.5 shrink-0 rounded-full bg-[var(--ac)]" aria-hidden />
-                    Explicit failures — never silently dropped
+                    Failing source lines and imported module signatures injected into repair turns
                   </li>
                   <li className="flex gap-3 text-sm leading-6 text-[var(--ink2)]">
                     <span className="mt-[9px] size-1.5 shrink-0 rounded-full bg-[var(--ac)]" aria-hidden />
-                    One repair retry against the exact current file contents
+                    Explicit missing-target verification before specialist teams execute edits
                   </li>
                   <li className="flex gap-3 text-sm leading-6 text-[var(--ink2)]">
                     <span className="mt-[9px] size-1.5 shrink-0 rounded-full bg-[var(--ac)]" aria-hidden />
-                    File notes state the real outcome, remembered across restarts
+                    File notes state the real apply outcome, persisted across restarts
                   </li>
                 </ul>
               </div>
@@ -282,7 +270,7 @@ export default function AgentPage() {
                     File notes
                   </p>
                   <div className="space-y-2.5">
-                    {fileNotes.map(({ file, status, chip, dot }) => (
+                    {fileNotes.map(({ file, status, tone }) => (
                       <div
                         key={file}
                         className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 rounded-xl border border-[var(--line)] bg-[var(--card)] px-4 py-3"
@@ -291,10 +279,7 @@ export default function AgentPage() {
                           <FileDiff className="size-3.5 shrink-0 text-[var(--mut)]" strokeWidth={1.75} />
                           <span className="truncate font-mono text-xs text-[var(--ink2)]">{file}</span>
                         </span>
-                        <span
-                          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${chip}`}
-                        >
-                          <span className={`size-1.5 rounded-full ${dot}`} aria-hidden />
+                        <span className={`font-mono text-[11px] font-semibold uppercase tracking-[0.08em] ${tone}`}>
                           {status}
                         </span>
                       </div>

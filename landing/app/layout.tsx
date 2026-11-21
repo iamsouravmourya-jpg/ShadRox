@@ -13,9 +13,9 @@ const jakarta = Plus_Jakarta_Sans({
   fallback: ['Segoe UI', 'system-ui', 'sans-serif'],
 })
 
-const TITLE = 'ShadRox — Project files, editor, AI chat, preview, Git and terminal in one Windows app'
-const DESCRIPTION = 'A native Windows workspace for local projects: focused code editor, bring-your-own-key AI chat, live project preview, Git tools and an integrated terminal. Files stay on your computer; only the context you choose goes to your AI provider.'
-const OG_DESCRIPTION = 'A native Windows workspace for local projects. Files stay on your computer; only the context you choose goes to your AI provider.'
+const TITLE = 'ShadRox — Project files, editor, AI chat, debugger, preview, Git and terminal in one app'
+const DESCRIPTION = 'A native Windows workspace for local projects: CodeMirror 6 editor, bring-your-own-key AI agent teams, bundled Node debugger, offline dead-code scanner, live preview, Git tools and terminal. Files stay on your computer.'
+const OG_DESCRIPTION = 'A native Windows workspace for local projects with BYOK AI chat, bundled debugging, live preview, and offline junk scanning.'
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),

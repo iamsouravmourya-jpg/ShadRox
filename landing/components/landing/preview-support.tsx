@@ -47,36 +47,37 @@ export function PreviewSupport() {
                   install missing dependencies.
                 </p>
 
-                <div className="mt-8 flex flex-col gap-6 sm:flex-row sm:items-start">
-                  <div className="flex-1">
-                    <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-700 dark:text-emerald-400">
+                <div className="mt-8 grid gap-6 sm:grid-cols-2">
+                  <div>
+                    <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700 dark:text-emerald-400">
                       Currently supported
                     </p>
-                    <div className="flex flex-wrap gap-1.5">
+                    <ul className="space-y-1.5 border-t border-[var(--line)] pt-3">
                       {supported.map((s) => (
-                        <span
+                        <li
                           key={s}
-                          className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/[.06] px-3 py-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"
+                          className="flex items-center gap-2 text-[12.5px] font-medium text-[var(--ink2)]"
                         >
-                          <Check className="size-3" aria-hidden /> {s}
-                        </span>
+                          <Check className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden />
+                          <span>{s}</span>
+                        </li>
                       ))}
-                    </div>
+                    </ul>
                   </div>
-                  <div className="flex-1">
-                    <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--mut)]">
+                  <div>
+                    <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--mut)]">
                       Good to know
                     </p>
-                    <div className="flex flex-wrap gap-1.5">
+                    <ul className="space-y-1.5 border-t border-[var(--line)] pt-3">
                       {caveats.map((s) => (
-                        <span
+                        <li
                           key={s}
-                          className="inline-flex items-center rounded-full border border-[var(--line)] bg-[var(--card)] px-3 py-1.5 text-[11px] text-[var(--mut)]"
+                          className="text-[12.5px] leading-5 text-[var(--mut)]"
                         >
                           {s}
-                        </span>
+                        </li>
                       ))}
-                    </div>
+                    </ul>
                   </div>
                 </div>
               </div>

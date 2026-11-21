@@ -1,0 +1,6 @@
+{
+  "name": "@vscode/js-debug",
+  "version": "1.140.1",
+  "private": true,
+  "type": "commonjs"
+}

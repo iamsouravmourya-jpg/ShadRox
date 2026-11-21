@@ -1,8 +1,8 @@
 'use strict';
 
 const fs = require('node:fs');
+const fsp = require('node:fs/promises');
 const path = require('node:path');
-const { isPathInsideDirectory } = require('./desktop-security.cjs');
 
 const IGNORE_DIRS = new Set([
   'node_modules',
@@ -15,7 +15,12 @@ const IGNORE_DIRS = new Set([
   '.shadrox',
   'shadrox-backups',
   'dist_desktop',
-  '.cache'
+  'dist_staging',
+  '.cache',
+  '.nuxt',
+  '.svelte-kit',
+  '.vercel',
+  '.netlify'
 ]);
 
 const WHITELIST_PATTERNS = [
@@ -23,6 +28,7 @@ const WHITELIST_PATTERNS = [
   /^package-lock\.json$/i,
   /^pnpm-lock\.yaml$/i,
   /^yarn\.lock$/i,
+  /^bun\.lockb?$/i,
   /^tsconfig.*\.json$/i,
   /^\.env.*$/i,
   /^README.*$/i,
@@ -34,22 +40,54 @@ const WHITELIST_PATTERNS = [
   /^tailwind\.config\..*$/i,
   /^postcss\.config\..*$/i,
   /^vite\.config\..*$/i,
+  /^vitest\.config\..*$/i,
   /^next\.config\..*$/i,
+  /^drizzle\.config\..*$/i,
   /^vercel\.json$/i,
   /^netlify\.toml$/i,
   /^Dockerfile$/i,
   /^shadrox\.debug\.json$/i
 ];
 
+const HIGH_CONFIDENCE_EXTENSIONS = new Set([
+  '.ts',
+  '.tsx',
+  '.mts',
+  '.cts',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.css',
+  '.scss',
+  '.sass',
+  '.less',
+  '.vue',
+  '.svelte'
+]);
+
+const QUOTED_PATH_REGEX = /['"`]([^'"`\r\n]{1,260})['"`]/g;
+const ASSET_OR_MODULE_PATH_RE =
+  /^(?:\.\.?\/|\/|[a-zA-Z0-9_-]+\/).+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|css|scss|sass|less|vue|svelte|json|html|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|wav|ogg|wasm|pdf|txt|md|sql)(?:[?#][^'"`\s]*)?$/i;
+
+function normalizePosix(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function classifyUnusedConfidence(relPath) {
+  const ext = path.extname(relPath).toLowerCase();
+  return HIGH_CONFIDENCE_EXTENSIONS.has(ext) ? 'high' : 'review';
+}
+
 function isWhitelisted(relPath) {
-  const normalized = relPath.replace(/\\/g, '/');
+  const normalized = normalizePosix(relPath);
   if (normalized.startsWith('public/')) return true;
   const basename = path.basename(normalized);
   return WHITELIST_PATTERNS.some((re) => re.test(basename));
 }
 
 function isDefaultEntry(relPath) {
-  const norm = relPath.replace(/\\/g, '/');
+  const norm = normalizePosix(relPath);
   if (/^index\.html$/i.test(norm)) return true;
   if (/^server\.[cm]?[jt]s$/i.test(norm)) return true;
   if (/^src\/main\.[cm]?[jt]sx?$/i.test(norm)) return true;
@@ -59,44 +97,52 @@ function isDefaultEntry(relPath) {
   if (/^src\/app\//i.test(norm)) return true;
   if (/^api\//i.test(norm)) return true;
   if (/^electron\//i.test(norm)) return true;
+  if (/^supabase\/functions\//i.test(norm)) return true;
+  if (/^netlify\/functions\//i.test(norm)) return true;
+  if (/^functions\//i.test(norm)) return true;
+  if (/^workers\//i.test(norm)) return true;
+  if (/\.worker\.[cm]?[jt]sx?$/i.test(norm)) return true;
+  if (/(?:^|\/)service-worker\.[cm]?[jt]s$/i.test(norm)) return true;
+  if (/^scripts\//i.test(norm)) return true;
+  if (/^prisma\//i.test(norm)) return true;
+  if (/^drizzle\//i.test(norm)) return true;
   if (/\.(test|spec)\.[cm]?[jt]sx?$/i.test(norm)) return true;
   return false;
 }
 
-function extractPackageJsonEntries(root) {
+async function extractPackageJsonEntries(root) {
   const entries = new Set();
   try {
     const pkgPath = path.join(root, 'package.json');
-    const content = fs.readFileSync(pkgPath, 'utf8');
+    const content = await fsp.readFile(pkgPath, 'utf8');
     const pkg = JSON.parse(content);
-    if (typeof pkg.main === 'string') entries.add(pkg.main.replace(/^\.\//, ''));
-    if (typeof pkg.module === 'string') entries.add(pkg.module.replace(/^\.\//, ''));
-    if (typeof pkg.bin === 'string') entries.add(pkg.bin.replace(/^\.\//, ''));
+    if (typeof pkg.main === 'string') entries.add(normalizePosix(pkg.main));
+    if (typeof pkg.module === 'string') entries.add(normalizePosix(pkg.module));
+    if (typeof pkg.bin === 'string') entries.add(normalizePosix(pkg.bin));
     else if (pkg.bin && typeof pkg.bin === 'object') {
       for (const val of Object.values(pkg.bin)) {
-        if (typeof val === 'string') entries.add(val.replace(/^\.\//, ''));
+        if (typeof val === 'string') entries.add(normalizePosix(val));
       }
     }
     if (pkg.scripts && typeof pkg.scripts === 'object') {
       for (const cmd of Object.values(pkg.scripts)) {
         if (typeof cmd === 'string') {
-          // extract any file paths mentioned in scripts (e.g. tsx server.ts)
-          const matches = cmd.match(/(?:[\w./\\-]+?\.[jt]sx?)/g);
+          const matches = cmd.match(/(?:[\w./\\-]+?\.[cm]?[jt]sx?)/g);
           if (matches) {
-            for (const m of matches) entries.add(m.replace(/^\.\//, ''));
+            for (const m of matches) entries.add(normalizePosix(m));
           }
         }
       }
     }
   } catch {
-    // ignore
+    // ignore missing or malformed package.json
   }
   return entries;
 }
 
 function extractReferences(filePath, content, ext) {
   const refs = new Set();
-  if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(ext)) {
+  if (['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.svelte'].includes(ext)) {
     // import/export ... from '...' or "..."
     const importExportRegex = /(?:import|export)\s+(?:[\s\S]*?from\s+)?['"]([^'"]+)['"]/g;
     let match;
@@ -114,7 +160,15 @@ function extractReferences(filePath, content, ext) {
     while ((match = sideEffectRegex.exec(content)) !== null) {
       if (match[1]) refs.add(match[1]);
     }
-  } else if (ext === '.css') {
+    // dynamic string asset/module references in code (e.g. '/assets/hero.png', './workers/sync.ts')
+    QUOTED_PATH_REGEX.lastIndex = 0;
+    while ((match = QUOTED_PATH_REGEX.exec(content)) !== null) {
+      const candidate = match[1]?.trim();
+      if (candidate && !candidate.includes('://') && ASSET_OR_MODULE_PATH_RE.test(candidate)) {
+        refs.add(candidate);
+      }
+    }
+  } else if (['.css', '.scss', '.sass', '.less'].includes(ext)) {
     const cssImport = /@import\s+(?:url\(\s*)?['"]?([^'")\s]+)['"]?\s*\)?/g;
     let match;
     while ((match = cssImport.exec(content)) !== null) {
@@ -125,23 +179,31 @@ function extractReferences(filePath, content, ext) {
       if (match[1] && !match[1].startsWith('data:')) refs.add(match[1]);
     }
   } else if (ext === '.html') {
-    const srcRegex = /(?:src|href)\s*=\s*['"]([^'"]+)['"]/g;
+    const srcRegex = /(?:src|href|poster)\s*=\s*['"]([^'"]+)['"]/g;
     let match;
     while ((match = srcRegex.exec(content)) !== null) {
       if (match[1] && !match[1].startsWith('http://') && !match[1].startsWith('https://') && !match[1].startsWith('#')) {
         refs.add(match[1]);
       }
     }
+  } else if (ext === '.json') {
+    let match;
+    QUOTED_PATH_REGEX.lastIndex = 0;
+    while ((match = QUOTED_PATH_REGEX.exec(content)) !== null) {
+      const candidate = match[1]?.trim();
+      if (candidate && !candidate.includes('://') && ASSET_OR_MODULE_PATH_RE.test(candidate)) {
+        refs.add(candidate);
+      }
+    }
   }
   return refs;
 }
 
-function resolveTsconfigPaths(root) {
+async function resolveTsconfigPaths(root) {
   try {
     const tsconfigPath = path.join(root, 'tsconfig.json');
     if (!fs.existsSync(tsconfigPath)) return {};
-    const content = fs.readFileSync(tsconfigPath, 'utf8');
-    // Simple json strip comments
+    const content = await fsp.readFile(tsconfigPath, 'utf8');
     const cleaned = content.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
     const tsconfig = JSON.parse(cleaned);
     const paths = tsconfig?.compilerOptions?.paths;
@@ -158,19 +220,24 @@ function resolveTsconfigPaths(root) {
       return resolved;
     }
   } catch {
-    // ignore
+    // ignore invalid tsconfig
   }
   return {};
 }
 
-function resolveModulePath(root, currentFile, ref, fileSet, tsconfigPaths) {
-  let candidatePaths = [];
+function stripRefSuffix(ref) {
+  return String(ref || '').split(/[?#]/)[0];
+}
 
-  // Handle @/* aliases
-  let targetRef = ref;
+function resolveModulePath(root, currentFile, rawRef, fileSet, tsconfigPaths) {
+  const ref = stripRefSuffix(rawRef);
+  if (!ref) return null;
+
+  const candidatePaths = [];
+
   for (const [alias, targetDir] of Object.entries(tsconfigPaths)) {
-    if (targetRef === alias || targetRef.startsWith(alias + '/')) {
-      const rel = targetRef.slice(alias.length).replace(/^\//, '');
+    if (ref === alias || ref.startsWith(alias + '/')) {
+      const rel = ref.slice(alias.length).replace(/^\//, '');
       candidatePaths.push(path.join(targetDir, rel));
       break;
     }
@@ -180,54 +247,120 @@ function resolveModulePath(root, currentFile, ref, fileSet, tsconfigPaths) {
     if (ref.startsWith('.')) {
       const currentDir = path.dirname(path.join(root, currentFile));
       candidatePaths.push(path.resolve(currentDir, ref));
-    } else if (!ref.startsWith('/')) {
-      // Node module or absolute in root
+    } else if (ref.startsWith('/')) {
+      const cleanRootRef = ref.replace(/^\/+/, '');
+      candidatePaths.push(path.join(root, cleanRootRef));
+      candidatePaths.push(path.join(root, 'src', cleanRootRef));
+      candidatePaths.push(path.join(root, 'public', cleanRootRef));
+    } else {
       candidatePaths.push(path.join(root, ref));
+      candidatePaths.push(path.join(root, 'src', ref));
     }
   }
 
-  const extensions = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.css', '.json', '/index.ts', '/index.tsx', '/index.js', '/index.jsx'];
+  const extensions = [
+    '',
+    '.ts',
+    '.tsx',
+    '.mts',
+    '.cts',
+    '.js',
+    '.jsx',
+    '.mjs',
+    '.cjs',
+    '.css',
+    '.scss',
+    '.json',
+    '/index.ts',
+    '/index.tsx',
+    '/index.js',
+    '/index.jsx'
+  ];
+
+  // TypeScript allowImportingTsExtensions maps foo.js -> foo.ts / foo.tsx
+  const tsAlternateExtensions = {
+    '.js': ['.ts', '.tsx', '.js', '.jsx'],
+    '.jsx': ['.tsx', '.jsx'],
+    '.mjs': ['.mts', '.mjs'],
+    '.cjs': ['.cts', '.cjs']
+  };
 
   for (const base of candidatePaths) {
+    const baseExt = path.extname(base).toLowerCase();
+    if (tsAlternateExtensions[baseExt]) {
+      const stem = base.slice(0, -baseExt.length);
+      for (const altExt of tsAlternateExtensions[baseExt]) {
+        const rel = path.relative(root, stem + altExt).replace(/\\/g, '/');
+        if (fileSet.has(rel)) return rel;
+      }
+    }
+
     for (const ext of extensions) {
       const full = base + ext;
       const rel = path.relative(root, full).replace(/\\/g, '/');
-      if (fileSet.has(rel)) {
-        return rel;
-      }
+      if (fileSet.has(rel)) return rel;
     }
   }
 
   return null;
 }
 
+function yieldEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 async function scanJunk(root, onProgress) {
   let cancelled = false;
-  const cancel = () => { cancelled = true; };
+  const cancel = () => {
+    cancelled = true;
+  };
 
-  if (typeof onProgress === 'function') {
-    onProgress({ step: 'discovering', current: 0, total: 0, message: 'Discovering project files...' });
-  }
+  const emitProgress = (payload) => {
+    if (typeof onProgress === 'function') {
+      onProgress(payload);
+    }
+  };
+
+  emitProgress({ step: 'discovering', current: 0, total: 0, message: 'Discovering project files...' });
 
   const allFiles = []; // { relPath, fullPath, size, mtime }
   const fileSet = new Set();
+  const queueDirs = [root];
+  let discoveredCount = 0;
 
-  function walk(dir) {
-    if (cancelled) return;
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+  // Iterative async BFS directory walk with regular yields keeps UI/main responsive on 10,000+ files.
+  while (queueDirs.length > 0 && !cancelled) {
+    const dir = queueDirs.shift();
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
     for (const entry of entries) {
-      if (cancelled) return;
+      if (cancelled) break;
       const fullPath = path.join(dir, entry.name);
       const relPath = path.relative(root, fullPath).replace(/\\/g, '/');
       if (entry.isDirectory()) {
         if (IGNORE_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
-        walk(fullPath);
+        queueDirs.push(fullPath);
       } else if (entry.isFile()) {
         if (isWhitelisted(relPath)) continue;
         try {
-          const stats = fs.statSync(fullPath);
+          const stats = await fsp.stat(fullPath);
           allFiles.push({ relPath, fullPath, size: stats.size, mtime: stats.mtimeMs });
           fileSet.add(relPath);
+          discoveredCount += 1;
+          if (discoveredCount % 100 === 0) {
+            emitProgress({
+              step: 'discovering',
+              current: discoveredCount,
+              total: 0,
+              message: `Indexed ${discoveredCount} workspace files...`
+            });
+            await yieldEventLoop();
+          }
         } catch {
           // ignore stat errors
         }
@@ -235,15 +368,24 @@ async function scanJunk(root, onProgress) {
     }
   }
 
-  walk(root);
-  if (cancelled) return { unusedFiles: [], deadFolders: [], stats: { total: 0, unused: 0, reclaimableBytes: 0 } };
-
-  if (typeof onProgress === 'function') {
-    onProgress({ step: 'resolving', current: allFiles.length, total: allFiles.length, message: 'Resolving dependency graph...' });
+  if (cancelled) {
+    return {
+      unusedFiles: [],
+      deadFolders: [],
+      stats: { total: 0, unused: 0, reclaimableBytes: 0, highConfidenceCount: 0, reviewCount: 0 },
+      cancel
+    };
   }
 
-  const tsconfigPaths = resolveTsconfigPaths(root);
-  const pkgEntries = extractPackageJsonEntries(root);
+  emitProgress({
+    step: 'resolving',
+    current: allFiles.length,
+    total: allFiles.length,
+    message: 'Resolving dependency graph...'
+  });
+
+  const tsconfigPaths = await resolveTsconfigPaths(root);
+  const pkgEntries = await extractPackageJsonEntries(root);
 
   const entryPoints = new Set();
   for (const f of allFiles) {
@@ -251,35 +393,34 @@ async function scanJunk(root, onProgress) {
       entryPoints.add(f.relPath);
     }
   }
-  // Ensure at least one entry point if none found
   if (entryPoints.size === 0 && allFiles.length > 0) {
     entryPoints.add(allFiles[0].relPath);
   }
 
-  // Graph traversal
   const visited = new Set();
   const queue = [...entryPoints];
+  let queueHead = 0;
   for (const ep of queue) visited.add(ep);
 
   let processedCount = 0;
   const totalFiles = allFiles.length;
-
   const fileMap = new Map();
   for (const f of allFiles) fileMap.set(f.relPath, f);
 
-  while (queue.length > 0 && !cancelled) {
-    const current = queue.shift();
+  while (queueHead < queue.length && !cancelled) {
+    const current = queue[queueHead++];
     const fileObj = fileMap.get(current);
     if (!fileObj) continue;
 
     processedCount++;
-    if (typeof onProgress === 'function' && processedCount % 20 === 0) {
-      onProgress({ step: 'analyzing', current: processedCount, total: totalFiles, message: `Analyzing ${current}...` });
+    if (processedCount % 40 === 0) {
+      emitProgress({ step: 'analyzing', current: processedCount, total: totalFiles, message: `Analyzing ${current}...` });
+      await yieldEventLoop();
     }
 
     try {
       const ext = path.extname(current).toLowerCase();
-      const content = fs.readFileSync(fileObj.fullPath, 'utf8');
+      const content = await fsp.readFile(fileObj.fullPath, 'utf8');
       const refs = extractReferences(current, content, ext);
 
       for (const ref of refs) {
@@ -294,14 +435,30 @@ async function scanJunk(root, onProgress) {
     }
   }
 
-  if (cancelled) return { unusedFiles: [], deadFolders: [], stats: { total: 0, unused: 0, reclaimableBytes: 0 } };
+  if (cancelled) {
+    return {
+      unusedFiles: [],
+      deadFolders: [],
+      stats: { total: 0, unused: 0, reclaimableBytes: 0, highConfidenceCount: 0, reviewCount: 0 },
+      cancel
+    };
+  }
 
-  const unusedFiles = allFiles.filter((f) => !visited.has(f.relPath));
-  let reclaimableBytes = unusedFiles.reduce((acc, f) => acc + f.size, 0);
+  const unusedFiles = allFiles
+    .filter((f) => !visited.has(f.relPath))
+    .map((f) => ({
+      path: f.relPath,
+      size: f.size,
+      mtime: f.mtime,
+      confidence: classifyUnusedConfidence(f.relPath)
+    }));
 
-  // Dead folder detection
-  const unusedSet = new Set(unusedFiles.map((f) => f.relPath));
-  const dirMap = new Map(); // dir -> { totalFiles: Set, unusedFiles: Set }
+  const reclaimableBytes = unusedFiles.reduce((acc, f) => acc + f.size, 0);
+  const highConfidenceCount = unusedFiles.filter((f) => f.confidence === 'high').length;
+  const reviewCount = unusedFiles.length - highConfidenceCount;
+
+  const unusedSet = new Set(unusedFiles.map((f) => f.path));
+  const dirMap = new Map();
 
   for (const f of allFiles) {
     const dir = path.dirname(f.relPath);
@@ -323,31 +480,35 @@ async function scanJunk(root, onProgress) {
     }
   }
 
-  // Sort dead dirs by depth (deepest first) to avoid redundant parent/child reporting
   deadDirs.sort((a, b) => b.split('/').length - a.split('/').length);
   const filteredDeadDirs = [];
   const coveredDirs = new Set();
   for (const d of deadDirs) {
     if (![...coveredDirs].some((cd) => d === cd || d.startsWith(cd + '/'))) {
-      filteredDeadDirs.add ? filteredDeadDirs.push(d) : filteredDeadDirs.push(d);
+      filteredDeadDirs.push(d);
       coveredDirs.add(d);
     }
   }
 
   return {
-    unusedFiles: unusedFiles.map((f) => ({
-      path: f.relPath,
-      size: f.size,
-      mtime: f.mtime
-    })),
+    unusedFiles,
     deadFolders: filteredDeadDirs,
     stats: {
       total: allFiles.length,
       unused: unusedFiles.length,
-      reclaimableBytes
+      reclaimableBytes,
+      highConfidenceCount,
+      reviewCount
     },
     cancel
   };
 }
 
-module.exports = { scanJunk };
+module.exports = {
+  scanJunk,
+  isDefaultEntry,
+  isWhitelisted,
+  classifyUnusedConfidence,
+  extractReferences,
+  resolveModulePath
+};

@@ -31,10 +31,6 @@ export const metadata: Metadata = {
 }
 
 const eyebrow = 'text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--ac)]'
-const chip =
-  'rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--ink2)]'
-const badge =
-  'inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--bg2)] px-3 py-1 text-[11px] font-semibold text-[var(--ink2)]'
 
 const GITHUB_PROFILE = 'https://github.com/iamsouravmourya-jpg'
 const LINKEDIN_PROFILE = 'https://www.linkedin.com/in/sourav-maurya-45b272377'
@@ -47,11 +43,11 @@ const makerLinks: { icon: typeof Globe; label: string; href: string }[] = [
   { icon: Globe, label: 'shadrox.cyou', href: SITE_URL },
 ]
 
-const before = ['editor', 'terminal', 'browser preview', 'separate AI tool']
-const inside = ['files', 'editor', 'AI chat', 'preview', 'Git tools', 'terminal']
+const before = ['editor', 'terminal', 'browser preview', 'debugger', 'separate AI tool']
+const inside = ['files', 'editor', 'AI chat', 'bundled debugger', 'offline scanner', 'preview', 'Git', 'terminal']
 
 const stack: { icon: typeof Cpu; name: string; detail: string }[] = [
-  { icon: Cpu, name: 'Electron', detail: 'v44' },
+  { icon: Cpu, name: 'Electron', detail: 'v44 · js-debug' },
   { icon: Atom, name: 'React', detail: 'v19' },
   { icon: CodeXml, name: 'CodeMirror', detail: 'v6' },
   { icon: SquareTerminal, name: 'xterm.js', detail: 'terminal' },
@@ -128,14 +124,16 @@ export default function AboutPage() {
                     Full-stack developer &amp; AI engineer
                   </p>
 
-                  <div className="mt-5 flex flex-wrap gap-2">
-                    <span className={badge}>19 years old</span>
-                    <span className={badge}>
+                  <p className="mt-4 flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono text-[11px] text-[var(--ink2)]">
+                    <span>19 years old</span>
+                    <span className="text-[var(--mut)]">·</span>
+                    <span className="inline-flex items-center gap-1">
                       <MapPin className="size-3 text-[var(--ac)]" strokeWidth={2} />
                       Delhi, India
                     </span>
-                    <span className={badge}>Solo maintainer</span>
-                  </div>
+                    <span className="text-[var(--mut)]">·</span>
+                    <span>Solo maintainer</span>
+                  </p>
 
                   <p className="mt-6 border-t border-[var(--line)] pt-6 text-[13px] leading-6 text-[var(--mut)]">
                     Maintains the desktop app, this website and the GitHub repo — one person,
@@ -193,16 +191,12 @@ export default function AboutPage() {
 
                 {/* Before → now */}
                 <div className="mt-8 rounded-2xl border border-[var(--line)] bg-[var(--bg2)] p-5">
-                  <p className="mb-2.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--mut)]">
+                  <p className="mb-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--mut)]">
                     Before
                   </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {before.map((b) => (
-                      <code key={b} className={chip}>
-                        {b}
-                      </code>
-                    ))}
-                  </div>
+                  <p className="font-mono text-xs leading-6 text-[var(--ink2)]">
+                    {before.join(' · ')}
+                  </p>
 
                   <div className="my-4 flex items-center gap-3" aria-hidden>
                     <span className="h-px flex-1 bg-[var(--line)]" />
@@ -210,19 +204,12 @@ export default function AboutPage() {
                     <span className="h-px flex-1 bg-[var(--line)]" />
                   </div>
 
-                  <p className="mb-2.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--mut)]">
+                  <p className="mb-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--mut)]">
                     One app
                   </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {inside.map((s) => (
-                      <code
-                        key={s}
-                        className="rounded-md border border-[var(--line)] bg-[var(--card)] px-2 py-0.5 font-mono text-[11px] font-semibold text-[var(--ac)]"
-                      >
-                        {s}
-                      </code>
-                    ))}
-                  </div>
+                  <p className="font-mono text-xs font-semibold leading-6 text-[var(--ac)]">
+                    {inside.join(' · ')}
+                  </p>
                 </div>
               </div>
             </Reveal>

@@ -2436,7 +2436,7 @@ export function ChatPanel({
               </div>
 
               {/* Attach File */}
-              <div ref={attachMenuRef} className="relative">
+              <div ref={attachMenuRef} className="relative flex items-center gap-1">
                 <button
                   type="button"
                   onClick={() => setIsAttachMenuOpen((open) => !open)}

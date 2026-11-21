@@ -49,7 +49,7 @@ import {
 import { copyToClipboard, downloadFile, downloadWorkspaceZip, estimateTokens, formatCode } from '../lib/toolUtils';
 import { confirmAction } from '../lib/confirm';
 import { resolveActiveFileIndex } from '../lib/activeFile';
-import { getLanguageExtension, detectLanguage } from '../lib/languages';
+import { detectLanguage, getCachedLanguageExtension, loadLanguageExtension, resolveLanguageLoaderKey } from '../lib/languages';
 import { ghostText } from '../lib/ghostText';
 import {
   FIM_FAILURE_HINT_THRESHOLD,
@@ -967,6 +967,28 @@ export function CodeEditor({
 
   const resolvedTheme = useSyncExternalStore(subscribeTheme, getResolvedTheme, () => 'dark' as const);
 
+  const activeLangKey = activeFile
+    ? resolveLanguageLoaderKey(activeFile.name, activeFile.language)
+    : null;
+  const [loadedLang, setLoadedLang] = useState<{ key: string; ext: Extension } | null>(null);
+
+  useEffect(() => {
+    if (!activeFile || !activeLangKey) return;
+    if (getCachedLanguageExtension(activeFile.name, activeFile.language)) return;
+    let cancelled = false;
+    void loadLanguageExtension(activeFile.name, activeFile.language).then((ext) => {
+      if (!cancelled && ext) setLoadedLang({ key: activeLangKey, ext });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeFile?.name, activeFile?.language, activeLangKey]);
+
+  const activeLanguageExtension = activeFile
+    ? (getCachedLanguageExtension(activeFile.name, activeFile.language) ??
+        (loadedLang && loadedLang.key === activeLangKey ? loadedLang.ext : null))
+    : null;
+
   const extensions = useMemo(() => {
     const list: Extension[] = [
       SURFACE_THEME,
@@ -980,9 +1002,8 @@ export function CodeEditor({
       SEMANTIC_EXTENSION,
       MULTI_CURSOR_EXTENSION
     ];
-    if (activeFile) {
-      const ext = getLanguageExtension(activeFile.name, activeFile.language);
-      if (ext) list.push(ext);
+    if (activeLanguageExtension) {
+      list.push(activeLanguageExtension);
     }
     if (editorAi?.completionEnabled) {
       list.push(
@@ -1021,7 +1042,7 @@ export function CodeEditor({
       );
     }
     return list;
-  }, [activeFile?.name, activeFile?.language, editorAi, lintExtensions, definitionExtensions, symbolExtensions, quickFixExtensions, breakpointExtension, debugHoverExtensionInstance]);
+  }, [activeFile?.name, activeFile?.language, activeLanguageExtension, editorAi, lintExtensions, definitionExtensions, symbolExtensions, quickFixExtensions, breakpointExtension, debugHoverExtensionInstance]);
 
   // Ctrl+K edits, the F2 prompt and the Ctrl+. menu are all scoped to the open
   // buffer, so a tab switch drops them along with the abort controller behind a

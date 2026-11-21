@@ -29,6 +29,24 @@ function commandBlock(report: VerificationReport): string | null {
   return lines.join('\n');
 }
 
+function failureContextBlock(report: VerificationReport): string | null {
+  const entries = report.failureContext;
+  if (!entries || entries.length === 0) return null;
+  const blocks: string[] = [];
+  for (const entry of entries) {
+    const parts: string[] = [`FILE ${entry.path} (current lines):`, entry.numberedSource];
+    if (entry.importedContracts.length > 0) {
+      const contractLines = entry.importedContracts.flatMap((imp) => [
+        `  from ${imp.path}:`,
+        ...imp.signatures.map((sig) => `    ${sig}`)
+      ]);
+      parts.push(`LOCAL IMPORT SIGNATURES USED BY ${entry.path}:`, ...contractLines);
+    }
+    blocks.push(parts.join('\n'));
+  }
+  return blocks.join('\n\n');
+}
+
 /**
  * `attemptIndex` is the number of attempts already spent on this unit (1-based
  * when describing the upcoming retry), matching the run-loop's own
@@ -53,6 +71,9 @@ export function buildRepairBrief(
   }
 
   sections.push('', 'WHAT THE CHECK FOUND:', diagnosticsBlock(report));
+
+  const context = failureContextBlock(report);
+  if (context) sections.push('', 'CURRENT FAILING FILE CONTEXT & IMPORTED SIGNATURES:', context);
 
   const command = commandBlock(report);
   if (command) sections.push('', command);

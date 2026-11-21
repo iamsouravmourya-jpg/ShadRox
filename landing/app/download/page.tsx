@@ -30,9 +30,6 @@ export const metadata: Metadata = {
 }
 
 const INSTALLER_NAME = `ShadRox-v${APP_VERSION}-Setup.exe`
-const FILE_BYTES = '144,905,745'
-const SHA512 =
-  '1jjcmtJntPmjnHnvA3Y3RimTd5Aor3cXnPDDup/w1c4sevffKATmoFw/d3XcqKH88VVhFU3pHbj3JbVfge1UMA=='
 const PS_CMD = `Get-FileHash .\\${INSTALLER_NAME} -Algorithm SHA512`
 const BUILD_CMD = 'npm install && npm run dist:win'
 
@@ -46,7 +43,7 @@ const steps = [
     icon: ShieldAlert,
     title: 'Confirm SmartScreen',
     text: 'The build is unsigned, so Windows SmartScreen may show a warning. That is expected for a beta installer — choose:',
-    chip: 'More info → Run anyway',
+    actionHint: 'More info → Run anyway',
   },
   {
     icon: LogIn,
@@ -180,10 +177,9 @@ export default function DownloadPage() {
               />
 
               <div className="relative">
-                <span className="inline-flex items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--bg2)] px-3.5 py-1.5 font-mono text-[11px] font-bold text-[var(--ac)]">
-                  <span className="glow-dot size-1.5 rounded-full bg-[var(--ac)]" aria-hidden />
-                  v{APP_VERSION}
-                </span>
+                <p className="font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--ac)] tabular-nums">
+                  Release v{APP_VERSION} · Windows 10 &amp; 11 · 64-bit
+                </p>
 
                 <h2 className="mx-auto mt-5 max-w-[620px] text-[clamp(1.75rem,3.6vw,2.625rem)] font-bold leading-[1.1] tracking-[-0.04em] text-[var(--ink)]">
                   Ready to <em className="font-normal italic text-[var(--ac)]">install?</em>
@@ -196,14 +192,14 @@ export default function DownloadPage() {
                 <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
                   <a
                     href={WINDOWS_DOWNLOAD_URL}
-                    className="cta-primary group w-full sm:w-auto"
+                    className="cta-primary group w-full whitespace-nowrap shrink-0 sm:w-auto"
                   >
                     <Download className="size-4" aria-hidden />
                     Download for Windows
                   </a>
                   <Link
                     href="/releases"
-                    className="cta-ghost group w-full sm:w-auto"
+                    className="cta-ghost group w-full whitespace-nowrap shrink-0 sm:w-auto"
                   >
                     All releases
                     <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" aria-hidden />
@@ -211,7 +207,7 @@ export default function DownloadPage() {
                 </div>
 
                 <p className="mt-6 text-xs font-medium text-[var(--mut)]">
-                  Windows 10 / 11 · 64-bit · ~138 MB · Free during beta
+                  Bundled Node debugger · Offline junk scanner · Free during beta
                 </p>
                 <p className="mt-2 break-all font-mono text-[11px] text-[var(--mut)]">{INSTALLER_NAME}</p>
 
@@ -243,10 +239,10 @@ export default function DownloadPage() {
           />
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {steps.map(({ icon: Icon, title, text, chip }, i) => (
+            {steps.map(({ icon: Icon, title, text, actionHint }, i) => (
               <Reveal key={title} delay={i * 90} className="h-full">
                 <article className="feature-card relative flex h-full flex-col rounded-2xl border border-[var(--line)] bg-[var(--card)] p-6">
-                  <span className="absolute right-5 top-5 font-mono text-[11px] font-bold text-[var(--mut)]" aria-hidden>
+                  <span className="absolute right-5 top-5 font-mono text-[11px] font-bold tabular-nums text-[var(--mut)]" aria-hidden>
                     0{i + 1}
                   </span>
                   <span className="grid size-11 place-items-center rounded-xl border border-[var(--line)] bg-[var(--bg2)]">
@@ -256,10 +252,10 @@ export default function DownloadPage() {
                     {title}
                   </h3>
                   <p className="text-[13px] leading-6 text-[var(--mut)]">{text}</p>
-                  {chip && (
-                    <span className="mt-3 inline-block self-start rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--ink2)]">
-                      {chip}
-                    </span>
+                  {actionHint && (
+                    <p className="mt-auto border-t border-[var(--line)] pt-3 font-mono text-[11px] font-semibold text-[var(--ink2)]">
+                      {actionHint}
+                    </p>
                   )}
                 </article>
               </Reveal>
@@ -427,41 +423,28 @@ export default function DownloadPage() {
 
           <Reveal variant="scale">
             <div className="mx-auto max-w-[860px] rounded-2xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-8">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="break-all rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--ink2)]">
-                  {INSTALLER_NAME}
-                </span>
-                <span className="rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--ink2)]">
-                  {FILE_BYTES} bytes
-                </span>
-                <span className="rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--ink2)]">
-                  ~138 MB
-                </span>
-              </div>
+              <p className="break-all font-mono text-xs text-[var(--ink2)]">
+                {INSTALLER_NAME} <span className="text-[var(--mut)]">· Windows x64 NSIS</span>
+              </p>
 
               {/* SHA-512 */}
-              <div className="mt-7">
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--mut)]">
-                    <Fingerprint className="size-3.5 text-[var(--ac)]" aria-hidden />
-                    SHA-512 · base64
-                  </span>
-                  <CopyButton value={SHA512} label="Copy hash" />
-                </div>
-                <p className="break-all rounded-lg border border-[var(--line)] bg-[var(--bg2)] p-4 font-mono text-[12px] leading-6 text-[var(--ink2)]">
-                  {SHA512}
-                </p>
-                <p className="mt-2 text-xs leading-5 text-[var(--mut)]">
-                  This is the hash from{' '}
+              <div className="mt-6">
+                <span className="inline-flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--mut)]">
+                  <Fingerprint className="size-3.5 text-[var(--ac)]" aria-hidden />
+                  SHA-512 · published in latest.yml
+                </span>
+                <p className="mt-2.5 text-sm leading-6 text-[var(--mut)]">
+                  Each release workflow generates a fresh base64 SHA-512 digest inside{' '}
+                  <code className="font-mono text-xs text-[var(--ink2)]">latest.yml</code> on{' '}
                   <a
                     href={LATEST_RELEASE_URL}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="font-semibold text-[var(--ac)] underline-offset-2 hover:underline"
                   >
-                    latest.yml on the release page
+                    the v{APP_VERSION} GitHub Release page
                   </a>
-                  .
+                  . Compare that published value against your local installer before running.
                 </p>
               </div>
 
@@ -479,8 +462,7 @@ export default function DownloadPage() {
                 </p>
                 <p className="mt-2 text-xs leading-5 text-[var(--mut)]">
                   PowerShell prints the hash in hex, while latest.yml publishes it in base64. Convert
-                  one to compare, or compare with the hash published in latest.yml on the release
-                  page.
+                  one to compare against the published value in latest.yml.
                 </p>
               </div>
             </div>

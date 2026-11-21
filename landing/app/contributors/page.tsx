@@ -88,8 +88,8 @@ export default function ContributorsPage() {
                   {initials(FOUNDER.name)}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--bg2)] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--ac)]">
-                    <Crown className="size-3" strokeWidth={2} />
+                  <p className="inline-flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--ac)]">
+                    <Crown className="size-3.5" strokeWidth={2} />
                     The one who built it
                   </p>
                   <h3 className="mt-3 text-xl font-bold tracking-[-0.02em] text-[var(--ink)]">

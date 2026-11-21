@@ -676,3 +676,18 @@ test('summaryReport.tasksCompleted matches passed count when tasks fail and form
   );
 });
 
+test('runTeam fails immediately with clear missing target warning when goal asks to modify non-existent files', async () => {
+  const h = harness({
+    tasks: [plannedTask({ id: 't1', expectedFiles: ['src/a.ts'] })],
+    errors: []
+  });
+  const state = await h.run('Fix null check in src/missing-module.ts');
+
+  assert.equal(state.status, 'failed');
+  assert.match(state.error ?? '', /src\/missing-module\.ts/);
+  assert.equal(h.turns.length, 0);
+  assert.equal(h.checkpoints(), 0);
+  assert.ok(h.events.some((e) => e.type === 'team:log' && /Missing target file/i.test(e.text)));
+});
+
+

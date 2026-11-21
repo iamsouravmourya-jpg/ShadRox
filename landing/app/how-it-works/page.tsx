@@ -31,7 +31,7 @@ type SessionStep = {
   num: string
   title: string
   text: string
-  chips: string[]
+  specs: string[]
 }
 
 const sessionSteps: SessionStep[] = [
@@ -40,35 +40,35 @@ const sessionSteps: SessionStep[] = [
     num: '01',
     title: 'Sign in with Google',
     text: 'The first screen opens your browser to continue with Google, then returns you to the app. ShadRox stores only five things about you:',
-    chips: ['email', 'name', 'avatar URL', 'app version', 'platform'],
+    specs: ['email', 'name', 'avatar URL', 'app version', 'platform'],
   },
   {
     icon: FolderOpen,
     num: '02',
     title: 'Open a local folder',
-    text: 'Choose any project folder on your computer. ShadRox builds a compact repo map and loads your rule files automatically — no cloud sync, no upload. Rule files it picks up:',
-    chips: ['.cursorrules', 'AGENTS.md', 'SHADROX.md'],
+    text: 'Choose any project folder on your computer. ShadRox builds a compact repo map and loads your rule files automatically — no cloud sync, no upload.',
+    specs: ['.cursorrules', 'AGENTS.md', 'SHADROX.md'],
   },
   {
     icon: KeyRound,
     num: '03',
     title: 'Connect a provider',
     text: 'Add a Gemini, Groq, or OpenAI-compatible key — local runtimes work too, so Ollama and LM Studio can keep inference on your machine. Keys live in OS-backed encrypted storage.',
-    chips: ['Gemini', 'Groq', 'OpenAI-compatible', 'Ollama', 'LM Studio'],
+    specs: ['Gemini', 'Groq', 'OpenAI-compatible', 'Ollama', 'LM Studio'],
   },
   {
     icon: MessagesSquare,
     num: '04',
     title: 'Ask, then review',
-    text: 'Chat in plain language, @-mention exactly the context you want included, or select code and press Ctrl+K. Every proposed change arrives as a diff you accept or reject — and follow-ups queue while a turn is still running.',
-    chips: ['@file', '@folder', '@problems', '@git-changes', 'Ctrl+K'],
+    text: 'Chat in plain language, @-mention exactly the context you want included, or select code and press Ctrl+K. Every proposed change arrives as a diff you accept or reject.',
+    specs: ['@file', '@folder', '@problems', '@git-changes', 'Ctrl+K'],
   },
   {
     icon: GitCommitHorizontal,
     num: '05',
-    title: 'Run, preview, commit',
-    text: 'Launch a detected preview with your approval, use the integrated terminal when you need it, then stage your diffs and commit with an AI-written message.',
-    chips: ['terminal', 'stage diffs', 'AI commit message'],
+    title: 'Run, debug, clean & commit',
+    text: 'Launch a detected preview with your approval, debug Node scripts with bundled @vscode/js-debug, sweep unreachable junk offline to OS Trash, and commit with AI.',
+    specs: ['bundled debugger', 'offline junk scan', 'terminal', 'AI commit message'],
   },
 ]
 
@@ -89,14 +89,6 @@ const ownership = [
     text: 'AI changes arrive as diffs. Nothing lands in your files until you accept it.',
   },
 ]
-
-function Chip({ children }: { children: string }) {
-  return (
-    <span className="rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--ink2)]">
-      {children}
-    </span>
-  )
-}
 
 export default function HowItWorksPage() {
   return (
@@ -132,33 +124,30 @@ export default function HowItWorksPage() {
                 </p>
               </Reveal>
               <Reveal delay={240}>
-                <div className="mt-7 flex flex-wrap items-center gap-2">
-                  <Chip>{`v${APP_VERSION}`}</Chip>
-                  <Chip>Windows 10 / 11 · 64-bit</Chip>
-                </div>
+                <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--mut)] tabular-nums">
+                  v{APP_VERSION} · Windows 10 / 11 · 64-bit
+                </p>
               </Reveal>
             </div>
 
             {/* Step cards */}
             <div className="flex flex-col gap-5">
-              {sessionSteps.map(({ icon: Icon, num, title, text, chips }, i) => (
+              {sessionSteps.map(({ icon: Icon, num, title, text, specs }, i) => (
                 <Reveal key={num} delay={i * 80}>
                   <article className="feature-card rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-8">
                     <div className="flex items-start gap-4 sm:gap-5">
-                      <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[linear-gradient(135deg,var(--ac),var(--pink))] font-mono text-xs font-bold text-white shadow-[0_6px_18px_var(--glow)]">
+                      <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[linear-gradient(135deg,var(--ac),var(--pink))] font-mono text-xs font-bold tabular-nums text-white shadow-[0_6px_18px_var(--glow)]">
                         {num}
                       </span>
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="mb-2 flex items-center gap-2">
                           <Icon className="size-4 shrink-0 text-[var(--ac)] opacity-80" strokeWidth={1.75} />
                           <h3 className="text-base font-bold text-[var(--ink)]">{title}</h3>
                         </div>
                         <p className="text-sm leading-6 text-[var(--mut)]">{text}</p>
-                        <div className="mt-4 flex flex-wrap gap-2">
-                          {chips.map((c) => (
-                            <Chip key={c}>{c}</Chip>
-                          ))}
-                        </div>
+                        <p className="mt-4 border-t border-[var(--line)] pt-3 font-mono text-[11px] leading-5 text-[var(--mut)]">
+                          {specs.join(' · ')}
+                        </p>
                       </div>
                     </div>
                   </article>

@@ -383,3 +383,44 @@ test('stop() terminates the adapter child and reports terminated', async (t) => 
   assert.equal(host.state('ws').status, 'idle');
   assert.ok(events.some((event) => event.type === 'terminated'));
 });
+
+test('bundled @vscode/js-debug launches without external approval, pauses on breakpoints, and reads locals', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shadrox-bundled-dbg-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(
+    path.join(root, 'index.js'),
+    'const greeting = "hello-shadrox";\nconsole.log(greeting);\nsetTimeout(() => {}, 1000);\n'
+  );
+
+  let approvalCalls = 0;
+  const events = [];
+  const host = makeHost(root, events);
+  t.after(() => host.disposeAll());
+
+  const configs = host.configs('ws');
+  assert.equal(configs.found, true);
+  assert.equal(configs.error, null);
+  assert.ok(configs.configurations.some((c) => c.program === 'index.js'));
+
+  await host.setBreakpoints('ws', 'index.js', [2]);
+  await host.start('ws', undefined, async () => {
+    approvalCalls += 1;
+    return true;
+  });
+  assert.equal(approvalCalls, 0, 'bundled js-debug should not prompt for external approval');
+
+  await waitForState(host, 'stopped', 10000);
+  const frames = await host.stack('ws');
+  assert.ok(frames.length > 0);
+  assert.equal(frames[0].file, 'index.js');
+  assert.equal(frames[0].line, 2);
+
+  const scopes = await host.scopes('ws', frames[0].id);
+  const vars = await host.variables('ws', scopes[0].variablesReference);
+  const greetingVar = vars.find((entry) => entry.name === 'greeting');
+  assert.ok(greetingVar);
+  assert.match(greetingVar.value, /hello-shadrox/);
+
+  await host.stop('ws');
+});
+

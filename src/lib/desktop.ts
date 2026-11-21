@@ -604,7 +604,7 @@ export interface DesktopAuthResult {
 /** One entry of `shadrox.debug.json` at the workspace root, after validation. */
 export interface DebugLaunchConfig {
   name: string;
-  type: 'node';
+  type: 'node' | 'python';
   request: 'launch';
   program: string;
   runtimeExecutable?: string;
@@ -628,6 +628,8 @@ export interface DebugConfigResult {
   error: string | null;
   /** True when the configurations were inferred, not read from shadrox.debug.json. */
   inferred?: boolean;
+  /** Optional non-blocking environment hint (e.g. missing debugpy for Python workspaces). */
+  hint?: string | null;
 }
 
 export interface DebugBreakpoint {
@@ -935,9 +937,15 @@ export interface ShadRoxDesktopAPI {
     appVersion: () => Promise<string>;
   };
   scanJunk?: (workspaceId: string) => Promise<{
-    unusedFiles: Array<{ path: string; size: number; mtime: number }>;
+    unusedFiles: Array<{ path: string; size: number; mtime: number; confidence: 'high' | 'review' }>;
     deadFolders: string[];
-    stats: { total: number; unused: number; reclaimableBytes: number };
+    stats: {
+      total: number;
+      unused: number;
+      reclaimableBytes: number;
+      highConfidenceCount?: number;
+      reviewCount?: number;
+    };
   }>;
   cancelJunkScan?: (workspaceId: string) => Promise<{ ok: boolean }>;
   onJunkScanProgress?: (listener: (event: { workspaceId: string; step?: string; message?: string; current?: number; total?: number }) => void) => () => void;

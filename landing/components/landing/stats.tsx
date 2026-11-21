@@ -8,14 +8,14 @@ const stats = [
   {
     value: 0,
     lead: true,
-    label: 'project files kept in cloud storage — the app opens the folder on your disk',
+    label: 'project files synced to cloud storage — files and dead-code scans run on your disk',
   },
-  { value: 3, label: 'AI provider types: Gemini, Groq, OpenAI-compatible' },
-  { value: 5, label: 'agent roles in a multi-step team run' },
+  { value: 3, label: 'AI provider families: Gemini, Groq, OpenAI-compatible (Ollama & LM Studio)' },
+  { value: 5, label: 'autonomous team roles with explicit target validation and contract-aware repair' },
   {
-    value: 14,
+    value: 40,
     label:
-      'built-in agent tools in the bounded loop — reads, search, one guarded shell command, a confirmed terminal answer and a paused-debugger snapshot',
+      'built-in agent tools across reads, edits, preview inspection, bundled js-debug telemetry and guarded commands',
   },
 ]
 

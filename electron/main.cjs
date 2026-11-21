@@ -194,8 +194,17 @@ const proofKeyring = createProofKeyring({
 const proofService = createProofService({ store: proofStore, keyring: proofKeyring });
 // The DAP host owns at most one adapter child; it is torn down on workspace
 // switch and on window close so no debuggee outlives the session that owns it.
+const bundledDebugRoots = [
+  path.join(__dirname, 'vendor', 'js-debug'),
+  path.join(app.getAppPath(), 'electron', 'vendor', 'js-debug'),
+  ...(typeof process.resourcesPath === 'string' && process.resourcesPath
+    ? [path.join(process.resourcesPath, 'js-debug'), process.resourcesPath]
+    : [])
+];
+
 const debugHost = createDebugHost({
   getWorkspace: (id) => workspaceAccess.getWorkspace(id),
+  bundledRoots: bundledDebugRoots,
   broadcast: (event) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('debug:event', event);
@@ -1689,7 +1698,7 @@ function registerDebugHandlers() {
         });
         return choice.response === 1;
       },
-      [app.getAppPath()]
+      [app.getAppPath(), ...bundledDebugRoots]
     );
   });
 
@@ -3591,7 +3600,7 @@ function registerIntegrationHandlers() {
       throw new Error('Unknown workspace.');
     }
     const absolute = path.isAbsolute(fullPath) ? path.resolve(fullPath) : path.resolve(workspace.root, fullPath);
-    if (!isPathInsideDirectory(workspace.root, absolute)) {
+    if (path.resolve(workspace.root) === absolute || !isPathInsideDirectory(workspace.root, absolute)) {
       throw new Error('Path traversal violation: target is outside workspace root.');
     }
     if (!fs.existsSync(absolute)) {

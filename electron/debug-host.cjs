@@ -20,7 +20,7 @@ const { spawn } = require('node:child_process');
 const { isPathInsideDirectory } = require('./desktop-security.cjs');
 const { resolveExecutable } = require('./preview-runtime.cjs');
 const { createFrameParser, encodeFrame } = require('./dap-framing.cjs');
-const { inferLaunchConfigs } = require('./debug-autoconfig.cjs');
+const { inferLaunchResult } = require('./debug-autoconfig.cjs');
 
 const MAX_CONFIG_BYTES = 256 * 1024;
 const MAX_CONFIGURATIONS = 10;
@@ -92,13 +92,50 @@ function normalizeStringArray(value, label) {
   });
 }
 
-function jsDebugCandidates(root) {
+function defaultBundledRoots() {
+  const candidates = [
+    path.join(__dirname, 'vendor', 'js-debug'),
+    path.join(__dirname, 'vendor'),
+    __dirname,
+    ...(typeof process.resourcesPath === 'string' && process.resourcesPath
+      ? [path.join(process.resourcesPath, 'js-debug'), process.resourcesPath]
+      : [])
+  ];
+  const seen = new Set();
+  return candidates.filter((dir) => {
+    const resolved = path.resolve(dir);
+    if (seen.has(resolved)) return false;
+    seen.add(resolved);
+    try {
+      return fs.statSync(resolved).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+}
+
+function jsDebugCandidates(root, bundledRoots = defaultBundledRoots()) {
   const bin = process.platform === 'win32' ? ['js-debug-adapter.cmd', 'js-debug-adapter.exe', 'js-debug-adapter'] : ['js-debug-adapter'];
-  return [
+  const workspaceCandidates = [
     ...bin.map((name) => path.join(root, 'node_modules', '.bin', name)),
     path.join(root, 'node_modules', '@vscode', 'js-debug', 'src', 'dapDebugServer.js'),
     path.join(root, 'node_modules', '@vscode', 'js-debug', 'dist', 'src', 'dapDebugServer.js')
   ];
+  const bundledCandidates = [];
+  for (const bundledRoot of Array.isArray(bundledRoots) ? bundledRoots : []) {
+    if (typeof bundledRoot !== 'string' || !bundledRoot) continue;
+    bundledCandidates.push(
+      path.join(bundledRoot, 'src', 'dapDebugServer.js'),
+      path.join(bundledRoot, 'dist', 'src', 'dapDebugServer.js'),
+      path.join(bundledRoot, 'js-debug', 'src', 'dapDebugServer.js'),
+      path.join(bundledRoot, 'js-debug', 'dist', 'src', 'dapDebugServer.js'),
+      path.join(bundledRoot, 'vendor', 'js-debug', 'src', 'dapDebugServer.js'),
+      path.join(bundledRoot, 'node_modules', '@vscode', 'js-debug', 'src', 'dapDebugServer.js'),
+      path.join(bundledRoot, 'node_modules', '@vscode', 'js-debug', 'dist', 'src', 'dapDebugServer.js'),
+      ...bin.map((name) => path.join(bundledRoot, 'node_modules', '.bin', name))
+    );
+  }
+  return [...workspaceCandidates, ...bundledCandidates];
 }
 
 function firstExisting(candidates) {
@@ -115,10 +152,10 @@ function firstExisting(candidates) {
 /**
  * Point a configured adapter at a real executable without a shell.
  * Bare names are resolved from PATH (never the workspace); path-looking
- * values must exist inside the workspace. A `js-debug-adapter` name falls
- * back to the workspace's installed adapter when PATH has no such binary.
+ * values must exist inside the workspace (or ShadRox's bundled @vscode/js-debug).
+ * A `js-debug-adapter` name falls back to workspace or bundled js-debug.
  */
-function resolveAdapterCommand(command, root) {
+function resolveAdapterCommand(command, root, bundledRoots = defaultBundledRoots()) {
   if (typeof command !== 'string' || !command.trim()) {
     throw new Error('adapterCommand must be a non-empty string.');
   }
@@ -126,20 +163,21 @@ function resolveAdapterCommand(command, root) {
   if (hasControlCharacters(command)) throw new Error('adapterCommand contains a NUL or newline, which is not allowed.');
 
   if (isPathLike(command)) {
-    // An absolute adapter path (a system Node, a debugpy venv) may live outside
-    // the workspace just like a PATH-resolved executable; a relative one must
-    // stay inside it. Either way it is spawned as argv, never through a shell.
     const absolute = path.isAbsolute(command) ? path.resolve(command) : resolveInside(root, command, 'adapterCommand');
     try {
       if (fs.statSync(absolute).isFile()) return absolute;
     } catch {
-      // fall through to the install hint
+      // Also allow explicit relative reference to node_modules/@vscode/js-debug/... to fall back to bundled adapter.
+      if (!path.isAbsolute(command) && /(?:^|[\\/])@vscode[\\/]js-debug(?:[\\/]|$)/i.test(command)) {
+        const bundled = firstExisting(jsDebugCandidates(root, bundledRoots));
+        if (bundled) return bundled;
+      }
     }
     throw new Error(`Debug adapter not found at ${absolute}. ${JS_DEBUG_INSTALL_HINT}`);
   }
 
   if (/^js-debug-adapter(?:\.exe)?$/i.test(command)) {
-    const installed = firstExisting(jsDebugCandidates(root));
+    const installed = firstExisting(jsDebugCandidates(root, bundledRoots));
     if (installed) return installed;
     throw new Error(`Debug adapter "${command}" is not installed in this workspace. ${JS_DEBUG_INSTALL_HINT}`);
   }
@@ -153,8 +191,8 @@ function resolveAdapterCommand(command, root) {
   return resolved;
 }
 
-/** Resolve `.js` adapter-entry arguments and verify they exist inside the workspace. */
-function resolveAdapterArgs(args, root) {
+/** Resolve `.js` adapter-entry arguments and verify they exist inside the workspace or bundled roots. */
+function resolveAdapterArgs(args, root, bundledRoots = defaultBundledRoots()) {
   return args.map((arg) => {
     if (arg.startsWith('-')) return arg;
     if (/\.[cm]?js$/i.test(arg)) {
@@ -162,7 +200,17 @@ function resolveAdapterArgs(args, root) {
       try {
         if (fs.statSync(absolute).isFile()) return absolute;
       } catch {
-        // fall through to the actionable error
+        for (const bundledRoot of Array.isArray(bundledRoots) ? bundledRoots : []) {
+          if (typeof bundledRoot !== 'string' || !bundledRoot) continue;
+          const candidate = path.resolve(bundledRoot, arg);
+          if (isPathInsideDirectory(bundledRoot, candidate)) {
+            try {
+              if (fs.statSync(candidate).isFile()) return candidate;
+            } catch {
+              // continue
+            }
+          }
+        }
       }
       throw new Error(`Debug adapter entry not found at ${absolute}. ${JS_DEBUG_INSTALL_HINT}`);
     }
@@ -170,7 +218,7 @@ function resolveAdapterArgs(args, root) {
   });
 }
 
-function normalizeConfig(raw, index, root, names) {
+function normalizeConfig(raw, index, root, names, bundledRoots = defaultBundledRoots()) {
   const label = `configurations[${index}]`;
   if (!isPlainObject(raw)) throw new Error(`${label} must be an object.`);
   if (typeof raw.name !== 'string' || !raw.name.trim()) throw new Error(`${label}.name is required.`);
@@ -179,7 +227,7 @@ function normalizeConfig(raw, index, root, names) {
   if (names.has(name)) throw new Error(`Duplicate launch configuration name: ${name}`);
   names.add(name);
 
-  if (raw.type !== 'node') throw new Error(`${label}.type must be "node".`);
+  if (raw.type !== 'node' && raw.type !== 'python') throw new Error(`${label}.type must be "node" or "python".`);
   if (raw.request !== 'launch') throw new Error(`${label}.request must be "launch".`);
 
   if (typeof raw.program !== 'string' || !raw.program.trim()) throw new Error(`${label}.program is required.`);
@@ -214,12 +262,12 @@ function normalizeConfig(raw, index, root, names) {
   }
 
   if (typeof raw.adapterCommand !== 'string') throw new Error(`${label}.adapterCommand is required.`);
-  const adapterCommand = resolveAdapterCommand(raw.adapterCommand, root);
-  const adapterArgs = resolveAdapterArgs(normalizeStringArray(raw.adapterArgs, `${label}.adapterArgs`), root);
+  const adapterCommand = resolveAdapterCommand(raw.adapterCommand, root, bundledRoots);
+  const adapterArgs = resolveAdapterArgs(normalizeStringArray(raw.adapterArgs, `${label}.adapterArgs`), root, bundledRoots);
 
   return {
     name,
-    type: 'node',
+    type: raw.type,
     request: 'launch',
     program: raw.program,
     runtimeExecutable,
@@ -240,13 +288,14 @@ function normalizeConfig(raw, index, root, names) {
  * Returns `{ found, path, configurations, error }`; a missing file is not an
  * error, it is the honest "no debug configuration" empty state.
  */
-function readLaunchConfigs(root) {
+function readLaunchConfigs(root, bundledRoots = defaultBundledRoots()) {
   const file = path.join(root, 'shadrox.debug.json');
   let parsed = null;
   let inferred = false;
+  let hint = null;
   try {
     const stat = fs.statSync(file);
-    if (!stat.isFile()) return { found: false, path: file, configurations: [], resolved: [], error: 'shadrox.debug.json is not a regular file.', inferred: false };
+    if (!stat.isFile()) return { found: false, path: file, configurations: [], resolved: [], error: 'shadrox.debug.json is not a regular file.', inferred: false, hint: null };
     if (stat.size > MAX_CONFIG_BYTES) {
       return {
         found: true,
@@ -254,29 +303,32 @@ function readLaunchConfigs(root) {
         configurations: [],
         resolved: [],
         error: `shadrox.debug.json is ${stat.size} bytes; the limit is ${MAX_CONFIG_BYTES} bytes.`,
-        inferred: false
+        inferred: false,
+        hint: null
       };
     }
 
     try {
       parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
     } catch (error) {
-      return { found: true, path: file, configurations: [], resolved: [], error: `shadrox.debug.json is not valid JSON: ${error.message}`, inferred: false };
+      return { found: true, path: file, configurations: [], resolved: [], error: `shadrox.debug.json is not valid JSON: ${error.message}`, inferred: false, hint: null };
     }
   } catch {
     // No debug file: infer ready-to-run configurations from the workspace
     // itself. They go through the same normalizeConfig validation below, so
     // an inferred entry is indistinguishable from a hand-written one — and
     // `start()` resolves it by name exactly the same way.
-    const candidates = inferLaunchConfigs(root);
+    const inferredResult = inferLaunchResult(root);
+    hint = inferredResult.hint ?? null;
+    const candidates = inferredResult.configurations;
     if (candidates.length === 0) {
-      return { found: false, path: file, configurations: [], resolved: [], error: null, inferred: false };
+      return { found: false, path: file, configurations: [], resolved: [], error: null, inferred: false, hint };
     }
     parsed = { configurations: candidates };
     inferred = true;
   }
   if (!isPlainObject(parsed) || !Array.isArray(parsed.configurations)) {
-    return { found: true, path: file, configurations: [], resolved: [], error: 'shadrox.debug.json must be { "configurations": [...] }.', inferred };
+    return { found: true, path: file, configurations: [], resolved: [], error: 'shadrox.debug.json must be { "configurations": [...] }.', inferred, hint };
   }
   if (parsed.configurations.length > MAX_CONFIGURATIONS) {
     return {
@@ -285,7 +337,8 @@ function readLaunchConfigs(root) {
       configurations: [],
       resolved: [],
       error: `shadrox.debug.json declares ${parsed.configurations.length} configurations; the limit is ${MAX_CONFIGURATIONS}.`,
-      inferred
+      inferred,
+      hint
     };
   }
 
@@ -293,7 +346,7 @@ function readLaunchConfigs(root) {
   const names = new Set();
   try {
     parsed.configurations.forEach((raw, index) => {
-      const normalized = normalizeConfig(raw, index, root, names);
+      const normalized = normalizeConfig(raw, index, root, names, bundledRoots);
       // Strip the resolved fields from the renderer-facing copy.
       const {
         programPath: _programPath,
@@ -305,7 +358,7 @@ function readLaunchConfigs(root) {
       configurations.push({ ...publicConfig, __resolved: normalized });
     });
   } catch (error) {
-    return { found: true, path: file, configurations: [], resolved: [], error: error.message, inferred };
+    return { found: true, path: file, configurations: [], resolved: [], error: error.message, inferred, hint };
   }
 
   return {
@@ -317,7 +370,8 @@ function readLaunchConfigs(root) {
     }),
     resolved: configurations.map((entry) => entry.__resolved),
     error: null,
-    inferred
+    inferred,
+    hint
   };
 }
 
@@ -489,6 +543,7 @@ function createDapClient(child, hooks) {
 function createDebugHost(options) {
   const getWorkspace = options.getWorkspace;
   const broadcastToRenderer = typeof options.broadcast === 'function' ? options.broadcast : () => {};
+  const hostBundledRoots = Array.isArray(options.bundledRoots) ? options.bundledRoots : defaultBundledRoots();
   let session = null;
   /** Breakpoints stay meaningful while no session is running, so they outlive one. */
   const pendingBreakpoints = new Map();
@@ -700,9 +755,33 @@ function createDebugHost(options) {
     });
   }
 
+  function resolveSpawnSpec(chosen) {
+    const cmd = chosen.resolvedAdapterCommand;
+    const args = chosen.resolvedAdapterArgs || [];
+    const env = scrubEnvironment(process.env);
+    if (/\.[cm]?js$/i.test(cmd)) {
+      env.ELECTRON_RUN_AS_NODE = '1';
+      if (path.basename(cmd).toLowerCase() === 'dapdebugserver.js') {
+        const siblingBridge = path.resolve(path.dirname(cmd), '..', 'stdio-bridge.cjs');
+        const vendorBridge = path.join(__dirname, 'vendor', 'js-debug', 'stdio-bridge.cjs');
+        const bridgePath = fs.existsSync(siblingBridge)
+          ? siblingBridge
+          : fs.existsSync(vendorBridge)
+            ? vendorBridge
+            : null;
+        if (bridgePath) {
+          return { command: process.execPath, args: [bridgePath, cmd, ...args], env };
+        }
+      }
+      return { command: process.execPath, args: [cmd, ...args], env };
+    }
+    return { command: cmd, args, env };
+  }
+
   async function start(workspaceId, configName, approveExternal = async () => true, bundledRoots = []) {
     const root = workspaceRoot(workspaceId);
-    const configs = readLaunchConfigs(root);
+    const effectiveBundledRoots = [...new Set([...hostBundledRoots, ...(Array.isArray(bundledRoots) ? bundledRoots : [])])];
+    const configs = readLaunchConfigs(root, effectiveBundledRoots);
     if (!configs.found) {
       throw new Error('No shadrox.debug.json in this workspace. Add one at the workspace root to start a debug session.');
     }
@@ -716,7 +795,7 @@ function createDebugHost(options) {
         ? `No launch configuration named "${configName}" in shadrox.debug.json.`
         : 'shadrox.debug.json has no launch configurations.');
     }
-    const isBundled = bundledRoots.some((rootPath) => isPathInsideDirectory(rootPath, chosen.resolvedAdapterCommand));
+    const isBundled = effectiveBundledRoots.some((rootPath) => isPathInsideDirectory(rootPath, chosen.resolvedAdapterCommand));
     if (!isBundled && !(await approveExternal({
       command: chosen.resolvedAdapterCommand,
       args: chosen.resolvedAdapterArgs,
@@ -751,9 +830,10 @@ function createDebugHost(options) {
 
     let child;
     try {
-      child = spawn(chosen.resolvedAdapterCommand, chosen.resolvedAdapterArgs, {
+      const spawnSpec = resolveSpawnSpec(chosen);
+      child = spawn(spawnSpec.command, spawnSpec.args, {
         cwd: chosen.cwdPath,
-        env: scrubEnvironment(process.env),
+        env: spawnSpec.env,
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true
@@ -796,19 +876,20 @@ function createDebugHost(options) {
       // Register before sending initialize so an eager adapter cannot race us.
       const initialized = client.waitForEvent('initialized', START_TIMEOUT_MS);
       const initResponse = await client.request('initialize', {
-        adapterID: 'node',
+        adapterID: chosen.type,
         clientID: 'shadrox',
         clientName: 'ShadRox',
         linesStartAt1: true,
         columnsStartAt1: true,
         pathFormat: 'path',
-        supportsConfigurationDoneRequest: true
+        supportsConfigurationDoneRequest: true,
+        supportsStartDebuggingRequest: true
       }, START_TIMEOUT_MS);
       const capabilities = isPlainObject(initResponse.body) ? initResponse.body : {};
       await initialized;
 
       const launchArgs = {
-        type: 'node',
+        type: chosen.type,
         request: 'launch',
         name: chosen.name,
         program: chosen.programPath,
@@ -816,13 +897,17 @@ function createDebugHost(options) {
         args: chosen.args
       };
       if (chosen.runtimeExecutable) launchArgs.runtimeExecutable = chosen.runtimeExecutable;
-      await client.request('launch', launchArgs, START_TIMEOUT_MS);
+      // DAP adapters such as @vscode/js-debug defer responding to `launch` until
+      // initial breakpoints and `configurationDone` are delivered.
+      const launchPromise = client.request('launch', launchArgs, START_TIMEOUT_MS);
 
       await applyStoredBreakpoints(active);
 
       if (capabilities.supportsConfigurationDoneRequest === true) {
         await client.request('configurationDone', {}, START_TIMEOUT_MS);
       }
+
+      await launchPromise;
 
       if (active.status === 'starting') {
         active.status = 'running';
@@ -1021,7 +1106,7 @@ function createDebugHost(options) {
   return {
     configs: (workspaceId) => {
       const root = workspaceRoot(workspaceId);
-      const result = readLaunchConfigs(root);
+      const result = readLaunchConfigs(root, hostBundledRoots);
       return {
         found: result.found,
         path: result.path,
@@ -1054,6 +1139,8 @@ module.exports = {
   createDebugHost,
   readLaunchConfigs,
   resolveAdapterCommand,
+  defaultBundledRoots,
+  jsDebugCandidates,
   LIMITS: {
     MAX_CONFIG_BYTES,
     MAX_CONFIGURATIONS,

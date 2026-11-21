@@ -26,6 +26,7 @@ import { dedupePaths, hasTrackedPath, mergeTrackedPaths, pathsEqual, resolveCano
 import { extractErrorMessage } from './coordinatorResilience';
 import { normalizeOwnedPath } from './ownership';
 import { selectTaskMetrics } from './runView';
+import { findMissingExplicitTargets, findMissingTaskTargets } from './targetCheck';
 import {
   buildIntegrationInstruction,
   buildTaskInstruction,
@@ -202,13 +203,36 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
   deps.ports.onEvent({ type: 'team:log', text: `Coordinating: ${goal}` });
 
   try {
+    const missingGoalTargets = findMissingExplicitTargets(goal, files);
+    if (missingGoalTargets.length > 0) {
+      const targetMsg = `Target file(s) do not exist in the workspace: ${missingGoalTargets.join(', ')}. Verify the file paths or explicitly ask to create new files.`;
+      state.status = 'failed';
+      state.error = targetMsg;
+      state.summaryReport = {
+        overview: `Agent team could not start: ${targetMsg}`,
+        filesModified: [],
+        tasksCompleted: 0,
+        totalTasks: 0,
+        durationMs: Math.max(0, deps.now() - state.startedAt),
+        openIssues: [targetMsg]
+      };
+      deps.ports.onEvent({ type: 'team:log', text: `Missing target file(s): ${missingGoalTargets.join(', ')}` });
+      deps.ports.onEvent({ type: 'team:done', status: 'failed' });
+      deps.persist(state);
+      return state;
+    }
+
     await deps.beforeTurn?.({ phase: 'plan' });
     const planned = await deps.planTeam(goal, files, deps.budget);
     const tasks = planned.tasks.map(newTask);
     const errors = [...planned.errors, ...(planned.errors.length > 0 ? [] : deps.validate(tasks, deps.budget))];
-    if (errors.length > 0) {
+    const missingTaskTargets = errors.length === 0 ? findMissingTaskTargets(tasks, files) : [];
+    if (errors.length > 0 || missingTaskTargets.length > 0) {
+      const targetErrorText = missingTaskTargets
+        .map((m) => `Task "${m.taskTitle}" targets missing file "${m.path}"`)
+        .join('; ');
       state.status = 'failed';
-      state.error = describeErrors(errors);
+      state.error = [describeErrors(errors), targetErrorText].filter(Boolean).join('; ');
       state.summaryReport = {
         overview: `Agent team failed during planning: ${state.error}`,
         filesModified: [],

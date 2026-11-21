@@ -24,8 +24,6 @@ export const metadata: Metadata = {
 }
 
 const eyebrow = 'text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--ac)]'
-const chip =
-  'rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--ink2)]'
 
 const askFirstExamples = [
   'npm test',
@@ -37,7 +35,7 @@ const askFirstExamples = [
   'git status',
 ]
 
-type Row = { label: string; text: string; chips?: string[] }
+type Row = { label: string; text: string; specs?: string[] }
 
 const places: {
   icon: typeof HardDrive
@@ -51,19 +49,19 @@ const places: {
     icon: HardDrive,
     tag: 'stays local',
     title: 'On your computer',
-    lead: 'Everything the app needs to open your project lives on this machine.',
+    lead: 'Everything the app needs to open, debug, and clean your project lives on this machine.',
     rows: [
       {
         label: 'Project files',
         text: 'Opened and edited locally. There is no ShadRox cloud project sync — the app works in the folder you pick.',
       },
       {
-        label: 'Provider keys',
-        text: 'Your Gemini, Groq or compatible key sits in OS-backed encrypted storage on your device.',
+        label: 'Offline junk scan & local debugger',
+        text: 'Dead-code scanning walks your disk locally with zero external API calls and moves items only to OS Trash; the bundled Node debugger inspects local scripts exclusively.',
       },
       {
-        label: 'Rules & workspace settings',
-        text: 'Rule files and workspace settings are read from the project folder itself.',
+        label: 'Provider keys & rules',
+        text: 'Your Gemini, Groq or compatible key sits in OS-backed encrypted storage, and rule files stay inside your project folder.',
       },
     ],
   },
@@ -97,7 +95,7 @@ const places: {
       {
         label: 'Profile fields',
         text: 'The account record holds these five fields:',
-        chips: ['email', 'name', 'avatar URL', 'app version', 'platform'],
+        specs: ['email', 'name', 'avatar URL', 'app version', 'platform'],
       },
       {
         label: 'No password',
@@ -166,7 +164,9 @@ export default function PrivacyPage() {
                     <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--bg2)]">
                       <Icon className="size-5 text-[var(--ac)]" strokeWidth={1.75} />
                     </span>
-                    <span className={chip}>{tag}</span>
+                    <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ac)]">
+                      {tag}
+                    </span>
                   </div>
 
                   <h3 className="text-[19px] font-bold leading-snug tracking-[-0.02em] text-[var(--ink)]">
@@ -188,13 +188,9 @@ export default function PrivacyPage() {
                           <span className="mt-1 block text-[13px] leading-5 text-[var(--mut)]">
                             {row.text}
                           </span>
-                          {row.chips && (
-                            <span className="mt-2.5 flex flex-wrap gap-1.5">
-                              {row.chips.map((c) => (
-                                <code key={c} className={chip}>
-                                  {c}
-                                </code>
-                              ))}
+                          {row.specs && (
+                            <span className="mt-2 block font-mono text-[11px] leading-5 text-[var(--ink2)]">
+                              {row.specs.join(' · ')}
                             </span>
                           )}
                         </div>
@@ -282,13 +278,9 @@ export default function PrivacyPage() {
                   </p>
                 </div>
               </div>
-              <div className="mt-5 flex flex-wrap gap-1.5 border-t border-[var(--line)] pt-5">
-                {askFirstExamples.map((c) => (
-                  <code key={c} className={chip}>
-                    {c}
-                  </code>
-                ))}
-              </div>
+              <p className="mt-5 border-t border-[var(--line)] pt-4 font-mono text-[11px] leading-6 text-[var(--ink2)]">
+                {askFirstExamples.join(' · ')}
+              </p>
             </div>
           </Reveal>
         </div>

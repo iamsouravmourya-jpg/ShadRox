@@ -4,9 +4,9 @@ import type { MouseEvent } from 'react'
 import {
   FileCode2, SearchCode, Command, Replace,
   AtSign, ListChecks, Plug, BookOpen,
-  Terminal, GitBranch, History, RefreshCw,
+  Terminal, GitBranch, History, RefreshCw, Bug, Eraser,
   GitPullRequest, Puzzle,
-  Sparkles, SquareTerminal, Rocket, TriangleAlert, Info,
+  Bot, SquareTerminal, Rocket, TriangleAlert, Info,
 } from 'lucide-react'
 import { Reveal } from '@/components/landing/reveal'
 
@@ -14,7 +14,7 @@ type Capability = {
   icon: typeof FileCode2
   title: string
   text: string
-  chips: string[]
+  specs: string[]
   beta?: boolean
   note?: string
 }
@@ -43,25 +43,25 @@ const groups: Group[] = [
         icon: FileCode2,
         title: 'Editor & Markdown',
         text: 'CodeMirror 6 with split editor groups, plus pinned and reorderable tabs so the files you live in stay where you put them.',
-        chips: ['CodeMirror 6', 'split groups', 'pinned tabs'],
+        specs: ['CodeMirror 6', 'split groups', 'pinned tabs'],
       },
       {
         icon: SearchCode,
         title: 'Code navigation',
         text: 'TypeScript diagnostics, go-to-definition and find references — follow a symbol through the project instead of guessing where it lives.',
-        chips: ['diagnostics', 'definition', 'references'],
+        specs: ['diagnostics', 'definition', 'references'],
       },
       {
         icon: Command,
         title: 'Command palette · Ctrl+K',
         text: 'Fuzzy-find files and commands from one palette. Select any code and press Ctrl+K to ask for an inline AI edit on just that selection.',
-        chips: ['Ctrl+K', 'fuzzy find', 'AI on selection'],
+        specs: ['Ctrl+K', 'fuzzy find', 'inline AI selection'],
       },
       {
         icon: Replace,
         title: 'Search & replace',
         text: 'Search across files on disk and open buffers, review the result list first, then replace the occurrences you actually meant.',
-        chips: ['files + buffers', 'review first'],
+        specs: ['files + buffers', 'review first'],
       },
     ],
   },
@@ -69,7 +69,7 @@ const groups: Group[] = [
     id: 'ai',
     index: '02',
     label: 'AI',
-    icon: Sparkles,
+    icon: Bot,
     headline: 'Context you choose.',
     tagline: 'Bring your own provider key and attach exactly what a request needs — a file, a folder, the current problems, or your uncommitted work.',
     note: 'Your prompt and the project context included with that request are sent to the AI provider you selected.',
@@ -78,26 +78,26 @@ const groups: Group[] = [
         icon: AtSign,
         title: '@-mention context',
         text: 'Type @ to pull real project context into the request: a single file, a whole folder, the diagnostics panel, or your Git changes.',
-        chips: ['@api/auth.ts', '@folder', '@problems', '@git-changes'],
+        specs: ['@api/auth.ts', '@folder', '@problems', '@git-changes'],
       },
       {
         icon: ListChecks,
         title: 'Multi-step runs & teams',
-        text: 'Plan a goal into tasks and verify each milestone. Agent teams split the same goal across roles with file ownership per brief.',
-        chips: ['plan → tasks', 'verify milestones'],
+        text: 'Plan a goal into tasks grounded in package.json, verify target paths before dispatch, and inject failing source lines plus imported contracts on repair retries.',
+        specs: ['plan → verify', 'source-aware repair'],
         beta: true,
       },
       {
         icon: Plug,
         title: 'MCP servers',
         text: 'Connect Model Context Protocol servers to give the assistant external tools. Every tool call waits for your approval before it runs.',
-        chips: ['Model Context Protocol', 'approval-gated'],
+        specs: ['Model Context Protocol', 'approval-gated'],
       },
       {
         icon: BookOpen,
         title: 'Rules & skills',
         text: 'Teach the assistant your conventions once. Rule files load from the project, and reusable skills carry a workflow between sessions.',
-        chips: ['SHADROX.md', 'AGENTS.md', '.cursorrules', 'skills'],
+        specs: ['SHADROX.md', 'AGENTS.md', '.cursorrules'],
       },
     ],
   },
@@ -106,33 +106,33 @@ const groups: Group[] = [
     index: '03',
     label: 'Run',
     icon: SquareTerminal,
-    headline: 'Run it, then rewind.',
-    tagline: 'A real shell in the project folder, real Git, and a way back when an experiment goes sideways.',
+    headline: 'Run, debug, and clean.',
+    tagline: 'A real shell, a bundled Node debugger, an offline dead-code scanner, real Git, and a way back when an experiment goes sideways.',
     items: [
       {
         icon: Terminal,
         title: 'Integrated terminal',
         text: 'An interactive shell rooted in your workspace, with sessions and splits. PowerShell and bash report live cwd and exit codes back to the panel.',
-        chips: ['PowerShell', 'bash', 'live cwd', 'exit codes'],
+        specs: ['PowerShell', 'bash', 'live cwd', 'exit codes'],
+      },
+      {
+        icon: Bug,
+        title: 'Bundled Node debugger',
+        text: '@vscode/js-debug ships inside ShadRox with an automatic stdio-to-TCP bridge — pause on breakpoints, step frames, and inspect locals with zero external installs.',
+        specs: ['@vscode/js-debug', 'breakpoints', 'locals'],
+      },
+      {
+        icon: Eraser,
+        title: 'Offline junk scanner',
+        text: 'Static dependency graph walks 10,000+ files locally off the UI thread, protects serverless/worker/ORM entry points, and moves flagged items safely to OS Trash.',
+        specs: ['zero API calls', 'confidence filter', 'OS Trash'],
       },
       {
         icon: GitBranch,
-        title: 'Source control',
-        text: 'Stage diffs, switch branches and write the commit message with AI help — without leaving the window the code is in.',
-        chips: ['stage diffs', 'branches', 'AI commit message'],
-      },
-      {
-        icon: History,
-        title: 'Rewindable checkpoints',
-        text: 'Restore earlier workspace files and your local Git position to the state a checkpoint captured.',
-        chips: ['files', 'local Git position'],
-        note: 'Installed packages, running terminals and remote effects are not undone.',
-      },
-      {
-        icon: RefreshCw,
-        title: 'Update checks',
-        text: 'ShadRox checks for a newer release on start and every 6 hours, and shows a badge when one is ready. You download and install it yourself.',
-        chips: ['checks on start', 'badge only', 'manual install'],
+        title: 'Source control & checkpoints',
+        text: 'Stage diffs, switch branches, write AI commit messages, and rewind workspace files and local Git position to an earlier checkpoint.',
+        specs: ['stage diffs', 'branches', 'rewind checkpoints'],
+        note: 'Installed packages, running terminals and remote effects are not undone by checkpoints.',
       },
     ],
   },
@@ -142,30 +142,36 @@ const groups: Group[] = [
     label: 'Ship',
     icon: Rocket,
     headline: 'Get it out the door.',
-    tagline: 'Push the work and automate the repeat parts without switching to another app.',
+    tagline: 'Push the work, track desktop releases, and automate the repeat parts without switching to another app.',
     items: [
       {
         icon: GitPullRequest,
         title: 'GitHub integration',
         text: 'Validate a GitHub token inside the app and push your commits straight from the workspace — no separate Git client needed for the everyday path.',
-        chips: ['validate token', 'push from the app'],
+        specs: ['validate token', 'push from app'],
+      },
+      {
+        icon: RefreshCw,
+        title: 'Update checks',
+        text: 'ShadRox checks GitHub Releases on start and every 6 hours, showing a badge when a new installer is ready — nothing downloads without you.',
+        specs: ['checks on start', 'badge only', 'manual install'],
       },
       {
         icon: Puzzle,
         title: 'Plugins & automations',
         text: 'Workspace plugins extend what ShadRox can do, and automations fire on a schedule or from a webhook so recurring jobs run without you.',
-        chips: ['workspace plugins', 'scheduled', 'webhook triggers'],
+        specs: ['workspace plugins', 'scheduled', 'webhook triggers'],
         beta: true,
+      },
+      {
+        icon: History,
+        title: 'Atomic staged edits',
+        text: 'Multi-file autonomous runs apply edits atomically with rollback support if post-edit verification or filesystem writes fail mid-turn.',
+        specs: ['atomic stage', 'rollback safety'],
       },
     ],
   },
 ]
-
-const chipClass =
-  'font-mono text-[11px] rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 text-[var(--mut)]'
-
-const betaClass =
-  'inline-flex shrink-0 items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-400'
 
 function trackGlow(e: MouseEvent<HTMLElement>) {
   const rect = e.currentTarget.getBoundingClientRect()
@@ -198,16 +204,17 @@ export function CapabilitySheet() {
           </p>
         </Reveal>
         <Reveal delay={220}>
-          <div className="mx-auto mt-7 flex w-fit max-w-full flex-wrap items-center justify-center gap-2 rounded-full border border-[var(--line)] bg-[var(--card)] px-4 py-2 text-[11px] leading-5 text-[var(--mut)]">
-            <span className={betaClass}>Beta</span>
-            marks features that are still evolving — review what they produce.
-          </div>
+          <p className="mx-auto mt-5 text-center font-mono text-[11px] text-[var(--mut)]">
+            <span className="font-bold uppercase tracking-[0.14em] text-amber-600 dark:text-amber-400">
+              Beta
+            </span>{' '}
+            marks evolving workflows — always review diffs before accepting.
+          </p>
         </Reveal>
 
         <div className="mt-14 space-y-14 lg:mt-16 lg:space-y-16">
           {groups.map((group, gi) => {
             const GroupIcon = group.icon
-            const wide = group.items.length === 2
             return (
               <div key={group.id} id={group.id} className="scroll-mt-28">
                 <Reveal delay={40}>
@@ -218,7 +225,7 @@ export function CapabilitySheet() {
                       </span>
                       <div>
                         <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--ac)]">
-                          <span className="font-mono">{group.index}</span> · {group.label}
+                          <span className="font-mono tabular-nums">{group.index}</span> · {group.label}
                         </p>
                         <h3 className="mt-1.5 text-[clamp(21px,2.6vw,28px)] font-bold leading-tight tracking-[-0.035em] text-[var(--ink)]">
                           {group.headline}
@@ -248,7 +255,6 @@ export function CapabilitySheet() {
                         key={item.title}
                         as="article"
                         delay={(i % 4) * 80 + gi * 20}
-                        className={wide ? 'lg:col-span-2' : undefined}
                       >
                         <div
                           onMouseMove={trackGlow}
@@ -263,11 +269,15 @@ export function CapabilitySheet() {
                             }}
                           />
                           <div className="relative flex h-full flex-col">
-                            <div className="mb-4 flex items-start justify-between gap-3">
+                            <div className="mb-4 flex items-center justify-between gap-3">
                               <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[var(--bg2)] motion-safe:transition-transform motion-safe:duration-300 motion-safe:group-hover:-rotate-6 motion-safe:group-hover:scale-110">
                                 <Icon className="size-[19px] text-[var(--ac)]" strokeWidth={1.75} />
                               </span>
-                              {item.beta && <span className={betaClass}>Beta</span>}
+                              {item.beta && (
+                                <span className="font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-amber-600 dark:text-amber-400">
+                                  Beta
+                                </span>
+                              )}
                             </div>
 
                             <h4 className="text-[15px] font-bold leading-snug text-[var(--ink)]">
@@ -284,13 +294,9 @@ export function CapabilitySheet() {
                               </p>
                             )}
 
-                            <div className="mt-auto flex flex-wrap gap-1.5 pt-4">
-                              {item.chips.map((chip) => (
-                                <span key={chip} className={chipClass}>
-                                  {chip}
-                                </span>
-                              ))}
-                            </div>
+                            <p className="mt-auto border-t border-[var(--line)] pt-3.5 font-mono text-[11px] leading-5 text-[var(--mut)]">
+                              {item.specs.join(' · ')}
+                            </p>
                           </div>
                         </div>
                       </Reveal>
