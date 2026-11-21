@@ -225,16 +225,30 @@ test('verifyMilestone: a proof command killed by its time limit cannot carry a p
   assert.match(timedOut.notes.join(' '), /killed by its time limit/);
 });
 
-test('verifyMilestone: a zero-write pass says the milestone touched nothing', async () => {
-  const report = await verifyMilestone(milestone(), host(), ROOT, { patchesApplied: 0, changedFiles: 0 });
-  assert.equal(report.verdict, 'passed', 'the note annotates the verdict; it never flips it');
-  assert.match(report.notes.join(' '), /touched nothing/);
-  assert.match(report.notes.join(' '), /applied no patches and changed no files/);
+test('verifyMilestone: a zero-write turn fails while its expected files are absent, passes once they exist', async () => {
+  const absent = await verifyMilestone(
+    milestone(),
+    host({ readFile: async () => { throw new Error('ENOENT'); } }),
+    ROOT,
+    { patchesApplied: 0, changedFiles: 0 }
+  );
+  assert.equal(absent.verdict, 'failed', 'a turn that wrote nothing cannot pass a milestone whose files are not on disk');
+  assert.match(absent.notes.join(' '), /touched nothing/);
+  assert.match(absent.notes.join(' '), /expected file\(s\) are absent: src\/a\.ts/);
+
+  const present = await verifyMilestone(
+    milestone(),
+    host({ readFile: async () => 'already on disk' }),
+    ROOT,
+    { patchesApplied: 0, changedFiles: 0 }
+  );
+  assert.equal(present.verdict, 'passed', 'the expected files already on disk are the milestone\'s work');
+  assert.match(present.notes.join(' '), /touched nothing/);
 });
 
 test('verifyMilestone: a host that reports no non-patch writes is taken at its word', async () => {
   const report = await verifyMilestone(milestone(), host(), ROOT, { patchesApplied: 0 });
-  assert.equal(report.verdict, 'passed');
+  assert.equal(report.verdict, 'unverified', 'zero writes with no file reader to prove the outputs exist is not a pass');
   assert.match(report.notes.join(' '), /touched nothing/, 'zero patches and no reported mutations is zero writes');
 });
 
@@ -267,7 +281,7 @@ test('createAutonomyPorts hands the turn\'s writes to the verifier', async () =>
     isCancellationRequested: () => false
   });
   const report = await ports.verify(milestone(), { patchesApplied: 0, changedFiles: 0 });
-  assert.equal(report.verdict, 'passed');
+  assert.equal(report.verdict, 'unverified', 'no file reader means the no-op turn cannot be claimed as passed');
   assert.match(report.notes.join(' '), /touched nothing/);
 });
 

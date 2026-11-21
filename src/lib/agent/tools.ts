@@ -1180,6 +1180,22 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           return refusal(`${path}: agent edits to plugin and automation manifests are blocked.`);
         }
 
+        // Entry-point confinement: the preview serves the FIRST existing HTML
+        // entry in this order. Creating a lower-priority one (public/,
+        // dist/, …) when a higher one exists produces a dead file the user
+        // never sees — the agent must patch the live entry instead.
+        const HTML_ENTRY_CANDIDATES = ['index.html', 'public/index.html', 'dist/index.html', 'build/index.html', 'out/index.html', 'src/index.html'];
+        const entryIndex = HTML_ENTRY_CANDIDATES.indexOf(normalized.toLowerCase());
+        if (entryIndex > 0) {
+          for (let e = 0; e < entryIndex; e += 1) {
+            const candidate = HTML_ENTRY_CANDIDATES[e];
+            try {
+              await desktop.readFile(workspaceId, candidate);
+              return refusal(`${normalized}: ${candidate} already exists and is this app's HTML entry point (the preview serves the first existing entry). Edit ${candidate} instead of creating a second entry file.`);
+            } catch { /* candidate absent — keep looking */ }
+          }
+        }
+
         let current: { content: string; version: string } | null = null;
         try {
           const file = await desktop.readFile(workspaceId, path);
@@ -1449,6 +1465,17 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           if (hunk.old === '') {
             if (base !== null) {
               return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): old is empty (create a new file) but the file already exists. ${atomicNote} Use a non-empty old snippet to edit it.` };
+            }
+            const HTML_ENTRY_CANDIDATES = ['index.html', 'public/index.html', 'dist/index.html', 'build/index.html', 'out/index.html', 'src/index.html'];
+            const entryIndex = HTML_ENTRY_CANDIDATES.indexOf(hunk.path.toLowerCase());
+            if (entryIndex > 0) {
+              for (let e = 0; e < entryIndex; e += 1) {
+                const candidate = HTML_ENTRY_CANDIDATES[e];
+                try {
+                  await desktop.readFile(workspaceId, candidate);
+                  return { ok: false, content: '', error: `apply_patch hunk ${index + 1} (${hunk.path}): ${candidate} already exists and is this app's HTML entry point (the preview serves the first existing entry). Patch ${candidate} instead of creating a second entry file. ${atomicNote}` };
+                } catch { /* candidate absent — keep looking */ }
+              }
             }
             working.set(hunk.path, hunk.next);
             continue;

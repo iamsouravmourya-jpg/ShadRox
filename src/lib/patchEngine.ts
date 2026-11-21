@@ -67,6 +67,11 @@ export interface ApplyFailure {
   reason: 'not-found' | 'not-unique' | 'ambiguous' | 'overlap';
   /** How many places the ORIGINAL matched; only set for 'ambiguous'. */
   matches?: number;
+  /**
+   * For 'not-found': the file region that came closest to the ORIGINAL, so a
+   * retry can copy the real on-disk text instead of guessing again.
+   */
+  hint?: string;
 }
 
 export interface ApplySearchReplaceResult {
@@ -358,6 +363,42 @@ export function findBlockRange(content: string, original: string): BlockLookup {
 }
 
 /**
+ * Best-effort diagnostic for a block that matched nothing: scores each file
+ * line by how many of the block's distinctive words it shares and returns the
+ * surrounding region. It never applies anything — it exists so the failure
+ * carries enough of the real file for the next attempt to re-anchor instead
+ * of repeating the same blind patch.
+ */
+function closestRegionHint(content: string, original: string): string | null {
+  const wanted = new Set(
+    original.toLowerCase().split(/[^a-z0-9_$]+/).filter((word) => word.length >= 3)
+  );
+  if (wanted.size === 0) return null;
+  const lines = content.split('\n');
+  if (lines.length > 20000) return null;
+  const tokens = [...wanted];
+  let bestIndex = -1;
+  let bestScore = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineTokens = new Set(lines[index].toLowerCase().split(/[^a-z0-9_$]+/));
+    let score = 0;
+    for (const token of tokens) if (lineTokens.has(token)) score += 1;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  }
+  if (bestIndex < 0 || bestScore === 0) return null;
+  const from = Math.max(0, bestIndex - 3);
+  const to = Math.min(lines.length, bestIndex + 4);
+  const excerpt = lines
+    .slice(from, to)
+    .map((line, offset) => `${from + offset + 1}: ${line}`)
+    .join('\n');
+  return `closest region on disk (around line ${bestIndex + 1}):\n${excerpt}`;
+}
+
+/**
  * Applies S/R blocks to the file content, right-to-left, refusing overlaps.
  * Blocks that cannot be placed are skipped and reported, so one bad block
  * never blocks the rest of a multi-file change.
@@ -373,7 +414,8 @@ export function applySearchReplaceBlocks(
     const match = locateBlock(content, block.original);
 
     if (match.status === 'not-found') {
-      failures.push({ blockIndex, reason: 'not-found' });
+      const hint = closestRegionHint(content, block.original);
+      failures.push(hint ? { blockIndex, reason: 'not-found', hint } : { blockIndex, reason: 'not-found' });
       return;
     }
     if (match.status === 'not-unique') {
@@ -441,7 +483,7 @@ export function formatApplyFailure(failure: ApplyFailure): string {
   const label = `block ${failure.blockIndex + 1}`;
   switch (failure.reason) {
     case 'not-found':
-      return `${label}: text not found in the file`;
+      return `${label}: text not found in the file — re-read the file and copy the current text exactly${failure.hint ? `\n${failure.hint}` : ''}`;
     case 'not-unique':
       return `${label}: matches several places once whitespace is ignored — add surrounding lines`;
     case 'ambiguous':

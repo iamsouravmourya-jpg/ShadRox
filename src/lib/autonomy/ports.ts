@@ -236,6 +236,28 @@ export async function verifyMilestone(
 
   if (writes && writes.patchesApplied === 0 && (writes.changedFiles ?? 0) === 0) {
     notes.push('the milestone touched nothing: the turn applied no patches and changed no files.');
+    if (verdict === 'passed' && unit.expectedFiles.length > 0) {
+      // A clean check is not proof of work: a turn that wrote nothing can only
+      // pass when the files the milestone was meant to produce already exist
+      // on disk. Anything less is a no-op being laundered into a pass.
+      if (typeof host.readFile === 'function') {
+        const missing: string[] = [];
+        for (const file of unit.expectedFiles) {
+          try {
+            await host.readFile(file);
+          } catch {
+            missing.push(file);
+          }
+        }
+        if (missing.length > 0) {
+          verdict = 'failed';
+          notes.push(`the turn produced no changes and ${missing.length} expected file(s) are absent: ${missing.slice(0, 5).join(', ')}.`);
+        }
+      } else {
+        verdict = 'unverified';
+        notes.push('the turn changed no files and no file reader is attached, so the milestone cannot be claimed as passed.');
+      }
+    }
   }
 
   return { verdict, diagnostics: diagnostics ?? [], command, notes };

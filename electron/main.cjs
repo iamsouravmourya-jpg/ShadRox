@@ -3564,10 +3564,14 @@ function registerIntegrationHandlers() {
         mainWindow.webContents.send('workspace:junk-scan-progress', { workspaceId, ...progress });
       }
     });
-    if (result && typeof result.cancel === 'function') {
-      activeJunkScans.set(workspaceId, result.cancel);
+    // `cancel` is a function and functions cannot cross the IPC boundary —
+    // returning it whole fails structured clone before the renderer sees a
+    // byte. Keep the handle in main, send only the serializable payload.
+    const { cancel, ...payload } = result ?? {};
+    if (typeof cancel === 'function') {
+      activeJunkScans.set(workspaceId, cancel);
     }
-    return result;
+    return payload;
   });
 
   ipcMain.handle('workspace:cancel-junk-scan', async (event, workspaceId) => {

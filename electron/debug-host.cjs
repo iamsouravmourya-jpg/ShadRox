@@ -20,6 +20,7 @@ const { spawn } = require('node:child_process');
 const { isPathInsideDirectory } = require('./desktop-security.cjs');
 const { resolveExecutable } = require('./preview-runtime.cjs');
 const { createFrameParser, encodeFrame } = require('./dap-framing.cjs');
+const { inferLaunchConfigs } = require('./debug-autoconfig.cjs');
 
 const MAX_CONFIG_BYTES = 256 * 1024;
 const MAX_CONFIGURATIONS = 10;
@@ -241,37 +242,50 @@ function normalizeConfig(raw, index, root, names) {
  */
 function readLaunchConfigs(root) {
   const file = path.join(root, 'shadrox.debug.json');
-  let stat;
+  let parsed = null;
+  let inferred = false;
   try {
-    stat = fs.statSync(file);
-  } catch {
-    return { found: false, path: file, configurations: [], error: null };
-  }
-  if (!stat.isFile()) return { found: false, path: file, configurations: [], error: 'shadrox.debug.json is not a regular file.' };
-  if (stat.size > MAX_CONFIG_BYTES) {
-    return {
-      found: true,
-      path: file,
-      configurations: [],
-      error: `shadrox.debug.json is ${stat.size} bytes; the limit is ${MAX_CONFIG_BYTES} bytes.`
-    };
-  }
+    const stat = fs.statSync(file);
+    if (!stat.isFile()) return { found: false, path: file, configurations: [], resolved: [], error: 'shadrox.debug.json is not a regular file.', inferred: false };
+    if (stat.size > MAX_CONFIG_BYTES) {
+      return {
+        found: true,
+        path: file,
+        configurations: [],
+        resolved: [],
+        error: `shadrox.debug.json is ${stat.size} bytes; the limit is ${MAX_CONFIG_BYTES} bytes.`,
+        inferred: false
+      };
+    }
 
-  let parsed;
-  try {
-    parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch (error) {
-    return { found: true, path: file, configurations: [], error: `shadrox.debug.json is not valid JSON: ${error.message}` };
+    try {
+      parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (error) {
+      return { found: true, path: file, configurations: [], resolved: [], error: `shadrox.debug.json is not valid JSON: ${error.message}`, inferred: false };
+    }
+  } catch {
+    // No debug file: infer ready-to-run configurations from the workspace
+    // itself. They go through the same normalizeConfig validation below, so
+    // an inferred entry is indistinguishable from a hand-written one — and
+    // `start()` resolves it by name exactly the same way.
+    const candidates = inferLaunchConfigs(root);
+    if (candidates.length === 0) {
+      return { found: false, path: file, configurations: [], resolved: [], error: null, inferred: false };
+    }
+    parsed = { configurations: candidates };
+    inferred = true;
   }
   if (!isPlainObject(parsed) || !Array.isArray(parsed.configurations)) {
-    return { found: true, path: file, configurations: [], error: 'shadrox.debug.json must be { "configurations": [...] }.' };
+    return { found: true, path: file, configurations: [], resolved: [], error: 'shadrox.debug.json must be { "configurations": [...] }.', inferred };
   }
   if (parsed.configurations.length > MAX_CONFIGURATIONS) {
     return {
       found: true,
       path: file,
       configurations: [],
-      error: `shadrox.debug.json declares ${parsed.configurations.length} configurations; the limit is ${MAX_CONFIGURATIONS}.`
+      resolved: [],
+      error: `shadrox.debug.json declares ${parsed.configurations.length} configurations; the limit is ${MAX_CONFIGURATIONS}.`,
+      inferred
     };
   }
 
@@ -291,7 +305,7 @@ function readLaunchConfigs(root) {
       configurations.push({ ...publicConfig, __resolved: normalized });
     });
   } catch (error) {
-    return { found: true, path: file, configurations: [], error: error.message };
+    return { found: true, path: file, configurations: [], resolved: [], error: error.message, inferred };
   }
 
   return {
@@ -302,7 +316,8 @@ function readLaunchConfigs(root) {
       return publicConfig;
     }),
     resolved: configurations.map((entry) => entry.__resolved),
-    error: null
+    error: null,
+    inferred
   };
 }
 
@@ -1011,7 +1026,8 @@ function createDebugHost(options) {
         found: result.found,
         path: result.path,
         configurations: result.configurations,
-        error: result.error
+        error: result.error,
+        inferred: result.inferred === true
       };
     },
     start,

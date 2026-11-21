@@ -615,13 +615,19 @@ export interface DebugLaunchConfig {
 }
 
 export interface DebugConfigResult {
-  /** False when the workspace has no `shadrox.debug.json`. */
+  /**
+   * False only when the workspace has no `shadrox.debug.json` AND nothing
+   * could be inferred from the files present. Inferred configurations count
+   * as found: they launch through the same validated path.
+   */
   found: boolean;
-  /** Absolute path the result was read from. */
+  /** Absolute path the result was read from (the would-be config path when inferred). */
   path: string;
   configurations: DebugLaunchConfig[];
   /** Validation problem, e.g. a program that escapes the workspace. */
   error: string | null;
+  /** True when the configurations were inferred, not read from shadrox.debug.json. */
+  inferred?: boolean;
 }
 
 export interface DebugBreakpoint {

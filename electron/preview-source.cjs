@@ -91,6 +91,27 @@ const SOURCE_BRIDGE_SCRIPT = `(function () {
       reveal(event);
     } catch (error) {}
   }, true);
+
+  // Runtime failures surface to the agent as console errors; without the stack
+  // it only sees "Cannot read properties of undefined" and guesses which
+  // component broke. Forward message + stack + location so the repair turn can
+  // go straight to the file instead of probing unrelated components.
+  function reportRuntimeError(kind, value, file, line) {
+    try {
+      var text = value && value.stack ? String(value.stack) : String(value && value.message ? value.message : value);
+      if (file) text += ' @ ' + file + ':' + line;
+      if (text.length > 4000) text = text.slice(0, 4000);
+      console.error('[shadrox-preview-' + kind + '] ' + text);
+    } catch (error) {}
+  }
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('error', function (event) {
+      reportRuntimeError('error', event.error || event.message, event.filename, event.lineno);
+    });
+    window.addEventListener('unhandledrejection', function (event) {
+      reportRuntimeError('rejection', event.reason);
+    });
+  }
 })();`;
 
 /**

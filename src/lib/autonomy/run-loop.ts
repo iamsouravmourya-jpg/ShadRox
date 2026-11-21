@@ -255,7 +255,7 @@ export async function runAutonomous(
       // and external MCP tools mutate the workspace without applying a patch,
       // and a run that damaged disk through them must still roll back.
       if (turn.patchesApplied > 0 || (turn.changedFiles ?? 0) > 0) wrote = true;
-      deps.ports.onEvent({ type: 'milestone:verdict', id: next.id, verdict, report });
+      deps.ports.onEvent({ type: 'milestone:verdict', id: next.id, verdict, report, attempt });
       deps.persist(state);
 
       if (turn.aborted) {

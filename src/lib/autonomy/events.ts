@@ -6,10 +6,28 @@
  * it says is worth pinning down.
  */
 
-import type { AutonomyEvent } from './types';
+import type { AutonomyEvent, VerificationReport } from './types';
 
 /** The log keeps the tail; a long run must not grow the panel without bound. */
 export const MAX_LOG_LINES = 200;
+
+const MAX_REASON_LENGTH = 160;
+
+/**
+ * The shortest honest explanation a verdict can carry: the first error
+ * diagnostic when there is one, else the first note. Without it a failed
+ * milestone logs a bare "failed." and the user (and the next repair turn)
+ * cannot tell a type error from a missing proof command.
+ */
+function verdictReason(report: VerificationReport): string | null {
+  const error = report.diagnostics.find((line) => line.severity === 'error');
+  const raw = error
+    ? `${error.path}:${error.line} ${error.message}`
+    : report.notes.find((note) => note.trim().length > 0) ?? null;
+  if (!raw) return null;
+  const text = raw.replace(/\s+/g, ' ').trim();
+  return text.length > MAX_REASON_LENGTH ? `${text.slice(0, MAX_REASON_LENGTH - 1)}…` : text;
+}
 
 /** One line per event, or null for an event this build does not describe. */
 export function describeEvent(event: AutonomyEvent): string | null {
@@ -20,8 +38,11 @@ export function describeEvent(event: AutonomyEvent): string | null {
       return `Starting "${event.id}".`;
     case 'milestone:attempt':
       return `"${event.id}": attempt ${event.attempt}.`;
-    case 'milestone:verdict':
-      return `"${event.id}": ${event.verdict}.`;
+    case 'milestone:verdict': {
+      const attempt = typeof event.attempt === 'number' ? ` (attempt ${event.attempt})` : '';
+      const reason = verdictReason(event.report);
+      return `"${event.id}": ${event.verdict}${attempt}${reason ? ` — ${reason}` : ''}.`;
+    }
     case 'milestone:done':
       return `"${event.id}": ${event.status}.`;
     case 'milestone:review':

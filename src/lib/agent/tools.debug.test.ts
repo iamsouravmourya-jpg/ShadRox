@@ -17,8 +17,8 @@ test('debugger_state is a known built-in tool', () => {
   assert.equal(definition.parameters, 'none');
 });
 
-test('the tool registry holds thirty-five tools including the write tools, job_control, preview_control and the upgrade tools', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 35);
+test('the tool registry holds forty tools including the write tools, job_control, preview_control and the upgrade tools', () => {
+  assert.equal(TOOL_DEFINITIONS.length, 40);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'debugger_state').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'write_file').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'edit_file').length, 1);

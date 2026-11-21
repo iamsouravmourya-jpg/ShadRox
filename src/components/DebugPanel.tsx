@@ -365,6 +365,11 @@ export function DebugPanel({ desktop, workspaceId, controller, onOpenFrame, onAs
           <p>
             Ready to launch <span className="font-mono text-ink-3">{config.configurations[0]?.program}</span>.
           </p>
+          {config.inferred && (
+            <p className="text-[10px] text-ink-5">
+              Auto-detected from workspace files — add <span className="font-mono">shadrox.debug.json</span> to customize.
+            </p>
+          )}
           <p className="text-[10px] text-ink-5">
             {Object.values(controller.breakpoints).reduce((total, lines) => total + lines.length, 0)} breakpoint(s) set.
           </p>

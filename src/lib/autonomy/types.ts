@@ -333,7 +333,7 @@ export type AutonomyEvent =
   | { type: 'plan:created'; milestones: Milestone[] }
   | { type: 'milestone:start'; id: string }
   | { type: 'milestone:attempt'; id: string; attempt: number }
-  | { type: 'milestone:verdict'; id: string; verdict: Verdict; report: VerificationReport }
+  | { type: 'milestone:verdict'; id: string; verdict: Verdict; report: VerificationReport; attempt?: number }
   | { type: 'milestone:done'; id: string; status: MilestoneStatus }
   /** Changes the apply policy refused to write without the user. */
   | { type: 'milestone:review'; id: string; paths: string[] }

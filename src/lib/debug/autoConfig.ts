@@ -1,48 +1,20 @@
 import type { DebugLaunchConfig } from '../desktop';
+import { inferLaunchConfigsFromNames } from '../../../electron/debug-autoconfig.cjs';
 
 /**
- * Automatically infers ready-to-run debug configurations for a workspace
- * by inspecting package.json and entry files when shadrox.debug.json is absent.
+ * Renderer-facing wrapper over the shared inference engine in
+ * `electron/debug-autoconfig.cjs`. The main process runs the same code against
+ * the real filesystem when `shadrox.debug.json` is absent, so a configuration
+ * shown here is one `debug:start` can actually resolve and launch.
+ *
+ * The renderer has no filesystem access, so paths the workspace walk skips
+ * (node_modules binaries) can only be confirmed by names already present in
+ * the supplied file list.
  */
-export function inferAutoDebugConfigs(workspaceRoot: string, files: Array<{ name: string; content?: string }>): DebugLaunchConfig[] {
-  const configs: DebugLaunchConfig[] = [];
-  const fileNames = new Set(files.map((f) => f.name.replace(/\\/g, '/')));
-
-  let mainProgram = 'src/index.js';
-  if (fileNames.has('server.ts')) mainProgram = 'server.ts';
-  else if (fileNames.has('server.js')) mainProgram = 'server.js';
-  else if (fileNames.has('src/main.ts')) mainProgram = 'src/main.ts';
-  else if (fileNames.has('src/index.ts')) mainProgram = 'src/index.ts';
-  else if (fileNames.has('src/App.tsx')) mainProgram = 'src/App.tsx';
-
-  configs.push({
-    name: 'Node.js / TypeScript App',
-    type: 'node',
-    request: 'launch',
-    program: mainProgram,
-    adapterCommand: 'js-debug-adapter'
-  });
-
-  if (fileNames.has('package.json')) {
-    configs.push({
-      name: 'Vite / Web Dev Server',
-      type: 'node',
-      request: 'launch',
-      program: 'node_modules/vite/bin/vite.js',
-      args: ['--host', '0.0.0.0', '--port', '3000'],
-      adapterCommand: 'js-debug-adapter'
-    });
-  }
-
-  if (fileNames.has('main.py') || fileNames.has('app.py')) {
-    configs.push({
-      name: 'Python Main Script',
-      type: 'node', // or python adapter if supported, fallback to node type for schema compatibility
-      request: 'launch',
-      program: fileNames.has('main.py') ? 'main.py' : 'app.py',
-      adapterCommand: 'js-debug-adapter'
-    });
-  }
-
-  return configs;
+export function inferAutoDebugConfigs(
+  _workspaceRoot: string,
+  files: Array<{ name: string; content?: string }>
+): DebugLaunchConfig[] {
+  const names = new Set(files.map((file) => file.name.replace(/\\/g, '/')));
+  return inferLaunchConfigsFromNames(names, () => false, null) as DebugLaunchConfig[];
 }

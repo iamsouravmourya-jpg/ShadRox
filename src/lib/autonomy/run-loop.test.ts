@@ -487,7 +487,7 @@ test('a zero-write pass is annotated and logged through the real verifier', asyn
   h.deps.ports.verify = realPorts.verify;
   const state = await runAutonomous('goal', h.deps);
   assert.equal(state.status, 'done');
-  assert.equal(state.milestones[0].status, 'passed', 'the note annotates the pass; it never flips it');
+  assert.equal(state.milestones[0].status, 'unverified', 'a no-op turn is not a pass: the verifier cannot prove the files exist');
   const report = state.milestones[0].attempts[0].verification;
   assert.match(report?.notes.join(' ') ?? '', /touched nothing/);
   assert.ok(
