@@ -100,7 +100,7 @@ async function main() {
 
   fs.copyFileSync(path.join(sourceElectronDirectory, 'loader.cjs'), path.join(electronDirectory, 'loader.cjs'));
   for (const entry of fs.readdirSync(electronDirectory)) {
-    if (!['loader.cjs', 'main.jsc', 'preload.cjs', 'ts-worker.cjs', 'shell-integration'].includes(entry)) {
+    if (!['loader.cjs', 'main.jsc', 'preload.cjs', 'ts-worker.cjs', 'shell-integration', 'vendor'].includes(entry)) {
       fs.rmSync(path.join(electronDirectory, entry), { recursive: true, force: true });
     }
   }
