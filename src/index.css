@@ -236,7 +236,7 @@
   -webkit-app-region: drag;
 }
 
-.titlebar :is(button, a, input, select, textarea, [role='button'], [contenteditable='true']) {
+.titlebar :is(button, a, input, label, select, textarea, [role='button'], [role='checkbox'], [contenteditable='true']) {
   -webkit-app-region: no-drag;
 }
 

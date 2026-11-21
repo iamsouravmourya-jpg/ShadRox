@@ -52,8 +52,8 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
   const unconfigured = status === 'unconfigured';
 
   return (
-    <div className="w-full h-screen bg-base text-ink flex flex-col titlebar">
-      <div className="h-12 shrink-0 flex items-center justify-between border-b border-line px-5">
+    <div className="w-full h-screen bg-base text-ink flex flex-col">
+      <header className="titlebar window-controls-inset h-12 shrink-0 flex items-center justify-between border-b border-line px-5">
         <span className="flex items-center gap-2">
           <ShadRoxLogo className="w-4 h-4 text-accent" />
           <span className="text-xs font-semibold tracking-[-0.02em]">ShadRox</span>
@@ -61,7 +61,7 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-3 tabular-nums">
           Desktop beta · v0.1.3 · Windows
         </span>
-      </div>
+      </header>
 
       <div className="flex-1 min-h-0 flex items-center justify-center px-6 pb-12">
         <div className="w-full max-w-sm rounded-2xl border border-line bg-surface p-7 shadow-[var(--shadow-panel)]">
@@ -112,7 +112,7 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
                 htmlFor="auth-terms"
                 className="mt-3 flex w-full cursor-pointer select-none items-start gap-2.5 rounded-lg px-0.5 py-1"
               >
-                <span className="pointer-events-none mt-px flex h-4 w-4 shrink-0 items-center justify-center">
+                <span className="relative mt-px flex h-4 w-4 shrink-0 items-center justify-center">
                   <input
                     id="auth-terms"
                     ref={termsRef}
@@ -122,11 +122,11 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
                       setAccepted(event.target.checked);
                       if (event.target.checked) setTermsHint(false);
                     }}
-                    className="peer sr-only"
+                    className="peer absolute inset-0 m-0 h-full w-full cursor-pointer opacity-0"
                   />
                   <span
                     aria-hidden="true"
-                    className={`flex h-4 w-4 items-center justify-center rounded-[5px] border border-line-2 bg-base-2 transition-[colors,box-shadow] peer-checked:border-accent peer-checked:bg-accent peer-focus-visible:ring-2 peer-focus-visible:ring-accent/40 ${
+                    className={`pointer-events-none flex h-4 w-4 items-center justify-center rounded-[5px] border border-line-2 bg-base-2 transition-[colors,box-shadow] peer-checked:border-accent peer-checked:bg-accent peer-focus-visible:ring-2 peer-focus-visible:ring-accent/40 ${
                       termsHint && !accepted ? 'ring-2 ring-warn/40' : ''
                     }`}
                   >
