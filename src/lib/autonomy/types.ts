@@ -20,6 +20,15 @@ import type { RequirementItem } from './requirements';
 
 export type Verdict = 'passed' | 'failed' | 'unverified';
 
+export type MilestoneCategory = 'read_only' | 'file_mutation' | 'command_execution' | 'checkpoint';
+
+export interface ToolExecutionEvent {
+  name: string;
+  ok: boolean;
+  refused?: boolean;
+  summary?: string;
+}
+
 /**
  * `unverified` is a *status*, not just a verdict: a unit that advanced the plan
  * without anything proving it must stay visibly unverified in the checklist, in
@@ -129,6 +138,8 @@ export interface Milestone {
   /** Optional proof command. Main-process allowlisted forms run via execFile; all others require approval. */
   verifyCommand?: string;
   status: MilestoneStatus;
+  /** Semantic category governing verification rules (read-only vs file mutation vs command execution). */
+  category?: MilestoneCategory;
   attempts: Attempt[];
   /** Files the turn actually changed, newest first as the turn emitted them. */
   touchedFiles?: string[];
@@ -249,6 +260,7 @@ export interface VerifiableUnit {
   expectedFiles: string[];
   touchedFiles?: string[];
   verifyCommand?: string;
+  category?: MilestoneCategory;
 }
 
 /** One turn of the model, told through the app's real chat path. */
@@ -310,6 +322,8 @@ export interface TurnResult {
    * failed check carries the real exit code and stderr behind it.
    */
   failureProof?: FailureReceipt | null;
+  /** Structured telemetry of tools invoked during the turn. */
+  toolEvents?: ToolExecutionEvent[];
 }
 
 /**
@@ -324,6 +338,12 @@ export interface TurnWrites {
   changedFiles?: number;
   /** Expected files that already existed before the milestone ran. */
   preExistingExpectedFiles?: string[];
+  /** SHA-256 content snapshots captured before the turn for target files (null when absent). */
+  preTurnHashes?: Record<string, string | null>;
+  /** SHA-256 content snapshots captured after the turn for target/touched files (null when absent). */
+  postTurnHashes?: Record<string, string | null>;
+  /** Structured telemetry of tool calls executed during the turn. */
+  toolEvents?: ToolExecutionEvent[];
 }
 
 /**
@@ -340,6 +360,8 @@ export interface AutonomyPorts {
   verify: (unit: VerifiableUnit, writes?: TurnWrites) => Promise<VerificationReport>;
   /** Repo-relative paths that exist right now, for plan validation and confinement. */
   listFiles: () => string[];
+  /** Optional file reader used for pre/post turn SHA-256 verification snapshots. */
+  readFile?: (path: string) => Promise<string | null>;
   /** Ask the model for the plan; returns its raw text answer. */
   askPlan: (prompt: string) => Promise<string>;
   onEvent: (event: AutonomyEvent) => void;

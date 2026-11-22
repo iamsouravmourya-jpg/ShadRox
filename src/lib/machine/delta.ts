@@ -31,6 +31,7 @@ export interface MachineDelta {
   limitations: string[];
   omissions: string[];
   canRestore: boolean;
+  noChanges?: boolean;
   blockedReason: string | null;
 }
 

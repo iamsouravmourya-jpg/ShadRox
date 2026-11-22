@@ -5,7 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { execFile } = require('node:child_process');
 const { createWorkspaceAccess } = require('./workspace.cjs');
-const { createMachineDelta, assertSafeRegularFile, LIMITS } = require('./machine-delta.cjs');
+const { createMachineDelta, assertSafeRegularFile, withNtfsRetry, LIMITS } = require('./machine-delta.cjs');
 const { createMachineGit } = require('./machine-git.cjs');
 const { createPreviewRuntime } = require('./preview-runtime.cjs');
 const { buildGitArgv, buildIsolatedGitEnv, resolveGitExecutable } = require('./desktop-security.cjs');
@@ -343,3 +343,46 @@ test('Git transaction failure rolls file restoration back to the after-state', a
   assert.equal(await f.read('a.txt'), 'after');
   assert.doesNotThrow(() => f.service.assertWritable());
 });
+
+test('zero-change turn sets noChanges and resolves noop without confirm or throwing', async (t) => {
+  const f = await fixture(t);
+  await f.service.begin(f.id, 'cp-noop');
+  const report = await f.service.finish(f.id, 'cp-noop');
+  assert.equal(report.noChanges, true);
+
+  let confirmCalled = false;
+  const result = await f.service.restore(f.id, 'cp-noop', async () => {
+    confirmCalled = true;
+    return true;
+  });
+  assert.equal(confirmCalled, false);
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'noop');
+  assert.equal(result.message, 'No file changes in this turn to undo.');
+});
+
+test('withNtfsRetry recovers from transient EBUSY and EPERM locks and clears read-only mode', async () => {
+  let calls = 0;
+  let chmodArgs = null;
+  const result = await withNtfsRetry(
+    async () => {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      if (calls === 2) throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      return 'done';
+    },
+    {
+      delaysMs: [1, 1, 1],
+      targetPath: 'C:\\repo\\locked.txt',
+      fsImpl: {
+        chmod: async (target, mode) => {
+          chmodArgs = { target, mode };
+        }
+      }
+    }
+  );
+  assert.equal(result, 'done');
+  assert.equal(calls, 3);
+  assert.deepEqual(chmodArgs, { target: 'C:\\repo\\locked.txt', mode: 0o666 });
+});
+

@@ -7,6 +7,7 @@ const chokidar = require('chokidar');
 const { sanitizeProjectName } = require('../project-scaffold.cjs');
 const { resolveFileReopen, resolveFolderReopen } = require('../workspace-consent.cjs');
 const { verifyChangeSet } = require('../change-verify.cjs');
+const { getDefaultBetaLogger } = require('../beta-logger.cjs');
 
 function createWorkspaceService({
   app,
@@ -262,16 +263,27 @@ function createWorkspaceService({
       assertTrustedRenderer(event);
       if (getRendererDirty()) throw new Error('Save or discard unsaved editor changes before machine rewind.');
       if (getMachineSensitiveOperations()) throw new Error('Wait for workspace commands and operations to finish before rewind.');
-      return machineDelta.restore(workspaceId, checkpointId, async (report) => {
-        const answer = await dialog.showMessageBox(getMainWindow(), {
-          type: 'warning', title: 'Rewind captured machine changes?',
-          message: `Restore ${report.files.length} captured files${report.git.positionChanged ? ', rewind the local Git ref/index' : ''} and stop ${report.previews.started.length} ShadRox-owned previews?`,
-          detail: 'This is not a full-machine restore. Installed packages, running terminals, stopped processes and remote effects are not undone. Stop other commands that may write to these files before continuing.',
-          buttons: ['Cancel', 'Rewind captured changes'], defaultId: 0, cancelId: 0, noLink: true
+      try {
+        return await machineDelta.restore(workspaceId, checkpointId, async (report) => {
+          const answer = await dialog.showMessageBox(getMainWindow(), {
+            type: 'warning', title: 'Rewind captured machine changes?',
+            message: `Restore ${report.files.length} captured files${report.git.positionChanged ? ', rewind the local Git ref/index' : ''} and stop ${report.previews.started.length} ShadRox-owned previews?`,
+            detail: 'This is not a full-machine restore. Installed packages, running terminals, stopped processes and remote effects are not undone. Stop other commands that may write to these files before continuing.',
+            buttons: ['Cancel', 'Rewind captured changes'], defaultId: 0, cancelId: 0, noLink: true
+          });
+          if (getRendererDirty()) throw new Error('Unsaved editor changes appeared; nothing was restored.');
+          return answer.response === 1;
         });
-        if (getRendererDirty()) throw new Error('Unsaved editor changes appeared; nothing was restored.');
-        return answer.response === 1;
-      });
+      } catch (error) {
+        getDefaultBetaLogger().record({
+          level: 'error',
+          source: 'ipc',
+          event: 'machine:restore_failed',
+          message: error instanceof Error ? error.message : String(error),
+          meta: { checkpointId }
+        });
+        throw error;
+      }
     });
 
     handleMachineSensitive('workspace:list-directory', async (event, workspaceId, relativePath, cursor) => {

@@ -439,6 +439,11 @@ export function useTaskGovernance({
       try {
         const result = await workspace.restoreCheckpoint(checkpointId);
         if (result.ok) {
+          if (result.noop) {
+            setToast('No file changes in this turn to undo.');
+            window.setTimeout(() => setToast(null), 3000);
+            return;
+          }
           const rejected = globalRepairSession.rejectForCheckpoint(
             checkpointId,
             `Restored checkpoint ${checkpointId}; the failing state was rewound.`

@@ -6,12 +6,15 @@ import type { McpToolHandle } from '../lib/agent/mcpTools';
 import type { PermissionMode } from '../lib/agent/runPolicy';
 import { DEFAULT_MAX_TOOL_ROUNDS, runToolRounds } from '../lib/agent/toolLoop';
 import { parseToolBlocks, repairAndParseNativeToolArgs, stripToolBlocks } from '../lib/agent/toolProtocol';
+import type { WorkspaceToolContext } from '../lib/agent/toolGatekeeper';
 import { nativeToolDefinitions, summarizeCall } from '../lib/agent/tools';
+import { inferMilestoneCategory } from '../lib/autonomy/milestoneVerifier';
 import { isRetryableCoordinatorError, withCoordinatorBackoff } from '../lib/agents/coordinatorResilience';
 import { selectTaskMetrics } from '../lib/agents/runView';
 import { executedToolCallCount, runAgentTurn } from '../lib/agents/turnRunner';
 import { retryCheck } from '../lib/agents/scopePreserve';
 import { getRefineMode, streamChat, type ChatTurn, type RefineModeMeta } from '../lib/ai';
+import { betaLogger } from '../lib/betaLogger';
 import {
   createBackgroundStore,
   formatTime,
@@ -152,6 +155,7 @@ export interface UseOrchestrationControllerOptions {
   openSettings: (tab?: SettingsTab) => void;
   setIsSettingsOpen: (open: boolean) => void;
   setSettingsTab: (tab: SettingsTab) => void;
+  getToolContext?: () => Promise<WorkspaceToolContext> | WorkspaceToolContext;
 }
 
 export function useOrchestrationController({
@@ -205,7 +209,8 @@ export function useOrchestrationController({
   announce,
   openSettings,
   setIsSettingsOpen,
-  setSettingsTab
+  setSettingsTab,
+  getToolContext
 }: UseOrchestrationControllerOptions) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [queuedChatItems, setQueuedChatItems] = useState<QueuedChatDraft[]>([]);
@@ -420,7 +425,8 @@ export function useOrchestrationController({
     const readerModel = autoReaderModel(text, mode.writesFiles ? 'edit' : 'chatter');
     const pickerReport: PickerReport = { model: readerModel ?? '', ran: false, shortlist: 0, answered: false, picked: 0, durationMs: 0 };
     let fit: ChatRequestFit;
-    const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId));
+    const toolContext = getToolContext ? await getToolContext() : undefined;
+    const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), toolContext);
     try {
       const systemContext = await buildSystemContext(
         text,
@@ -1053,7 +1059,8 @@ export function useOrchestrationController({
 
       const contextWindow =
         activeModel?.contextWindow || resolveContextWindow(byok.activeProvider, byok.selectedModel);
-      const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId));
+      const toolContext = getToolContext ? await getToolContext() : undefined;
+      const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), toolContext);
       const system = await buildSystemContext(instruction, mode);
       const fit = fitChatRequest({
         contextWindow,
@@ -1064,6 +1071,8 @@ export function useOrchestrationController({
       });
       const runPolicy = { mode: permissionMode };
       const runId = makeId('run');
+      const milestoneCategory = inferMilestoneCategory(request.milestone);
+      const requireFileMutation = milestoneCategory === 'file_mutation' && request.milestone.expectedFiles.length > 0;
       const machineCheckpoint = await workspace.markCheckpoint(runId, instruction);
       try {
         const outcome = await runAgentTurn({
@@ -1071,6 +1080,7 @@ export function useOrchestrationController({
           expectedFiles: request.milestone.expectedFiles,
           applyPolicy: request.applyPolicy,
           checkpointBacked: true,
+          requireFileMutation,
           signal: request.signal,
           systemInstruction: fit.systemInstruction,
           maxToolRounds: DEFAULT_MAX_TOOL_ROUNDS,
@@ -1161,6 +1171,19 @@ export function useOrchestrationController({
           }
         });
         const touchedFiles = dedupePaths([...outcome.applied, ...(outcome.toolChangedPaths ?? [])]);
+        betaLogger.record({
+          level: outcome.error ? 'error' : 'info',
+          source: 'autonomy',
+          event: outcome.error ? 'turn_error' : 'turn_complete',
+          message: outcome.error
+            ? `Autonomous turn failed: ${outcome.error}`
+            : `Autonomous turn completed (${touchedFiles.length} file(s) touched).`,
+          meta: {
+            touchedCount: touchedFiles.length,
+            toolEventCount: outcome.toolEvents?.length ?? 0,
+            aborted: outcome.aborted
+          }
+        });
         return {
           reply: outcome.reply,
           patchesApplied: touchedFiles.length,
@@ -1172,6 +1195,7 @@ export function useOrchestrationController({
           pendingReview: outcome.pendingReview,
           changedFiles: outcome.changedFiles,
           failureProof: outcome.failureProof,
+          toolEvents: outcome.toolEvents,
           toolCalls: executedToolCallCount(outcome.toolActivity)
         };
       } finally { await workspace.finishMachineCheckpoint(machineCheckpoint); }
@@ -1185,6 +1209,7 @@ export function useOrchestrationController({
       permissionMode,
       activeModel,
       buildSystemContext,
+      getToolContext,
       mcpToolHandleRef,
       workspace,
       desktop,

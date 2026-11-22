@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AuthScreen } from './components/AuthScreen';
+import { BetaDebugLogModal } from './components/BetaDebugLogModal';
 import { ChatPanel, type PinnedSymbol } from './components/ChatPanel';
 import { PathPromptDialog, type PathPromptRequest } from './components/CodeEditor';
 import { FeedbackPanel } from './components/FeedbackPanel';
@@ -34,8 +35,10 @@ import { setCodeIntelRoot } from './lib/agent/codeIntel';
 import { setProjectMemoryRoot } from './lib/agent/projectMemory';
 import { normalizePermissionMode, type PermissionMode } from './lib/agent/runPolicy';
 import { ASK_USER_EVENT, ASK_USER_RESOLVED_EVENT, answerPendingQuestion, cancelPendingQuestion, type AskUserPrompt } from './lib/agent/subagent';
+import { buildWorkspaceToolContext, type WorkspaceToolContext } from './lib/agent/toolGatekeeper';
 import type { AutomationDesktopApi } from './lib/appHelpers';
 import { resumeSummary as backgroundResumeSummary } from './lib/autonomy/background';
+import { betaLogger } from './lib/betaLogger';
 import type { AcceptanceContract, BehaviorEvent } from './lib/behavior/types';
 import { listOutcomes } from './lib/calibratedAuto/ledger';
 import type { OutcomeRecord } from './lib/calibratedAuto/types';
@@ -44,6 +47,7 @@ import type { Command } from './lib/commands';
 import { confirmAction } from './lib/confirm';
 import { getDesktopBridge, type ShadRoxDesktopAPI, type UpdaterStatus } from './lib/desktop';
 import { buildTsOverrides, isScriptFilePath } from './lib/diagnostics';
+import { terminalStateManager } from './lib/terminal/state';
 import type {
   ChatMessage,
   RecentEntry,
@@ -118,6 +122,7 @@ export default function App() {
   const [quickOpenMode, setQuickOpenMode] = useState<'files' | 'content' | 'commands' | null>(null);
   const [askUserPrompt, setAskUserPrompt] = useState<AskUserPrompt | null>(null);
   const [newFilePathPrompt, setNewFilePathPrompt] = useState<PathPromptRequest | null>(null);
+  const [isBetaLogsOpen, setIsBetaLogsOpen] = useState(false);
 
   const busyRef = useRef(false);
   const dirtyFilesRef = useRef<string[]>([]);
@@ -260,6 +265,39 @@ export default function App() {
     setContract: setBehaviorContract
   });
 
+  const getToolContext = useCallback(async (): Promise<WorkspaceToolContext> => {
+    let activeJobCount = 0;
+    if (desktop && nativeWorkspaceId && typeof desktop.jobControl === 'function') {
+      try {
+        const res = await desktop.jobControl(nativeWorkspaceId, { action: 'list' });
+        if (res?.ok && Array.isArray(res.jobs)) {
+          activeJobCount = res.jobs.filter((job) => job.status === 'running').length;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    const termSummary = terminalStateManager.getSummary();
+    return buildWorkspaceToolContext({
+      workspaceOpen: Boolean(nativeWorkspaceId && workspace.workspace?.kind === 'folder'),
+      filePaths: workspace.workspace?.diskFileTree?.map((entry) => entry.path) ?? workspace.files.map((file) => file.name),
+      debugStatus: debug.state.status,
+      previewStatus: localPreview.localRuntime.status,
+      activeJobCount,
+      terminalAwaitingInput: termSummary.awaitingInput,
+      hasActiveTerminal: terminalStateManager.getSessionIds().length > 0,
+      checkpointCount: workspace.checkpoints.length
+    });
+  }, [
+    desktop,
+    nativeWorkspaceId,
+    workspace.workspace,
+    workspace.files,
+    workspace.checkpoints.length,
+    debug.state.status,
+    localPreview.localRuntime.status
+  ]);
+
   const contextBuilder = useContextBuilder({
     desktop,
     nativeWorkspaceId,
@@ -274,7 +312,8 @@ export default function App() {
     repoMapFiles,
     intentGetContext: intent.getContext,
     ruleDocsRef: pluginAutomations.ruleDocsRef,
-    skillDocsRef: pluginAutomations.skillDocsRef
+    skillDocsRef: pluginAutomations.skillDocsRef,
+    getToolContext
   });
 
   const languageActions = useLanguageActions({
@@ -355,7 +394,8 @@ export default function App() {
     announce,
     openSettings,
     setIsSettingsOpen,
-    setSettingsTab
+    setSettingsTab,
+    getToolContext
   });
 
   const governance = useTaskGovernance({
@@ -460,6 +500,17 @@ export default function App() {
         setIsPreviewFullscreen(false);
         setIsPreviewOpen(false);
         setIsSearchPanelOpen(true);
+        return;
+      }
+      if (key === 'l' && event.shiftKey) {
+        event.preventDefault();
+        betaLogger.record({
+          level: 'info',
+          source: 'ui',
+          event: 'beta_log_modal_toggled',
+          message: 'Opened ShadRox Beta Diagnostics Log viewer via Ctrl+Shift+L.'
+        });
+        setIsBetaLogsOpen((open) => !open);
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -607,6 +658,14 @@ export default function App() {
         category: 'Workspace',
         keywords: 'home recents switch project',
         run: handleBackToHub
+      },
+      {
+        id: 'view.betaLogs',
+        title: 'Open Beta Debug Logs',
+        category: 'View',
+        shortcut: 'Ctrl+Shift+L',
+        keywords: 'diagnostics telemetry debug logs',
+        run: () => setIsBetaLogsOpen(true)
       }
     ];
 
@@ -753,12 +812,15 @@ export default function App() {
 
   if (auth.status !== 'signed-in' && auth.status !== 'unconfigured') {
     return (
-      <AuthScreen
-        status={auth.status}
-        busy={auth.busy}
-        error={auth.error}
-        onSignIn={() => void auth.signIn()}
-      />
+      <>
+        <AuthScreen
+          status={auth.status}
+          busy={auth.busy}
+          error={auth.error}
+          onSignIn={() => void auth.signIn()}
+        />
+        <BetaDebugLogModal isOpen={isBetaLogsOpen} onClose={() => setIsBetaLogsOpen(false)} />
+      </>
     );
   }
 
@@ -782,6 +844,7 @@ export default function App() {
           onSignOut={() => void auth.signOut()}
         />
         {settingsDrawer}
+        <BetaDebugLogModal isOpen={isBetaLogsOpen} onClose={() => setIsBetaLogsOpen(false)} />
       </>
     );
   }
@@ -1058,6 +1121,8 @@ export default function App() {
       {newFilePathPrompt && (
         <PathPromptDialog request={newFilePathPrompt} onCancel={() => setNewFilePathPrompt(null)} />
       )}
+
+      <BetaDebugLogModal isOpen={isBetaLogsOpen} onClose={() => setIsBetaLogsOpen(false)} />
 
       {toast && (
         <div className="fixed bottom-14 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-accent-line bg-surface/95 px-4 py-2 text-xs text-ink shadow-2xl backdrop-blur">

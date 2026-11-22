@@ -191,6 +191,9 @@ export async function restoreAgentCheckpoint(workspaceId: string, desktop: Check
       return { ok: false, message: 'This is a machine checkpoint and the bridge has no machine-turn restore channel.' };
     }
     const result = await desktop.restoreMachineTurn(workspaceId, id);
+    if (result.status === 'noop' || result.report?.noChanges) {
+      return { ok: true, message: result.message || 'No file changes in this turn to undo.' };
+    }
     return { ok: result.ok, message: result.ok ? `Restored machine checkpoint "${meta.label}". ${result.message}` : `Machine restore failed: ${result.message}` };
   }
 

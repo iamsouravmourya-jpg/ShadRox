@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DEFAULT_MAX_TOOL_ROUNDS, MAX_CALLS_PER_ROUND, runToolRounds, ZERO_PROGRESS_LIMIT } from './toolLoop';
+import {
+  DEFAULT_MAX_TOOL_ROUNDS,
+  MAX_CALLS_PER_ROUND,
+  MUTATION_REQUIRED_NUDGE,
+  runToolRounds,
+  ZERO_PROGRESS_LIMIT
+} from './toolLoop';
 import { createMcpToolHandle } from './mcpTools';
 import type { McpBridge } from './mcpTools';
 import type { ChatTurn } from '../ai';
@@ -1158,4 +1164,76 @@ test('runToolRounds injects and updates pinned WORKING MEMORY scratchpad from ro
     assert.match(round4Transcript, /Create src\/b\.ts and update src\/a\.ts/);
   });
 });
+
+test('requireFileMutation intercepts zero-write finish call once with MUTATION_REQUIRED_NUDGE and succeeds once write_file runs', async () => {
+  const files = new Map<string, string>([['src/a.ts', 'export const x = 1;\n']]);
+  await withBridge({
+    readFile: async (_id: string, path: string) => {
+      if (!files.has(path)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { name: path, content: files.get(path), version: 'v1' };
+    },
+    diagnostics: async () => ({ diagnostics: [], truncated: false }),
+    verifyChangeSet: async () => ({ ok: true, issues: [] }),
+    saveFiles: async (_id: string, entries: Array<{ name: string; content: string }>) => {
+      for (const entry of entries) files.set(entry.name, entry.content);
+      return { errors: [], saved: entries.map((entry) => ({ name: entry.name })) };
+    }
+  }, async () => {
+    const model = scripted([
+      toolBlock([readCall]),
+      finishWith('Looked at src/a.ts and summarized changes.'),
+      toolBlock([{ name: 'write_file', args: { path: 'src/a.ts', content: 'export const x = 2;\n' } }]),
+      toolBlock([{ name: 'problems', args: { paths: ['src/a.ts'] } }]),
+      finishWith('Updated src/a.ts cleanly.')
+    ]);
+    const result = await runToolRounds({
+      messages: [{ role: 'user', content: 'Update src/a.ts to export 2' }],
+      workspaceId: 'ws',
+      aborted: () => false,
+      requireFileMutation: true,
+      stream: model.stream
+    });
+    assert.equal(files.get('src/a.ts'), 'export const x = 2;\n');
+    assert.equal(result.changedFiles, 1);
+    assert.match(result.finish?.summary ?? '', /^Updated src\/a\.ts cleanly\./);
+    assert.ok(result.toolEvents.some((ev) => ev.name === 'write_file' && ev.ok));
+    assert.ok(
+      model.seen.some((turns) => turns.some((turn) => turn.content.includes(MUTATION_REQUIRED_NUDGE))),
+      'expected zero-write finish to trigger MUTATION_REQUIRED_NUDGE'
+    );
+  });
+});
+
+test('requireFileMutation intercepts zero-write plain-text reply once before allowing completion', async () => {
+  const files = new Map<string, string>();
+  await withBridge({
+    readFile: async (_id: string, path: string) => {
+      if (!files.has(path)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { name: path, content: files.get(path), version: 'v1' };
+    },
+    verifyChangeSet: async () => ({ ok: true, issues: [] }),
+    saveFiles: async (_id: string, entries: Array<{ name: string; content: string }>) => {
+      for (const entry of entries) files.set(entry.name, entry.content);
+      return { errors: [], saved: entries.map((entry) => ({ name: entry.name })) };
+    }
+  }, async () => {
+    const model = scripted([
+      'Here is a summary without applying edits.',
+      toolBlock([{ name: 'write_file', args: { path: 'src/created.ts', content: 'export const ok = true;\n' } }]),
+      'Created src/created.ts.'
+    ]);
+    const result = await runToolRounds({
+      messages: [{ role: 'user', content: 'Create src/created.ts' }],
+      workspaceId: 'ws',
+      aborted: () => false,
+      requireFileMutation: true,
+      stream: model.stream
+    });
+    assert.equal(files.get('src/created.ts'), 'export const ok = true;\n');
+    assert.equal(result.rounds, 3);
+    assert.equal(result.text, 'Created src/created.ts.');
+    assert.equal(model.seen[1].at(-1)?.content, MUTATION_REQUIRED_NUDGE);
+  });
+});
+
 

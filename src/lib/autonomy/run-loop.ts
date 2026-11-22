@@ -21,6 +21,7 @@ import type {
   Verdict
 } from './types';
 import { ceilingReached, type CeilingStop, workUsageOf } from './budget';
+import { captureFileHashSnapshot } from './milestoneVerifier';
 import { auditRequirementCoverage, extractRequirements } from './requirements';
 import { canonicalPathKey, dedupePaths, isCaseInsensitivePlatform } from '../paths';
 
@@ -134,6 +135,10 @@ async function executeMilestoneUnit(
       : '';
     const baseFeedback = prior ? deps.feedbackFor(next, prior, lastFailures(next), next.attempts.length) : '';
     const feedbackText = [baseFeedback, heldNote].filter(Boolean).join('\n\n') || undefined;
+    const preTurnHashes =
+      typeof deps.ports.readFile === 'function' && next.expectedFiles.length > 0
+        ? await captureFileHashSnapshot(next.expectedFiles, deps.ports.readFile)
+        : undefined;
     const turn = await deps.ports.runTurn({
       goal,
       milestone: next,
@@ -146,10 +151,18 @@ async function executeMilestoneUnit(
     if (turn.pendingReview && turn.pendingReview.length > 0) {
       deps.ports.onEvent({ type: 'milestone:review', id: next.id, paths: turn.pendingReview });
     }
+    const snapshotTargets = [...new Set([...next.expectedFiles, ...(turn.touchedFiles ?? [])])];
+    const postTurnHashes =
+      typeof deps.ports.readFile === 'function' && snapshotTargets.length > 0
+        ? await captureFileHashSnapshot(snapshotTargets, deps.ports.readFile)
+        : undefined;
     const report = await deps.ports.verify(next, {
       patchesApplied: turn.patchesApplied,
       changedFiles: turn.changedFiles,
-      preExistingExpectedFiles
+      preExistingExpectedFiles,
+      ...(preTurnHashes ? { preTurnHashes } : {}),
+      ...(postTurnHashes ? { postTurnHashes } : {}),
+      ...(turn.toolEvents ? { toolEvents: turn.toolEvents } : {})
     });
     const verdict = verdictOf(report);
     const attemptRecord: Attempt = {

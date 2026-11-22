@@ -11,6 +11,7 @@ import { composerAfterCheckpointFailure } from '../lib/agents/scopePreserve';
 import { getSnapshot, pruneSnapshots, saveSnapshot } from '../lib/snapshots';
 import { getRecentWorkspaces, pushRecentWorkspace, removeRecentWorkspace } from '../lib/storage';
 import { getDesktopBridge, type DirectoryPage, type StagedTransaction, type WorkspaceChange } from '../lib/desktop';
+import { betaLogger } from '../lib/betaLogger';
 import { confirmAction } from '../lib/confirm';
 import {
   ensureReadWrite,
@@ -195,7 +196,7 @@ interface UseWorkspaceResult {
   inspectMachineCheckpoint: (id: string) => Promise<void>;
   exportDeltaReceipt: (id: string) => Promise<string>;
   /** `ok` = the state was restored; `partial` = restored, but some steps failed. */
-  restoreCheckpoint: (id: string) => Promise<{ ok: boolean; partial: boolean }>;
+  restoreCheckpoint: (id: string) => Promise<{ ok: boolean; partial: boolean; noop?: boolean }>;
   /** What restoring would do to the current buffers, so a restore is never blind. */
   previewCheckpointDiff: (id: string) => Promise<CheckpointDiff | null>;
   /**
@@ -1838,7 +1839,7 @@ export function useWorkspace(): UseWorkspaceResult {
    * checkpoints stay buffer-only; the user saves to disk deliberately.
    */
   const restoreCheckpoint = useCallback(
-    async (id: string): Promise<{ ok: boolean; partial: boolean }> => {
+    async (id: string): Promise<{ ok: boolean; partial: boolean; noop?: boolean }> => {
       const failure = { ok: false, partial: false };
       const checkpoint = checkpoints.find((entry) => entry.id === id);
       if (checkpoint?.machine) {
@@ -1855,6 +1856,19 @@ export function useWorkspace(): UseWorkspaceResult {
         try {
           const result = await desktop.restoreMachineTurn(nativeId, id);
           if (desktopWorkspaceIdRef.current !== nativeId) return failure;
+          if (result.status === 'noop' || result.report?.noChanges) {
+            const msg = result.message || 'No file changes in this turn to undo.';
+            betaLogger.record({
+              level: 'info',
+              source: 'checkpoint',
+              event: 'machine_rewind_noop',
+              message: msg,
+              meta: { checkpointId: id }
+            });
+            setDiskMessage(msg);
+            await inspectMachineCheckpoint(id);
+            return { ok: true, partial: false, noop: true };
+          }
           // The native response separates "files restored" (report state) from
           // "every step succeeded" (ok). Say partial when the disk contents came
           // back but e.g. a preview could not be stopped — never plain success.
@@ -1893,7 +1907,15 @@ export function useWorkspace(): UseWorkspaceResult {
           await inspectMachineCheckpoint(id);
           return restoredState ? { ok: true, partial: !result.ok } : failure;
         } catch (error) {
-          setDiskMessage(error instanceof Error ? error.message : 'Machine rewind failed.');
+          const message = error instanceof Error ? error.message : 'Machine rewind failed.';
+          betaLogger.record({
+            level: 'error',
+            source: 'checkpoint',
+            event: 'machine_rewind_failed',
+            message,
+            meta: { checkpointId: id }
+          });
+          setDiskMessage(message);
           await inspectMachineCheckpoint(id);
           return failure;
         }

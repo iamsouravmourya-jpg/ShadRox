@@ -30,7 +30,7 @@ import { isControlTool } from '../agent/tools';
 import type { FailureReceipt } from '../repairProof';
 import type { AttemptRecord } from '../taskUsage';
 import { confinePatches, isInsideWorkspaceRoot } from '../autonomy/confinement';
-import type { ApplyPolicyKind } from '../autonomy/types';
+import type { ApplyPolicyKind, ToolExecutionEvent } from '../autonomy/types';
 import {
   normalizePolicyPath,
   partitionPatches,
@@ -92,6 +92,8 @@ export interface AgentTurnInput {
   /** Per-attempt usage provenance, forwarded to the tool loop when it records one. */
   /** Model-scaled character budget for mid-loop observation compaction. */
   loopContextBudgetChars?: number;
+  /** When true, nudges the tool loop once if the model tries to exit without file mutations. */
+  requireFileMutation?: boolean;
   onAttempt?: (record: AttemptRecord) => void;
   onActivity?: (activity: ToolActivity[]) => void;
   onRound?: (round: number, text: string) => void;
@@ -150,6 +152,8 @@ export interface AgentTurnOutcome {
   toolChangedPaths?: string[];
   /** Exact paths created via native write tools during the tool loop. */
   toolCreatedPaths?: string[];
+  /** Structured telemetry of tools invoked during the turn. */
+  toolEvents?: ToolExecutionEvent[];
   error: string | null;
   plan: TaskPlan;
   finish?: { summary: string; blocked: string | null };
@@ -326,6 +330,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
     onAttempt: input.onAttempt,
     loopContextBudgetChars: input.loopContextBudgetChars,
     expectedFiles: scoped,
+    requireFileMutation: input.requireFileMutation,
     existsOnDisk: async (path) => (await input.ports.readFile(path)) !== null
   });
 
@@ -345,6 +350,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
     changedFiles: loop.changedFiles ?? 0,
     toolChangedPaths,
     toolCreatedPaths,
+    toolEvents: loop.toolEvents,
     failureProof: loop.failureProof,
     plan: loop.plan,
     finish: loop.finish

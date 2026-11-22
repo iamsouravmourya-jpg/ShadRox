@@ -13,6 +13,14 @@
 import type { DesktopDiagnostic, ExportedContract } from '../desktop';
 import { placeholderDiagnostics } from '../agent/placeholderLint';
 import { canonicalPathKey, dedupePaths, isCaseInsensitivePlatform } from '../paths';
+import {
+  buildNonMutationDiagnostics,
+  compareFileHashSnapshots,
+  evaluateNativeFileCheckCommand,
+  inferMilestoneCategory,
+  parseNativeFileCheckCommand,
+  verifyToolTelemetry
+} from './milestoneVerifier';
 import type {
   AutonomyEvent,
   AutonomyPorts,
@@ -423,24 +431,43 @@ export async function verifyMilestone(
     }
   }
 
+  const category = inferMilestoneCategory(unit);
   let command: CommandOutcome | undefined;
 
   if (unit.verifyCommand) {
-    try {
-      const outcome = await host.runCommand(unit.verifyCommand);
-      command = { ...outcome, stdoutTail: tail(outcome.stdoutTail), stderrTail: tail(outcome.stderrTail) };
-      if (outcome.timedOut) {
-        notes.push('the proof command was killed by its time limit, so its result is not a verdict.');
+    const fileCheckClauses = parseNativeFileCheckCommand(unit.verifyCommand);
+    if (fileCheckClauses) {
+      const nativeCheck = await evaluateNativeFileCheckCommand(unit.verifyCommand, {
+        listFiles: () => host.listFiles(),
+        readFile: host.readFile
+      });
+      if (nativeCheck) {
+        notes.push(...nativeCheck.notes);
+        command = {
+          argv: unit.verifyCommand,
+          exitCode: nativeCheck.ok ? 0 : 1,
+          stdoutTail: nativeCheck.ok ? nativeCheck.notes.join('\n') : '',
+          stderrTail: nativeCheck.ok ? '' : `Missing path(s): ${nativeCheck.missing.join(', ')}`,
+          timedOut: false
+        };
       }
-      if (outcome.declinedReason) {
-        notes.push(`the proof command was not run: ${outcome.declinedReason}`);
-      } else if (outcome.exitCode !== 0) {
-        notes.push(
-          `the proof command exited ${outcome.exitCode === null ? 'without a code' : outcome.exitCode} and failed verification.`
-        );
+    } else {
+      try {
+        const outcome = await host.runCommand(unit.verifyCommand);
+        command = { ...outcome, stdoutTail: tail(outcome.stdoutTail), stderrTail: tail(outcome.stderrTail) };
+        if (outcome.timedOut) {
+          notes.push('the proof command was killed by its time limit, so its result is not a verdict.');
+        }
+        if (outcome.declinedReason) {
+          notes.push(`the proof command was not run: ${outcome.declinedReason}`);
+        } else if (outcome.exitCode !== 0) {
+          notes.push(
+            `the proof command exited ${outcome.exitCode === null ? 'without a code' : outcome.exitCode} and failed verification.`
+          );
+        }
+      } catch (error) {
+        notes.push(`the proof command could not run: ${error instanceof Error ? error.message : String(error)}`);
       }
-    } catch (error) {
-      notes.push(`the proof command could not run: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -461,14 +488,40 @@ export async function verifyMilestone(
     verdict = 'passed';
   } else {
     verdict = 'unverified';
-    if (targetFiles.length === 0) {
+    if (targetFiles.length === 0 && category !== 'read_only' && category !== 'checkpoint') {
       notes.push('the milestone named no files, so there was nothing specific to check.');
     }
   }
 
+  // Deterministic read-only & checkpoint category telemetry check: never reject
+  // for zero patches when no files were expected.
+  if (category === 'read_only' || category === 'checkpoint') {
+    const telemetry = verifyToolTelemetry(category, unit, writes);
+    if (telemetry.notes.length > 0) notes.push(...telemetry.notes);
+    if (!telemetry.ok && writes?.toolEvents && writes.toolEvents.length > 0 && telemetry.ranRelevantTool) {
+      verdict = 'failed';
+    } else if (!hasError && !commandFailed && (telemetry.ok || commandPassed || diagnostics !== null)) {
+      verdict = 'passed';
+    }
+    const failureContext =
+      verdict === 'failed' && hasError
+        ? await buildFailureContext(errorDiagnostics, host, caseInsensitive)
+        : undefined;
+    return { verdict, diagnostics: diagnostics ?? [], command, ...(failureContext ? { failureContext } : {}), notes };
+  }
+
   const MODIFICATION_INTENT_PATTERN = /\b(update|edit|modify|refactor|fix|patch|replace|rename|remove|wire|integrate|extend|enhance|improve|style|convert|migrate)\b/i;
 
-  if (writes && writes.patchesApplied === 0 && (writes.changedFiles ?? 0) === 0) {
+  const hashDiff = compareFileHashSnapshots(
+    targetFiles,
+    writes?.preTurnHashes,
+    writes?.postTurnHashes
+  );
+  const hashProvesMutation = hashDiff.compared && hashDiff.mutatedPaths.length > 0;
+  const hashProvesZeroDiff =
+    hashDiff.compared && hashDiff.mutatedPaths.length === 0 && hashDiff.missingPaths.length === 0;
+
+  if (writes && writes.patchesApplied === 0 && (writes.changedFiles ?? 0) === 0 && !hashProvesMutation) {
     notes.push('the milestone touched nothing: the turn applied no patches and changed no files.');
     if (verdict === 'passed' && unit.expectedFiles.length > 0) {
       // A clean check is not proof of work: a turn that wrote nothing can only
@@ -491,7 +544,8 @@ export async function verifyMilestone(
         if (missing.length > 0) {
           verdict = 'failed';
           notes.push(`the turn produced no changes and ${missing.length} expected file(s) are absent: ${missing.slice(0, 5).join(', ')}.`);
-        } else if (hasPreExistingTarget || explicitModification) {
+          diagnostics = [...(diagnostics ?? []), ...buildNonMutationDiagnostics(missing)];
+        } else if (hasPreExistingTarget || explicitModification || hashProvesZeroDiff) {
           verdict = 'failed';
           const targets = (writes.preExistingExpectedFiles?.length ? writes.preExistingExpectedFiles : unit.expectedFiles).slice(0, 5);
           notes.push(`the turn produced no changes to existing target file(s): ${targets.join(', ')}.`);
@@ -501,6 +555,8 @@ export async function verifyMilestone(
         notes.push('the turn changed no files and no file reader is attached, so the milestone cannot be claimed as passed.');
       }
     }
+  } else if (hashProvesMutation) {
+    notes.push(`SHA-256 verification confirmed byte changes in ${hashDiff.mutatedPaths.slice(0, 5).join(', ')}.`);
   }
 
   const failureContext =
@@ -575,6 +631,7 @@ export function createAutonomyPorts(host: AutonomyHost, options: AutonomyPortsOp
     verify: (unit, writes) => verifyMilestone(unit, host, options.rootPath, writes),
     verifyWorkspace: () => verifyWorkspaceDiagnostics(host, options.rootPath),
     listFiles: () => host.listFiles(),
+    ...(host.readFile ? { readFile: (path) => host.readFile!(path) } : {}),
     askPlan: (prompt) => host.askPlan(prompt),
     onEvent: options.onEvent,
     isCancellationRequested: options.isCancellationRequested,

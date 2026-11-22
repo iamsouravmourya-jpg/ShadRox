@@ -2,6 +2,33 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
 
+const NTFS_RETRY_DELAYS_MS = [50, 100, 200, 400, 800];
+const NTFS_RETRY_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+
+function sleepNtfs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withNtfsRetry(op, options = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= NTFS_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await op();
+    } catch (error) {
+      lastError = error;
+      const code = error && typeof error === 'object' ? error.code : undefined;
+      if (!code || !NTFS_RETRY_CODES.has(code) || attempt >= NTFS_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+      if ((code === 'EPERM' || code === 'EACCES') && options.readOnlyTarget) {
+        await fs.chmod(options.readOnlyTarget, 0o666).catch(() => {});
+      }
+      await sleepNtfs(NTFS_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+  throw lastError;
+}
+
 const MAX_FILES = 400;
 const MAX_ASSETS = 200;
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
@@ -538,7 +565,7 @@ function createWorkspaceAccess() {
     const existing = await fs.lstat(target).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
     if (existing) throw new Error('A file already exists at that destination.');
 
-    await fs.rename(source.realPath, target);
+    await withNtfsRetry(() => fs.rename(source.realPath, target), { readOnlyTarget: source.realPath });
     workspace.fileMap.delete(source.clean);
     workspace.fileMap.set(cleanTo, target);
     const content = await fs.readFile(target, 'utf8');
@@ -594,11 +621,11 @@ function createWorkspaceAccess() {
 
     if (stat.isDirectory()) {
       if ((await fs.readdir(target)).length > 0) throw new Error('Only an empty folder can be deleted.');
-      await fs.rmdir(target);
+      await withNtfsRetry(() => fs.rmdir(target), { readOnlyTarget: target });
       return { path: clean, kind: 'directory' };
     }
     if (!stat.isFile()) throw new Error('Only files and empty folders can be deleted.');
-    await fs.unlink(target);
+    await withNtfsRetry(() => fs.unlink(target), { readOnlyTarget: target });
     workspace.fileMap.delete(clean);
     return { path: clean, kind: 'file' };
   }
@@ -900,20 +927,20 @@ function createWorkspaceAccess() {
         temporaryPath = path.join(path.dirname(target), `.shadrox-${randomUUID()}.tmp`);
         await fs.writeFile(temporaryPath, file.content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
         if (hadMappedPath) {
-          await fs.rename(temporaryPath, target);
+          await withNtfsRetry(() => fs.rename(temporaryPath, target), { readOnlyTarget: target });
         } else {
           const linked = await fs.link(temporaryPath, target).then(() => true, () => false);
           if (linked) {
-            await fs.unlink(temporaryPath);
+            await withNtfsRetry(() => fs.unlink(temporaryPath), { readOnlyTarget: temporaryPath });
           } else {
             // OneDrive/FAT32/network volumes refuse hard links; rename is the
             // same-volume atomic move, copy+unlink covers cross-volume EXDEV.
             try {
-              await fs.rename(temporaryPath, target);
+              await withNtfsRetry(() => fs.rename(temporaryPath, target), { readOnlyTarget: target });
             } catch (renameError) {
               if (renameError.code !== 'EXDEV') throw renameError;
-              await fs.copyFile(temporaryPath, target);
-              await fs.unlink(temporaryPath);
+              await withNtfsRetry(() => fs.copyFile(temporaryPath, target), { readOnlyTarget: target });
+              await withNtfsRetry(() => fs.unlink(temporaryPath), { readOnlyTarget: temporaryPath });
             }
           }
         }

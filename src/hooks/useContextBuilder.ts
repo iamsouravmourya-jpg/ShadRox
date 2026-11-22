@@ -7,6 +7,7 @@ import { buildRepoMap as buildRankedRepoMap } from '../lib/agent/repoMap';
 import { CHAT_PROMPT_CORE, TOOL_DISCIPLINE_RULES } from '../lib/agent/promptDiscipline';
 import { DEFAULT_MAX_TOOL_ROUNDS } from '../lib/agent/toolLoop';
 import { describeExternalTools, describeTools } from '../lib/agent/tools';
+import type { WorkspaceToolContext } from '../lib/agent/toolGatekeeper';
 import { formatWorkspaceManifestBlock, parseWorkspaceManifest } from '../lib/agents/workspaceManifest';
 import { streamChat, type RefineModeMeta } from '../lib/ai';
 import {
@@ -66,6 +67,7 @@ export interface UseContextBuilderOptions {
   intentGetContext: ReturnType<typeof useIntentGraph>['getContext'];
   ruleDocsRef: MutableRefObject<RuleSource[]>;
   skillDocsRef: MutableRefObject<Skill[]>;
+  getToolContext?: () => Promise<WorkspaceToolContext> | WorkspaceToolContext;
 }
 
 export function useContextBuilder({
@@ -82,7 +84,8 @@ export function useContextBuilder({
   repoMapFiles,
   intentGetContext,
   ruleDocsRef,
-  skillDocsRef
+  skillDocsRef,
+  getToolContext
 }: UseContextBuilderOptions) {
   /** Auto pays a cheap model to pick the context before the answer model sees it. */
   const [autoContext, setAutoContext] = useState<boolean>(() => {
@@ -467,7 +470,10 @@ export function useContextBuilder({
             ...describeSkills(skillDocsRef.current)
           );
         }
-        if (nativeWorkspaceId) core.push(...describeTools(DEFAULT_MAX_TOOL_ROUNDS, mcpDiscovery.tools, mcpNotes));
+        if (nativeWorkspaceId) {
+          const toolContext = getToolContext ? await getToolContext() : undefined;
+          core.push(...describeTools(DEFAULT_MAX_TOOL_ROUNDS, mcpDiscovery.tools, mcpNotes, toolContext));
+        }
         const signatureMap = repoMapFiles.files.length > 0 ? await buildRankedRepoMap(folder.path, {
           tokenBudget: repoMapBudgetFor(contextWindow),
           query,
@@ -694,7 +700,8 @@ export function useContextBuilder({
       repoMapFiles.signatures,
       intentGetContext,
       ruleDocsRef,
-      skillDocsRef
+      skillDocsRef,
+      getToolContext
     ]
   );
 

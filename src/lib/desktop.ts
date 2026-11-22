@@ -760,7 +760,7 @@ export interface ShadRoxDesktopAPI {
   beginMachineTurn: (workspaceId: string, checkpointId: string) => Promise<import('./machine/delta').MachineDelta | null>;
   finishMachineTurn: (workspaceId: string, checkpointId: string) => Promise<import('./machine/delta').MachineDelta | null>;
   inspectMachineTurn: (workspaceId: string, checkpointId: string) => Promise<import('./machine/delta').MachineDelta | null>;
-  restoreMachineTurn: (workspaceId: string, checkpointId: string) => Promise<{ ok: boolean; message: string; report: import('./machine/delta').MachineDelta }>;
+  restoreMachineTurn: (workspaceId: string, checkpointId: string) => Promise<{ ok: boolean; status?: 'restored' | 'noop' | 'cancelled' | 'failed'; message: string; report: import('./machine/delta').MachineDelta }>;
   exportMachineReceipt: (workspaceId: string, checkpointId: string) => Promise<import('./machine/receipt').MachineReceiptExport>;
   verifyMachineReceipt: (workspaceId: string, receiptId: string) => Promise<import('./machine/receipt').MachineReceiptVerification>;
   /** Static pre-apply check of proposed file contents (syntax, JSON, markup). */
@@ -935,6 +935,10 @@ export interface ShadRoxDesktopAPI {
     /** Opens the system browser and resolves with the loopback callback's query params. */
     startLoopback: (authorizeUrl: string, redirectUri: string) => Promise<DesktopAuthResult>;
     appVersion: () => Promise<string>;
+  };
+  logs?: {
+    getRecent: (limit?: number) => Promise<import('./betaLogger').BetaLogEntry[]>;
+    record: (entry: import('./betaLogger').BetaLogEntry) => Promise<void>;
   };
 }
 

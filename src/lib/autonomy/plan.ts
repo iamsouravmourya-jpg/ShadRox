@@ -16,7 +16,7 @@
 import { findCycles } from './dag';
 import { extractExplicitPathsFromText, extractRequirements, formatRequirementChecklistForPrompt } from './requirements';
 import { canonicalPathKey, isCaseInsensitivePlatform, normalizeRepoPath } from '../paths';
-import type { Milestone, PlanError, RunBudget } from './types';
+import type { Milestone, MilestoneCategory, PlanError, RunBudget } from './types';
 
 /**
  * A milestone leaf from the model's JSON array. Every field is optional because
@@ -31,6 +31,7 @@ interface RawMilestone {
   expectedFiles?: unknown;
   dependsOn?: unknown;
   verifyCommand?: unknown;
+  category?: unknown;
 }
 
 function asString(value: unknown): string {
@@ -68,8 +69,21 @@ export function extractJsonArray(text: string): string | null {
   return body.slice(start, end + 1);
 }
 
+const VALID_CATEGORIES = new Set<MilestoneCategory>([
+  'read_only',
+  'file_mutation',
+  'command_execution',
+  'checkpoint'
+]);
+
+function normalizeCategory(value: unknown): MilestoneCategory | undefined {
+  const raw = asString(value);
+  return VALID_CATEGORIES.has(raw as MilestoneCategory) ? (raw as MilestoneCategory) : undefined;
+}
+
 function normalizeMilestone(raw: RawMilestone, index: number): Milestone {
   const title = asString(raw.title) || asString(raw.description);
+  const category = normalizeCategory(raw.category);
   return {
     id: asString(raw.id) || `m${index + 1}`,
     title,
@@ -77,6 +91,7 @@ function normalizeMilestone(raw: RawMilestone, index: number): Milestone {
     expectedFiles: asStringArray(raw.expectedFiles),
     dependsOn: asStringArray(raw.dependsOn),
     verifyCommand: asString(raw.verifyCommand) || undefined,
+    ...(category ? { category } : {}),
     status: 'pending',
     attempts: []
   };
@@ -237,6 +252,118 @@ export function coalesceSingleFileMilestones(milestones: Milestone[], files: rea
     }
     return { ...milestone, dependsOn: mappedDeps };
   });
+}
+
+/**
+ * Anti-bloat consolidator for small 1-2 file tasks:
+ * When a planner emits 4+ granular milestones that only touch <= 2 distinct files
+ * on a focused goal, merge consecutive excess steps cleanly so the plan stays
+ * atomic (at most 3 milestones) without artificial read/grep/verify bloat.
+ */
+export function consolidateSmallTaskMilestones(
+  milestones: Milestone[],
+  goal: string
+): Milestone[] {
+  if (milestones.length <= 3) return milestones;
+  const requirements = extractRequirements(goal);
+  if (requirements.length > 4) return milestones;
+
+  const distinctFiles = new Set<string>();
+  for (const milestone of milestones) {
+    for (const file of milestone.expectedFiles) {
+      const clean = normalizePlanPath(file).toLowerCase();
+      if (clean) distinctFiles.add(clean);
+    }
+  }
+  if (distinctFiles.size > 2) return milestones;
+
+  // Merge into 2 or 3 cohesive buckets depending on whether there is a trailing verification/command milestone.
+  const last = milestones[milestones.length - 1];
+  const lastIsVerifyOnly =
+    Boolean(last.verifyCommand) &&
+    (last.expectedFiles.length === 0 || last.category === 'command_execution');
+
+  const body = lastIsVerifyOnly ? milestones.slice(0, -1) : milestones;
+  if (body.length <= (lastIsVerifyOnly ? 2 : 3)) return milestones;
+
+  const hasLeadingPhase =
+    body.length > 2 &&
+    (body[0].category === 'read_only' || body[0].category === 'checkpoint') &&
+    body[0].expectedFiles.length === 0;
+  const leading = hasLeadingPhase ? [body[0]] : [];
+  const mutableBody = hasLeadingPhase ? body.slice(1) : body;
+  const remainingSlots = (lastIsVerifyOnly ? 2 : 3) - leading.length;
+  if (mutableBody.length <= remainingSlots) return milestones;
+
+  const bucketSize = Math.ceil(mutableBody.length / Math.max(1, remainingSlots));
+  const consolidated: Milestone[] = [...leading];
+  const idRemap = new Map<string, string>();
+
+  for (let start = 0; start < mutableBody.length; start += bucketSize) {
+    const slice = mutableBody.slice(start, start + bucketSize);
+    const head = slice[0];
+    const sliceIds = new Set(slice.map((m) => m.id));
+    const expectedFiles: string[] = [];
+    const seenFiles = new Set<string>();
+    for (const m of slice) {
+      for (const file of m.expectedFiles) {
+        const clean = normalizePlanPath(file);
+        if (!clean) continue;
+        const key = clean.toLowerCase();
+        if (!seenFiles.has(key)) {
+          seenFiles.add(key);
+          expectedFiles.push(clean);
+        }
+      }
+    }
+    const verifyCommand = [...slice].reverse().find((m) => Boolean(m.verifyCommand))?.verifyCommand;
+    const category = slice.some((m) => m.category === 'file_mutation' || m.expectedFiles.length > 0)
+      ? 'file_mutation'
+      : head.category;
+    const dependsOn: string[] = [];
+    const seenDeps = new Set<string>();
+    for (const m of slice) {
+      for (const dep of m.dependsOn) {
+        const mapped = idRemap.get(dep) ?? dep;
+        if (!mapped || sliceIds.has(mapped) || mapped === head.id || seenDeps.has(mapped)) continue;
+        seenDeps.add(mapped);
+        dependsOn.push(mapped);
+      }
+    }
+    for (const member of slice) idRemap.set(member.id, head.id);
+
+    consolidated.push({
+      id: head.id,
+      title: slice.length === 1 ? head.title : slice.map((m) => m.title).join(' & ').slice(0, 140),
+      instruction:
+        slice.length === 1
+          ? head.instruction
+          : slice.map((m, idx) => `${idx + 1}. ${m.title}: ${m.instruction}`).join('\n'),
+      expectedFiles,
+      dependsOn,
+      ...(verifyCommand ? { verifyCommand } : {}),
+      ...(category ? { category } : {}),
+      status: 'pending',
+      attempts: []
+    });
+  }
+
+  if (lastIsVerifyOnly) {
+    const remappedLastDeps: string[] = [];
+    const seenLastDeps = new Set<string>();
+    for (const dep of last.dependsOn) {
+      const mapped = idRemap.get(dep) ?? dep;
+      if (!mapped || mapped === last.id || seenLastDeps.has(mapped)) continue;
+      seenLastDeps.add(mapped);
+      remappedLastDeps.push(mapped);
+    }
+    if (remappedLastDeps.length === 0 && consolidated.length > 0) {
+      remappedLastDeps.push(consolidated[consolidated.length - 1].id);
+    }
+    consolidated.push({ ...last, dependsOn: remappedLastDeps });
+  }
+
+  return consolidated;
 }
 
 /**
@@ -445,12 +572,14 @@ export function buildPlannerPrompt(goal: string, files: string[], budget: RunBud
     '',
     'Return ONLY a JSON array. Each element:',
     '{ "id": "m1", "title": "one imperative line", "instruction": "the exact instruction to carry out",',
-    '  "expectedFiles": ["repo/relative/path.ts"], "dependsOn": ["m0"], "verifyCommand": "optional command to prove it" }',
+    '  "expectedFiles": ["repo/relative/path.ts"], "dependsOn": ["m0"], "category": "file_mutation", "verifyCommand": "optional build/test command" }',
     '',
     'Rules: ids are unique; dependsOn only references ids in this array; every path is repo-relative (no leading slash, no "..");',
+    'category is optional: "file_mutation" | "read_only" | "command_execution" | "checkpoint";',
     'ensure EVERY item in the requirement checklist and EVERY target file in the goal is assigned to a milestone;',
+    'Keep 1-2 file tasks consolidated into 1-3 cohesive milestones — do NOT emit separate search/read/verify/checkpoint milestones unless explicitly requested;',
     'when updating multiple cohesive UI sections inside a single existing file (e.g. App.jsx or one page component), group those edits into 1-2 structured milestones rather than creating 5-7 section-by-section milestones;',
-    'omit verifyCommand when there is nothing to run; do not wrap the array in prose.',
+    'never emit shell file-existence commands (test -f, ls, dir, Test-Path) as verifyCommand — file presence is verified automatically; only set verifyCommand for real build/test/typecheck scripts and omit verifyCommand otherwise; do not wrap the array in prose.',
     '',
     'FILES CURRENTLY IN THE WORKSPACE:',
     fileList
@@ -474,7 +603,10 @@ export function createPlanGoal(askPlan: (prompt: string) => Promise<string>) {
       const reply = await askPlan(prompt);
       const parsed = parsePlanReply(reply);
       if (parsed.errors.length === 0) {
-        const coalesced = coalesceSingleFileMilestones(parsed.milestones, files);
+        const coalesced = consolidateSmallTaskMilestones(
+          coalesceSingleFileMilestones(parsed.milestones, files),
+          goal
+        );
         const validationErrors = validatePlan(coalesced, files, budget);
         if (validationErrors.length === 0) {
           return { milestones: coalesced, errors: [] };

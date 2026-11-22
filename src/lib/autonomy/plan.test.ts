@@ -5,6 +5,7 @@ import {
   buildPlannerPrompt,
   coalesceSingleFileMilestones,
   computeElasticRunBudget,
+  consolidateSmallTaskMilestones,
   createPlanGoal,
   isSafeRelativePath,
   parsePlanReply,
@@ -197,3 +198,23 @@ test('createPlanGoal retries once when validation fails and repairs the plan', a
   assert.equal(result.errors.length, 0);
   assert.equal(result.milestones[0].title, 'Good plan');
 });
+
+test('consolidateSmallTaskMilestones compresses bloated <=2-file plans to at most 3 milestones with valid dependencies', async () => {
+  const bloated = [
+    milestone({ id: 'm1', title: 'Inspect files', instruction: 'Read files', expectedFiles: [], dependsOn: [], category: 'read_only' }),
+    milestone({ id: 'm2', title: 'Step 1', instruction: 'Edit header', expectedFiles: ['src/App.tsx'], dependsOn: ['m1'], category: 'file_mutation' }),
+    milestone({ id: 'm3', title: 'Step 2', instruction: 'Edit footer', expectedFiles: ['src/App.tsx'], dependsOn: ['m2'], category: 'file_mutation' }),
+    milestone({ id: 'm4', title: 'Step 3', instruction: 'Add styles', expectedFiles: ['src/App.css'], dependsOn: ['m3'], category: 'file_mutation' }),
+    milestone({ id: 'm5', title: 'Verify', instruction: 'Run build check', expectedFiles: ['src/App.tsx'], dependsOn: ['m4'], verifyCommand: 'npm run build' })
+  ];
+  const consolidated = consolidateSmallTaskMilestones(bloated, 'Update App header, footer, and styles');
+  assert.ok(consolidated.length <= 3, `expected <= 3 milestones, got ${consolidated.length}`);
+  assert.deepEqual(validatePlan(consolidated, ['src/App.tsx', 'src/App.css'], BUDGET), []);
+
+  const planGoal = createPlanGoal(async () => JSON.stringify(bloated));
+  const planned = await planGoal('Update App header, footer, and styles', ['src/App.tsx', 'src/App.css'], BUDGET);
+  assert.equal(planned.errors.length, 0);
+  assert.ok(planned.milestones.length <= 3);
+  assert.equal(planned.milestones[0].category, 'read_only');
+});
+

@@ -20,6 +20,7 @@ import { createFailureRepeatTracker, failureNudge, failureBlockMessage } from '.
 import { ensureTurnCheckpoint } from './checkpoints';
 import { isVerifyCommand } from './verifyProject';
 import { confinePatches, isInsideWorkspaceRoot } from '../autonomy/confinement';
+import type { ToolExecutionEvent } from '../autonomy/types';
 
 /**
  * Runs the tool rounds of one assistant turn.
@@ -77,6 +78,9 @@ const EXPLORATION_INTENT =
 
 const EXPLORATION_NUDGE =
   'You have not inspected the workspace yet. Use the read/search tools to examine the code before answering.';
+
+export const MUTATION_REQUIRED_NUDGE =
+  'Verification blocked: You have not applied any file edits yet. Call edit_file, apply_patch, or write_file now before finishing.';
 
 export type ToolLoopStopReason =
   | 'complete'
@@ -139,6 +143,8 @@ export interface ToolLoopResult {
   changedPaths?: string[];
   /** Exact normalized paths created on disk by write tools during the loop. */
   createdPaths?: string[];
+  /** Structured telemetry of tools invoked during the loop. */
+  toolEvents?: ToolExecutionEvent[];
   /** Why the loop stopped; always set by this implementation. */
   stopReason?: ToolLoopStopReason;
   /** Present on hard stops (cap, stuck, abort): the data a Continue button resumes from. */
@@ -180,6 +186,8 @@ export interface ToolLoopInput {
   existsOnDisk?: (path: string) => Promise<boolean>;
   /** Pending requirements carried into the pinned working-memory scratchpad. */
   initialRequirements?: string[];
+  /** When true, intercepts zero-write completion or finish once with MUTATION_REQUIRED_NUDGE. */
+  requireFileMutation?: boolean;
 }
 
 /* ------------------------------------------------------------------ *
@@ -535,6 +543,12 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
       changedFiles: changedFilesTotal,
       changedPaths: [...changedPathsSet],
       createdPaths: [...createdPathsSet],
+      toolEvents: activity.map((entry) => ({
+        name: entry.name,
+        ok: entry.ok,
+        ...(entry.refused ? { refused: true } : {}),
+        summary: entry.label
+      })),
       ...(resume ? { resume } : {}),
       ...(failureProof ? { failureProof } : {})
     };
@@ -542,6 +556,11 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
 
   const wantsExploration = EXPLORATION_INTENT.test(latestUserAsk);
   let nudgeUsed = false;
+  let mutationNudgeUsed = false;
+  const hasPendingPathFence = (rawText: string): boolean => /```[^\n]*\bpath=/.test(rawText);
+  const hasTurnWrites = (): boolean => changedFilesTotal > 0 || changedPathsSet.size > 0;
+  const mayNudgeMutation = (): boolean =>
+    input.requireFileMutation === true && !mutationNudgeUsed && !hasTurnWrites() && round < maxRounds;
   const inspectedWorkspace = () => activity.some((entry) => !isControlTool(entry.name));
   /** One nudge per turn, and only while a round is left to spend on it. */
   const mayNudgeExploration = () => !nudgeUsed && wantsExploration && !inspectedWorkspace() && round < maxRounds;
@@ -625,6 +644,10 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
    * escape hatch if the model keeps refusing to satisfy a gate.
    */
   const finishGate = async (): Promise<ToolOutcome | null> => {
+    if (mayNudgeMutation() && !hasPendingPathFence(text)) {
+      mutationNudgeUsed = true;
+      return { ok: false, content: '', error: MUTATION_REQUIRED_NUDGE, refused: true };
+    }
     if (!turn) return null;
     if (turn.scaffoldIntent && !turn.scaffoldNudged && turn.created.size < 2) {
       turn.scaffoldNudged = true;
@@ -702,6 +725,12 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         nudgeUsed = true;
         if (streamed.text.trim()) messages.push({ role: 'assistant', content: streamed.text });
         messages.push({ role: 'user', content: EXPLORATION_NUDGE });
+        continue;
+      }
+      if (mayNudgeMutation() && !hasPendingPathFence(streamed.text)) {
+        mutationNudgeUsed = true;
+        if (streamed.text.trim()) messages.push({ role: 'assistant', content: streamed.text });
+        messages.push({ role: 'user', content: MUTATION_REQUIRED_NUDGE });
         continue;
       }
       return stamp({ text, rounds: round, activity, capped: false, error: null, plan, stopReason: 'complete' });

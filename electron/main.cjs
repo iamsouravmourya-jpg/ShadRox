@@ -20,6 +20,7 @@ const { createMachineDelta, LIMITS: MACHINE_LIMITS } = require('./machine-delta.
 const { createMachineGit } = require('./machine-git.cjs');
 const { createMachineReceipt } = require('./machine-receipt.cjs');
 const { createDebugHost } = require('./debug-host.cjs');
+const { initDefaultBetaLogger, getDefaultBetaLogger } = require('./beta-logger.cjs');
 
 const { PREVIEW_SCHEME, APP_SCHEME, APP_ORIGIN, createPreviewProtocolService } = require('./ipc/previewProtocol.cjs');
 const { createCommandProofRecorder, registerProofHandlers, registerDebugHandlers } = require('./ipc/debugProofIpc.cjs');
@@ -503,6 +504,26 @@ app.whenReady().then(async () => {
     startProtocolPreview: previewProtocol.startProtocolPreview,
     runPreviewAssertion: previewProtocol.runPreviewAssertion,
     getMainWindow: () => mainWindow
+  });
+
+  initDefaultBetaLogger({ logDir: path.join(app.getPath('userData'), 'logs') });
+  ipcMain.handle('logs:getRecent', (event, limit) => {
+    assertTrustedRenderer(event);
+    const bounded = typeof limit === 'number' && Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.floor(limit))) : 500;
+    return getDefaultBetaLogger().getRecent(bounded);
+  });
+  ipcMain.handle('logs:record', (event, rawEntry) => {
+    assertTrustedRenderer(event);
+    if (!rawEntry || typeof rawEntry !== 'object') return;
+    getDefaultBetaLogger().record({
+      id: typeof rawEntry.id === 'string' ? rawEntry.id : undefined,
+      timestamp: typeof rawEntry.timestamp === 'number' ? rawEntry.timestamp : Date.now(),
+      level: rawEntry.level === 'error' || rawEntry.level === 'warn' ? rawEntry.level : 'info',
+      source: typeof rawEntry.source === 'string' ? rawEntry.source : 'ui',
+      event: typeof rawEntry.event === 'string' ? rawEntry.event : 'event',
+      message: typeof rawEntry.message === 'string' ? rawEntry.message : '',
+      meta: rawEntry.meta && typeof rawEntry.meta === 'object' ? rawEntry.meta : undefined
+    });
   });
 
   await createWindow();

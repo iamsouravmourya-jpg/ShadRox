@@ -24,6 +24,7 @@ import { SEMANTIC_SEARCH_TOOLS, SEMANTIC_SEARCH_SCHEMA, handleSemanticSearch } f
 import { WEB_TOOLS, WEB_TOOL_SCHEMAS, handleWebSearch, handleFetchUrl, handlePreviewInspect } from './webTools';
 import { INTERACTION_TOOLS, INTERACTION_SCHEMAS, handleAskUser, handleSpawnSubagent } from './subagent';
 import { DIFF_REVIEW_TOOLS, DIFF_REVIEW_SCHEMA, handleDiffReview } from './diffReview';
+import { resolveActiveTools, type WorkspaceToolContext } from './toolGatekeeper';
 
 const fallbackFileBackups = new Map<string, string>();
 
@@ -497,8 +498,13 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
 };
 
 /** JSON schemas for provider-native calls; MCP tools remain on the text protocol. */
-export function nativeToolDefinitions(includeWorkspaceTools = true): Array<{ name: string; description: string; parameters: Record<string, unknown> }> {
-  return TOOL_DEFINITIONS.filter((tool) => includeWorkspaceTools || isControlTool(tool.name)).map((tool) => ({
+export function nativeToolDefinitions(
+  includeWorkspaceTools = true,
+  context?: WorkspaceToolContext
+): Array<{ name: string; description: string; parameters: Record<string, unknown> }> {
+  const base = TOOL_DEFINITIONS.filter((tool) => includeWorkspaceTools || isControlTool(tool.name));
+  const filtered = context ? resolveActiveTools(context, base) : base;
+  return filtered.map((tool) => ({
     name: tool.name,
     description: tool.description,
     parameters: NATIVE_TOOL_SCHEMAS[tool.name]
@@ -570,7 +576,16 @@ export function classifyToolEffect(name: string): ToolEffect {
 }
 
 /** The instruction block that teaches the model to use the tools. */
-export function describeTools(maxRounds: number, external: ExternalToolDefinition[] = [], notes: string[] = []): string[] {
+export function describeTools(
+  maxRounds: number,
+  external: ExternalToolDefinition[] = [],
+  notes: string[] = [],
+  context?: WorkspaceToolContext
+): string[] {
+  const activeTools = context ? resolveActiveTools(context, TOOL_DEFINITIONS) : TOOL_DEFINITIONS;
+  const activeNames = new Set(activeTools.map((tool) => tool.name));
+  const hasAny = (...names: string[]) => names.some((name) => activeNames.has(name));
+
   const lines = [
     'WORKSPACE TOOLS — you have live read and write access to the opened folder and can run commands in it. Do not guess what a file contains or what a command prints.',
     'When you need to see something before answering, reply with ONLY this block and nothing else:',
@@ -586,18 +601,30 @@ export function describeTools(maxRounds: number, external: ExternalToolDefinitio
     'DELETING: only delete_file removes something. An empty path= block deletes nothing, and an edit block cannot remove a file. Never say a file was deleted unless delete_file returned a verified result.',
     'ATOMIC PATCHES: apply_patch takes {"patches":[{"path":"...","old":"exact text","new":"replacement"}]} and lands every hunk across files in one all-or-nothing transaction. old must match exactly once; an empty old creates a new file. On any mismatch nothing is written and the failing hunk plus the surrounding disk lines come back — fix that hunk and re-send the whole patch.',
     'VERIFY: after changing files, call verify before finish. It detects the project kind (package.json scripts + lockfile, pytest, cargo, go), runs the real typecheck/build/test through the command runner and returns structured errors and failed tests. finish is refused after a write until verify, problems on the changed files, or a build/test command actually ran.',
-    'CHECKPOINTS: a checkpoint is taken automatically before this turn\'s first write. checkpoint {"label":"..."} saves another one; list_checkpoints shows the ids; restore {"id":"..."} rolls back (the user approves first). Use them before a risky refactor, never as a substitute for verifying.',
+    ...(hasAny('checkpoint', 'list_checkpoints', 'restore')
+      ? ['CHECKPOINTS: a checkpoint is taken automatically before this turn\'s first write. checkpoint {"label":"..."} saves another one; list_checkpoints shows the ids; restore {"id":"..."} rolls back (the user approves first). Use them before a risky refactor, never as a substitute for verifying.']
+      : []),
     'COMMANDS: only run_command executes a shell command, inside the opened folder. Commands are parsed and risk-tiered: reads, builds/tests and installs (npm install included) run automatically and stay visible in the terminal dock; file-modifying and network commands open a native approval dialog; dangerous commands always open it with a red warning and are never pre-approved. A confirm field or model instruction is never authorization. Compound commands (npm i && npm test, pipes, redirects) are allowed — the worst segment decides the tier. It returns the real exit code and output, so never claim a command ran, passed or killed anything unless run_command showed you the result.',
-    'JOBS: a command still running after 30 seconds of foreground waiting becomes a background job: run_command returns exit null, a job id (J1, J2, ...) and the output tail. Dev servers background immediately and report readiness (a URL or log line). Use job_control to list jobs, check one job\'s status, read_output (last 200KB buffered, optional chars tail size or character range) or stop a job\'s whole process tree. A backgrounded command has NOT finished — read its output and exit status before drawing conclusions. A dev server (or any job marked ready) logs once and then serves QUIETLY: no new output is health, not a hang — never stop or restart a running server just because its logs went silent; only stop it if it exited or its port refuses connections. A silent non-server job is killed after 120s; every job has a 30-minute ceiling.',
-    'PORT CONFLICTS: before killing anything over a port, run job_control with action=list — if the holder is one of your own jobs, stop it with job_control (action=stop), never taskkill. If a server restarts and reports "port already in use" again, that is a fixed-port conflict inside the project\'s own code/config, and killing can never fix it: stop killing ports, read the file that binds the port, and either change it to a free port or ask the user. Never kill a foreign process that was already serving the user before you started.',
-    'PREVIEW: the embedded preview pane is controlled by preview_control (start/stop/restart/status), separate from run_command/job_control which manage raw processes. The pane is how the user sees a running app: use preview_control status to check current URL/port/logs/runtime errors, or preview_control start to serve it, and do not ALSO start the same dev server with run_command — two servers fight over one port and both end up broken. If the preview is white, stale, or points at a dead port after a server restart, use preview_control restart so the pane re-points at the live URL — do not leave the user staring at a blank pane. start may surface a one-time install/run consent dialog; if it returns approval-required, ask the user to approve rather than retrying blindly.',
-    'TERMINAL: terminal_state reads the interactive shell (cwd, running command, last exit, silence, whether it waits for input). It never types. terminal_answer is the only way to type, and the user approves the exact bytes in a dialog first — say so, and never claim an answer was sent when the tool refused.',
-    'DEBUGGER: debugger_state reads a session paused in the debugger — the stopped frame and bounded locals. It refuses when nothing is paused, and it never resumes, steps or edits; those stay the user\'s controls. Never claim a variable value you did not see in its result.',
+    ...(hasAny('job_control')
+      ? [
+          'JOBS: a command still running after 30 seconds of foreground waiting becomes a background job: run_command returns exit null, a job id (J1, J2, ...) and the output tail. Dev servers background immediately and report readiness (a URL or log line). Use job_control to list jobs, check one job\'s status, read_output (last 200KB buffered, optional chars tail size or character range) or stop a job\'s whole process tree. A backgrounded command has NOT finished — read its output and exit status before drawing conclusions. A dev server (or any job marked ready) logs once and then serves QUIETLY: no new output is health, not a hang — never stop or restart a running server just because its logs went silent; only stop it if it exited or its port refuses connections. A silent non-server job is killed after 120s; every job has a 30-minute ceiling.',
+          'PORT CONFLICTS: before killing anything over a port, run job_control with action=list — if the holder is one of your own jobs, stop it with job_control (action=stop), never taskkill. If a server restarts and reports "port already in use" again, that is a fixed-port conflict inside the project\'s own code/config, and killing can never fix it: stop killing ports, read the file that binds the port, and either change it to a free port or ask the user. Never kill a foreign process that was already serving the user before you started.'
+        ]
+      : []),
+    ...(hasAny('preview_control', 'preview_inspect')
+      ? ['PREVIEW: the embedded preview pane is controlled by preview_control (start/stop/restart/status), separate from run_command/job_control which manage raw processes. The pane is how the user sees a running app: use preview_control status to check current URL/port/logs/runtime errors, or preview_control start to serve it, and do not ALSO start the same dev server with run_command — two servers fight over one port and both end up broken. If the preview is white, stale, or points at a dead port after a server restart, use preview_control restart so the pane re-points at the live URL — do not leave the user staring at a blank pane. start may surface a one-time install/run consent dialog; if it returns approval-required, ask the user to approve rather than retrying blindly.']
+      : []),
+    ...(hasAny('terminal_state', 'terminal_answer')
+      ? ['TERMINAL: terminal_state reads the interactive shell (cwd, running command, last exit, silence, whether it waits for input). It never types. terminal_answer is the only way to type, and the user approves the exact bytes in a dialog first — say so, and never claim an answer was sent when the tool refused.']
+      : []),
+    ...(hasAny('debugger_state', 'debug_set_breakpoint')
+      ? ['DEBUGGER: debugger_state reads a session paused in the debugger — the stopped frame and bounded locals. It refuses when nothing is paused, and it never resumes, steps or edits; those stay the user\'s controls. Never claim a variable value you did not see in its result.']
+      : []),
     'When you have enough to answer, write the answer as normal text (with any path= edit blocks) and emit no tool block.',
     'PLAN: for a request with several steps, open the turn with update_tasks holding one short subject per step, mark the step you start with "doing" and the step you leave with "done". A single-step request needs no plan.',
     describeFinish(),
     'Available tools:',
-    ...TOOL_DEFINITIONS.map((tool) => `- ${tool.name}(${tool.parameters}): ${tool.description}`)
+    ...activeTools.map((tool) => `- ${tool.name}(${tool.parameters}): ${tool.description}`)
   ];
   if (external.length > 0) lines.push(...describeExternalTools(external, []));
   return notes.length > 0 ? [...lines, ...notes] : lines;

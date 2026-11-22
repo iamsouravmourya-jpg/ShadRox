@@ -4,6 +4,37 @@ const { execFile } = require('node:child_process');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { normalizeRelativePath, isWithinRoot } = require('./workspace.cjs');
+const { getDefaultBetaLogger } = require('./beta-logger.cjs');
+
+const NTFS_RETRY_DELAYS_MS = [50, 100, 200, 400, 800];
+const NTFS_RETRY_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withNtfsRetry(op, options = {}) {
+  const delays = options.delaysMs || NTFS_RETRY_DELAYS_MS;
+  const fsImpl = options.fsImpl || fs;
+  let lastError;
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    try {
+      return await op();
+    } catch (error) {
+      lastError = error;
+      const code = error && typeof error === 'object' ? error.code : undefined;
+      if (!code || !NTFS_RETRY_CODES.has(code) || attempt >= delays.length) {
+        throw error;
+      }
+      const roPath = options.readOnlyTarget || options.targetPath;
+      if ((code === 'EPERM' || code === 'EACCES') && roPath && typeof fsImpl.chmod === 'function') {
+        await fsImpl.chmod(roPath, 0o666).catch(() => {});
+      }
+      await sleepMs(delays[attempt]);
+    }
+  }
+  throw lastError;
+}
 
 const LIMITS = { files: 400, bytes: 8 * 1024 * 1024, directories: 300, records: 8 };
 const LOCKFILES = ['yarn.lock', 'poetry.lock', 'uv.lock', 'Cargo.lock', 'Pipfile.lock', 'bun.lock'];
@@ -195,6 +226,7 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
       environment: 'No persistent env/PATH changes are made by this collector; child-shell changes cannot modify the parent environment.',
       limitations, omissions,
       canRestore: Boolean(after && !record.restored && !record.overlapped && !omissions.length && canRestoreGit && (changes.length || addedPreviews.length || gitChanged)),
+      noChanges: Boolean(after && !record.restored && !record.overlapped && !omissions.length && canRestoreGit && !changes.length && !addedPreviews.length && !gitChanged),
       blockedReason: record.overlapped ? 'Overlapping turns: ownership is ambiguous; rewind is disabled.' : null
     };
   }
@@ -259,7 +291,7 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
     const current = await readCurrent(root, name);
     if (current.hash !== expectedHash) throw new Error(`Restore conflict: ${name} changed on disk.`);
     if (content === null) {
-      await fs.unlink(current.destination);
+      await withNtfsRetry(() => fs.unlink(current.destination), { readOnlyTarget: current.destination });
       return;
     }
     await fs.mkdir(path.dirname(current.destination), { recursive: true });
@@ -270,22 +302,45 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
       await fs.writeFile(temporary, content, { flag: 'wx', mode });
       const checked = await readCurrent(root, name);
       if (checked.hash !== expectedHash) throw new Error(`Restore conflict: ${name} changed while writing.`);
-      if (expectedHash === null) await fs.copyFile(temporary, current.destination, fsConstants.COPY_FILE_EXCL);
-      else await fs.rename(temporary, current.destination);
+      if (expectedHash === null) {
+        await withNtfsRetry(() => fs.copyFile(temporary, current.destination, fsConstants.COPY_FILE_EXCL), {
+          readOnlyTarget: current.destination
+        });
+      } else {
+        await withNtfsRetry(() => fs.rename(temporary, current.destination), {
+          readOnlyTarget: current.destination
+        });
+      }
     } finally { await fs.rm(temporary, { force: true }); }
   }
 
   async function restore(id, checkpointId, confirm) {
     if (busy.has(id)) throw new Error('A machine restore is already in progress.');
     const record = recordFor(id, checkpointId);
-    if (!view(record)?.canRestore) throw new Error('This machine snapshot cannot be restored.');
+    const initialSummary = view(record);
+    if (initialSummary?.noChanges) {
+      getDefaultBetaLogger().record({
+        level: 'info',
+        source: 'checkpoint',
+        event: 'restore_noop',
+        message: `Checkpoint ${checkpointId} had zero disk changes; no rewind needed.`,
+        meta: { checkpointId }
+      });
+      return {
+        ok: true,
+        status: 'noop',
+        message: 'No file changes in this turn to undo.',
+        report: initialSummary
+      };
+    }
+    if (!initialSummary?.canRestore) throw new Error('This machine snapshot cannot be restored.');
     if ([...records.values()].some((entry) => entry.workspaceId === id && !entry.finished)) throw new Error('Wait for all agent turns to finish.');
     busy.add(id);
     let gitTransaction;
     const applied = [];
     try {
       const summary = view(record);
-      if (!await confirm(summary)) return { ok: false, message: 'Restore cancelled.', report: summary };
+      if (!await confirm(summary)) return { ok: false, status: 'cancelled', message: 'Restore cancelled.', report: summary };
       if (!recordFor(id, checkpointId)) throw new Error('The workspace changed before restore.');
       const current = await capture(id);
       if (current.omissions.length) throw new Error('Current files cannot be captured safely; nothing was restored.');
@@ -302,6 +357,13 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
         }
         await gitTransaction?.commit();
       } catch (error) {
+        getDefaultBetaLogger().record({
+          level: 'error',
+          source: 'checkpoint',
+          event: 'restore_error',
+          message: error instanceof Error ? error.message : String(error),
+          meta: { checkpointId, appliedCount: applied.length }
+        });
         const rollbackErrors = [];
         for (const change of applied.reverse()) {
           try { await replace(record.root, change.path, record.after.files[change.path]?.content ?? null, change.beforeHash); }
@@ -321,7 +383,14 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
         else workspace(id).fileMap.set(change.path, path.join(record.root, change.path));
       }
       record.restored = true;
-      return { ok: !failed.length, report: view(record), message: `${applied.length} files restored; ${stopped.length} owned previews stopped.${failed.length ? ' Some previews could not be stopped.' : ''} Installed packages, closed terminals and external side effects were not restored.` };
+      getDefaultBetaLogger().record({
+        level: failed.length ? 'warn' : 'info',
+        source: 'checkpoint',
+        event: 'restore_complete',
+        message: `Restored ${applied.length} file(s) for ${checkpointId}.`,
+        meta: { checkpointId, appliedCount: applied.length, stoppedCount: stopped.length, failedCount: failed.length }
+      });
+      return { ok: !failed.length, status: 'restored', report: view(record), message: `${applied.length} files restored; ${stopped.length} owned previews stopped.${failed.length ? ' Some previews could not be stopped.' : ''} Installed packages, closed terminals and external side effects were not restored.` };
     } finally {
       try { await gitTransaction?.abort(); }
       finally { busy.delete(id); }
@@ -332,4 +401,4 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
     assertWritable: () => { if (busy.size) throw new Error('Wait for machine rewind to finish.'); } };
 }
 
-module.exports = { createMachineDelta, changesBetween, assertSafeRegularFile, LIMITS };
+module.exports = { createMachineDelta, changesBetween, assertSafeRegularFile, withNtfsRetry, NTFS_RETRY_DELAYS_MS, LIMITS };
