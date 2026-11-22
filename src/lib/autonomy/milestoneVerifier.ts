@@ -138,9 +138,9 @@ export function normalizeVerifyPath(path: string): string {
  * ------------------------------------------------------------------ */
 
 const CHECKPOINT_INTENT_RE = /\b(create|save|take|list|verify)?\s*checkpoint\b|\bsnapshot\b/i;
-const LEADING_READ_ONLY_VERB_RE = /^(?:verify|check|inspect|audit|analy[sz]e|read|review|list|search)\b/i;
+const LEADING_READ_ONLY_VERB_RE = /^(?:verify|check|inspect|audit|analy[sz]e|read|review|list|search|outline|explore|examine|view)\b/i;
 const READ_ONLY_INTENT_RE =
-  /\b(inspect|audit|review|analyze|analyse|check\s+preview|verify\s+preview|read|list|search|save\s+memory|record\s+memory|memory\s+note|check\s+problems|diagnostics)\b/i;
+  /\b(inspect|audit|review|analyze|analyse|check\s+preview|verify\s+preview|read|list|search|save\s+memory|record\s+memory|memory\s+note|check\s+problems|diagnostics|outline|explore|examine)\b/i;
 const EXPLICIT_MUTATION_VERB_RE =
   /\b(create|write|add|implement|update|edit|modify|refactor|fix|patch|replace|rename|remove|delete|wire|integrate|extend|enhance|style|convert|migrate|rewrite)\b/i;
 const MUTATION_VERB_RE =
@@ -169,6 +169,23 @@ export function inferMilestoneCategory(
     return 'file_mutation';
   }
   return 'file_mutation';
+}
+
+/**
+ * Returns true if TypeScript / linter diagnostic verification checks should be
+ * completely skipped for this milestone (i.e. category === 'read_only' or 'checkpoint').
+ */
+export function shouldSkipDiagnostics(
+  unit: Pick<VerifiableUnit, 'category' | 'title' | 'instruction' | 'expectedFiles' | 'verifyCommand'>
+): boolean {
+  const category = unit.category ?? inferMilestoneCategory(unit);
+  return category === 'read_only' || category === 'checkpoint';
+}
+
+export function shouldSkipDiagnosticVerification(
+  unit: Pick<VerifiableUnit, 'category' | 'title' | 'instruction' | 'expectedFiles' | 'verifyCommand'>
+): boolean {
+  return shouldSkipDiagnostics(unit);
 }
 
 export interface ShellFileCheckClause {
@@ -461,7 +478,12 @@ export function verifyToolTelemetry(
       notes.push('read-only milestone verified via tool execution telemetry.');
       return { ok: true, ranRelevantTool: true, notes };
     }
-    return { ok: false, ranRelevantTool: false, notes };
+    const anyReadFailed = events.find((ev) => !ev.ok && READ_ONLY_TOOLS.has(ev.name));
+    if (anyReadFailed) {
+      notes.push(`read-only tool failed: ${anyReadFailed.name}.`);
+      return { ok: false, ranRelevantTool: true, notes };
+    }
+    return { ok: true, ranRelevantTool: events.some((ev) => ev.ok), notes };
   }
 
   return { ok: false, ranRelevantTool: false, notes };
