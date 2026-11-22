@@ -10,6 +10,7 @@ import {
   toDiagnosticLine,
   toWorkspaceRelative,
   verifyMilestone,
+  verifyWorkspaceDiagnostics,
   type AutonomyHost
 } from './ports';
 import type { AutonomyEvent, CommandOutcome, Milestone } from './types';
@@ -110,17 +111,15 @@ test('verifyMilestone: the proof command decides when diagnostics cannot', async
   const greenWithNoFiles = await verifyMilestone(noFiles, host(), ROOT);
   assert.equal(greenWithNoFiles.verdict, 'passed', 'a green command is proof even with nothing to type-check');
 
-  // BUG-03: a red command with clean diagnostics is diagnostic evidence, not a
-  // failure verdict — a fresh workspace's `npm test` fails before deps exist.
   const red = await verifyMilestone(
     milestone({ verifyCommand: 'npm test' }),
     host({ runCommand: async () => okCommand({ exitCode: 1, stderrTail: 'boom' }) }),
     ROOT
   );
-  assert.equal(red.verdict, 'passed', 'clean compiler diagnostics decide; the red command alone does not fail the task');
-  assert.match(red.notes.join(' '), /exited 1/);
+  assert.equal(red.verdict, 'failed', 'a non-zero proof command fails verification even with clean diagnostics');
+  assert.match(red.notes.join(' '), /exited 1 and failed verification/);
   assert.equal(red.command?.exitCode, 1);
-  assert.equal(red.command?.stderrTail, 'boom', 'the failure output stays on the report for the next attempt');
+  assert.equal(red.command?.stderrTail, 'boom', 'the failure output stays on the report for repair');
 });
 
 test('verifyMilestone: a red command with error diagnostics still fails, output captured for repair', async () => {
@@ -143,16 +142,16 @@ test('verifyMilestone: a red command with error diagnostics still fails, output 
   assert.match(brief, /1 failing test/);
 });
 
-test('verifyMilestone: a red command with no checker is unverified, never a silent pass or a kill', async () => {
+test('verifyMilestone: a red command with no checker fails verification rather than passing silently', async () => {
   const report = await verifyMilestone(
     milestone({ verifyCommand: 'npm test' }),
     host({ getDiagnostics: async () => null, runCommand: async () => okCommand({ exitCode: 1, stderrTail: 'missing script: test' }) }),
     ROOT
   );
-  assert.equal(report.verdict, 'unverified');
+  assert.equal(report.verdict, 'failed');
   assert.equal(report.command?.exitCode, 1);
   assert.equal(report.command?.stderrTail, 'missing script: test');
-  assert.match(report.notes.join(' '), /exited 1/);
+  assert.match(report.notes.join(' '), /exited 1 and failed verification/);
 });
 
 test('verifyMilestone: a green command never erases a type error', async () => {
@@ -436,5 +435,33 @@ test('verifyMilestone attaches failing source lines and imported contracts on fa
   assert.match(brief, /from src\/auth\.ts:/);
   assert.match(brief, /Promise<\{ id: string \}>/);
 });
+
+test('verifyWorkspaceDiagnostics checks the full workspace and attaches failureContext on cross-file errors', async () => {
+  const cleanPorts = createAutonomyPorts(host({ getDiagnostics: async () => [] }), {
+    rootPath: ROOT,
+    onEvent: () => undefined,
+    isCancellationRequested: () => false
+  });
+  const ok = await cleanPorts.verifyWorkspace!();
+  assert.equal(ok.verdict, 'passed');
+
+  const broken = await verifyWorkspaceDiagnostics(
+    host({
+      listFiles: () => ['src/other.ts'],
+      getDiagnostics: async (files) => {
+        assert.equal(files, undefined, 'workspace check queries undefined file filter');
+        return [diag({ file: '/ws/src/other.ts', line: 1, character: 2, message: 'Exported symbol missing' })];
+      },
+      readFile: async () => 'export const a = 1;\nexport const broken = missing;\n'
+    }),
+    ROOT
+  );
+  assert.equal(broken.verdict, 'failed');
+  assert.equal(broken.diagnostics.length, 1);
+  assert.equal(broken.diagnostics[0].path, 'src/other.ts');
+  assert.equal(broken.failureContext?.[0]?.path, 'src/other.ts');
+  assert.match(broken.notes[0], /workspace-wide error diagnostic/);
+});
+
 
 

@@ -4,8 +4,10 @@ import type { TeamTask } from './types';
 const EXPLICIT_PATH_RE =
   /(?:^|[\s`'"(\[,])((?:\.\.?\/)?(?:[a-zA-Z0-9._-]+\/)+[a-zA-Z0-9._-]+\.[a-zA-Z0-9]{1,10})(?=$|[\s`'")\],:;?!])/g;
 
-const CREATION_BEFORE_RE = /\b(?:create|add\s+(?:a\s+)?new|scaffold|generate\s+(?:a\s+)?new|new\s+file|write\s+(?:a\s+)?new|make\s+(?:a\s+)?new)\b/i;
-const MODIFY_VERB_RE = /\b(?:modify|update|edit|fix|refactor|patch|change|rewrite|extend|repair|debug|replace|rename)\b/i;
+const CREATION_BEFORE_RE =
+  /\b(?:create|add\s+(?:a\s+)?new|scaffold|generate\s+(?:a\s+)?new|new\s+file|write\s+(?:a\s+)?new|make\s+(?:a\s+)?new|extract\s+(?:into|to)|split\s+(?:out\s+)?into|introduce\s+(?:a\s+)?new)\b/i;
+const MODIFY_VERB_RE =
+  /\b(?:modify|update|edit|fix|refactor|patch|change|rewrite|extend|repair|debug|replace|rename)\b/i;
 
 function normalizeCandidate(raw: string): string {
   return raw
@@ -23,6 +25,28 @@ function isRepoRelativeCandidate(candidate: string): boolean {
   return candidate.includes('/');
 }
 
+/** Trim backward context to the nearest local clause delimiter so adjacent modify clauses do not leak intent. */
+function localClauseBefore(text: string, index: number): string {
+  const start = Math.max(0, index - 120);
+  const slice = text.slice(start, index);
+  const boundaryMatches = [
+    slice.lastIndexOf('. '),
+    slice.lastIndexOf(';'),
+    slice.lastIndexOf('\n'),
+    slice.lastIndexOf('!'),
+    slice.lastIndexOf('?')
+  ];
+  const coordRe = /,\s+(?:then|and\s+(?:also|then)?|plus|while)\s+/gi;
+  let lastCoord = -1;
+  let match: RegExpExecArray | null;
+  while ((match = coordRe.exec(slice)) !== null) {
+    lastCoord = match.index + match[0].length;
+  }
+  const sentenceBreak = Math.max(...boundaryMatches);
+  const cut = Math.max(sentenceBreak >= 0 ? sentenceBreak + 1 : 0, lastCoord >= 0 ? lastCoord : 0);
+  return slice.slice(cut);
+}
+
 /**
  * Extract repo-relative file paths referenced in user goals or task instructions
  * alongside their intent (creation vs modification of an existing target).
@@ -30,7 +54,6 @@ function isRepoRelativeCandidate(candidate: string): boolean {
 export function extractExplicitFileTargets(text: string): Array<{ path: string; allowMissing: boolean }> {
   const results: Array<{ path: string; allowMissing: boolean }> = [];
   const seen = new Set<string>();
-  const globalModify = MODIFY_VERB_RE.test(text);
 
   EXPLICIT_PATH_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -41,12 +64,14 @@ export function extractExplicitFileTargets(text: string): Array<{ path: string; 
     if (seen.has(key)) continue;
     seen.add(key);
 
-    const start = Math.max(0, match.index - 72);
-    const before = text.slice(start, match.index);
-    const localCreate = CREATION_BEFORE_RE.test(before);
+    const before = localClauseBefore(text, match.index);
+    const after = text.slice(match.index + match[0].length, match.index + match[0].length + 36);
+    const localCreate =
+      CREATION_BEFORE_RE.test(before) || /^\s*\(\s*new(?:\s+file)?\s*\)/i.test(after);
     const localModify = MODIFY_VERB_RE.test(before);
-    // Treat as modification target unless creation language immediately precedes it without a modification verb.
-    const allowMissing = localCreate && !localModify && !globalModify;
+    // Scope create vs modify intent per clause so a modify verb elsewhere in a mega-prompt
+    // never blocks brand-new files requested with creation intent.
+    const allowMissing = localCreate && !localModify;
     results.push({ path: candidate, allowMissing });
   }
 
@@ -90,7 +115,7 @@ export function findMissingTaskTargets(
 
   const missing: Array<{ taskId: string; taskTitle: string; path: string }> = [];
   for (const task of tasks) {
-    if (!MODIFY_VERB_RE.test(task.instruction) || CREATION_BEFORE_RE.test(task.instruction)) continue;
+    if (!MODIFY_VERB_RE.test(task.instruction)) continue;
 
     const upstreamFiles = new Set<string>();
     const queue = [...task.dependsOn];

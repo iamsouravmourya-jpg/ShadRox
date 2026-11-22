@@ -9,6 +9,15 @@ const SECURE_KEY_PATTERN = /^shadrox\.[a-z0-9._-]{1,80}$/i;
 const AUTH_CALLBACK_PATH = '/auth/callback';
 const AUTH_TIMEOUT_MS = 180_000;
 
+function escapeHtml(text) {
+  return String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function authCallbackPage(heading, detail) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>ShadRox</title>
 <style>
@@ -17,7 +26,7 @@ function authCallbackPage(heading, detail) {
   main { text-align: center; padding: 24px; }
   h1 { margin: 0 0 8px; font-size: 20px; font-weight: 600; }
   p { margin: 0; color: #a1a1aa; font-size: 14px; }
-</style></head><body><main><h1>${heading}</h1><p>${detail}</p></main></body></html>`;
+</style></head><body><main><h1>${escapeHtml(heading)}</h1><p>${escapeHtml(detail)}</p></main></body></html>`;
 }
 
 function registerSecureStoreHandlers({ app, ipcMain, safeStorage, assertTrustedRenderer }) {
@@ -111,7 +120,9 @@ function registerAuthHandlers({ app, ipcMain, shell, assertTrustedRenderer, getM
     } catch {
       throw new Error('Invalid sign-in request.');
     }
-    if (authorize.protocol !== 'https:') throw new Error('Sign-in must use an https URL.');
+    if (authorize.protocol !== 'https:' || authorize.username || authorize.password) {
+      throw new Error('Sign-in must use a plain https URL.');
+    }
     const port = Number(redirect.port);
     if (
       redirect.protocol !== 'http:' ||
@@ -150,7 +161,14 @@ function registerAuthHandlers({ app, ipcMain, shell, assertTrustedRenderer, getM
         }
         const params = Object.fromEntries(incoming.searchParams.entries());
         const failed = params.error_description || params.error;
-        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        response.writeHead(200, {
+          'Cache-Control': 'no-store',
+          'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
+          'Content-Type': 'text/html; charset=utf-8',
+          'Referrer-Policy': 'no-referrer',
+          'X-Content-Type-Options': 'nosniff',
+          'X-Frame-Options': 'DENY'
+        });
         response.end(
           authCallbackPage(
             failed ? 'Sign-in was not completed' : 'Signed in',

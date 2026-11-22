@@ -4,7 +4,7 @@ import type { MouseEvent } from 'react'
 import {
   FileCode2, SearchCode, Command, Replace,
   AtSign, ListChecks, Plug, BookOpen,
-  Terminal, GitBranch, History, RefreshCw, Bug, Eraser,
+  Terminal, GitBranch, History, RefreshCw, Bug, ShieldCheck,
   GitPullRequest, Puzzle,
   Bot, SquareTerminal, Rocket, TriangleAlert, Info,
 } from 'lucide-react'
@@ -106,8 +106,8 @@ const groups: Group[] = [
     index: '03',
     label: 'Run',
     icon: SquareTerminal,
-    headline: 'Run, debug, and clean.',
-    tagline: 'A real shell, a bundled Node debugger, an offline dead-code scanner, real Git, and a way back when an experiment goes sideways.',
+    headline: 'Run, debug, and rewind.',
+    tagline: 'A real shell, a bundled Node debugger, OS-encrypted secret protection, real Git, and a way back when an experiment goes sideways.',
     items: [
       {
         icon: Terminal,
@@ -122,10 +122,10 @@ const groups: Group[] = [
         specs: ['@vscode/js-debug', 'breakpoints', 'locals'],
       },
       {
-        icon: Eraser,
-        title: 'Offline junk scanner',
-        text: 'Static dependency graph walks 10,000+ files locally off the UI thread, protects serverless/worker/ORM entry points, and moves flagged items safely to OS Trash.',
-        specs: ['zero API calls', 'confidence filter', 'OS Trash'],
+        icon: ShieldCheck,
+        title: 'Secret & env scrubbing',
+        text: 'Credential-shaped environment variables are stripped from terminals and logs, .env files are masked during reads, and provider keys stay OS-encrypted.',
+        specs: ['OS-encrypted keys', '.env masking', 'log redaction'],
       },
       {
         icon: GitBranch,

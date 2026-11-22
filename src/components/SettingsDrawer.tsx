@@ -142,10 +142,10 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
       ? findEndpointPreset(baseUrlDraft)?.docsUrl ?? currentMeta.docsUrl
       : currentMeta.docsUrl;
   const keyDestination = activeProvider === 'custom' ? 'your endpoint' : currentMeta.label;
-  // Desktop has an OS-encrypted secret store; a browser build has only plaintext localStorage.
+  // Desktop uses OS-backed safeStorage; browser mode encrypts via WebCrypto AES-GCM + non-extractable IndexedDB key.
   const keyStorageLine = usesEncryptedSecrets()
-    ? `Saved on this device in the OS-encrypted store (Windows DPAPI); this app's local server and ${keyDestination} are the only things that ever see it.`
-    : `Saved in this browser's local storage as plain text; this app's local server and ${keyDestination} are the only things that ever see it.`;
+    ? `Saved on this device in the OS-encrypted store; this app's local server and ${keyDestination} are the only things that ever see it.`
+    : `Encrypted in this browser (WebCrypto AES-GCM with a non-extractable IndexedDB key); this app's local server and ${keyDestination} are the only things that ever see it.`;
   const currentStatus = keyStatus[activeProvider];
   const currentSavedKey = currentStatus && currentStatus.state === 'ok';
   const hasStoredKey = currentDraft.trim().length > 0 || currentSavedKey;

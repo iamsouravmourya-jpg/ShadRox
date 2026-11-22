@@ -79,9 +79,9 @@ const sections: {
     icon: FileText,
     title: 'Intellectual Property',
     content: [
-      'ShadRox and its features are owned by us or our licensors. The software is protected by copyright, trademark, and other intellectual property laws.',
-      'You may not copy, modify, distribute, sell, or lease any part of the software without our written permission.',
-      'Third-party libraries and dependencies are subject to their own licenses.',
+      'ShadRox, its source code, architecture, branding, and features are proprietary intellectual property owned exclusively by ShadRox and its founder, Sourav Maurya (Copyright © 2026, All Rights Reserved).',
+      'You may not copy, modify, distribute, sell, reverse-engineer, or lease any part of the software without written permission from ShadRox / Sourav Maurya.',
+      'Third-party libraries and dependencies remain subject to their own respective licenses.',
     ],
   },
   {
@@ -127,7 +127,7 @@ export default function BetaTermsPage() {
           <Reveal>
             <p className={`mb-4 ${eyebrow}`}>Effective date</p>
             <p className="text-sm leading-6 text-[var(--mut)]">
-              Last updated: November 2025
+              Last updated: November 2026
             </p>
           </Reveal>
 

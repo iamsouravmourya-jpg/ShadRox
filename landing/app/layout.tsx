@@ -14,8 +14,8 @@ const jakarta = Plus_Jakarta_Sans({
 })
 
 const TITLE = 'ShadRox — Project files, editor, AI chat, debugger, preview, Git and terminal in one app'
-const DESCRIPTION = 'A native Windows workspace for local projects: CodeMirror 6 editor, bring-your-own-key AI agent teams, bundled Node debugger, offline dead-code scanner, live preview, Git tools and terminal. Files stay on your computer.'
-const OG_DESCRIPTION = 'A native Windows workspace for local projects with BYOK AI chat, bundled debugging, live preview, and offline junk scanning.'
+const DESCRIPTION = 'A native Windows workspace for local projects: CodeMirror 6 editor, bring-your-own-key AI agent teams, bundled Node debugger, live preview, Git tools and terminal. Files stay on your computer.'
+const OG_DESCRIPTION = 'A native Windows workspace for local projects with BYOK AI chat, bundled debugging, and live preview.'
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -67,7 +67,7 @@ function buildJsonLd(siteUrl: string) {
         logo: { '@type': 'ImageObject', url: `${siteUrl}/brand-logo.png` },
         foundingDate: '2026',
         founder: { '@id': `${siteUrl}/#sourav-maurya` },
-        description: 'ShadRox is a solo-developed, local-first desktop AI coding workspace for Windows.',
+        description: 'ShadRox is a founder-owned, local-first desktop AI coding workspace for Windows.',
         sameAs: [
           'https://www.linkedin.com/company/shadrox',
           GITHUB_REPO,
@@ -81,8 +81,8 @@ function buildJsonLd(siteUrl: string) {
         name: 'Sourav Maurya',
         url: 'https://github.com/iamsouravmourya-jpg',
         sameAs: ['https://github.com/iamsouravmourya-jpg', 'https://www.linkedin.com/in/sourav-maurya-45b272377'],
-        jobTitle: 'Solo Developer & AI Engineer',
-        description: 'A full-stack developer and AI engineer from Delhi, India. Built ShadRox alone.',
+        jobTitle: 'Founder, Solo Developer & AI Engineer',
+        description: 'A full-stack developer and AI engineer from Delhi, India. Founder and owner of ShadRox.',
         address: { '@type': 'PostalAddress', addressLocality: 'Delhi', addressCountry: 'IN' },
       },
       {

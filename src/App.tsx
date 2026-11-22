@@ -3,7 +3,6 @@ import { AuthScreen } from './components/AuthScreen';
 import { ChatPanel, type PinnedSymbol } from './components/ChatPanel';
 import { PathPromptDialog, type PathPromptRequest } from './components/CodeEditor';
 import { FeedbackPanel } from './components/FeedbackPanel';
-import { JunkScannerPane } from './components/JunkScannerPane';
 import { PreviewPane } from './components/PreviewPane';
 import { QuickOpen } from './components/QuickOpen';
 import { ScmPanel } from './components/ScmPanel';
@@ -69,7 +68,6 @@ export default function App() {
   const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false);
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
   const [isScmPanelOpen, setIsScmPanelOpen] = useState(false);
-  const [isJunkScannerOpen, setIsJunkScannerOpen] = useState(false);
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [diskToast, setDiskToast] = useState<string | null>(null);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
@@ -718,14 +716,6 @@ export default function App() {
     />
   );
 
-  const junkScannerPanel = desktop && nativeWorkspaceId ? (
-    <JunkScannerPane
-      desktop={desktop}
-      workspaceId={nativeWorkspaceId}
-      onClose={() => setIsJunkScannerOpen(false)}
-    />
-  ) : null;
-
   const previewPane = (
     <PreviewPane
       document={localPreview.previewDocument}
@@ -861,10 +851,8 @@ export default function App() {
       >
         <ActivityRail
           hasDesktop={Boolean(desktop)}
-          hasNativeWorkspace={Boolean(nativeWorkspaceId)}
           isPreviewOpen={isPreviewOpen}
           isSearchPanelOpen={isSearchPanelOpen}
-          isJunkScannerOpen={isJunkScannerOpen}
           isScmPanelOpen={isScmPanelOpen}
           isDebugPanelOpen={isDebugPanelOpen}
           showTaskInspector={showTaskInspector}
@@ -875,34 +863,23 @@ export default function App() {
             setIsPreviewOpen(false);
             setIsSearchPanelOpen(false);
             setIsScmPanelOpen(false);
-            setIsJunkScannerOpen(false);
           }}
           onSelectPreviewView={() => {
             setIsPreviewFullscreen(false);
             setIsPreviewOpen(true);
             setIsSearchPanelOpen(false);
             setIsScmPanelOpen(false);
-            setIsJunkScannerOpen(false);
           }}
           onToggleSearchPanel={() => {
             setIsPreviewFullscreen(false);
             setIsPreviewOpen(false);
             setIsSearchPanelOpen((open) => !open);
             setIsScmPanelOpen(false);
-            setIsJunkScannerOpen(false);
-          }}
-          onToggleJunkScanner={() => {
-            setIsPreviewFullscreen(false);
-            setIsPreviewOpen(false);
-            setIsSearchPanelOpen(false);
-            setIsScmPanelOpen(false);
-            setIsJunkScannerOpen((open) => !open);
           }}
           onToggleScmPanel={() => {
             setIsPreviewFullscreen(false);
             setIsPreviewOpen(false);
             setIsSearchPanelOpen(false);
-            setIsJunkScannerOpen(false);
             setIsScmPanelOpen((open) => !open);
           }}
           onToggleDebugPanel={() => setIsDebugPanelOpen((open) => !open)}
@@ -1040,7 +1017,7 @@ export default function App() {
           debugBreakpointsEnabled={debugBreakpointsEnabled}
           debugPausedAt={debugPausedAt}
           onNavigateToPath={(path, line, column) => void languageActions.navigateToPath(path, line, column)}
-          sidebarPanel={isScmPanelOpen ? scmPanel : isSearchPanelOpen ? searchPanel : isJunkScannerOpen ? junkScannerPanel : undefined}
+          sidebarPanel={isScmPanelOpen ? scmPanel : isSearchPanelOpen ? searchPanel : undefined}
           isDebugPanelOpen={isDebugPanelOpen}
           onCloseDebugPanel={() => setIsDebugPanelOpen(false)}
           onAskAiToDebug={(summary) => setInput(summary)}

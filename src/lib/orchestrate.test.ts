@@ -93,4 +93,19 @@ describe('decideOrchestration escalation', () => {
       'chat'
     );
   });
+
+  it('routes cross-cutting multi-file architecture upgrades to autonomy unless team is explicitly named', () => {
+    const crossCutting = [
+      'Execute security hardening and decompose src/App.tsx across 6 modules:',
+      '1. Update api/ai/_endpoint.ts SSRF guard',
+      '2. Update electron/main.cjs window security',
+      '3. Split src/components/Header.tsx and add tests in tests/app.test.ts',
+      '4. Update backend server.ts and landing/index.html + package.json version.'
+    ].join('\n');
+    assert.equal(decideOrchestration(input({ prompt: crossCutting })).kind, 'autonomy');
+    assert.equal(
+      decideOrchestration(input({ prompt: `Use a team of agents.\n${crossCutting}` })).kind,
+      'team'
+    );
+  });
 });

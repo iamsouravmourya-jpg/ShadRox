@@ -1,10 +1,10 @@
 # FAQ
 
-Plain answers about the ShadRox beta (v0.1.2). These mirror the questions on the website's FAQ page; where the beta has changed, the answer here reflects the current code.
+Plain answers about the ShadRox beta (v0.1.4). These mirror the questions on the website's FAQ page; where the beta has changed, the answer here reflects the current code.
 
 ## Can I download ShadRox now?
 
-Yes. The latest beta installer (v0.1.2) is for Windows 10 or 11, 64-bit: [ShadRox-v0.1.2-Setup.exe](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.2-Setup.exe). The build is unsigned, so SmartScreen may warn — verify the download source before choosing **More info → Run anyway**. See [troubleshooting.md](./troubleshooting.md).
+Yes. The latest beta installer (v0.1.4) is for Windows 10 or 11, 64-bit: [ShadRox-v0.1.4-Setup.exe](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.4-Setup.exe). The build is unsigned, so SmartScreen may warn — verify the download source before choosing **More info → Run anyway**. See [troubleshooting.md](./troubleshooting.md).
 
 ## Do I need an account?
 
@@ -52,7 +52,7 @@ Yes. Up to 5 follow-up messages are held in a queue and sent after the current t
 
 ## Who is behind ShadRox?
 
-ShadRox is a solo project built by Sourav Maurya, a 19-year-old full-stack developer and AI engineer based in Delhi, India. There is no company behind it — the app, the website ([shadrox.cyou](https://www.shadrox.cyou)), and the GitHub repo are all maintained by one person, in the open.
+ShadRox is proprietary software founded and owned by Sourav Maurya, a 19-year-old full-stack developer and AI engineer based in Delhi, India. There is no outside company behind it — the app, the website ([shadrox.cyou](https://www.shadrox.cyou)), and all releases are built and maintained by its founder.
 
 ## Where does feedback go?
 

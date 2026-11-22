@@ -936,20 +936,6 @@ export interface ShadRoxDesktopAPI {
     startLoopback: (authorizeUrl: string, redirectUri: string) => Promise<DesktopAuthResult>;
     appVersion: () => Promise<string>;
   };
-  scanJunk?: (workspaceId: string) => Promise<{
-    unusedFiles: Array<{ path: string; size: number; mtime: number; confidence: 'high' | 'review' }>;
-    deadFolders: string[];
-    stats: {
-      total: number;
-      unused: number;
-      reclaimableBytes: number;
-      highConfidenceCount?: number;
-      reviewCount?: number;
-    };
-  }>;
-  cancelJunkScan?: (workspaceId: string) => Promise<{ ok: boolean }>;
-  onJunkScanProgress?: (listener: (event: { workspaceId: string; step?: string; message?: string; current?: number; total?: number }) => void) => () => void;
-  trashItem?: (workspaceId: string, fullPath: string) => Promise<{ path: string; ok: boolean }>;
 }
 
 declare global {

@@ -969,12 +969,19 @@ export function resolvePatchContent(
  * want to rewrite the file — but nothing destructive happens without either a
  * click or a warning.
  */
+export interface RewriteRiskOptions {
+  extractedFilesCreated?: number;
+  backupCreated?: boolean;
+}
+
 export function assessRewriteRisk(
   path: string,
   newContent: string,
-  currentContent: string | undefined
+  currentContent: string | undefined,
+  options?: RewriteRiskOptions
 ): string | null {
   if (currentContent === undefined) return null;
+  if (options?.backupCreated && (options.extractedFilesCreated ?? 0) > 0) return null;
 
   const nonBlankLines = (value: string) => value.split('\n').filter((line) => line.trim()).length;
   const before = nonBlankLines(currentContent);

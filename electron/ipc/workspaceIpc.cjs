@@ -4,17 +4,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const chokidar = require('chokidar');
-const { isPathInsideDirectory } = require('../desktop-security.cjs');
 const { sanitizeProjectName } = require('../project-scaffold.cjs');
 const { resolveFileReopen, resolveFolderReopen } = require('../workspace-consent.cjs');
 const { verifyChangeSet } = require('../change-verify.cjs');
-const { scanJunk } = require('../junk-scanner.cjs');
 
 function createWorkspaceService({
   app,
   dialog,
   ipcMain,
-  shell,
   workspaceAccess,
   workspaceConsent,
   previewRuntime,
@@ -34,7 +31,6 @@ function createWorkspaceService({
   getMachineSensitiveOperations
 }) {
   const workspaceWatchers = new Map();
-  const activeJunkScans = new Map();
 
   function stopWorkspaceServices(workspaceId) {
     debugHost.stopWorkspace(workspaceId);
@@ -375,57 +371,6 @@ function createWorkspaceService({
         throw new Error('Change verification requires an opened workspace.');
       }
       return verifyChangeSet({ root: workspace.root, files });
-    });
-
-    ipcMain.handle('workspace:scan-junk', async (event, workspaceId) => {
-      assertTrustedRenderer(event);
-      const workspace = workspaceAccess.getWorkspace(workspaceId);
-      if (!workspace || typeof workspace.root !== 'string') {
-        throw new Error('Unknown workspace for junk scan.');
-      }
-      const existingCancel = activeJunkScans.get(workspaceId);
-      if (existingCancel) {
-        try { existingCancel(); } catch {}
-        activeJunkScans.delete(workspaceId);
-      }
-      const result = await scanJunk(workspace.root, (progress) => {
-        const mainWindow = getMainWindow();
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('workspace:junk-scan-progress', { workspaceId, ...progress });
-        }
-      });
-      const { cancel, ...payload } = result ?? {};
-      if (typeof cancel === 'function') {
-        activeJunkScans.set(workspaceId, cancel);
-      }
-      return payload;
-    });
-
-    ipcMain.handle('workspace:cancel-junk-scan', async (event, workspaceId) => {
-      assertTrustedRenderer(event);
-      const cancel = activeJunkScans.get(workspaceId);
-      if (cancel) {
-        try { cancel(); } catch {}
-        activeJunkScans.delete(workspaceId);
-      }
-      return { ok: true };
-    });
-
-    ipcMain.handle('workspace:trash-item', async (event, workspaceId, fullPath) => {
-      assertTrustedRenderer(event);
-      const workspace = workspaceAccess.getWorkspace(workspaceId);
-      if (!workspace || typeof workspace.root !== 'string') {
-        throw new Error('Unknown workspace.');
-      }
-      const absolute = path.isAbsolute(fullPath) ? path.resolve(fullPath) : path.resolve(workspace.root, fullPath);
-      if (path.resolve(workspace.root) === absolute || !isPathInsideDirectory(workspace.root, absolute)) {
-        throw new Error('Path traversal violation: target is outside workspace root.');
-      }
-      if (!fs.existsSync(absolute)) {
-        throw new Error('File or folder does not exist.');
-      }
-      await shell.trashItem(absolute);
-      return { path: absolute, ok: true };
     });
 
     ipcMain.handle('ts:diagnostics', async (event, workspaceId, overrides, files) => {

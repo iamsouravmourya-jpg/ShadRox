@@ -304,3 +304,15 @@ test('a second launch only contributes an existing directory from its command li
     'Paths inside the app install directory are never workspace candidates.'
   );
 });
+
+test('production renderer CSP excludes unsafe-inline from script-src and locks framing/forms', () => {
+  const { RENDERER_CSP } = require('./ipc/previewProtocol.cjs');
+  const scriptSrc = RENDERER_CSP.split(';').map((s) => s.trim()).find((s) => s.startsWith('script-src'));
+  assert.ok(scriptSrc, 'RENDERER_CSP must define script-src');
+  assert.equal(scriptSrc.includes("'unsafe-inline'"), false);
+  assert.equal(scriptSrc.includes("'unsafe-eval'"), false);
+  assert.ok(RENDERER_CSP.includes("object-src 'none'"));
+  assert.ok(RENDERER_CSP.includes("frame-ancestors 'none'"));
+  assert.ok(RENDERER_CSP.includes("form-action 'none'"));
+});
+

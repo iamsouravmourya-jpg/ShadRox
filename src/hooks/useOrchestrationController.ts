@@ -51,6 +51,7 @@ import { contextFitNotice, fitChatRequest, type ChatRequestFit, type SystemConte
 import type { ContextManifest } from '../lib/contextManifest';
 import type { DesktopDiagnostic, ShadRoxDesktopAPI } from '../lib/desktop';
 import { normalizeSlashes, warnBridgeError } from '../lib/diagnostics';
+import { dedupePaths } from '../lib/paths';
 import { decideOrchestration } from '../lib/orchestrate';
 import { DEFAULT_MAX_OUTPUT, modelSupportsVision, resolveBudgetCapabilities, resolveContextWindow } from '../lib/modelCapabilities';
 import { extractUnifiedPatches } from '../lib/patchEngine';
@@ -1052,13 +1053,14 @@ export function useOrchestrationController({
 
       const contextWindow =
         activeModel?.contextWindow || resolveContextWindow(byok.activeProvider, byok.selectedModel);
+      const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId));
       const system = await buildSystemContext(instruction, mode);
       const fit = fitChatRequest({
         contextWindow,
         messages: [{ role: 'user', content: instruction }],
         system,
         maxOutput: resolveBudgetCapabilities(byok.activeProvider, byok.selectedModel).maxOutput ?? DEFAULT_MAX_OUTPUT,
-        extraInputChars: JSON.stringify(nativeToolDefinitions(Boolean(nativeWorkspaceId))).length + 2048
+        extraInputChars: JSON.stringify(nativeTools).length + 2048
       });
       const runPolicy = { mode: permissionMode };
       const runId = makeId('run');
@@ -1086,13 +1088,17 @@ export function useOrchestrationController({
             extractPatches: (text) => extractUnifiedPatches(text, workspace.files),
             readFile: async (path) => {
               const canonical = normalizeSlashes(path).toLowerCase();
+              const isDirty = workspace.dirtyFiles.some((name) => normalizeSlashes(name).toLowerCase() === canonical);
               const buffered = workspace.files.find((file) => normalizeSlashes(file.name).toLowerCase() === canonical);
-              if (buffered) return buffered.content;
-              const existsOnDisk = workspace.workspace?.diskFileTree?.some(
-                (entry) => normalizeSlashes(entry.path).toLowerCase() === canonical
-              ) ?? false;
-              if (!existsOnDisk || !desktop || !nativeWorkspaceId) return null;
-              return (await desktop.readFile(nativeWorkspaceId, path)).content;
+              if (isDirty && buffered) return buffered.content;
+              if (desktop && nativeWorkspaceId) {
+                try {
+                  return (await desktop.readFile(nativeWorkspaceId, path)).content;
+                } catch {
+                  return null;
+                }
+              }
+              return buffered ? buffered.content : null;
             },
             writePatches: async (patches) => {
               const review: ReviewPatch[] = patches.map((patch) => ({
@@ -1121,9 +1127,18 @@ export function useOrchestrationController({
                       systemInstruction: fit.systemInstruction,
                       temperature: byok.temperature,
                       thinking: mode.thinking,
-                      signal: request.signal
+                      signal: request.signal,
+                      toolDefinitions: nativeTools
                     }, {
                       onDelta: (chunk) => { roundText += chunk; },
+                      onToolCalls: (calls) => {
+                        const normalized = calls.map((call) => ({
+                          name: call.name,
+                          args: repairAndParseNativeToolArgs(call.arguments)
+                        }));
+                        const serialized = JSON.stringify(normalized).replaceAll('`', '\\u0060');
+                        roundText += `${roundText ? '\n\n' : ''}\`\`\`shadrox:tools\n${serialized}\n\`\`\``;
+                      },
                       onError: (message) => { streamErr = message; }
                     });
                     if (streamErr) {
@@ -1145,14 +1160,15 @@ export function useOrchestrationController({
             }
           }
         });
+        const touchedFiles = dedupePaths([...outcome.applied, ...(outcome.toolChangedPaths ?? [])]);
         return {
           reply: outcome.reply,
-          patchesApplied: outcome.applied.length,
+          patchesApplied: touchedFiles.length,
           patchFailures: outcome.error ? [...outcome.patchFailures, outcome.error] : outcome.patchFailures,
           aborted: outcome.aborted || Boolean(outcome.error),
           stopped: outcome.stopped,
           filesRead: outcome.filesRead,
-          touchedFiles: outcome.applied,
+          touchedFiles,
           pendingReview: outcome.pendingReview,
           changedFiles: outcome.changedFiles,
           failureProof: outcome.failureProof,
@@ -1187,14 +1203,17 @@ export function useOrchestrationController({
       },
       readFile: async (path) => {
         const canonical = normalizeSlashes(path).toLowerCase();
+        const isDirty = workspace.dirtyFiles.some((name) => normalizeSlashes(name).toLowerCase() === canonical);
         const buffered = workspace.files.find((file) => normalizeSlashes(file.name).toLowerCase() === canonical);
-        if (buffered) return buffered.content;
-        if (!desktop || !nativeWorkspaceId) return null;
-        try {
-          return (await desktop.readFile(nativeWorkspaceId, path)).content;
-        } catch {
-          return null;
+        if (isDirty && buffered) return buffered.content;
+        if (desktop && nativeWorkspaceId) {
+          try {
+            return (await desktop.readFile(nativeWorkspaceId, path)).content;
+          } catch {
+            return null;
+          }
         }
+        return buffered ? buffered.content : null;
       },
       getExportedContracts: async (paths) => {
         if (!desktop || !nativeWorkspaceId || paths.length === 0) return null;
@@ -1246,6 +1265,7 @@ export function useOrchestrationController({
       diagnosticsOverrides,
       getWorkspaceManifest,
       workspace.workspace?.diskFileTree,
+      workspace.dirtyFiles,
       workspace.files
     ]
   );

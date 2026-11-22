@@ -5,7 +5,7 @@ import type { ReactNode } from 'react'
 import {
   MessagesSquare, FileCode2, SearchCode, Command,
   Eye, Terminal, GitBranch, Replace, History, ArrowRight,
-  BugPlay, FolderSearch,
+  BugPlay,
 } from 'lucide-react'
 import { Reveal } from './reveal'
 import { cn } from '@/lib/utils'
@@ -40,11 +40,6 @@ const features: Feature[] = [
     icon: BugPlay,
     title: 'Bundled Node debugger',
     text: 'Ships with Microsoft js-debug out of the box. Infer Node, TypeScript, Vite, or Next.js launch targets automatically, set breakpoints, step frames, inspect locals, and send pauses straight to AI chat.',
-  },
-  {
-    icon: FolderSearch,
-    title: 'Offline junk & dead-code scanner',
-    text: 'Zero-API static dependency graph walks large workspaces in the background, preserves serverless, edge, worker, Prisma, and Drizzle entries, classifies High Confidence vs Needs Review, and moves safely to OS Trash.',
   },
   {
     icon: FileCode2,
@@ -106,7 +101,7 @@ export function Features() {
         </Reveal>
         <Reveal delay={160}>
           <p className="mx-auto mb-14 max-w-[620px] text-center text-base leading-7 text-[var(--mut)]">
-            Editor, AI agent teams, bundled debugger, dead-code scanner, live preview, Git tools,
+            Editor, AI agent teams, bundled debugger, live preview, Git tools,
             and terminal live side by side in one local-first workspace.
           </p>
         </Reveal>

@@ -29,7 +29,7 @@ export const faqs = [
   },
   {
     q: 'Can the agent make changes on its own?',
-    a: 'Not silently. Inspection tools are read-only. The agent can run one shell command at a time in your opened folder and gets its real exit code back, but every command — including npm test, pytest, tsc --noEmit and Git status/diff — opens a native approval dialog with a plain-language risk notice first. File edits go through a guarded patch and review flow; unsafe changes are held for review. Deleting a path needs an explicit confirm plus a follow-up read that proves it is gone. Agent and autonomous workflows are beta, so inspect results and keep backups.',
+    a: 'Not silently. Inspection tools are read-only. Shell commands are parsed and risk-tiered per segment: read-only checks, builds/tests, and package installs run confined inside your opened folder, while file-mutating, network, unrecognized, and dangerous commands open a native approval dialog with a plain-language risk notice first. File edits go through a guarded patch and review flow, and deleting a path needs an explicit confirm plus a follow-up read that proves it is gone.',
   },
   {
     q: 'How do updates work?',
@@ -53,11 +53,7 @@ export const faqs = [
   },
   {
     q: 'Who is behind ShadRox?',
-    a: 'ShadRox is a solo project built by Sourav Maurya, a 19-year-old full-stack developer and AI engineer based in Delhi, India. There is no company behind it — the app, the website, and the GitHub repo are all maintained by one person.',
-  },
-  {
-    q: 'Does the Junk & Dead-Code Scanner upload my code anywhere?',
-    a: 'No. Since v0.1.3 and throughout v0.1.4, the scanner walks your workspace locally in a non-blocking background pass, preserves serverless, edge, worker, Prisma, and Drizzle entry points, classifies High Confidence vs Needs Review files, and sends deleted items to the OS Trash / Recycle Bin.',
+    a: 'ShadRox is proprietary software founded and built by Sourav Maurya, a 19-year-old full-stack developer and AI engineer based in Delhi, India. There is no outside company behind it — the app, the website, and all releases are built and owned by its founder.',
   },
   {
     q: 'Do I have to install a debugger separately?',

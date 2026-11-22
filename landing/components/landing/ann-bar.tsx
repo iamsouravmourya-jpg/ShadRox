@@ -11,8 +11,8 @@ export function AnnBar() {
   return (
     <div className="relative flex items-center justify-center gap-3 bg-[linear-gradient(100deg,var(--cta-1),var(--cta-2))] px-12 py-2 text-center text-[12px] font-semibold leading-snug text-white sm:px-14">
       <p className="min-w-0">
-        ShadRox v{APP_VERSION} — bundled zero-config Node debugger, offline junk &amp; dead-code
-        scanner, and context-aware autonomous repair.{' '}
+        ShadRox v{APP_VERSION} — bundled zero-config Node debugger, enterprise security
+        hardening, and context-aware autonomous repair.{' '}
         <a
           href="/releases"
           className="underline decoration-white/45 underline-offset-2 transition-colors hover:decoration-white"

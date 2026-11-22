@@ -146,6 +146,10 @@ export interface AgentTurnOutcome {
   stopped: boolean;
   /** Nothing was extracted and nothing was written — a stopped turn's guarantee. */
   wroteNothing: boolean;
+  /** Exact paths written via native write tools during the tool loop. */
+  toolChangedPaths?: string[];
+  /** Exact paths created via native write tools during the tool loop. */
+  toolCreatedPaths?: string[];
   error: string | null;
   plan: TaskPlan;
   finish?: { summary: string; blocked: string | null };
@@ -304,6 +308,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
   // A Stop pressed before the turn even started must not open a model request.
   if (aborted()) return stoppedOutcome('Stopped before this turn started.', input);
 
+  const scoped = scopedExpectedFiles(input.expectedFiles, input.policy?.scope);
   const messages = input.ports.buildMessages(input.instruction);
   const loop = await input.ports.runToolRounds({
     messages,
@@ -319,11 +324,15 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
     policy: input.policy,
     signal: input.signal,
     onAttempt: input.onAttempt,
-    loopContextBudgetChars: input.loopContextBudgetChars
+    loopContextBudgetChars: input.loopContextBudgetChars,
+    expectedFiles: scoped,
+    existsOnDisk: async (path) => (await input.ports.readFile(path)) !== null
   });
 
   const filesRead = filesReadFromActivity(loop.activity);
   const observations = readObservations(loop.activity);
+  const toolChangedPaths = loop.changedPaths ?? [];
+  const toolCreatedPaths = loop.createdPaths ?? [];
   const base = {
     reply: loop.text,
     filesRead,
@@ -334,6 +343,8 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
     // Non-patch writes and the failure receipt are the loop's evidence, not
     // this module's to re-derive: pass both through exactly as reported.
     changedFiles: loop.changedFiles ?? 0,
+    toolChangedPaths,
+    toolCreatedPaths,
     failureProof: loop.failureProof,
     plan: loop.plan,
     finish: loop.finish
@@ -384,7 +395,6 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
   }
 
   const patches = input.ports.extractPatches(loop.text);
-  const scoped = scopedExpectedFiles(input.expectedFiles, input.policy?.scope);
   // Confinement must tell creation from modification: probe the disk for every
   // unlisted candidate so a brand-new in-workspace file is allowed while an
   // existing unlisted file stays refused. Only safe, in-scope paths are read;
@@ -425,8 +435,8 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
       patchFailures: refused,
       aborted: aborted(),
       stopped: aborted(),
-      // Nothing was cleared, so the workspace is exactly as this turn found it.
-      wroteNothing: true,
+      // Nothing was cleared unless native write tools modified files on disk.
+      wroteNothing: toolChangedPaths.length === 0,
       error: null
     };
   }
@@ -487,7 +497,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
     // rather than claiming a clean finish after the signal fired.
     aborted: aborted(),
     stopped: aborted(),
-    wroteNothing: applied.length === 0 && pendingReview.length === 0,
+    wroteNothing: applied.length === 0 && pendingReview.length === 0 && toolChangedPaths.length === 0,
     error: null
   };
 }

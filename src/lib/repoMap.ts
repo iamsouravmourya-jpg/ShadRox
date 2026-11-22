@@ -678,22 +678,30 @@ function signaturePriority(sig: Signature): number {
   return (isExported(sig) ? 0 : 4) + KIND_RANK[sig.kind];
 }
 
-function pickSignatures(sigs: readonly Signature[]): Signature[] {
+function signatureCapFor(lineCount: number, isPersonalized: boolean): number {
+  if (lineCount >= 250) return isPersonalized ? 36 : 24;
+  if (lineCount >= 100 && isPersonalized) return 16;
+  return MAX_SIGNATURES_PER_FILE;
+}
+
+function pickSignatures(sigs: readonly Signature[], lineCount = 0, isPersonalized = false): Signature[] {
   const declared = sigs.filter((sig) => sig.kind !== 'other');
   const pool = declared.length > 0 ? declared : sigs;
   return pool
     .slice()
     .sort((a, b) => signaturePriority(a) - signaturePriority(b) || a.line - b.line)
-    .slice(0, MAX_SIGNATURES_PER_FILE);
+    .slice(0, signatureCapFor(lineCount, isPersonalized));
 }
 
 /**
- * aider's repo-map allowance: an eighth of the window, clamped.
- *
- * One number in, one number out, so no caller has to remember why the clamp
- * exists — a map that outranks the conversation itself is worse than no map.
+ * aider's repo-map allowance: an eighth of the window, clamped cleanly for
+ * standard windows (1k-4k up to 200k) and scaling up to 8,192 tokens for
+ * large-context models (>200k).
  */
 export function repoMapBudgetFor(contextWindowTokens: number): number {
+  if (contextWindowTokens > 200_000) {
+    return Math.min(8_192, BUDGET_MAX_TOKENS + Math.floor((contextWindowTokens - 200_000) / 100));
+  }
   const share = Math.floor(contextWindowTokens / 8);
   return Math.max(BUDGET_MIN_TOKENS, Math.min(BUDGET_MAX_TOKENS, share));
 }
@@ -733,6 +741,7 @@ export function buildSignatureMap(
   anchors.sort();
 
   const pinned = new Set((options.pinned ?? []).map(normalizePath));
+  const personalized = new Set((options.personalization ?? []).map(normalizePath));
   const ranked = rankFiles(buildGraph(files, signatures), options.personalization ?? [], options.query ?? '');
   const included = new Set(anchors);
   const lines: string[] = [];
@@ -758,8 +767,9 @@ export function buildSignatureMap(
     included.add(path);
     emitted += 1;
 
+    const lineCount = file.content.split('\n').length;
     const size = sizes.get(path) ?? 0;
-    const head = `${path} · ${file.content.split('\n').length} lines · ${size} B`;
+    const head = `${path} · ${lineCount} lines · ${size} B`;
     if (!push(head)) {
       included.delete(path);
       emitted -= 1;
@@ -767,7 +777,7 @@ export function buildSignatureMap(
     }
 
     reserve = 0;
-    const shown = pickSignatures(sigs);
+    const shown = pickSignatures(sigs, lineCount, personalized.has(path));
     for (const sig of shown) push(`  ${sig.text}`);
     if (shown.length > 0 || sigs.length === 0) {
       const hidden = Math.max(0, sigs.length - shown.length);

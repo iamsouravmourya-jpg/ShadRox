@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildPlannerPrompt, coalesceSingleFileMilestones, createPlanGoal, isSafeRelativePath, parsePlanReply, validatePlan } from './plan';
+import {
+  buildPlannerPrompt,
+  coalesceSingleFileMilestones,
+  computeElasticRunBudget,
+  createPlanGoal,
+  isSafeRelativePath,
+  parsePlanReply,
+  selectPrioritizedWorkspaceFiles,
+  validatePlan
+} from './plan';
 import { DEFAULT_RUN_BUDGET, type Milestone, type PlanError, type RunBudget } from './types';
 
 const BUDGET: RunBudget = DEFAULT_RUN_BUDGET;
@@ -135,4 +144,56 @@ test('coalesceSingleFileMilestones groups fragmented UI section updates targetin
   );
   assert.equal(fourSingle.length, 1);
   assert.match(fourSingle[0].instruction, /Hero[\s\S]*Body[\s\S]*Footer/);
+});
+
+test('selectPrioritizedWorkspaceFiles preserves explicit targets, root manifests, and stratified dirs past 400 files', () => {
+  const manySrc = Array.from({ length: 650 }, (_, i) => `src/generated/file${i}.ts`);
+  const all = [
+    ...manySrc,
+    'package.json',
+    'electron/main.cjs',
+    'landing/index.html',
+    'api/ai/_endpoint.ts'
+  ];
+  const selected = selectPrioritizedWorkspaceFiles(
+    'Update api/ai/_endpoint.ts and landing/index.html plus electron/main.cjs',
+    all,
+    100
+  );
+  assert.equal(selected.length, 100);
+  assert.ok(selected.includes('api/ai/_endpoint.ts'));
+  assert.ok(selected.includes('landing/index.html'));
+  assert.ok(selected.includes('electron/main.cjs'));
+  assert.ok(selected.includes('package.json'));
+});
+
+test('computeElasticRunBudget scales budgets for multi-workstream prompts without shrinking small runs', () => {
+  assert.deepEqual(computeElasticRunBudget('Fix button color in src/App.tsx', BUDGET), BUDGET);
+  const mega = Array.from({ length: 12 }, (_, i) => `${i + 1}. Update file${i}.ts behavior`).join('\n');
+  const scaled = computeElasticRunBudget(mega, BUDGET);
+  assert.ok(scaled.maxMilestones > BUDGET.maxMilestones);
+  assert.ok(scaled.maxTurns > BUDGET.maxTurns);
+  assert.ok(scaled.maxToolCalls >= BUDGET.maxToolCalls);
+});
+
+test('createPlanGoal retries once when validation fails and repairs the plan', async () => {
+  const prompts: string[] = [];
+  let call = 0;
+  const planGoal = createPlanGoal(async (prompt) => {
+    prompts.push(prompt);
+    call += 1;
+    if (call === 1) {
+      return JSON.stringify([
+        { id: 'm1', title: 'Bad dep', instruction: 'do', expectedFiles: ['src/a.ts'], dependsOn: ['missing'] }
+      ]);
+    }
+    return JSON.stringify([
+      { id: 'm1', title: 'Good plan', instruction: 'do', expectedFiles: ['src/a.ts'], dependsOn: [] }
+    ]);
+  });
+  const result = await planGoal('Fix src/a.ts', ['src/a.ts'], BUDGET);
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1], /PREVIOUS PLAN FAILED VALIDATION/);
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.milestones[0].title, 'Good plan');
 });

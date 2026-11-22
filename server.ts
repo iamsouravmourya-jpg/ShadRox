@@ -19,6 +19,51 @@ import { sendJson } from './api/_http';
 const serverFile = typeof __filename === 'string' ? __filename : fileURLToPath(import.meta.url);
 const serverDirectory = path.dirname(serverFile);
 
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+function parseHostname(hostHeader: string | undefined): string {
+  if (!hostHeader) return '';
+  const trimmed = hostHeader.trim().toLowerCase();
+  if (trimmed.startsWith('[')) {
+    const end = trimmed.indexOf(']');
+    return end >= 0 ? trimmed.slice(0, end + 1) : '';
+  }
+  return trimmed.split(':')[0] || '';
+}
+
+export function isTrustedApiRequest(
+  headers: Record<string, string | string[] | undefined>,
+  options: { enforceLoopbackHost?: boolean } = {}
+): boolean {
+  const hostHeader = typeof headers.host === 'string' ? headers.host.trim() : '';
+  if (options.enforceLoopbackHost) {
+    const hostname = parseHostname(hostHeader);
+    if (!LOOPBACK_HOSTS.has(hostname)) return false;
+  }
+
+  const originHeader = typeof headers.origin === 'string' ? headers.origin.trim() : '';
+  if (originHeader === 'shadrox-app://localhost') return true;
+
+  const secFetchSite = typeof headers['sec-fetch-site'] === 'string'
+    ? headers['sec-fetch-site'].trim().toLowerCase()
+    : '';
+  if (secFetchSite === 'cross-site') return false;
+
+  if (originHeader) {
+    if (originHeader === 'null') return false;
+    try {
+      const parsedOrigin = new URL(originHeader);
+      if (parsedOrigin.protocol !== 'http:' && parsedOrigin.protocol !== 'https:') return false;
+      if (hostHeader && parsedOrigin.host.toLowerCase() !== hostHeader.toLowerCase()) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Local development server.
  *
@@ -32,6 +77,24 @@ export async function startServer(options: {
   staticDirectory?: string;
 } = {}) {
   const app = express();
+  app.disable('x-powered-by');
+
+  const enforceLoopbackHost = options.mode === 'production' && (!options.host || LOOPBACK_HOSTS.has(options.host));
+
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    if (req.path.startsWith('/api/')) {
+      res.setHeader('Cache-Control', 'no-store');
+      if (!isTrustedApiRequest(req.headers, { enforceLoopbackHost })) {
+        sendJson(res, 403, { error: 'Cross-origin or untrusted API request rejected.' });
+        return;
+      }
+    }
+    next();
+  });
+
   app.use(express.json({ limit: '20mb' }));
 
   const mount = (

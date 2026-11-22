@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildTeamPlannerPrompt, createTeamPlan, parseTeamPlan, validateTeamPlan } from './plan';
+import { buildTeamPlannerPrompt, computeElasticTeamBudget, createTeamPlan, parseTeamPlan, validateTeamPlan } from './plan';
 import { SPECIALIST_ROLES } from './roles';
 import { DEFAULT_TEAM_BUDGET, type TeamTask } from './types';
 
@@ -147,4 +147,30 @@ test('createTeamPlan hands the prompt to askPlan and parses its answer', async (
   assert.match(seen, /goal/);
   assert.equal(plan.tasks.length, 1);
   assert.equal(plan.errors.length, 0);
+});
+
+test('computeElasticTeamBudget expands tasks and turns proportionally for large prompts', () => {
+  assert.deepEqual(computeElasticTeamBudget('Fix typo in README.md', DEFAULT_TEAM_BUDGET), DEFAULT_TEAM_BUDGET);
+  const large = Array.from({ length: 10 }, (_, i) => `${i + 1}. Update module src/mod${i}.ts and verify`).join('\n');
+  const scaled = computeElasticTeamBudget(large, DEFAULT_TEAM_BUDGET);
+  assert.ok(scaled.maxTasks > DEFAULT_TEAM_BUDGET.maxTasks);
+  assert.ok(scaled.maxTurns > DEFAULT_TEAM_BUDGET.maxTurns);
+});
+
+test('createTeamPlan retries once when coordinator returns validation errors', async () => {
+  const prompts: string[] = [];
+  let attempt = 0;
+  const planTeam = createTeamPlan(async (prompt) => {
+    prompts.push(prompt);
+    attempt += 1;
+    if (attempt === 1) {
+      return '[{"id":"t1","title":"bad","instruction":"do","assignee":"coordinator"}]';
+    }
+    return '[{"id":"t1","title":"good","instruction":"do","assignee":"backend"}]';
+  });
+  const plan = await planTeam('goal', ['src/a.ts'], DEFAULT_TEAM_BUDGET);
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1], /PREVIOUS TEAM PLAN FAILED VALIDATION/);
+  assert.equal(plan.errors.length, 0);
+  assert.equal(plan.tasks[0].title, 'good');
 });

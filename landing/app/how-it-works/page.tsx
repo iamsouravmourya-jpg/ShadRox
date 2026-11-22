@@ -17,7 +17,7 @@ import {
 import { PageShell } from '@/components/landing/page-shell'
 import { HowItWorks } from '@/components/landing/how-it-works'
 import { Reveal } from '@/components/landing/reveal'
-import { APP_VERSION, GITHUB_REPO, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
+import { APP_VERSION, RELEASES_URL, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 
 export const metadata: Metadata = {
   title: 'ShadRox — How it works',
@@ -66,9 +66,9 @@ const sessionSteps: SessionStep[] = [
   {
     icon: GitCommitHorizontal,
     num: '05',
-    title: 'Run, debug, clean & commit',
-    text: 'Launch a detected preview with your approval, debug Node scripts with bundled @vscode/js-debug, sweep unreachable junk offline to OS Trash, and commit with AI.',
-    specs: ['bundled debugger', 'offline junk scan', 'terminal', 'AI commit message'],
+    title: 'Run, debug & commit',
+    text: 'Launch a detected preview with your approval, debug Node scripts with bundled @vscode/js-debug, run verification commands, and commit with AI.',
+    specs: ['bundled debugger', 'live preview', 'terminal', 'AI commit message'],
   },
 ]
 
@@ -250,12 +250,12 @@ export default function HowItWorksPage() {
                 <p className="mt-5 text-xs leading-5 text-[var(--mut)]">
                   Windows may warn about an unsigned installer — More → Run anyway.{' '}
                   <a
-                    href={GITHUB_REPO}
+                    href={RELEASES_URL}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-0.5 font-semibold text-[var(--ac)] transition hover:opacity-80"
                   >
-                    View the source
+                    View release notes
                     <ArrowUpRight className="size-3" />
                   </a>
                 </p>

@@ -13,12 +13,12 @@ import {
   RefreshCw,
   HardDrive,
   EyeOff,
-  CodeXml,
+  ShieldCheck,
   BadgeCheck,
 } from 'lucide-react'
 import { PageShell } from '@/components/landing/page-shell'
 import { Reveal } from '@/components/landing/reveal'
-import { APP_VERSION, WINDOWS_DOWNLOAD_URL, LATEST_RELEASE_URL, GITHUB_REPO } from '@/lib/download'
+import { APP_VERSION, WINDOWS_DOWNLOAD_URL, LATEST_RELEASE_URL } from '@/lib/download'
 import { CopyButton } from './copy-button'
 import { SmartScreenMock } from './smartscreen-mock'
 
@@ -31,7 +31,6 @@ export const metadata: Metadata = {
 
 const INSTALLER_NAME = `ShadRox-v${APP_VERSION}-Setup.exe`
 const PS_CMD = `Get-FileHash .\\${INSTALLER_NAME} -Algorithm SHA512`
-const BUILD_CMD = 'npm install && npm run dist:win'
 
 const steps = [
   {
@@ -86,7 +85,7 @@ const clickThrough = [
   },
   {
     title: 'Click “Run anyway”',
-    text: 'The installer starts. Do this only after the checksum matches — or build from source instead.',
+    text: 'The installer starts. Do this only after the SHA-512 checksum matches latest.yml.',
   },
 ]
 
@@ -102,10 +101,10 @@ const trustAnchors = [
     text: 'Bring your own key: provider keys sit in OS-backed encrypted storage on your device and are never sent to ShadRox. Prompts go only to the provider you configure.',
   },
   {
-    icon: CodeXml,
-    title: 'Open source, AGPL-3.0',
-    text: 'The full source is public on GitHub — read it, audit it, or build the installer yourself instead of trusting ours.',
-    link: { label: 'View the repository', href: GITHUB_REPO },
+    icon: ShieldCheck,
+    title: 'Proprietary · Sourav Maurya',
+    text: 'ShadRox is proprietary software founded and owned by Sourav Maurya (All Rights Reserved). Every official installer ships with a published SHA-512 checksum.',
+    link: { label: 'Read release notes', href: LATEST_RELEASE_URL },
   },
 ]
 
@@ -207,7 +206,7 @@ export default function DownloadPage() {
                 </div>
 
                 <p className="mt-6 text-xs font-medium text-[var(--mut)]">
-                  Bundled Node debugger · Offline junk scanner · Free during beta
+                  Bundled Node debugger · Local-first BYOK · Free during beta
                 </p>
                 <p className="mt-2 break-all font-mono text-[11px] text-[var(--mut)]">{INSTALLER_NAME}</p>
 
@@ -274,7 +273,7 @@ export default function DownloadPage() {
             eyebrow="SmartScreen"
             title="The warning is"
             accent="expected."
-            sub="ShadRox is an indie, open-source beta maintained by one person. The installer is not code-signed yet, so Windows cannot verify its publisher — and SmartScreen says so. Here is exactly what you will see, and how to check the file before you run it."
+            sub="ShadRox is an indie beta founded and maintained by Sourav Maurya. The installer is not code-signed yet, so Windows cannot verify its publisher — and SmartScreen says so. Here is exactly what you will see, and how to check the file before you run it."
           />
 
           <Reveal variant="scale">
@@ -384,23 +383,23 @@ export default function DownloadPage() {
                   </h3>
                   <p className="mt-1.5 max-w-[520px] text-[13px] leading-6 text-[var(--mut)]">
                     A code-signing certificate is planned as the project grows. Until then,
-                    download only from the official GitHub release, verify the SHA-512 — or build
-                    the installer yourself from the public source.
+                    download only from the official GitHub release and verify the SHA-512
+                    digest against latest.yml before running.
                   </p>
                 </div>
               </div>
               <div className="shrink-0 lg:w-[340px]">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--mut)]">
-                    Build from source
+                    Verify SHA-512
                   </span>
-                  <CopyButton value={BUILD_CMD} label="Copy" />
+                  <CopyButton value={PS_CMD} label="Copy" />
                 </div>
                 <p className="break-all rounded-lg border border-[var(--line)] bg-[var(--card)] p-3 font-mono text-[12px] leading-6 text-[var(--ink2)]">
-                  {BUILD_CMD}
+                  {PS_CMD}
                 </p>
                 <p className="mt-2 text-[11px] leading-4 text-[var(--mut)]">
-                  From the repo root, after the README&apos;s .env setup. Requires Node.js 22.12+.
+                  Run in PowerShell and compare against the published base64 digest in latest.yml.
                 </p>
               </div>
             </div>

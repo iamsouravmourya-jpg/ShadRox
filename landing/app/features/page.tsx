@@ -4,18 +4,18 @@ import { ArrowRight, ArrowUpRight, Check, Download } from 'lucide-react'
 import { PageShell } from '@/components/landing/page-shell'
 import { Reveal } from '@/components/landing/reveal'
 import { Features } from '@/components/landing/features'
-import { APP_VERSION, GITHUB_REPO, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
+import { APP_VERSION, RELEASES_URL, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import { CapabilitySheet } from './capability-sheet'
 
 export const metadata: Metadata = {
   title: 'ShadRox — Features',
   description:
-    'Editor, AI chat, bundled Node debugger, offline junk scanner, local preview, Git and terminal in one Windows workspace. CodeMirror 6 editing, @-mention context, MCP servers, approval-gated runs, checkpoints and GitHub push.',
+    'Editor, AI chat, bundled Node debugger, local preview, Git and terminal in one Windows workspace. CodeMirror 6 editing, @-mention context, MCP servers, approval-gated runs, checkpoints and GitHub push.',
   alternates: { canonical: '/features' },
 }
 
 const included = [
-  'Editor, AI chat, bundled Node debugger, offline junk scanner, preview, Git and terminal',
+  'Editor, AI chat, bundled Node debugger, preview, Git and terminal',
   'Free bring-your-own-key tier — you pay your provider, ShadRox adds no cap',
   'Google sign-in at first launch, then your own provider key',
   'Multi-step runs, autonomous teams, plugins and automations — included, still beta',
@@ -105,10 +105,10 @@ export default function FeaturesPage() {
                   </ul>
                   <div className="mt-6 border-t border-[var(--line)] pt-5">
                     <a
-                      href={GITHUB_REPO}
+                      href={RELEASES_URL}
                       className="group inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--mut)] transition hover:text-[var(--ac)]"
                     >
-                      Browse the repository on GitHub
+                      Browse releases on GitHub
                       <ArrowUpRight className="size-3.5 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
                     </a>
                   </div>

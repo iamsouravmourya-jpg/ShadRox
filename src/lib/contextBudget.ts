@@ -23,6 +23,7 @@ import {
   TRIM_ORDER,
   USER_ASK_MIN_CHARS,
   hasToolFence,
+  isWorkingMemoryText,
   pairAnchorIndices,
   pairFloorChars,
   pairGroupsFromAnchors,
@@ -163,7 +164,7 @@ export function trimMessagesToBudget(
   let newestAskIndex = -1;
   for (let index = result.length - 1; index >= 0; index--) {
     const message = result[index]!;
-    if (message.role === 'user' && !hasToolFence(message.content)) {
+    if (message.role === 'user' && !hasToolFence(message.content) && !isWorkingMemoryText(message.content)) {
       newestTurnStart = index;
       newestAskIndex = index;
       break;
@@ -230,9 +231,8 @@ export function trimMessagesToBudget(
           const eligible = members.filter((index) => {
             if (settled[index]) return false;
             const message = result[index];
-            // Stage 6: rules/repo-map blocks are degraded by
-            // `capSystemInstruction`, never by this loop.
-            if (message.role === 'system') return false;
+            // Stage 6: rules/repo-map/working-memory blocks are never degraded by this loop.
+            if (trimStageOf(message.role, message.content) === 'system_block') return false;
             return message.content.length > floorFor(index, phase);
           });
           if (eligible.length === 0) return;

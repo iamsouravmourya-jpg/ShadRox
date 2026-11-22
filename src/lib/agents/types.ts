@@ -19,6 +19,7 @@ import type {
   Verdict,
   VerificationReport
 } from '../autonomy/types';
+import type { RequirementItem } from '../autonomy/requirements';
 
 /** Who can be asked to do work. `coordinator` plans; it never carries a task. */
 export type AgentRole = 'coordinator' | 'frontend' | 'backend' | 'tests' | 'reviewer';
@@ -225,6 +226,8 @@ export interface TeamState {
     /** Files two roles wrote, one sentence each. */
     mergeConflicts?: string[];
   };
+  /** Extracted multi-part requirements and their verification coverage status. */
+  requirements?: RequirementItem[];
 }
 
 export type TeamEvent =

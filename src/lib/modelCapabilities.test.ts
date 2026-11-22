@@ -124,13 +124,13 @@ import { resolveCapabilities, DEFAULT_MAX_OUTPUT } from './modelCapabilities.js'
 test('resolveCapabilities returns contextWindow and maxOutput for gemini flash', () => {
   const cap = resolveCapabilities('gemini', 'gemini-2.5-flash')
   assert.equal(cap.contextWindow, 1_048_576)
-  assert.equal(cap.maxOutput, 8_192)
+  assert.equal(cap.maxOutput, 65_536)
 })
 
 test('resolveCapabilities returns maxOutput for claude custom endpoint', () => {
   const cap = resolveCapabilities('custom', 'claude-3-5-sonnet')
   assert.equal(cap.contextWindow, 200_000)
-  assert.equal(cap.maxOutput, 8_096)
+  assert.equal(cap.maxOutput, 16_384)
 })
 
 test('resolveCapabilities for unknown provider has no maxOutput', () => {

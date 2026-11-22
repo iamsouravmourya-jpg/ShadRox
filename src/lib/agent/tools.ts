@@ -1226,13 +1226,13 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           if (typeof call.args.content !== 'string') return refusal('write_file needs content: the full file text as a string.');
           content = call.args.content;
           if (current) {
-            const risk = assessRewriteRisk(path, content, current.content);
-            if (risk) {
-              return { ok: false, content: '', error: `${risk} Use edit_file with an exact original snippet for targeted changes instead.` };
-            }
-            // Overwriting a large existing file keeps a backup outside the
-            // watched workspace (Electron userData) so Vite/Next HMR never reloads.
-            if (current.content.length >= LARGE_FILE_BACKUP_THRESHOLD) {
+            const extractedFilesCreated = turn?.created.size ?? 0;
+            const shouldBackup = current.content.length >= LARGE_FILE_BACKUP_THRESHOLD || extractedFilesCreated > 0;
+            let backupCreated = false;
+            // Overwriting a large existing file (or shrinking a monolith after
+            // extracting modules) keeps a backup outside the watched workspace so
+            // Vite/Next HMR never reloads and rollback remains intact.
+            if (shouldBackup) {
               try {
                 if (typeof desktop.backupFile === 'function') {
                   const backup = await desktop.backupFile(workspaceId, normalized, current.content);
@@ -1241,9 +1241,14 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
                   const backupKey = storeFallbackBackup(workspaceId, normalized, current.content);
                   backupNote = ` Previous version (${current.content.length} chars) backed up in session store (${backupKey}).`;
                 }
+                backupCreated = true;
               } catch (error) {
                 return { ok: false, content: '', error: `Not written — ${path} is a large existing file (${current.content.length} chars) and its backup failed: ${error instanceof Error ? error.message : String(error)}. Use edit_file for targeted changes instead.` };
               }
+            }
+            const risk = assessRewriteRisk(path, content, current.content, { extractedFilesCreated, backupCreated });
+            if (risk) {
+              return { ok: false, content: '', error: `${risk} Use edit_file with an exact original snippet for targeted changes instead.` };
             }
           }
         } else {

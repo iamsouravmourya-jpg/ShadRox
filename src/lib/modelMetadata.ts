@@ -21,7 +21,7 @@ export const KNOWN_MODELS_CATALOG: Record<string, ModelMetadata> = {
     name: 'Gemini 2.5 Flash',
     provider: 'gemini',
     contextWindow: 1_048_576,
-    maxOutputTokens: 8_192,
+    maxOutputTokens: 65_536,
     inputPricePerMillion: 0.15,
     outputPricePerMillion: 0.60,
     cacheReadPricePerMillion: 0.0375,
@@ -36,7 +36,7 @@ export const KNOWN_MODELS_CATALOG: Record<string, ModelMetadata> = {
     // 1M input, not the 2M figure that circulated for the preview: sizing a
     // request from the larger number gets a provider 400, not a longer answer.
     contextWindow: 1_048_576,
-    maxOutputTokens: 8_192,
+    maxOutputTokens: 65_536,
     inputPricePerMillion: 1.25,
     outputPricePerMillion: 5.00,
     cacheReadPricePerMillion: 0.3125,

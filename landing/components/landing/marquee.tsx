@@ -3,7 +3,7 @@
 import {
   FolderTree, MessageSquare, Eye, TerminalSquare,
   GitBranch, FileCode2, Boxes, History,
-  Command, Replace, KeyRound, BugPlay, FolderSearch,
+  Command, Replace, KeyRound, BugPlay,
 } from 'lucide-react'
 
 const items = [
@@ -11,7 +11,6 @@ const items = [
   { icon: FileCode2,      label: 'CodeMirror 6 editor' },
   { icon: MessageSquare,  label: 'BYOK AI chat & queue' },
   { icon: BugPlay,        label: 'Bundled Node debugger' },
-  { icon: FolderSearch,   label: 'Offline junk scanner' },
   { icon: Eye,            label: 'In-app live preview' },
   { icon: TerminalSquare, label: 'Project terminal' },
   { icon: GitBranch,      label: 'Git source control' },

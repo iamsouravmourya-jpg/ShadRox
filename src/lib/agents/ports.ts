@@ -8,7 +8,7 @@
  */
 
 import type { AutonomyHost } from '../autonomy/ports';
-import { verifyMilestone } from '../autonomy/ports';
+import { verifyMilestone, verifyWorkspaceDiagnostics } from '../autonomy/ports';
 import type { TeamEvent, TeamPorts } from './types';
 
 export interface TeamPortsOptions {
@@ -25,6 +25,7 @@ export function createTeamPorts(host: AutonomyHost, options: TeamPortsOptions): 
   return {
     runTurn: (request) => host.runTurn(request),
     verify: (unit, writes) => verifyMilestone(unit, host, options.rootPath, writes),
+    verifyWorkspace: () => verifyWorkspaceDiagnostics(host, options.rootPath),
     listFiles: () => host.listFiles(),
     onEvent: options.onEvent,
     isCancellationRequested: options.isCancellationRequested,

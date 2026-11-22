@@ -12,7 +12,7 @@ const EXAMPLES = [
   'npm install',
 ]
 
-// Faithful demo of the app's rule: every shell command opens the native approval dialog.
+// Faithful demo of the app's rule: risk-tiered command classification and native approval dialog.
 export function CommandApprovalDemo() {
   const inputId = useId()
   const [value, setValue] = useState('')
@@ -22,7 +22,7 @@ export function CommandApprovalDemo() {
     <div className="flex h-full flex-col rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-8">
       <div className="mb-4 flex items-center gap-2">
         <Terminal className="size-4 text-[var(--ac)]" strokeWidth={1.75} />
-        <h3 className="text-sm font-bold text-[var(--ink)]">Try it — every command asks</h3>
+        <h3 className="text-sm font-bold text-[var(--ink)]">Try it — risk-tiered command guard</h3>
         <span className="ml-auto rounded-md border border-[var(--line)] bg-[var(--bg2)] px-2 py-0.5 font-mono text-[11px] text-[var(--mut)]">
           live demo
         </span>
@@ -77,12 +77,12 @@ export function CommandApprovalDemo() {
             <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.08] px-4 py-3">
               <p className="flex items-center gap-2 text-sm font-bold text-amber-700 dark:text-amber-400">
                 <ShieldCheck className="size-4 shrink-0" strokeWidth={2} />
-                Opens the approval dialog
+                Parsed &amp; risk-tiered before execution
               </p>
               <p className="mt-1 text-xs leading-5 text-[var(--ink2)]">
-                The native dialog shows this exact command, its working directory, and a
-                plain-language risk notice. The workspace is re-checked between approval and
-                execution.
+                Each segment is classified before running: mutating, network, or dangerous
+                commands open the native approval dialog with a plain-language risk notice and a
+                workspace re-check before execution.
               </p>
             </div>
           )}

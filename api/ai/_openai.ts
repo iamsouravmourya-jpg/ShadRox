@@ -98,22 +98,50 @@ function reasoningText(delta: Record<string, unknown>): string {
   return '';
 }
 
+export interface ClampMessagesResult<T> {
+  messages: T[];
+  systemTruncated: boolean;
+}
+
+const PINNED_SECTION_MARKER_RE = /^(?:\[WORKING MEMORY[^\]]*\]|REQUIREMENT CHECKLIST\b|===\s*REQUIREMENTS\s*===)/m;
+
+function sliceSystemPreservingAnchors(content: string, limit: number): string {
+  if (content.length <= limit) return content;
+  if (limit <= 0) return '';
+
+  const markerMatch = PINNED_SECTION_MARKER_RE.exec(content);
+  if (!markerMatch || markerMatch.index < limit - 64) {
+    return content.slice(0, limit);
+  }
+
+  const tailSlice = content.slice(markerMatch.index);
+  const maxAnchorShare = Math.floor(limit * 0.45);
+  const anchorText = tailSlice.length <= maxAnchorShare ? tailSlice : tailSlice.slice(0, maxAnchorShare);
+  const divider = '\n...\n';
+  const headRoom = limit - anchorText.length - divider.length;
+  if (headRoom <= 32) {
+    return content.slice(0, limit);
+  }
+  return `${content.slice(0, headRoom)}${divider}${anchorText}`;
+}
+
 /**
  * Keeps the newest turns under a character budget, because Groq's smaller free
  * models cap prompt + completion per minute far below a full chat history. The
  * system prompt survives in its RESERVED share (a quarter of the budget, never
- * more than its own length) so instructions are not silently dropped — and the
- * returned system slice is exactly that reservation, never the accumulated
- * body count, so system + body together cannot exceed the budget.
+ * more than its own length) while preserving any pinned working-memory or
+ * requirement-checklist anchors when the system prompt must be clipped.
  */
-export function clampMessages<T extends { role: string; content: unknown }>(
+export function clampMessagesDetailed<T extends { role: string; content: unknown }>(
   messages: T[],
   charBudget: number
-): T[] {
+): ClampMessagesResult<T> {
   const system = messages[0]?.role === 'system' ? messages[0] : null;
+  const systemLength = system && typeof system.content === 'string' ? system.content.length : 0;
   const reserved = system
-    ? Math.min(typeof system.content === 'string' ? system.content.length : 0, Math.floor(charBudget * 0.25))
+    ? Math.min(systemLength, Math.floor(charBudget * 0.25))
     : 0;
+  const systemTruncated = Boolean(system && typeof system.content === 'string' && system.content.length > reserved);
   const body: T[] = [];
   let used = 0;
 
@@ -135,9 +163,23 @@ export function clampMessages<T extends { role: string; content: unknown }>(
     }
   }
 
-  return system
-    ? [{ ...system, content: typeof system.content === 'string' ? system.content.slice(0, reserved) : system.content }, ...body]
+  const clampedMessages = system
+    ? [{
+        ...system,
+        content: typeof system.content === 'string'
+          ? sliceSystemPreservingAnchors(system.content, reserved)
+          : system.content
+      }, ...body]
     : body;
+
+  return { messages: clampedMessages, systemTruncated };
+}
+
+export function clampMessages<T extends { role: string; content: unknown }>(
+  messages: T[],
+  charBudget: number
+): T[] {
+  return clampMessagesDetailed(messages, charBudget).messages;
 }
 
 export async function streamGroq(request: StreamRequest, sink: StreamSink): Promise<StreamResult> {
@@ -239,8 +281,10 @@ export async function streamGroq(request: StreamRequest, sink: StreamSink): Prom
       if (limits.tokensPerMinute) {
         const output = maxOutputTokens ?? Math.min(1024, Math.floor(limits.tokensPerMinute / 2));
         const roomTokens = Math.max(512, limits.tokensPerMinute - output);
-        messages = clampMessages(messages, roomTokens * 4);
+        const clamped = clampMessagesDetailed(messages, roomTokens * 4);
+        messages = clamped.messages;
         droppedFeatures.push('history_clamp');
+        if (clamped.systemTruncated) droppedFeatures.push('system_context_truncated');
       }
       response = await send(messages, effort, maxOutputTokens, 1, withTools);
     } else {

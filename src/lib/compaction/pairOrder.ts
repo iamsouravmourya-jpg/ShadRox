@@ -79,12 +79,19 @@ export const USER_ASK_MIN_CHARS = 600;
 /** Shortest body a preserved tool fence may hold. */
 const MIN_FENCE_BODY_CHARS = 40;
 
+export const WORKING_MEMORY_PREFIX = '[WORKING MEMORY — PINNED ACROSS COMPACTION]';
+
+/** True when a message carries the pinned working-memory scratchpad. */
+export function isWorkingMemoryText(content: string): boolean {
+  return content.trimStart().startsWith(WORKING_MEMORY_PREFIX);
+}
+
 /**
  * Stage a message belongs to. Used as the primary victim ranking; the weighted
  * score inside it is the existing Void greedy tie-breaker.
  */
 export function trimStageOf(role: 'user' | 'assistant' | 'system', content: string): TrimStage {
-  if (role === 'system') return 'system_block';
+  if (role === 'system' || isWorkingMemoryText(content)) return 'system_block';
   if (hasToolFence(content)) return 'tool_payload';
   return role === 'assistant' ? 'assistant_prose' : 'user_ask';
 }

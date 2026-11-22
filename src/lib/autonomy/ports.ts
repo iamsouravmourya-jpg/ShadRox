@@ -378,11 +378,8 @@ async function buildFailureContext(
  *
  * - an error diagnostic         -> failed, and a green command cannot undo it
  * - placeholder code lint error -> failed, forcing the next attempt to replace stubs
- * - the command exited non-zero -> diagnostic evidence, not a verdict: its exit
- *   code and output ride on the report for the next attempt's repair brief, but
- *   the compiler diagnostics decide. A fresh workspace's planner-invented
- *   `npm test`/`tsc` often fails before deps or scripts exist, and that alone
- *   must not kill the task (and block every dependent).
+ * - the command exited non-zero -> failed; its exit code and output ride on the
+ *   report for the next attempt's repair brief
  * - the command timed out       -> failed: it proved nothing and burned its budget
  * - a clean check or green cmd  -> passed
  * - the command was declined    -> the diagnostics verdict stands, with a note
@@ -439,7 +436,7 @@ export async function verifyMilestone(
         notes.push(`the proof command was not run: ${outcome.declinedReason}`);
       } else if (outcome.exitCode !== 0) {
         notes.push(
-          `the proof command exited ${outcome.exitCode === null ? 'without a code' : outcome.exitCode}; its output is attached as diagnostic evidence, not a verdict.`
+          `the proof command exited ${outcome.exitCode === null ? 'without a code' : outcome.exitCode} and failed verification.`
         );
       }
     } catch (error) {
@@ -449,7 +446,7 @@ export async function verifyMilestone(
 
   const commandRan = command !== undefined && !command.declinedReason;
   const commandPassed = commandRan && command.exitCode === 0 && !command.timedOut;
-  const commandFailed = commandRan && command.timedOut;
+  const commandFailed = commandRan && (command.timedOut || command.exitCode !== 0);
   const errorDiagnostics = diagnostics?.filter((line) => line.severity === 'error') ?? [];
   const hasError = errorDiagnostics.length > 0;
 
@@ -514,11 +511,69 @@ export async function verifyMilestone(
   return { verdict, diagnostics: diagnostics ?? [], command, ...(failureContext ? { failureContext } : {}), notes };
 }
 
+/**
+ * Runs a full workspace diagnostics check across all workspace files (not only a
+ * single milestone's expectedFiles) so cross-file breakage outside the milestone
+ * list is caught before a run declares victory.
+ */
+export async function verifyWorkspaceDiagnostics(
+  host: AutonomyHost,
+  rootPath: string
+): Promise<VerificationReport> {
+  const caseInsensitive = isCaseInsensitivePlatform() || isWindowsPathStyle(normalizeRelativePath(rootPath));
+  let raw: DesktopDiagnostic[] | null = null;
+  try {
+    raw = await host.getDiagnostics(undefined);
+  } catch (error) {
+    return {
+      verdict: 'unverified',
+      diagnostics: [],
+      notes: [`the type service did not answer during workspace verification: ${error instanceof Error ? error.message : String(error)}`]
+    };
+  }
+
+  if (raw === null) {
+    return {
+      verdict: 'unverified',
+      diagnostics: [],
+      notes: ['no type checker is attached to this workspace, so workspace-wide verification could not run.']
+    };
+  }
+
+  const seen = new Set<string>();
+  const lines: DiagnosticLine[] = [];
+  for (const diagnostic of raw) {
+    const relative = toWorkspaceRelative(diagnostic.file, rootPath) || normalizeRelativePath(diagnostic.file);
+    const line = toDiagnosticLine(diagnostic, relative);
+    if (!line) continue;
+    const key = canonicalPathKey(relative, caseInsensitive);
+    const dedupeKey = `${line.severity}:${key}:${line.line}:${line.column}:${line.message}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    lines.push(line);
+  }
+
+  const errorDiagnostics = lines.filter((line) => line.severity === 'error');
+  if (errorDiagnostics.length > 0) {
+    const first = errorDiagnostics[0];
+    const failureContext = await buildFailureContext(errorDiagnostics, host, caseInsensitive);
+    return {
+      verdict: 'failed',
+      diagnostics: lines,
+      ...(failureContext ? { failureContext } : {}),
+      notes: [`${errorDiagnostics.length} workspace-wide error diagnostic(s) found (${first.path}:${first.line} ${first.message})`]
+    };
+  }
+
+  return { verdict: 'passed', diagnostics: lines, notes: [] };
+}
+
 /** Wrap the app's capabilities into the engine's ports contract. */
 export function createAutonomyPorts(host: AutonomyHost, options: AutonomyPortsOptions): AutonomyPorts {
   return {
     runTurn: (request) => host.runTurn(request),
     verify: (unit, writes) => verifyMilestone(unit, host, options.rootPath, writes),
+    verifyWorkspace: () => verifyWorkspaceDiagnostics(host, options.rootPath),
     listFiles: () => host.listFiles(),
     askPlan: (prompt) => host.askPlan(prompt),
     onEvent: options.onEvent,

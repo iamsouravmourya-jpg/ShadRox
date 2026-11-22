@@ -57,7 +57,7 @@ test('a table-known model gets the table numbers, not the pattern guess', () => 
   // request is a provider 400.
   const pro = resolveCapabilities('gemini', 'gemini-2.5-pro');
   assert.equal(pro.contextWindow, 1_048_576);
-  assert.equal(pro.maxOutput, 8_192);
+  assert.equal(pro.maxOutput, 65_536);
   assert.equal(pro.source, 'metadata_table');
 
   const gpt = resolveCapabilities('custom', 'gpt-4o');
@@ -82,7 +82,7 @@ test('a table-known flash model replaces its pattern guess for every provider', 
 test('an unknown model still gets the old fallback, so compaction cannot crash on a missing row', () => {
   const pattern = resolveCapabilities('gemini', 'gemini-3.8-flash');
   assert.equal(pattern.contextWindow, 1_048_576);
-  assert.equal(pattern.maxOutput, 8_192);
+  assert.equal(pattern.maxOutput, 65_536);
   assert.equal(pattern.source, 'pattern_table');
 
   const groqCatchAll = resolveCapabilities('groq', 'some-tiny-unknown-groq-model');

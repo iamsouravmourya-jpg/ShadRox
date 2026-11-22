@@ -13,3 +13,10 @@ You may stop using the beta at any time. Report defects and data-deletion
 requests in the private beta WhatsApp group. ShadRox is free and runs on bring-your-own-key:
 there is no plan to buy and no charge from ShadRox — your own provider key carries every request
 and your provider bills you directly.
+
+## Intellectual Property
+
+Copyright (c) 2026 ShadRox — founded and owned by Sourav Maurya. All rights reserved.
+ShadRox, its source code, architecture, branding, and compiled installers are proprietary
+intellectual property owned exclusively by ShadRox and Sourav Maurya (see [LICENSE](./LICENSE)).
+You retain 100% ownership and all rights to your own project files and code.

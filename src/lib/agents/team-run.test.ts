@@ -690,4 +690,40 @@ test('runTeam fails immediately with clear missing target warning when goal asks
   assert.ok(h.events.some((e) => e.type === 'team:log' && /Missing target file/i.test(e.text)));
 });
 
+test('multi-requirement goal spawns bounded t-catchup task when a requirement lacks touched-file evidence', async () => {
+  const h = harness({
+    tasks: [plannedTask({ id: 't1', assignee: 'backend', expectedFiles: ['src/a.ts'] })],
+    errors: []
+  });
+  h.setTurn((unit) => ({
+    reply: `done ${unit.id}`,
+    patchesApplied: 1,
+    patchFailures: [],
+    aborted: false,
+    touchedFiles: unit.id === 't1' ? ['src/a.ts'] : ['src/ui.tsx']
+  }));
+  const state = await h.run('1. Implement API in src/a.ts\n2. Create view component in src/ui.tsx');
+  assert.equal(state.status, 'done');
+  assert.equal(state.tasks.some((t) => t.id === 't-catchup'), true);
+  assert.equal(state.requirements?.every((r) => r.status === 'covered'), true);
+});
+
+test('verifyWorkspace errors outside per-task files mark integration broken and fail the team', async () => {
+  const h = harness({
+    tasks: [plannedTask({ id: 't1', assignee: 'backend', expectedFiles: ['src/a.ts'] })],
+    errors: []
+  });
+  h.setTurn(writes({ t1: ['src/a.ts'] }));
+  h.deps.ports.verifyWorkspace = async () => ({
+    verdict: 'failed',
+    diagnostics: [{ path: 'src/consumer.ts', line: 12, column: 4, message: 'Missing export foo', severity: 'error' }],
+    notes: ['1 workspace error']
+  });
+  const state = await h.run('update src/a.ts');
+  assert.equal(state.status, 'failed');
+  assert.equal(state.mergeReport?.verdict, 'broken');
+  assert.match(state.error ?? '', /src\/consumer\.ts:12/);
+});
+
+
 

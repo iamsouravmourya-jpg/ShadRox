@@ -9,7 +9,6 @@ import {
   Cpu,
   Database,
   Download,
-  FolderGit,
   Globe,
   IndianRupee,
   Info,
@@ -21,7 +20,7 @@ import {
 } from 'lucide-react'
 import { PageShell } from '@/components/landing/page-shell'
 import { Reveal } from '@/components/landing/reveal'
-import { APP_VERSION, GITHUB_REPO, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
+import { APP_VERSION, RELEASES_URL, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 
 export const metadata: Metadata = {
   title: 'ShadRox — About the maker',
@@ -38,13 +37,13 @@ const SITE_URL = 'https://www.shadrox.cyou'
 
 const makerLinks: { icon: typeof Globe; label: string; href: string }[] = [
   { icon: CodeXml, label: 'GitHub', href: GITHUB_PROFILE },
-  { icon: FolderGit, label: 'ShadRox repo', href: GITHUB_REPO },
+  { icon: Download, label: 'Releases', href: RELEASES_URL },
   { icon: Briefcase, label: 'LinkedIn', href: LINKEDIN_PROFILE },
   { icon: Globe, label: 'shadrox.cyou', href: SITE_URL },
 ]
 
 const before = ['editor', 'terminal', 'browser preview', 'debugger', 'separate AI tool']
-const inside = ['files', 'editor', 'AI chat', 'bundled debugger', 'offline scanner', 'preview', 'Git', 'terminal']
+const inside = ['files', 'editor', 'AI chat', 'bundled debugger', 'preview', 'Git', 'terminal']
 
 const stack: { icon: typeof Cpu; name: string; detail: string }[] = [
   { icon: Cpu, name: 'Electron', detail: 'v44 · js-debug' },
@@ -56,9 +55,9 @@ const stack: { icon: typeof Cpu; name: string; detail: string }[] = [
 ]
 
 const facts: { label: string; value: string; mono?: boolean }[] = [
-  { label: 'Maker', value: 'Sourav Maurya' },
+  { label: 'Founder & Owner', value: 'Sourav Maurya' },
   { label: 'Based in', value: 'Delhi, India' },
-  { label: 'Team', value: 'One person — no company' },
+  { label: 'Ownership', value: 'Proprietary · ShadRox' },
   { label: 'Platform', value: 'Windows 10 / 11, 64-bit' },
   { label: 'Current version', value: `v${APP_VERSION}`, mono: true },
   { label: 'Stage', value: 'Beta' },
@@ -73,9 +72,9 @@ const notes: { icon: typeof Info; title: string; text: string; link?: { label: s
   },
   {
     icon: ScrollText,
-    title: 'Open source, AGPL-3.0',
-    text: 'ShadRox is free, open-source software under the GNU Affero General Public License v3.0. Use it, study it, modify it, share it — the full source is on GitHub.',
-    link: { label: 'View the repo', href: GITHUB_REPO },
+    title: 'Proprietary · All Rights Reserved',
+    text: 'Copyright © 2026 ShadRox — founded and owned by Sourav Maurya. All source code, architecture, branding, and compiled installers are proprietary intellectual property of ShadRox and Sourav Maurya.',
+    link: { label: 'Read Beta Terms', href: '/beta-terms' },
   },
   {
     icon: KeyRound,
@@ -92,10 +91,10 @@ const notes: { icon: typeof Info; title: string; text: string; link?: { label: s
 export default function AboutPage() {
   return (
     <PageShell
-      eyebrow="The maker"
+      eyebrow="The founder"
       title="Built solo,"
-      accent="in the open."
-      sub="ShadRox is one person's project: a native Windows workspace for local projects, written and maintained by Sourav Maurya from Delhi, India. No company, no team page — just the app, this site and the repo."
+      accent="owned by its founder."
+      sub="ShadRox is proprietary software founded and maintained by Sourav Maurya from Delhi, India. Built end to end by one founder — the desktop app, this website, and official releases."
     >
       {/* ── Maker + story ── */}
       <section className="border-t border-[var(--line)] bg-[var(--bg)] px-5 py-16 lg:px-8 lg:py-20">
@@ -132,11 +131,11 @@ export default function AboutPage() {
                       Delhi, India
                     </span>
                     <span className="text-[var(--mut)]">·</span>
-                    <span>Solo maintainer</span>
+                    <span>Founder &amp; Solo Maintainer</span>
                   </p>
 
                   <p className="mt-6 border-t border-[var(--line)] pt-6 text-[13px] leading-6 text-[var(--mut)]">
-                    Maintains the desktop app, this website and the GitHub repo — one person,
+                    Founded ShadRox and maintains the desktop app, this website, and official releases — one founder,
                     end to end.
                   </p>
 
@@ -182,10 +181,10 @@ export default function AboutPage() {
                     are held instead of written in place.
                   </p>
                   <p>
-                    There is no company behind ShadRox. It is built in the open: the source is
-                    published on GitHub for viewing, installers ship from the releases page, and
-                    anything that behaves differently from these pages belongs in the issue
-                    tracker.
+                    There is no outside company behind ShadRox. All intellectual property belongs
+                    exclusively to ShadRox and its founder, Sourav Maurya. Official installers ship
+                    from GitHub Releases, and anything that behaves differently from these pages
+                    belongs in the issue tracker.
                   </p>
                 </div>
 

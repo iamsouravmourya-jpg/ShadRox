@@ -1081,3 +1081,81 @@ test('the recorder scrubs credentials out of command events before they are kept
   assert.ok(events.some((event) => event.type === 'command_finished' && event.data.exit === 0));
   flightRecorder.reset();
 });
+
+test('expectedFiles confines native write tools on existing unlisted files while allowing brand-new files and reporting changedPaths', async () => {
+  const files = new Map<string, string>([
+    ['src/a.ts', 'export const a = 1;\n'],
+    ['src/secret.ts', 'export const keep = true;\n']
+  ]);
+  await withBridge({
+    readFile: async (_id: string, path: string) => {
+      if (!files.has(path)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { name: path, content: files.get(path), version: 'v' };
+    },
+    verifyChangeSet: async () => ({ ok: true, issues: [] }),
+    saveFiles: async (_id: string, entries: Array<{ name: string; content: string }>) => {
+      for (const entry of entries) files.set(entry.name, entry.content);
+      return { errors: [], saved: entries.map((e) => ({ name: e.name })) };
+    }
+  }, async () => {
+    const model = scripted([
+      toolBlock([
+        { name: 'write_file', args: { path: 'src/secret.ts', content: 'clobbered' } },
+        { name: 'write_file', args: { path: 'src/newHelper.ts', content: 'export const h = 1;\n' } },
+        { name: 'edit_file', args: { path: 'src/a.ts', original: 'export const a = 1;', updated: 'export const a = 2;' } }
+      ]),
+      'Finished.'
+    ]);
+    const result = await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      expectedFiles: ['src/a.ts'],
+      existsOnDisk: async (p) => files.has(p),
+      stream: model.stream
+    });
+    assert.equal(files.get('src/secret.ts'), 'export const keep = true;\n', 'unlisted existing file stays untouched');
+    assert.equal(result.activity[0].refused, true);
+    assert.match(result.activity[0].error ?? '', /expectedFiles|outside|confine/i);
+    assert.equal(files.get('src/newHelper.ts'), 'export const h = 1;\n', 'brand-new unlisted file is allowed');
+    assert.equal(files.get('src/a.ts'), 'export const a = 2;\n');
+    assert.ok(result.changedPaths?.includes('src/a.ts'));
+    assert.ok(result.changedPaths?.includes('src/newHelper.ts'));
+    assert.deepEqual(result.createdPaths, ['src/newHelper.ts']);
+  });
+});
+
+test('runToolRounds injects and updates pinned WORKING MEMORY scratchpad from round 4 onward', async () => {
+  const files = new Map<string, string>([['src/a.ts', 'line1\nline2\n']]);
+  await withBridge({
+    readFile: async (_id: string, path: string) => {
+      if (!files.has(path)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { name: path, content: files.get(path), version: 'v' };
+    },
+    verifyChangeSet: async () => ({ ok: true, issues: [] }),
+    saveFiles: async (_id: string, entries: Array<{ name: string; content: string }>) => {
+      for (const entry of entries) files.set(entry.name, entry.content);
+      return { errors: [], saved: entries.map((e) => ({ name: e.name })) };
+    }
+  }, async () => {
+    const model = scripted([
+      toolBlock([{ name: 'read_file', args: { path: 'src/a.ts', start_line: 1, end_line: 2 } }]),
+      toolBlock([{ name: 'edit_file', args: { path: 'src/a.ts', original: 'line1', updated: 'line1_updated' } }]),
+      toolBlock([{ name: 'write_file', args: { path: 'src/b.ts', content: 'export const b = 1;\n' } }]),
+      toolBlock([{ name: 'write_file', args: { path: 'src/c.ts', content: 'export const c = 1;\n' } }]),
+      'All done.'
+    ]);
+    await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      initialRequirements: ['Create src/b.ts and update src/a.ts'],
+      stream: model.stream
+    });
+    const round4Transcript = model.seen[4].map((m) => m.content).join('\n');
+    assert.match(round4Transcript, /\[WORKING MEMORY/);
+    assert.match(round4Transcript, /src\/a\.ts/);
+    assert.match(round4Transcript, /Create src\/b\.ts and update src\/a\.ts/);
+  });
+});
+

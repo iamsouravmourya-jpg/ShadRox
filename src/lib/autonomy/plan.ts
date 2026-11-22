@@ -14,7 +14,8 @@
  */
 
 import { findCycles } from './dag';
-import { canonicalPathKey, isCaseInsensitivePlatform } from '../paths';
+import { extractExplicitPathsFromText, extractRequirements, formatRequirementChecklistForPrompt } from './requirements';
+import { canonicalPathKey, isCaseInsensitivePlatform, normalizeRepoPath } from '../paths';
 import type { Milestone, PlanError, RunBudget } from './types';
 
 /**
@@ -306,15 +307,139 @@ export function validatePlan(milestones: Milestone[], _files: string[], budget: 
   return errors;
 }
 
+const ROOT_PRIORITY_RE =
+  /^(?:package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|tsconfig[^/]*\.json|vite\.config\.[^/]+|next\.config\.[^/]+|server\.[cm]?[jt]s|index\.html|readme[^/]*|\.env(?:\.[^/]+)?|electron\/main\.[^/]+|electron\/preload\.[^/]+)$/i;
+
+/**
+ * Selects a deterministic, high-signal workspace file inventory up to `limit`
+ * paths instead of blindly truncating `files.slice(0, 400)`:
+ * 1) files explicitly referenced or stem-matched in the goal,
+ * 2) root manifests and entry configs,
+ * 3) stratified round-robin across top-level directories so `src/`, `electron/`,
+ *    `api/`, `landing/`, `tests/` are all represented on large repos.
+ */
+export function selectPrioritizedWorkspaceFiles(
+  goal: string,
+  files: readonly string[],
+  limit = 800
+): string[] {
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of files) {
+    const clean = normalizeRepoPath(raw);
+    if (!clean) continue;
+    const key = canonicalPathKey(clean, true);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(clean);
+  }
+  if (deduped.length <= limit) return deduped;
+
+  const explicitRefs = extractExplicitPathsFromText(goal);
+  const goalLower = goal.toLowerCase();
+  const refKeys = new Set(explicitRefs.map((p) => canonicalPathKey(p, true)));
+  const refBasenames = new Set(
+    explicitRefs.map((p) => p.split('/').pop()?.toLowerCase() ?? '').filter(Boolean)
+  );
+
+  const selected: string[] = [];
+  const pickedKeys = new Set<string>();
+  const add = (path: string) => {
+    if (selected.length >= limit) return;
+    const key = canonicalPathKey(path, true);
+    if (pickedKeys.has(key)) return;
+    pickedKeys.add(key);
+    selected.push(path);
+  };
+
+  // Tier 1: explicitly referenced paths or filename matches mentioned in goal.
+  for (const path of deduped) {
+    const key = canonicalPathKey(path, true);
+    const base = path.split('/').pop()?.toLowerCase() ?? '';
+    if (refKeys.has(key) || (base && (refBasenames.has(base) || goalLower.includes(base)))) {
+      add(path);
+    }
+  }
+
+  // Tier 2: root manifests and primary entrypoints.
+  for (const path of deduped) {
+    if (ROOT_PRIORITY_RE.test(path)) add(path);
+  }
+
+  // Tier 3: stratified round-robin across top-level directories.
+  const buckets = new Map<string, string[]>();
+  for (const path of deduped) {
+    const key = canonicalPathKey(path, true);
+    if (pickedKeys.has(key)) continue;
+    const slash = path.indexOf('/');
+    const topDir = slash >= 0 ? path.slice(0, slash) : '(root)';
+    const list = buckets.get(topDir);
+    if (list) list.push(path);
+    else buckets.set(topDir, [path]);
+  }
+
+  const queues = [...buckets.values()];
+  let cursor = 0;
+  while (selected.length < limit && queues.some((q) => cursor < q.length)) {
+    for (const q of queues) {
+      if (cursor < q.length && selected.length < limit) {
+        add(q[cursor]);
+      }
+    }
+    cursor += 1;
+  }
+
+  return selected;
+}
+
+/**
+ * Scales milestone, turn, tool-call and wall-clock ceilings proportionally when
+ * a prompt describes a multi-workstream mega-upgrade (while never shrinking below `base`).
+ */
+export function computeElasticRunBudget(goal: string, base: RunBudget): RunBudget {
+  const requirements = extractRequirements(goal);
+  const explicitPaths = extractExplicitPathsFromText(goal).length;
+  const words = goal.trim().split(/\s+/).filter(Boolean).length;
+  const complexityScore = Math.max(
+    requirements.length,
+    Math.ceil(explicitPaths / 1.5),
+    words >= 350 ? 12 : words >= 180 ? 8 : 1
+  );
+
+  if (complexityScore <= 4 && explicitPaths <= 4) {
+    return base;
+  }
+
+  const maxMilestones = Math.min(20, Math.max(base.maxMilestones, Math.min(18, complexityScore + 2)));
+  const maxTurns = Math.min(80, Math.max(base.maxTurns, maxMilestones * 3 + 6));
+  const maxToolCalls = Math.max(base.maxToolCalls, maxTurns * 200);
+  const maxWallClockMs = Math.max(base.maxWallClockMs, 45 * 60 * 1000);
+
+  return {
+    ...base,
+    maxMilestones,
+    maxTurns,
+    maxToolCalls,
+    maxWallClockMs
+  };
+}
+
 /** The instruction handed to the model that must return the milestone JSON. */
 export function buildPlannerPrompt(goal: string, files: string[], budget: RunBudget): string {
-  const fileList = files.slice(0, 400).join('\n') || '(the workspace has no files yet)';
-  return [
+  const inventory = selectPrioritizedWorkspaceFiles(goal, files, 800);
+  const fileList = inventory.join('\n') || '(the workspace has no files yet)';
+  const checklist = formatRequirementChecklistForPrompt(extractRequirements(goal));
+  const sections = [
     'You are the architect for an autonomous coding run inside one project folder.',
     'Decompose the goal below into an ordered set of milestones and return them as JSON.',
     '',
     'GOAL:',
-    goal,
+    goal
+  ];
+  if (checklist) {
+    sections.push('', checklist);
+  }
+  sections.push(
     '',
     `CONSTRAINTS: at most ${budget.maxMilestones} milestones; each milestone must be independently runnable once its dependencies pass.`,
     '',
@@ -323,24 +448,55 @@ export function buildPlannerPrompt(goal: string, files: string[], budget: RunBud
     '  "expectedFiles": ["repo/relative/path.ts"], "dependsOn": ["m0"], "verifyCommand": "optional command to prove it" }',
     '',
     'Rules: ids are unique; dependsOn only references ids in this array; every path is repo-relative (no leading slash, no "..");',
+    'ensure EVERY item in the requirement checklist and EVERY target file in the goal is assigned to a milestone;',
     'when updating multiple cohesive UI sections inside a single existing file (e.g. App.jsx or one page component), group those edits into 1-2 structured milestones rather than creating 5-7 section-by-section milestones;',
     'omit verifyCommand when there is nothing to run; do not wrap the array in prose.',
     '',
     'FILES CURRENTLY IN THE WORKSPACE:',
     fileList
-  ].join('\n');
+  );
+  return sections.join('\n');
 }
 
 /**
  * Builds the `planGoal` driver dep from the app's ask-plan function. The budget
  * arrives per call (the run-loop passes its own), so the prompt always reflects
- * the cap actually in force.
+ * the cap actually in force. Automatically runs up to 2 validation self-repair
+ * retries when the planner emits invalid JSON or structural plan errors.
  */
 export function createPlanGoal(askPlan: (prompt: string) => Promise<string>) {
   return async (goal: string, files: string[], budget: RunBudget): Promise<ParsedPlan> => {
-    const reply = await askPlan(buildPlannerPrompt(goal, files, budget));
-    const parsed = parsePlanReply(reply);
-    if (parsed.errors.length > 0) return parsed;
-    return { milestones: coalesceSingleFileMilestones(parsed.milestones, files), errors: [] };
+    const basePrompt = buildPlannerPrompt(goal, files, budget);
+    let prompt = basePrompt;
+    let lastResult: ParsedPlan = { milestones: [], errors: [] };
+
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const reply = await askPlan(prompt);
+      const parsed = parsePlanReply(reply);
+      if (parsed.errors.length === 0) {
+        const coalesced = coalesceSingleFileMilestones(parsed.milestones, files);
+        const validationErrors = validatePlan(coalesced, files, budget);
+        if (validationErrors.length === 0) {
+          return { milestones: coalesced, errors: [] };
+        }
+        lastResult = { milestones: coalesced, errors: validationErrors };
+        prompt = [
+          basePrompt,
+          '',
+          'PREVIOUS PLAN FAILED VALIDATION. Fix every error listed below and return ONLY the corrected JSON array:',
+          ...validationErrors.map((e) => `- ${e.reason}: ${e.message}`)
+        ].join('\n');
+      } else {
+        lastResult = parsed;
+        prompt = [
+          basePrompt,
+          '',
+          'PREVIOUS REPLY COULD NOT BE PARSED AS A MILESTONE JSON ARRAY. Fix these errors and return ONLY valid JSON:',
+          ...parsed.errors.map((e) => `- ${e.reason}: ${e.message}`)
+        ].join('\n');
+      }
+    }
+
+    return lastResult;
   };
 }

@@ -86,6 +86,98 @@ export interface CompactionResult {
   compacted: number;
 }
 
+export const WORKING_MEMORY_HEADER = '[WORKING MEMORY — PINNED ACROSS COMPACTION]';
+const MAX_WORKING_MEMORY_CHARS = 3_600;
+
+export interface WorkingMemoryRange {
+  path: string;
+  startLine?: number;
+  endLine?: number;
+  totalLines?: number;
+}
+
+export interface WorkingMemoryEdit {
+  path: string;
+  op: string;
+}
+
+export interface WorkingMemoryState {
+  inspectedRanges: WorkingMemoryRange[];
+  completedEdits: WorkingMemoryEdit[];
+  pendingRequirements: string[];
+  latestDiagnostics: string[];
+}
+
+export function isWorkingMemoryContent(content: string): boolean {
+  return content.trimStart().startsWith(WORKING_MEMORY_HEADER);
+}
+
+export function isWorkingMemoryMessage(turn: Pick<ChatTurn, 'role' | 'content'>): boolean {
+  return (turn.role === 'user' || turn.role === 'system') && isWorkingMemoryContent(turn.content);
+}
+
+export function formatWorkingMemoryMessage(state: WorkingMemoryState): string {
+  const sections: string[] = [WORKING_MEMORY_HEADER];
+
+  if (state.pendingRequirements.length > 0) {
+    sections.push(
+      'Pending requirements:\n' +
+        state.pendingRequirements.slice(0, 16).map((req) => `- ${req.slice(0, 180)}`).join('\n')
+    );
+  }
+
+  if (state.completedEdits.length > 0) {
+    const byPath = new Map<string, string>();
+    for (const edit of state.completedEdits) {
+      byPath.set(edit.path, edit.op);
+    }
+    const items = [...byPath.entries()].slice(-24).map(([path, op]) => `- ${path} (${op})`);
+    sections.push(`Completed edits:\n${items.join('\n')}`);
+  }
+
+  if (state.inspectedRanges.length > 0) {
+    const byKey = new Map<string, WorkingMemoryRange>();
+    for (const range of state.inspectedRanges) {
+      const span = range.startLine !== undefined || range.endLine !== undefined
+        ? `${range.startLine ?? 1}-${range.endLine ?? '?'}`
+        : 'full';
+      byKey.set(`${range.path}#${span}`, range);
+    }
+    const items = [...byKey.values()].slice(-20).map((range) => {
+      if (range.startLine !== undefined || range.endLine !== undefined) {
+        const total = range.totalLines !== undefined ? ` of ${range.totalLines}` : '';
+        return `- ${range.path} (lines ${range.startLine ?? 1}-${range.endLine ?? '?'}${total})`;
+      }
+      return `- ${range.path}`;
+    });
+    sections.push(`Inspected files/ranges:\n${items.join('\n')}`);
+  }
+
+  if (state.latestDiagnostics.length > 0) {
+    sections.push(
+      'Latest diagnostics/failures:\n' +
+        state.latestDiagnostics.slice(-10).map((line) => `- ${line.slice(0, 200)}`).join('\n')
+    );
+  }
+
+  const text = sections.join('\n\n');
+  return text.length <= MAX_WORKING_MEMORY_CHARS
+    ? text
+    : `${text.slice(0, MAX_WORKING_MEMORY_CHARS - 1)}…`;
+}
+
+export function upsertWorkingMemory(messages: ChatTurn[], state: WorkingMemoryState): ChatTurn[] {
+  const content = formatWorkingMemoryMessage(state);
+  const existingIndex = messages.findIndex((turn) => isWorkingMemoryMessage(turn));
+  if (existingIndex >= 0) {
+    if (messages[existingIndex].content === content) return messages;
+    return messages.map((turn, index) => (index === existingIndex ? { ...turn, content } : turn));
+  }
+  const entry: ChatTurn = { role: 'user', content };
+  if (messages.length === 0) return [entry];
+  return [messages[0], entry, ...messages.slice(1)];
+}
+
 /**
  * Summarizes old observations once the transcript passes the trigger share of
  * the budget. Below the trigger the SAME array is returned, so a short turn
@@ -96,7 +188,7 @@ export function compactToolObservations(messages: ChatTurn[], budget = LOOP_CONT
   if (total <= budget * COMPACT_TRIGGER_SHARE) return { messages, compacted: 0 };
   const observationIndices: number[] = [];
   messages.forEach((turn, index) => {
-    if (isToolObservation(turn)) observationIndices.push(index);
+    if (isToolObservation(turn) && !isWorkingMemoryMessage(turn)) observationIndices.push(index);
   });
   const compactable = observationIndices.slice(0, Math.max(0, observationIndices.length - KEEP_RECENT_OBSERVATIONS));
   let compacted = 0;

@@ -16,6 +16,7 @@
 
 // Type-only: erased at compile time, so this file still has no runtime dependencies.
 import type { FailureReceipt } from '../repairProof';
+import type { RequirementItem } from './requirements';
 
 export type Verdict = 'passed' | 'failed' | 'unverified';
 
@@ -222,10 +223,12 @@ export interface RunState {
   startedAt: number;
   /** Shown verbatim in the panel; the reason a run is not running. */
   error?: string;
-  /** The pre-run checkpoint, kept so an unrecoverable failure can be undone. */
+  /** Pre-run checkpoint, kept so an unrecoverable failure can be undone. */
   checkpointId?: string | null;
   /** True when a failed run restored the workspace to that checkpoint. */
   rolledBack?: boolean;
+  /** Extracted multi-part requirements and their verification coverage status. */
+  requirements?: RequirementItem[];
 }
 
 /**
@@ -353,6 +356,11 @@ export interface AutonomyPorts {
    * leaves the run with nothing to honour.
    */
   isPauseRequested?: () => boolean;
+  /**
+   * Optional workspace-wide diagnostics check used during final integration to
+   * catch cross-file type breakages outside individual milestone lists.
+   */
+  verifyWorkspace?: () => Promise<VerificationReport>;
 }
 
 export type AutonomyEvent =

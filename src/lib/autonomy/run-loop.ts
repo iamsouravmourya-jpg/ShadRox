@@ -21,7 +21,8 @@ import type {
   Verdict
 } from './types';
 import { ceilingReached, type CeilingStop, workUsageOf } from './budget';
-import { canonicalPathKey, isCaseInsensitivePlatform } from '../paths';
+import { auditRequirementCoverage, extractRequirements } from './requirements';
+import { canonicalPathKey, dedupePaths, isCaseInsensitivePlatform } from '../paths';
 
 export interface DriverDeps {
   ports: AutonomyPorts;
@@ -72,6 +73,176 @@ function userHalt(ports: AutonomyPorts): 'cancelled' | 'paused' | null {
   return null;
 }
 
+interface ExecutionShared {
+  goal: string;
+  deps: DriverDeps;
+  state: RunState;
+  caseInsensitive: boolean;
+  clockStart: number;
+  unverified: string[];
+  checkpointId: string | null;
+  checkpointed: boolean;
+  wrote: boolean;
+  endedByUser: 'cancelled' | 'paused' | null;
+}
+
+async function executeMilestoneUnit(
+  next: Milestone,
+  shared: ExecutionShared,
+  options: { maxAttempts?: number; initialReport?: VerificationReport } = {}
+): Promise<'passed' | 'unverified' | 'failed' | 'stopped'> {
+  const { deps, state, goal } = shared;
+  const maxAttempts = options.maxAttempts ?? deps.budget.maxAttemptsPerMilestone;
+
+  if (!shared.checkpointed) {
+    shared.checkpointId = (await deps.checkpoint(goal)) ?? null;
+    state.checkpointId = shared.checkpointId;
+    shared.checkpointed = true;
+  }
+
+  next.status = 'running';
+  deps.ports.onEvent({ type: 'milestone:start', id: next.id });
+
+  const existingSet = new Set(deps.ports.listFiles().map((file) => canonicalPathKey(file, shared.caseInsensitive)));
+  const preExistingExpectedFiles = next.expectedFiles.filter((file) =>
+    existingSet.has(canonicalPathKey(file, shared.caseInsensitive))
+  );
+
+  let outcome: 'passed' | 'unverified' | 'failed' | 'stopped' = 'failed';
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (userHalt(deps.ports) !== null) {
+      next.status = next.attempts.length > 0 ? 'stopped' : 'pending';
+      outcome = 'stopped';
+      break;
+    }
+
+    const midCeiling = workStop(deps, state.milestones, deps.now() - shared.clockStart);
+    if (midCeiling) {
+      next.status = next.attempts.length > 0 ? 'stopped' : 'pending';
+      state.status = 'stopped';
+      state.error = `${midCeiling.message} ${remaining(state.milestones)} milestone(s) did not run.`;
+      outcome = 'stopped';
+      break;
+    }
+
+    const startedAt = deps.now();
+    deps.ports.onEvent({ type: 'milestone:attempt', id: next.id, attempt });
+    const prior = previousFeedback(next) ?? (attempt === 1 ? options.initialReport : undefined);
+    const heldBefore = next.pendingReview ?? [];
+    const heldNote = heldBefore.length > 0
+      ? `Files with changes held for user review (NOT on disk): ${heldBefore.join(', ')}. Their pending content is not applied — work with what is actually on disk, and do not re-propose those same edits.`
+      : '';
+    const baseFeedback = prior ? deps.feedbackFor(next, prior, lastFailures(next), next.attempts.length) : '';
+    const feedbackText = [baseFeedback, heldNote].filter(Boolean).join('\n\n') || undefined;
+    const turn = await deps.ports.runTurn({
+      goal,
+      milestone: next,
+      feedback: prior,
+      feedbackText,
+      signal: deps.turnSignal?.()
+    });
+    next.touchedFiles = [...new Set([...(next.touchedFiles ?? []), ...(turn.touchedFiles ?? [])])];
+    next.pendingReview = [...new Set([...(next.pendingReview ?? []), ...(turn.pendingReview ?? [])])];
+    if (turn.pendingReview && turn.pendingReview.length > 0) {
+      deps.ports.onEvent({ type: 'milestone:review', id: next.id, paths: turn.pendingReview });
+    }
+    const report = await deps.ports.verify(next, {
+      patchesApplied: turn.patchesApplied,
+      changedFiles: turn.changedFiles,
+      preExistingExpectedFiles
+    });
+    const verdict = verdictOf(report);
+    const attemptRecord: Attempt = {
+      index: attempt,
+      reply: turn.reply,
+      patchesApplied: turn.patchesApplied,
+      patchFailures: turn.patchFailures,
+      verification: report,
+      toolCalls: turn.toolCalls,
+      failureProof: turn.failureProof ?? undefined,
+      startedAt
+    };
+    next.attempts.push(attemptRecord);
+    if (turn.patchesApplied > 0 || (turn.changedFiles ?? 0) > 0) shared.wrote = true;
+    deps.ports.onEvent({ type: 'milestone:verdict', id: next.id, verdict, report, attempt });
+    deps.persist(state);
+
+    if (turn.aborted) {
+      const byUser = turn.stopped === true || userHalt(deps.ports) !== null;
+      next.status = byUser ? 'stopped' : 'failed';
+      outcome = byUser ? 'stopped' : 'failed';
+      if (byUser) shared.endedByUser = userHalt(deps.ports) ?? 'cancelled';
+      deps.ports.onEvent({
+        type: 'log',
+        text: `"${next.title}" ${byUser ? 'was stopped mid-turn' : 'was interrupted mid-turn'}.`
+      });
+      break;
+    }
+
+    if (verdict === 'passed') {
+      next.status = 'passed';
+      outcome = 'passed';
+      if (report.notes.length > 0) {
+        deps.ports.onEvent({
+          type: 'log',
+          text: `"${next.title}" passed (${report.notes.join('; ')}).`
+        });
+      }
+      break;
+    }
+
+    if (verdict === 'unverified') {
+      next.status = 'unverified';
+      shared.unverified.push(`${next.title}: ${report.notes.join('; ') || 'no checker could run'}`);
+      outcome = 'unverified';
+      deps.ports.onEvent({
+        type: 'log',
+        text: `"${next.title}" was not verified (${report.notes.join('; ') || 'no checker could run'}).`
+      });
+      break;
+    }
+
+    const held = next.pendingReview ?? [];
+    if (held.length > 0 && reviewExplainsFailure(next, report, held)) {
+      next.status = 'stopped';
+      outcome = 'stopped';
+      state.status = 'paused';
+      state.error = `"${next.title}" is waiting for your review: ${held.join(', ')}. Accept the held changes, then resume the run.`;
+      deps.ports.onEvent({
+        type: 'log',
+        text: `"${next.title}" paused — ${held.length} file(s) await review before its check can pass.`
+      });
+      deps.ports.onEvent({ type: 'milestone:done', id: next.id, status: 'stopped' });
+      break;
+    }
+
+    if (attempt >= maxAttempts) {
+      next.status = 'failed';
+      outcome = 'failed';
+      break;
+    }
+
+    deps.ports.onEvent({
+      type: 'log',
+      text: `"${next.title}" failed check ${attempt}/${maxAttempts}.`
+    });
+  }
+
+  if (outcome !== 'stopped') {
+    deps.ports.onEvent({ type: 'milestone:done', id: next.id, status: next.status });
+  }
+  deps.persist(state);
+  return outcome;
+}
+
+function uniqueDerivedId(prefix: string, milestones: readonly Milestone[]): string {
+  const existing = new Set(milestones.map((m) => m.id));
+  if (!existing.has(prefix)) return prefix;
+  let suffix = milestones.length + 1;
+  while (existing.has(`${prefix}-${suffix}`)) suffix += 1;
+  return `${prefix}-${suffix}`;
+}
+
 /**
  * Runs the goal to completion and returns the final state. The loop is
  * sequential on purpose: two milestones editing the same file at once produces a
@@ -83,7 +254,13 @@ export async function runAutonomous(
   resumeFrom?: RunState
 ): Promise<RunState> {
   const files = deps.ports.listFiles();
+  const caseInsensitive = isCaseInsensitivePlatform() || /^[a-z]:/i.test(files[0] ?? '');
   const resuming = Boolean(resumeFrom && resumeFrom.milestones.length > 0);
+  const initialRequirements =
+    resuming && resumeFrom?.requirements && resumeFrom.requirements.length > 0
+      ? structuredClone(resumeFrom.requirements)
+      : extractRequirements(goal);
+
   const state: RunState = resuming
     ? {
         ...structuredClone(resumeFrom as RunState),
@@ -91,6 +268,7 @@ export async function runAutonomous(
         error: undefined,
         rolledBack: undefined,
         checkpointId: undefined,
+        requirements: initialRequirements,
         // A milestone left mid-flight by a crash, a Stop or a Pause is runnable
         // again. Leaving it `stopped` would make `nextRunnable` skip it forever,
         // and the resumed pass would then report `done` with work still owing —
@@ -108,7 +286,8 @@ export async function runAutonomous(
         goal,
         status: 'planning',
         milestones: [],
-        startedAt: deps.now()
+        startedAt: deps.now(),
+        requirements: initialRequirements
       };
   deps.persist(state);
 
@@ -150,210 +329,138 @@ export async function runAutonomous(
     return state;
   }
 
-  let checkpointed = false;
-  let checkpointId: string | null = null;
-  let wrote = false;
-  /**
-   * Set when a turn reported that the user ended it. The halt flags are normally
-   * already set at that moment, but a run must never claim `done` because a host
-   * said "stopped" without also saying which button was pressed.
-   */
-  let endedByUser: 'cancelled' | 'paused' | null = null;
-  const unverified: string[] = [];
-  // The clock starts here, not at `state.startedAt`: a run that was stopped on
-  // Tuesday and resumed on Friday is not four days out of a time budget.
-  const clockStart = deps.now();
+  const shared: ExecutionShared = {
+    goal,
+    deps,
+    state,
+    caseInsensitive,
+    clockStart: deps.now(),
+    unverified: [],
+    checkpointId: null,
+    checkpointed: false,
+    wrote: false,
+    endedByUser: null
+  };
 
   while (userHalt(deps.ports) === null) {
     const next = deps.nextRunnable(state.milestones);
     if (!next) break;
 
-    const ceiling = workStop(deps, state.milestones, deps.now() - clockStart);
+    const ceiling = workStop(deps, state.milestones, deps.now() - shared.clockStart);
     if (ceiling) {
       state.status = 'stopped';
       state.error = `${ceiling.message} ${remaining(state.milestones)} milestone(s) did not run.`;
       break;
     }
 
-    if (!checkpointed) {
-      checkpointId = (await deps.checkpoint(goal)) ?? null;
-      state.checkpointId = checkpointId;
-      checkpointed = true;
-    }
-
-    next.status = 'running';
-    deps.ports.onEvent({ type: 'milestone:start', id: next.id });
-
-    // Snapshot which expected files already exist on disk before this milestone
-    // attempts any writes, so a no-op turn targeting an existing file is caught
-    // as an unfulfilled modification rather than passing on stale bytes.
-    const caseInsensitive = isCaseInsensitivePlatform() || /^[a-z]:/i.test(files[0] ?? '');
-    const existingSet = new Set(deps.ports.listFiles().map((file) => canonicalPathKey(file, caseInsensitive)));
-    const preExistingExpectedFiles = next.expectedFiles.filter((file) =>
-      existingSet.has(canonicalPathKey(file, caseInsensitive))
-    );
-
-    let outcome: 'passed' | 'unverified' | 'failed' | 'blocked' | 'stopped' = 'failed';
-    for (let attempt = 1; attempt <= deps.budget.maxAttemptsPerMilestone; attempt += 1) {
-      if (userHalt(deps.ports) !== null) {
-        // The unit was set running above. Leaving it `running` in a persisted
-        // state would tell the next panel that work is in flight which died
-        // here, so it is filed as stopped — or back as pending when it never
-        // got a turn at all.
-        next.status = next.attempts.length > 0 ? 'stopped' : 'pending';
-        outcome = 'stopped';
-        break;
-      }
-
-      // A turn can take minutes, so the clock and the iteration caps are read
-      // again at the point where one more turn would otherwise start.
-      const midCeiling = workStop(deps, state.milestones, deps.now() - clockStart);
-      if (midCeiling) {
-        next.status = next.attempts.length > 0 ? 'stopped' : 'pending';
-        state.status = 'stopped';
-        state.error = `${midCeiling.message} ${remaining(state.milestones)} milestone(s) did not run.`;
-        outcome = 'stopped';
-        break;
-      }
-
-      const startedAt = deps.now();
-      deps.ports.onEvent({ type: 'milestone:attempt', id: next.id, attempt });
-      const prior = previousFeedback(next);
-      // Held changes are not on disk. A repair turn must know that, or it
-      // "fixes" imports against content only the review queue has seen.
-      const heldBefore = next.pendingReview ?? [];
-      const heldNote = heldBefore.length > 0
-        ? `Files with changes held for user review (NOT on disk): ${heldBefore.join(', ')}. Their pending content is not applied — work with what is actually on disk, and do not re-propose those same edits.`
-        : '';
-      const baseFeedback = prior ? deps.feedbackFor(next, prior, lastFailures(next), next.attempts.length) : '';
-      const feedbackText = [baseFeedback, heldNote].filter(Boolean).join('\n\n') || undefined;
-      const turn = await deps.ports.runTurn({
-        goal,
-        milestone: next,
-        feedback: prior,
-        feedbackText,
-        // Without this the Stop button only lands between units, so a turn
-        // keeps streaming after the user asked for it to end.
-        signal: deps.turnSignal?.()
-      });
-      next.touchedFiles = [...new Set([...(next.touchedFiles ?? []), ...(turn.touchedFiles ?? [])])];
-      next.pendingReview = [...new Set([...(next.pendingReview ?? []), ...(turn.pendingReview ?? [])])];
-      if (turn.pendingReview && turn.pendingReview.length > 0) {
-        deps.ports.onEvent({ type: 'milestone:review', id: next.id, paths: turn.pendingReview });
-      }
-      // The verifier is told what this turn actually wrote, so a milestone
-      // that passed a clean check without touching a byte says so in its notes.
-      const report = await deps.ports.verify(next, {
-        patchesApplied: turn.patchesApplied,
-        changedFiles: turn.changedFiles,
-        preExistingExpectedFiles
-      });
-      const verdict = verdictOf(report);
-      const attemptRecord: Attempt = {
-        index: attempt,
-        reply: turn.reply,
-        patchesApplied: turn.patchesApplied,
-        patchFailures: turn.patchFailures,
-        verification: report,
-        toolCalls: turn.toolCalls,
-        // The command-failure receipt travels with the attempt: the journal
-        // and a resumed run can see the real evidence behind a failed check.
-        failureProof: turn.failureProof ?? undefined,
-        startedAt
-      };
-      next.attempts.push(attemptRecord);
-      // Patches are not the only way a turn writes: delete_file, run_command
-      // and external MCP tools mutate the workspace without applying a patch,
-      // and a run that damaged disk through them must still roll back.
-      if (turn.patchesApplied > 0 || (turn.changedFiles ?? 0) > 0) wrote = true;
-      deps.ports.onEvent({ type: 'milestone:verdict', id: next.id, verdict, report, attempt });
-      deps.persist(state);
-
-      if (turn.aborted) {
-        // A turn the user ended and a turn that died are different outcomes:
-        // one is a stop to honour, the other a failure to report and repair.
-        const byUser = turn.stopped === true || userHalt(deps.ports) !== null;
-        next.status = byUser ? 'stopped' : 'failed';
-        outcome = byUser ? 'stopped' : 'failed';
-        if (byUser) endedByUser = userHalt(deps.ports) ?? 'cancelled';
-        deps.ports.onEvent({
-          type: 'log',
-          text: `"${next.title}" ${byUser ? 'was stopped mid-turn' : 'was interrupted mid-turn'}.`
-        });
-        break;
-      }
-
-      if (verdict === 'passed') {
-        next.status = 'passed';
-        outcome = 'passed';
-        // A passed with caveats is still shown with the caveats: the verdict
-        // event alone reads as a bare "passed", so the notes (a touched-nothing
-        // milestone, a declined proof command) reach the panel log and journal.
-        if (report.notes.length > 0) {
-          deps.ports.onEvent({
-            type: 'log',
-            text: `"${next.title}" passed (${report.notes.join('; ')}).`
-          });
-        }
-        break;
-      }
-
-      if (verdict === 'unverified') {
-        // The plan advances — nothing was disproved — but the milestone is not
-        // recorded as passed. `unverified` is its own status all the way into the
-        // panel, the summary and a resumed run, because a step nobody proved is
-        // not a step that succeeded.
-        next.status = 'unverified';
-        unverified.push(`${next.title}: ${report.notes.join('; ') || 'no checker could run'}`);
-        outcome = 'unverified';
-        deps.ports.onEvent({
-          type: 'log',
-          text: `"${next.title}" was not verified (${report.notes.join('; ') || 'no checker could run'}).`
-        });
-        break;
-      }
-
-      // A failed check whose cause sits in the review queue cannot be repaired
-      // by another turn: the bytes are not on disk and only the user can
-      // accept them. Pause with the work intact instead of burning the attempt
-      // ceiling and then rolling back everything the run already landed.
-      const held = next.pendingReview ?? [];
-      if (held.length > 0 && reviewExplainsFailure(next, report, held)) {
-        next.status = 'stopped';
-        outcome = 'stopped';
-        state.status = 'paused';
-        state.error = `"${next.title}" is waiting for your review: ${held.join(', ')}. Accept the held changes, then resume the run.`;
-        deps.ports.onEvent({
-          type: 'log',
-          text: `"${next.title}" paused — ${held.length} file(s) await review before its check can pass.`
-        });
-        deps.ports.onEvent({ type: 'milestone:done', id: next.id, status: 'stopped' });
-        break;
-      }
-
-      if (attempt >= deps.budget.maxAttemptsPerMilestone) {
-        next.status = 'failed';
-        outcome = 'failed';
-        break;
-      }
-
-      // The next attempt composes its brief from this report at the top of the
-      // loop, so nothing is re-derived here.
-      deps.ports.onEvent({
-        type: 'log',
-        text: `"${next.title}" failed check ${attempt}/${deps.budget.maxAttemptsPerMilestone}.`
-      });
-    }
-
-    if (outcome === 'stopped') {
-      deps.persist(state);
-      break;
-    }
-    deps.ports.onEvent({ type: 'milestone:done', id: next.id, status: next.status });
-    deps.persist(state);
+    const outcome = await executeMilestoneUnit(next, shared);
+    if (outcome === 'stopped') break;
   }
 
-  const halt = userHalt(deps.ports) ?? endedByUser;
+  // Requirement coverage audit + bounded catch-up pass for multi-part mega-prompts.
+  state.requirements = auditRequirementCoverage(
+    state.requirements ?? extractRequirements(goal),
+    state.milestones,
+    state.milestones.flatMap((m) => m.touchedFiles ?? []),
+    caseInsensitive
+  );
+
+  if (
+    state.status === 'running' &&
+    userHalt(deps.ports) === null &&
+    shared.endedByUser === null &&
+    state.requirements.length > 1 &&
+    state.milestones.every((m) => m.status !== 'failed' && m.status !== 'blocked')
+  ) {
+    const pendingReqs = state.requirements.filter((req) => req.status === 'pending');
+    if (
+      pendingReqs.length > 0 &&
+      !workStop(deps, state.milestones, deps.now() - shared.clockStart)
+    ) {
+      const catchupTargets = dedupePaths(
+        pendingReqs.flatMap((req) => req.explicitPaths),
+        caseInsensitive
+      );
+      const catchup: Milestone = {
+        id: uniqueDerivedId('m-catchup', state.milestones),
+        title: `Cover remaining requirement(s): ${pendingReqs.map((r) => r.id).join(', ')}`,
+        instruction: [
+          'Complete and verify all remaining prompt requirements listed below that were not yet evidenced by touched files:',
+          ...pendingReqs.map((r) => `- [${r.id}] ${r.text}${r.evidence ? ` (${r.evidence})` : ''}`)
+        ].join('\n'),
+        expectedFiles: catchupTargets,
+        dependsOn: [],
+        status: 'pending',
+        attempts: []
+      };
+      deps.ports.onEvent({
+        type: 'log',
+        text: `Requirement coverage audit found ${pendingReqs.length} pending requirement(s); running targeted catch-up.`
+      });
+      state.milestones.push(catchup);
+      await executeMilestoneUnit(catchup, shared, {
+        maxAttempts: Math.min(2, deps.budget.maxAttemptsPerMilestone)
+      });
+      state.requirements = auditRequirementCoverage(
+        state.requirements,
+        state.milestones,
+        state.milestones.flatMap((m) => m.touchedFiles ?? []),
+        caseInsensitive
+      );
+    }
+  }
+
+  // Workspace-wide verification gate: catches cross-file breakage outside milestone lists.
+  if (
+    state.status === 'running' &&
+    userHalt(deps.ports) === null &&
+    shared.endedByUser === null &&
+    typeof deps.ports.verifyWorkspace === 'function' &&
+    state.milestones.every((m) => m.status !== 'failed' && m.status !== 'blocked')
+  ) {
+    let wsReport = await deps.ports.verifyWorkspace();
+    if (wsReport.verdict === 'failed') {
+      const errorFiles = dedupePaths(
+        wsReport.diagnostics.filter((d) => d.severity === 'error').map((d) => d.path),
+        caseInsensitive
+      );
+      if (!workStop(deps, state.milestones, deps.now() - shared.clockStart)) {
+        const repairMilestone: Milestone = {
+          id: uniqueDerivedId('m-ws-repair', state.milestones),
+          title: 'Repair workspace-wide verification errors',
+          instruction: [
+            'Final workspace-wide verification detected errors outside individual milestones.',
+            'Fix every diagnostic listed below without regressing completed work:',
+            ...wsReport.diagnostics
+              .filter((d) => d.severity === 'error')
+              .slice(0, 12)
+              .map((d) => `- ${d.path}:${d.line}:${d.column} ${d.message}`)
+          ].join('\n'),
+          expectedFiles: errorFiles,
+          dependsOn: [],
+          status: 'pending',
+          attempts: []
+        };
+        deps.ports.onEvent({
+          type: 'log',
+          text: `Workspace verification found error(s); running repair pass across ${errorFiles.join(', ') || 'affected files'}.`
+        });
+        state.milestones.push(repairMilestone);
+        await executeMilestoneUnit(repairMilestone, shared, {
+          maxAttempts: Math.min(2, deps.budget.maxAttemptsPerMilestone),
+          initialReport: wsReport
+        });
+        wsReport = await deps.ports.verifyWorkspace();
+      }
+      if (wsReport.verdict === 'failed' && state.status === 'running') {
+        state.status = 'failed';
+        state.error = wsReport.notes[0] ?? 'Workspace-wide verification failed after milestone completion.';
+        deps.ports.onEvent({ type: 'log', text: state.error });
+      }
+    }
+  }
+
+  const halt = userHalt(deps.ports) ?? shared.endedByUser;
   if (halt && state.status === 'running') {
     state.status = halt;
     state.error = `${halt === 'paused' ? 'Paused' : 'Cancelled'} with ${remaining(state.milestones)} milestone(s) left.`;
@@ -368,26 +475,34 @@ export async function runAutonomous(
 
   if (state.status === 'running') {
     const unresolved = state.milestones.filter((m) => m.status === 'failed' || m.status === 'blocked');
-    // Counted from the milestone list, not the local log, so a run that resumes
-    // still reports the steps an earlier pass left unproven.
-    // An unverified step only raises the alarm when it owned files: a read-only
-    // milestone has nothing to prove, and flagging every one of them would make
-    // the warning that matters — an unproven edit — noise.
     const unproven = state.milestones.filter((m) => m.status === 'unverified' && m.expectedFiles.length > 0);
     state.status = unresolved.length > 0 ? 'failed' : 'done';
     if (unresolved.length > 0) {
       state.error = `${unresolved.length} of ${state.milestones.length} milestones did not complete.`;
     } else if (unproven.length > 0) {
-      state.error = `${unproven.length} of ${state.milestones.length} milestones finished unverified — nothing checked them, so they are not claimed as passed.${unverified.length > 0 ? ` (${unverified.join('; ')}).` : ''}`;
+      state.error = `${unproven.length} of ${state.milestones.length} milestones finished unverified — nothing checked them, so they are not claimed as passed.${shared.unverified.length > 0 ? ` (${shared.unverified.join('; ')}).` : ''}`;
+    } else if (state.requirements.length > 1) {
+      const stillPending = state.requirements.filter((r) => r.status === 'pending');
+      if (stillPending.length > 0) {
+        state.error = `${stillPending.length} of ${state.requirements.length} prompt requirement(s) lack completion evidence (${stillPending.map((r) => r.id).join(', ')}).`;
+      }
     }
   }
+
+  // Final requirement audit across settled milestones (captures catch-up/repair touches too).
+  state.requirements = auditRequirementCoverage(
+    state.requirements,
+    state.milestones,
+    state.milestones.flatMap((m) => m.touchedFiles ?? []),
+    caseInsensitive
+  );
 
   // An unrecoverable failure must not leave a half-applied workspace behind.
   // Only runs that actually wrote, and only the failure state (not a user stop),
   // are rolled back; restoring the checkpoint is the transactional-safe outcome.
-  if (state.status === 'failed' && wrote && checkpointId && deps.rollback) {
+  if (state.status === 'failed' && shared.wrote && shared.checkpointId && deps.rollback) {
     try {
-      state.rolledBack = await deps.rollback(checkpointId);
+      state.rolledBack = await deps.rollback(shared.checkpointId);
     } catch {
       state.rolledBack = false;
     }

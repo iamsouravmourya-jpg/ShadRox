@@ -139,7 +139,7 @@ export default function ReleasesPage() {
                   <em className="font-normal italic text-[var(--ac)]">rock-solid on Windows.</em>
                 </h2>
                 <p className="mt-4 max-w-[680px] text-sm leading-7 text-[var(--mut)]">
-                  Building on the v0.1.3 bundled Node debugger and offline dead-code scanner, v{APP_VERSION} hardens
+                  Building on the v0.1.3 bundled Node debugger, v{APP_VERSION} hardens
                   custom endpoint SSRF protection, sandboxes popup windows, guarantees safe Windows NTFS rewind &amp;
                   process-tree cleanup, decomposes the core desktop &amp; workspace architecture, and refines autonomous
                   milestone verification — still free, still BYOK, with zero billing.

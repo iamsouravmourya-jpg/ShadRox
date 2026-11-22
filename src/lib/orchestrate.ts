@@ -43,13 +43,31 @@ const AREA_WORDS: Array<[string, RegExp]> = [
   ['docs', /\bdocs?\b|\bdocumentation\b/i]
 ];
 const ACTION =
-  /\b(implement|build|add|create|refactor|migrate|upgrade|integrate|rewrite|convert|scaffold|wire|connect|fix|redesign|restructure|ship|deliver)\b/i;
+  /\b(implement|build|add|create|refactor|migrate|upgrade|integrate|rewrite|convert|scaffold|wire|connect|fix|redesign|restructure|ship|deliver|decompose|harden|split)\b/i;
 const QUESTION_START = /^(what|why|how|where|when|who|which|explain|describe|show|tell|is|are|does|do|can)\b/i;
 const NO_EDIT = /\b(just (?:answer|explain|tell)|don'?t (?:edit|change|modify|touch)|no (?:edits?|changes?|code changes?)|read[-\s]?only)\b/i;
-const BROAD_SCOPE = /\b(across|every|all|whole|entire|project[-\s]?wide|codebase|multiple files)\b/i;
+const BROAD_SCOPE = /\b(across|every|all|whole|entire|project[-\s]?wide|codebase|multiple files|monolith|decompose|audit\s+report)\b/i;
+const EXPLICIT_PATH_COUNT_RE =
+  /(?:^|[\s`'"(\[,])((?:\.\.?\/)?(?:[a-zA-Z0-9._-]+\/)+[a-zA-Z0-9._-]+\.[a-zA-Z0-9]{1,10})(?=$|[\s`'")\],:;?!])/g;
+const CROSS_CUTTING_RE =
+  /\b(?:decompose|modulariz\w+|monolith|security\s+hardening|version\s+bump|cross[-\s]?cutting|workstream|subsystem|architecture\s+upgrade|audit\s+fix)\b/i;
 
 function areasIn(prompt: string): string[] {
   return AREA_WORDS.filter(([, pattern]) => pattern.test(prompt)).map(([name]) => name);
+}
+
+function explicitPathCount(prompt: string): number {
+  const seen = new Set<string>();
+  EXPLICIT_PATH_COUNT_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = EXPLICIT_PATH_COUNT_RE.exec(prompt)) !== null) {
+    seen.add(match[1].replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase());
+  }
+  return seen.size;
+}
+
+function structuredItemCount(prompt: string): number {
+  return (prompt.match(/(?:^|\n)\s*(?:\d+[.)]\s+|#{1,4}\s+|[-*•]\s+)/g) ?? []).length;
 }
 
 function chat(): OrchestrationDecision {
@@ -71,9 +89,17 @@ export function decideOrchestration(input: OrchestrationInput): OrchestrationDec
   const words = prompt.split(/\s+/).length;
   const areas = areasIn(prompt);
   const action = ACTION.test(prompt);
-  const broad = BROAD_SCOPE.test(prompt);
+  const explicitPaths = explicitPathCount(prompt);
+  const structuredItems = structuredItemCount(prompt);
+  const broad = BROAD_SCOPE.test(prompt) || explicitPaths >= 4 || structuredItems >= 4;
+  const crossCutting = CROSS_CUTTING_RE.test(prompt) || explicitPaths >= 6 || structuredItems >= 5;
+  const explicitTeam = TEAM_WORDS.test(prompt);
 
-  const wantsTeam = TEAM_WORDS.test(prompt) || (action && areas.length >= 3 && words >= 18);
+  // Explicit team wording always goes to the team. Otherwise, multi-area work
+  // goes to the team ONLY when it is not a cross-cutting mega-refactor spanning
+  // 6+ files or 5+ numbered/bulleted workstreams (which autonomous runs handle
+  // cleanly without 4-role ownership collisions).
+  const wantsTeam = explicitTeam || (action && areas.length >= 3 && words >= 18 && !crossCutting);
   if (wantsTeam) {
     return {
       kind: 'team',

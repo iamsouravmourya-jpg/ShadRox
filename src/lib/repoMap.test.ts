@@ -176,3 +176,14 @@ test('a precomputed signature index produces the same map', () => {
     buildSignatureMap(files, { tokenBudget: 500, query: 'App' })
   );
 });
+
+test('large personalized files and >200k context windows scale signature caps and token budgets cleanly', () => {
+  const monolith = file('src/App.tsx', Array.from({ length: 260 }, (_, i) => `export function fn${i}() {}\n`).join(''));
+  const map = buildSignatureMap([monolith], { tokenBudget: 4_000, personalization: ['src/App.tsx'] });
+  const shownCount = map.split('\n').filter((line) => line.includes('export function fn')).length;
+  assert.ok(shownCount > 8 && shownCount <= 36, `expected >8 and <=36 signatures for 260-line file, got ${shownCount}`);
+
+  assert.equal(repoMapBudgetFor(200_000), 4_096);
+  const oneMillion = repoMapBudgetFor(1_048_576);
+  assert.ok(oneMillion > 4_096 && oneMillion <= 8_192, `got ${oneMillion}`);
+});

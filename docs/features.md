@@ -1,6 +1,6 @@
 # Features
 
-What ShadRox v0.1.2 actually does today, area by area. Beta areas are marked; review what they produce. The agent's tool surface and safety model have their own page: [agent-tools.md](./agent-tools.md).
+What ShadRox v0.1.4 actually does today, area by area. Beta areas are marked; review what they produce. The agent's tool surface and safety model have their own page: [agent-tools.md](./agent-tools.md).
 
 ## Editor
 
@@ -115,7 +115,7 @@ These records stay local to the workspace/browser profile.
 
 Architecture in one paragraph: the Electron main process (`electron/main.cjs` and friends) owns workspace consent, command risk classification and approval, the preview runtime, terminals, Git, MCP, the proof ledger, and the updater. The React renderer talks to it over a context-isolated preload bridge, with a renderer CSP applied only to the app origin (the preview iframe is allowed its own loopback dev-server origins). A local Express API layer (`api/`) handles provider calls (`/ai/chat`, `/ai/fim`, `/ai/commit-message`), BYOK validation, and GitHub operations. Prompts go from your machine to your configured provider; Supabase receives only account profile fields.
 
-Built on open-source projects including Electron, React, CodeMirror, xterm.js, Vite, Tailwind CSS, and Supabase; third-party dependencies remain subject to their own licenses.
+ShadRox is proprietary software owned by ShadRox and founder Sourav Maurya, built on third-party libraries including Electron, React, CodeMirror, xterm.js, Vite, Tailwind CSS, and Supabase; third-party dependencies remain subject to their own licenses.
 
 <details>
 <summary>Repository layout</summary>

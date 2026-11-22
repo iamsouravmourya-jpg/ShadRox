@@ -6,7 +6,7 @@ Common problems on the Windows beta, and where to look when something fails.
 
 The Windows installer is **not code-signed**, so SmartScreen may show "Windows protected your PC". This is expected for the beta.
 
-1. Verify the download came from `https://github.com/iamsouravmourya-jpg/ShadRox/releases` (the direct asset is `ShadRox-v0.1.2-Setup.exe`).
+1. Verify the download came from `https://github.com/iamsouravmourya-jpg/ShadRox/releases` (the direct asset is `ShadRox-v0.1.4-Setup.exe`).
 2. Choose **More info → Run anyway**.
 
 Do not run installers from mirrors or re-uploads you cannot verify.

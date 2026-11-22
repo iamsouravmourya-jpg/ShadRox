@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { APP_VERSION, GITHUB_REPO } from '@/lib/download'
+import { APP_VERSION, GITHUB_REPO, RELEASES_URL } from '@/lib/download'
 import { Logo } from './navbar'
 
 const cols = [
@@ -34,11 +34,11 @@ const cols = [
   {
     title: 'Project',
     links: [
-      { label: 'About the maker', href: '/about' },
-      { label: 'Contributors',    href: '/contributors' },
-      { label: 'GitHub repo',     href: GITHUB_REPO, external: true },
+      { label: 'About the founder', href: '/about' },
+      { label: 'Contributors',      href: '/contributors' },
+      { label: 'GitHub releases',   href: RELEASES_URL, external: true },
       { label: 'LinkedIn (company)', href: 'https://www.linkedin.com/company/shadrox', external: true },
-      { label: 'shadrox.cyou',    href: 'https://www.shadrox.cyou', external: true },
+      { label: 'shadrox.cyou',      href: 'https://www.shadrox.cyou', external: true },
     ],
   },
 ]
@@ -57,7 +57,7 @@ export function Footer() {
               preview, Git tools and terminal — in one app.
             </p>
             <p className="mt-4 text-xs leading-5 text-[var(--mut)]">
-              Built solo by{' '}
+              Founded &amp; built by{' '}
               <Link
                 href="/about"
                 className="underline underline-offset-2 transition-colors hover:text-[var(--ac)]"
@@ -101,7 +101,7 @@ export function Footer() {
 
         {/* Bottom bar */}
         <div className="mt-12 flex flex-col gap-3 border-t border-[var(--line)] pt-7 text-xs text-[var(--mut)] sm:flex-row sm:items-center sm:justify-between">
-          <span>© 2026 Sourav Maurya. Open source under the AGPL-3.0 license.</span>
+          <span>© 2026 ShadRox · Founded &amp; owned by Sourav Maurya. All rights reserved.</span>
           <span className="shrink-0">Built with Electron, React, CodeMirror &amp; Supabase · Made in India 🇮🇳</span>
         </div>
       </div>

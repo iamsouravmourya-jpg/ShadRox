@@ -12,7 +12,7 @@ import {
   observationAnchors,
   transcriptOf
 } from './compaction/openhands';
-import { TRIM_ORDER, pairGroupsFromAnchors, trimStageNote, trimStageOfMessage, type TrimStage } from './compaction/pairOrder';
+import { TRIM_ORDER, isWorkingMemoryText, pairGroupsFromAnchors, trimStageNote, trimStageOfMessage, type TrimStage } from './compaction/pairOrder';
 
 /**
  * LLM-free history compaction: the step that runs before trimMessagesToBudget().
@@ -494,6 +494,16 @@ export function compactHistory(
         origin: index,
         protected: true,
         edits: messageCarriesEdits(message, options.patchedMessageIds),
+        digest: false
+      });
+      return;
+    }
+    if (isWorkingMemoryText(message.content)) {
+      kept.push({
+        message,
+        origin: index,
+        protected: true,
+        edits: false,
         digest: false
       });
       return;

@@ -8,7 +8,7 @@ const stats = [
   {
     value: 0,
     lead: true,
-    label: 'project files synced to cloud storage — files and dead-code scans run on your disk',
+    label: 'project files synced to cloud storage — your workspace stays on your disk',
   },
   { value: 3, label: 'AI provider families: Gemini, Groq, OpenAI-compatible (Ollama & LM Studio)' },
   { value: 5, label: 'autonomous team roles with explicit target validation and contract-aware repair' },

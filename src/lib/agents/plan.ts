@@ -14,7 +14,12 @@
  */
 
 import { findCycles } from '../autonomy/dag';
-import { extractJsonArray, isSafeRelativePath } from '../autonomy/plan';
+import {
+  extractJsonArray,
+  isSafeRelativePath,
+  selectPrioritizedWorkspaceFiles
+} from '../autonomy/plan';
+import { extractExplicitPathsFromText, extractRequirements, formatRequirementChecklistForPrompt } from '../autonomy/requirements';
 import type { PlanError } from '../autonomy/types';
 import { repairCoordinatorPlanJson } from './coordinatorResilience';
 import { SPECIALIST_ROLES, isSpecialistRole } from './roles';
@@ -195,6 +200,38 @@ export function validateTeamPlan(tasks: TeamTask[], budget: TeamBudget): PlanErr
   return errors;
 }
 
+/**
+ * Scales task, turn, tool-call and wall-clock ceilings proportionally when
+ * a team prompt spans many requirements or files (while never shrinking below `base`).
+ */
+export function computeElasticTeamBudget(goal: string, base: TeamBudget): TeamBudget {
+  const requirements = extractRequirements(goal);
+  const explicitPaths = extractExplicitPathsFromText(goal).length;
+  const words = goal.trim().split(/\s+/).filter(Boolean).length;
+  const complexityScore = Math.max(
+    requirements.length,
+    Math.ceil(explicitPaths / 1.5),
+    words >= 350 ? 10 : words >= 180 ? 7 : 1
+  );
+
+  if (complexityScore <= 4 && explicitPaths <= 4) {
+    return base;
+  }
+
+  const maxTasks = Math.min(16, Math.max(base.maxTasks, Math.min(14, complexityScore + 2)));
+  const maxTurns = Math.min(64, Math.max(base.maxTurns, maxTasks * 3 + 4));
+  const maxToolCalls = Math.max(base.maxToolCalls, maxTurns * 200);
+  const maxWallClockMs = Math.max(base.maxWallClockMs, 45 * 60 * 1000);
+
+  return {
+    ...base,
+    maxTasks,
+    maxTurns,
+    maxToolCalls,
+    maxWallClockMs
+  };
+}
+
 /** The instruction handed to the model that must return the task JSON. */
 export function buildTeamPlannerPrompt(
   goal: string,
@@ -202,14 +239,21 @@ export function buildTeamPlannerPrompt(
   budget: TeamBudget,
   workspaceManifest?: string
 ): string {
-  const fileList = files.slice(0, 400).join('\n') || '(the workspace has no files yet)';
+  const inventory = selectPrioritizedWorkspaceFiles(goal, files, 800);
+  const fileList = inventory.join('\n') || '(the workspace has no files yet)';
   const roster = SPECIALIST_ROLES.join(', ');
+  const checklist = formatRequirementChecklistForPrompt(extractRequirements(goal));
   const sections = [
     'You are the coordinator of a small local engineering team working inside one project folder.',
     'Split the goal below into an ordered list of tasks and return them as JSON.',
     '',
     'GOAL:',
-    goal,
+    goal
+  ];
+  if (checklist) {
+    sections.push('', checklist);
+  }
+  sections.push(
     '',
     `THE TEAM — assign every task to exactly one of: ${roster}.`,
     'frontend owns UI and client state; backend owns APIs, data and config;',
@@ -225,7 +269,7 @@ export function buildTeamPlannerPrompt(
     '',
     'Rules: ids are unique; dependsOn only references ids in this array; every path is repo-relative',
     '(no leading slash, no ".."); omit verifyCommand when there is nothing to run; do not wrap the array in prose.'
-  ];
+  );
   if (workspaceManifest && workspaceManifest.trim()) {
     sections.push('', workspaceManifest.trim());
   }
@@ -235,7 +279,9 @@ export function buildTeamPlannerPrompt(
 
 /**
  * Builds the `planTeam` dep from the app's ask-plan function. The budget arrives
- * per call so the prompt always reflects the cap actually in force.
+ * per call so the prompt always reflects the cap actually in force. Automatically
+ * runs up to 2 validation self-repair retries when the coordinator returns
+ * invalid JSON or plan validation errors.
  */
 export function createTeamPlan(
   askPlan: (prompt: string) => Promise<string>,
@@ -243,7 +289,36 @@ export function createTeamPlan(
 ) {
   return async (goal: string, files: string[], budget: TeamBudget): Promise<TeamPlan> => {
     const manifest = (await getWorkspaceManifest?.()) ?? undefined;
-    const reply = await askPlan(buildTeamPlannerPrompt(goal, files, budget, manifest));
-    return parseTeamPlan(reply);
+    const basePrompt = buildTeamPlannerPrompt(goal, files, budget, manifest);
+    let prompt = basePrompt;
+    let lastPlan: TeamPlan = { tasks: [], errors: [] };
+
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const reply = await askPlan(prompt);
+      const parsed = parseTeamPlan(reply);
+      if (parsed.errors.length === 0) {
+        const validationErrors = validateTeamPlan(parsed.tasks, budget);
+        if (validationErrors.length === 0) {
+          return parsed;
+        }
+        lastPlan = { tasks: parsed.tasks, errors: validationErrors };
+        prompt = [
+          basePrompt,
+          '',
+          'PREVIOUS TEAM PLAN FAILED VALIDATION. Fix every error below and return ONLY the corrected JSON array:',
+          ...validationErrors.map((e) => `- ${e.reason}: ${e.message}`)
+        ].join('\n');
+      } else {
+        lastPlan = parsed;
+        prompt = [
+          basePrompt,
+          '',
+          'PREVIOUS REPLY COULD NOT BE PARSED AS A TASK JSON ARRAY. Fix these errors and return ONLY valid JSON:',
+          ...parsed.errors.map((e) => `- ${e.reason}: ${e.message}`)
+        ].join('\n');
+      }
+    }
+
+    return lastPlan;
   };
 }

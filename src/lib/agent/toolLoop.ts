@@ -15,10 +15,11 @@ import {
   noteVerification, needsVerification, satisfyingVerification, verificationDemand, type AgentTurnState
 } from './turnState';
 import { detectScaffoldIntent, detectAddPageIntent, scaffoldNudge, addPageNudge, previewNudge } from './scaffold';
-import { compactToolObservations } from './loopContext';
+import { compactToolObservations, upsertWorkingMemory, type WorkingMemoryState } from './loopContext';
 import { createFailureRepeatTracker, failureNudge, failureBlockMessage } from './stuck';
 import { ensureTurnCheckpoint } from './checkpoints';
 import { isVerifyCommand } from './verifyProject';
+import { confinePatches, isInsideWorkspaceRoot } from '../autonomy/confinement';
 
 /**
  * Runs the tool rounds of one assistant turn.
@@ -132,8 +133,12 @@ export interface ToolLoopResult {
   finish?: { summary: string; blocked: string | null };
   /** Latest captured command failure, so the chat card can show it. */
   failureProof?: FailureReceipt | null;
-  /** Successful workspace-mutating calls across the turn (delete_file, run_command, external MCP). */
+  /** Successful workspace-mutating calls across the turn (write_file, edit_file, apply_patch, delete_file, run_command, external MCP). */
   changedFiles: number;
+  /** Exact normalized paths mutated on disk by write tools during the loop. */
+  changedPaths?: string[];
+  /** Exact normalized paths created on disk by write tools during the loop. */
+  createdPaths?: string[];
   /** Why the loop stopped; always set by this implementation. */
   stopReason?: ToolLoopStopReason;
   /** Present on hard stops (cap, stuck, abort): the data a Continue button resumes from. */
@@ -169,6 +174,12 @@ export interface ToolLoopInput {
   onAttempt?: (record: AttemptRecord) => void;
   /** Model-scaled character budget for mid-loop observation compaction. */
   loopContextBudgetChars?: number;
+  /** When set, confines write-effect tools to declared paths plus brand-new in-workspace files. */
+  expectedFiles?: string[];
+  /** Probes whether an unlisted path already exists on disk for write confinement. */
+  existsOnDisk?: (path: string) => Promise<boolean>;
+  /** Pending requirements carried into the pinned working-memory scratchpad. */
+  initialRequirements?: string[];
 }
 
 /* ------------------------------------------------------------------ *
@@ -199,6 +210,21 @@ function pathsOf(call: ToolCall): string[] {
     for (const entry of call.args.paths) {
       const path = normalizePath(entry);
       if (path && !paths.includes(path)) paths.push(path);
+    }
+  }
+  return paths;
+}
+
+/** All paths a write-effect call targets, including apply_patch hunks/patches. */
+function writePathsOf(call: ToolCall): string[] {
+  const paths = pathsOf(call);
+  for (const field of ['patches', 'hunks'] as const) {
+    const raw = call.args[field];
+    if (Array.isArray(raw)) {
+      for (const hunk of raw) {
+        const path = normalizePath((hunk as Record<string, unknown> | null)?.path);
+        if (path && !paths.includes(path)) paths.push(path);
+      }
     }
   }
   return paths;
@@ -470,13 +496,21 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   let wrapNudgeUsed = false;
   let consecutiveParseFailures = 0;
   let changedFilesTotal = 0;
+  const changedPathsSet = new Set<string>();
+  const createdPathsSet = new Set<string>();
+  const workingMemory: WorkingMemoryState = {
+    inspectedRanges: [],
+    completedEdits: [],
+    pendingRequirements: input.initialRequirements ? [...input.initialRequirements] : [],
+    latestDiagnostics: []
+  };
   let finished: { summary: string; blocked: string | null } | null = null;
   let failureProof: FailureReceipt | null = null;
 
   // Every return path goes through stamp, so the turn's mutation total, the
   // stop reason, the resumable summary and the recorder's stop event are
   // attached even on early exits and forceFinal.
-  const stamp = (result: Omit<ToolLoopResult, 'changedFiles' | 'stopReason' | 'resume'> & { stopReason: ToolLoopStopReason }): ToolLoopResult => {
+  const stamp = (result: Omit<ToolLoopResult, 'changedFiles' | 'changedPaths' | 'createdPaths' | 'stopReason' | 'resume'> & { stopReason: ToolLoopStopReason }): ToolLoopResult => {
     if (input.workspaceId) endTurn(input.workspaceId);
     const pendingIntent = (plan.find((item) => item.status !== 'done' && item.status !== 'blocked')?.subject ?? latestUserAsk).slice(0, 300);
     const resume: ToolLoopResumeState | undefined = RESUMABLE_STOPS.has(result.stopReason)
@@ -499,6 +533,8 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     return {
       ...result,
       changedFiles: changedFilesTotal,
+      changedPaths: [...changedPathsSet],
+      createdPaths: [...createdPathsSet],
       ...(resume ? { resume } : {}),
       ...(failureProof ? { failureProof } : {})
     };
@@ -630,6 +666,14 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
       messages = compacted.messages;
       flightRecorder.record('context_assembled', { compacted: compacted.compacted, chars: messages.reduce((total, entry) => total + entry.content.length, 0) }, runId);
     }
+    const hasMemoryFacts =
+      workingMemory.inspectedRanges.length > 0 ||
+      workingMemory.completedEdits.length > 0 ||
+      workingMemory.pendingRequirements.length > 0 ||
+      workingMemory.latestDiagnostics.length > 0;
+    if ((compacted.compacted > 0 || round >= 4) && hasMemoryFacts) {
+      messages = upsertWorkingMemory(messages, workingMemory);
+    }
     // ONE soft note at 80% of the budget, before the next stream sees it.
     if (!budgetNoteUsed && round >= softThreshold && round < maxRounds) {
       budgetNoteUsed = true;
@@ -671,13 +715,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
       for (const block of blocks) {
         for (const call of block.calls) {
           if (classifyToolEffect(call.name) === 'write') {
-            for (const path of pathsOf(call)) writePaths.add(path);
-          }
-          if (call.name === 'apply_patch' && Array.isArray(call.args.patches)) {
-            for (const hunk of call.args.patches) {
-              const path = normalizePath((hunk as Record<string, unknown> | null)?.path);
-              if (path) writePaths.add(path);
-            }
+            for (const path of writePathsOf(call)) writePaths.add(path);
           }
         }
       }
@@ -816,11 +854,51 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
 
     const runnable: number[] = [];
     const outcomes: ToolOutcome[] = usable.map(() => ({ ok: false, content: '' }));
+    const confinementExistence = new Map<string, boolean>();
+    const declaredExpected = new Set((input.expectedFiles ?? []).map((p) => normalizePath(p) ?? p));
     // Control calls run in order; a finish first passes the async gates (scaffold,
     // add-page, preview, forced-verify) before the plan guard and structured render.
     for (let index = 0; index < usable.length; index += 1) {
       const call = usable[index];
       if (!isControlTool(call.name)) {
+        if (input.expectedFiles !== undefined && classifyToolEffect(call.name) === 'write') {
+          const targetPaths = writePathsOf(call);
+          if (targetPaths.length > 0) {
+            if (input.expectedFiles.length > 0) {
+              for (const target of targetPaths) {
+                if (declaredExpected.has(target) || confinementExistence.has(target)) continue;
+                if (!isInsideWorkspaceRoot(target)) continue;
+                if (input.existsOnDisk) {
+                  confinementExistence.set(target, await input.existsOnDisk(target));
+                } else {
+                  const desktop = getDesktopBridge();
+                  if (desktop && input.workspaceId) {
+                    try {
+                      await desktop.readFile(input.workspaceId, target);
+                      confinementExistence.set(target, true);
+                    } catch {
+                      confinementExistence.set(target, false);
+                    }
+                  }
+                }
+              }
+            }
+            const confined = confinePatches(
+              targetPaths.map((p) => ({ path: p })),
+              input.expectedFiles,
+              { fileExists: (p) => confinementExistence.get(p) ?? true }
+            );
+            if (confined.refused.length > 0) {
+              outcomes[index] = {
+                ok: false,
+                content: '',
+                error: confined.refused.join(' '),
+                refused: true
+              };
+              continue;
+            }
+          }
+        }
         runnable.push(index);
         continue;
       }
@@ -947,6 +1025,10 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         }
       }
       if (!outcome.ok || isControlTool(call.name)) {
+        if (!outcome.ok && !outcome.refused && (classifyToolEffect(call.name) === 'write' || call.name === 'verify' || call.name === 'run_command')) {
+          const line = (outcome.error ?? outcome.content).split('\n')[0]?.trim();
+          if (line) workingMemory.latestDiagnostics = [...workingMemory.latestDiagnostics.slice(-9), `${call.name}: ${line}`];
+        }
         if (call.name === 'run_command' && outcome.refused && /not approved|blocked|blacklist|not allowed/i.test(outcome.error ?? '')) {
           flightRecorder.record('command_decision', {
             decision: 'deny',
@@ -954,13 +1036,13 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
             tier: 'execute'
           }, runId);
         }
-        if ((call.name === 'write_file' || call.name === 'edit_file') && /^Not written —/.test(outcome.error ?? '')) {
+        if ((call.name === 'write_file' || call.name === 'edit_file' || call.name === 'apply_patch') && /^Not written —/.test(outcome.error ?? '')) {
           flightRecorder.record('verify_result', { ok: false, stage: 'pre-apply', path: normalizePath(call.args.path) }, runId);
         }
         return;
       }
       const effect = classifyToolEffect(call.name);
-      const paths = pathsOf(call);
+      const paths = effect === 'write' ? writePathsOf(call) : pathsOf(call);
       // terminal_answer only submits prose to a waiting prompt; verify runs the
       // project's checks but is a check, not a mutation; preview_control status is
       // read-only inspection — counting it would stale the very verify finishGate
@@ -979,9 +1061,29 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
           // a kill/restart loop that keeps failing identically would never block.
           failureTracker.reset();
         }
+        const effectiveChanged = outcome.changedPaths && outcome.changedPaths.length > 0 ? outcome.changedPaths : paths;
+        const effectiveCreated = outcome.createdPaths ?? [];
+        if (effect === 'write') {
+          for (const p of effectiveChanged) {
+            const norm = normalizePath(p) ?? p;
+            changedPathsSet.add(norm);
+            workingMemory.completedEdits.push({ path: norm, op: call.name });
+          }
+          for (const p of effectiveCreated) {
+            const norm = normalizePath(p) ?? p;
+            createdPathsSet.add(norm);
+            changedPathsSet.add(norm);
+          }
+          if (/Diagnostics after edit/.test(outcome.content)) {
+            const diagLines = outcome.content.split('\n').slice(1).filter((l) => l.trim()).slice(0, 4);
+            workingMemory.latestDiagnostics = diagLines;
+          } else if (/No compiler problems in this file/.test(outcome.content)) {
+            workingMemory.latestDiagnostics = [];
+          }
+        }
         if (turn) {
-          if (effect === 'write' && outcome.changedPaths && outcome.changedPaths.length > 0) {
-            noteWrite(turn, outcome.changedPaths, outcome.createdPaths ?? []);
+          if (effect === 'write' && effectiveChanged.length > 0) {
+            noteWrite(turn, effectiveChanged, effectiveCreated);
           } else {
             noteUnknownWrite(turn);
           }
@@ -995,15 +1097,22 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
           // can tell a genuinely unchanged entry from a stale one.
           pathHashes.set(paths[0], hashText(call.args.content));
         } else {
-          for (const path of paths) pathHashes.delete(path);
+          for (const path of effectiveChanged) pathHashes.delete(normalizePath(path) ?? path);
         }
-        for (const path of paths) invalidatePath(path);
+        for (const path of effectiveChanged) invalidatePath(normalizePath(path) ?? path);
         if (effect === 'write') {
           flightRecorder.record('edit_applied', {
-            files: paths,
+            files: effectiveChanged,
             match: outcome.content.split(' ')[0] ?? 'changed',
             chars: typeof call.args.content === 'string' ? call.args.content.length : undefined
           }, runId);
+        }
+      }
+      if (call.name === 'verify') {
+        if (outcome.verifyReport && outcome.verifyReport.errors.length > 0) {
+          workingMemory.latestDiagnostics = outcome.verifyReport.errors.slice(0, 6).map((e) => `${e.file}:${e.line} ${e.msg}`);
+        } else {
+          workingMemory.latestDiagnostics = [];
         }
       }
       if (call.name === 'run_command') {
@@ -1015,7 +1124,13 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         }, runId);
       }
       if (call.name === 'problems') {
-        flightRecorder.record('verify_result', { ok: true, count: parseProblemsCount(outcome.content) }, runId);
+        const count = parseProblemsCount(outcome.content);
+        flightRecorder.record('verify_result', { ok: true, count }, runId);
+        if (count === 0) {
+          workingMemory.latestDiagnostics = [];
+        } else if (count !== null && count > 0) {
+          workingMemory.latestDiagnostics = outcome.content.split('\n').slice(1, 8).filter((l) => l.trim());
+        }
       }
       let contentHash: string | undefined;
       if (call.name === 'read_file' && paths.length > 0) {
@@ -1029,6 +1144,17 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         // path moved (an external edit, a landed patch): drop its stale entries.
         if (previous !== undefined && previous !== contentHash) invalidatePath(paths[0]);
         if (turn) noteRead(turn, paths[0], contentHash);
+        const rangeMatch = outcome.content.match(/lines\s+(\d+)-(\d+)\s+of\s+(\d+)/);
+        workingMemory.inspectedRanges.push(
+          rangeMatch
+            ? {
+                path: paths[0],
+                startLine: Number.parseInt(rangeMatch[1], 10),
+                endLine: Number.parseInt(rangeMatch[2], 10),
+                totalLines: Number.parseInt(rangeMatch[3], 10)
+              }
+            : { path: paths[0] }
+        );
       }
       cache.set(serializeCallKey(call), { outcome, step: round, epoch, paths, effect, contentHash });
     });

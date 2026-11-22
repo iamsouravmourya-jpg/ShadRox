@@ -1,6 +1,6 @@
 'use client'
 
-import { BugPlay, FolderSearch, GitCompareArrows } from 'lucide-react'
+import { BugPlay, GitCompareArrows, ShieldCheck } from 'lucide-react'
 import { APP_VERSION } from '@/lib/download'
 import { Reveal } from './reveal'
 
@@ -12,10 +12,10 @@ const notes = [
     text: 'Microsoft\'s js-debug adapter now ships directly inside ShadRox — launch Node, TypeScript, Vite, or Next.js targets out of the box, pause on breakpoints, inspect locals, and send crashes straight to AI chat.',
   },
   {
-    icon: FolderSearch,
-    kicker: '02. Hygiene',
-    title: 'Offline junk & dead-code scanner',
-    text: 'Scans large repositories asynchronously at zero API cost, preserves serverless, edge, worker, Prisma, and Drizzle entry points, classifies High Confidence vs Needs Review files, and sends removals safely to OS Trash.',
+    icon: ShieldCheck,
+    kicker: '02. Security',
+    title: 'Enterprise hardening & NTFS safety',
+    text: 'Custom AI endpoints verify DNS A/AAAA records against SSRF rebinding, popup windows run strictly sandboxed, .env secrets are excluded from packaging, and Windows NTFS rewinds plus process trees clean up reliably.',
   },
   {
     icon: GitCompareArrows,
@@ -42,8 +42,8 @@ export function WhatsNew() {
         </Reveal>
         <Reveal delay={160}>
           <p className="mx-auto mb-12 max-w-[640px] text-center text-base leading-7 text-[var(--mut)]">
-            Zero-config debugging out of the box, an offline static reachability scanner for dead
-            code, and autonomous repair turns grounded in exact source lines and local contracts.
+            Zero-config debugging out of the box, hardened desktop security and Windows NTFS
+            reliability, and autonomous repair turns grounded in exact source lines and local contracts.
           </p>
         </Reveal>
 
@@ -71,7 +71,7 @@ export function WhatsNew() {
         <Reveal delay={200}>
           <div className="mx-auto mt-8 flex max-w-[780px] flex-wrap items-center justify-center gap-x-3 gap-y-2 rounded-2xl border border-[var(--line)] bg-[var(--card)] px-5 py-4 text-center text-[13px] leading-6 text-[var(--mut)]">
             <span>
-              Every shell command asks first with a plain-language risk notice. Still free, still BYOK.
+              Risk-tiered shell guard with plain-language risk notices. Still free, still BYOK.
             </span>
             <a
               href="/releases"

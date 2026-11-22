@@ -18,7 +18,7 @@ import {
   withCoordinatorBackoff
 } from '../lib/agents/coordinatorResilience';
 import { describeTeamEvent } from '../lib/agents/events';
-import { createTeamPlan, validateTeamPlan } from '../lib/agents/plan';
+import { computeElasticTeamBudget, createTeamPlan, validateTeamPlan } from '../lib/agents/plan';
 import { createTeamPorts } from '../lib/agents/ports';
 import { runTeam } from '../lib/agents/team-run';
 import { DEFAULT_TEAM_BUDGET, type TeamBudget, type TeamEvent, type TeamState } from '../lib/agents/types';
@@ -116,7 +116,7 @@ export function useTeamRun(options: UseTeamRunOptions): TeamRun {
     setLog([]);
     setRunning(true);
 
-    const budget = budgetRef.current;
+    const budget = computeElasticTeamBudget(trimmed, budgetRef.current);
     const ports = createTeamPorts(hostRef.current, {
       rootPath: root,
       onEvent: (event) => {

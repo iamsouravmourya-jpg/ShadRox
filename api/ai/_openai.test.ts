@@ -8,7 +8,7 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { streamGroq } from './_openai.js';
+import { clampMessagesDetailed, streamGroq } from './_openai.js';
 import { UpstreamError, type StreamRequest, type StreamSink } from './_types.js';
 
 interface Captured {
@@ -133,3 +133,38 @@ test('with no tools in the request an in-stream error surfaces immediately', asy
   assert.equal(captured.length, 1);
   assert.ok(error instanceof UpstreamError);
 });
+
+test('clampMessagesDetailed preserves pinned working-memory and requirement anchors when clipping long system prompts', () => {
+  const prefix = 'CONTEXT_PREFIX '.repeat(250);
+  const anchor = 'REQUIREMENT CHECKLIST\n- [req-1] Preserve billing webhook handler\n[WORKING MEMORY — DO NOT DROP]\n- src/billing.ts edited';
+  const clamped = clampMessagesDetailed(
+    [
+      { role: 'system', content: `${prefix}\n${anchor}` },
+      { role: 'user', content: 'continue' }
+    ],
+    2_000
+  );
+  assert.equal(clamped.systemTruncated, true);
+  const sysText = String(clamped.messages[0].content);
+  assert.match(sysText, /REQUIREMENT CHECKLIST/);
+  assert.match(sysText, /Preserve billing webhook handler/);
+  assert.match(sysText, /\[WORKING MEMORY/);
+});
+
+test('streamGroq reports system_context_truncated and retains requirement anchors on TPM clamp resend', async () => {
+  const longSystem = `${'A'.repeat(2_500)}\nREQUIREMENT CHECKLIST\n- [req-1] Keep src/a.ts intact`;
+  const { captured, result, error } = await outbound(
+    (attempt) =>
+      attempt === 0
+        ? rejected(413, 'Request too large for model on TPM: Limit 900, Requested 3000')
+        : okWithUsage(),
+    { systemInstruction: longSystem }
+  );
+  assert.equal(error, null);
+  assert.equal(captured.length, 2);
+  assert.ok(result.droppedFeatures.includes('history_clamp'));
+  assert.ok(result.droppedFeatures.includes('system_context_truncated'));
+  const resentMsgs = captured[1].body.messages as Array<{ role: string; content: string }>;
+  assert.match(resentMsgs[0].content, /REQUIREMENT CHECKLIST/);
+});
+

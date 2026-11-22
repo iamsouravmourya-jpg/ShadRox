@@ -21,7 +21,7 @@ import {
 import { PageShell } from '@/components/landing/page-shell'
 import { AgentSection } from '@/components/landing/agent-section'
 import { Reveal } from '@/components/landing/reveal'
-import { APP_VERSION, GITHUB_REPO, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
+import { APP_VERSION, RELEASES_URL, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import { CommandApprovalDemo } from './command-approval-demo'
 
 export const metadata: Metadata = {
@@ -89,7 +89,7 @@ const approvalRules = [
   },
   {
     icon: ShieldCheck,
-    text: 'Everything else opens a native approval dialog before it runs.',
+    text: 'Mutating, network, and dangerous commands open a native approval dialog before running.',
   },
   {
     icon: ScanSearch,
@@ -191,8 +191,9 @@ export default function AgentPage() {
           </Reveal>
           <Reveal delay={160}>
             <p className="mb-10 mt-4 max-w-[620px] text-sm leading-7 text-[var(--mut)]">
-              The agent cannot run whatever it likes. Every shell command — even routine
-              verification — stops and asks you first, with a plain-language risk notice.
+              Every shell command is parsed and risk-tiered first: read-only checks, local
+              builds/tests, and package installs run cleanly inside the workspace, while file-mutating,
+              network, and dangerous commands stop for your explicit native approval.
             </p>
           </Reveal>
 
@@ -200,10 +201,10 @@ export default function AgentPage() {
             <Reveal>
               <div className="feature-card h-full rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-8">
                 <h3 className="mb-1 font-bold text-[var(--ink)]">
-                  Even these ask first
+                  Parsed, risk-tiered &amp; guarded
                 </h3>
                 <p className="mb-4 text-xs leading-5 text-[var(--mut)]">
-                  Routine verification is no exception:
+                  Compound commands are split and checked per segment before execution:
                 </p>
                 <p className="rounded-xl border border-[var(--line)] bg-[var(--bg2)] px-4 py-3 font-mono text-[11px] leading-6 text-[var(--ink2)]">
                   {VERIFY_EXAMPLES.join(' · ')}
@@ -369,12 +370,12 @@ export default function AgentPage() {
                   Agent, autonomous run and team features are beta. Model output can be wrong —
                   review the results and keep backups of important work.{' '}
                   <a
-                    href={GITHUB_REPO}
+                    href={RELEASES_URL}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-0.5 font-semibold text-[var(--ac)] transition hover:opacity-80"
                   >
-                    Built in the open — view the source
+                    See official releases &amp; changelog
                     <ArrowUpRight className="size-3" />
                   </a>
                 </p>

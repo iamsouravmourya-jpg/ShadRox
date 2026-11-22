@@ -286,6 +286,9 @@ function registerMcpHandlers({ app, dialog, ipcMain, safeStorage, assertTrustedR
       }))
       .digest('hex');
     if (mcpConsentHashes.has(consentKey)) return;
+    const targetDetail = server.transport === 'http'
+      ? `URL: ${server.url}\nHeaders: ${Object.keys(server.headers || {}).join(', ') || '(none)'}`
+      : `Command: ${server.command}\nArguments: ${(server.args || []).join(' ') || '(none)'}\nDirectory: ${server.cwd || '(default)'}`;
     const choice = await dialog.showMessageBox(getMainWindow(), {
       type: 'warning',
       buttons: ['Cancel', 'Connect'],
@@ -293,8 +296,10 @@ function registerMcpHandlers({ app, dialog, ipcMain, safeStorage, assertTrustedR
       cancelId: 0,
       noLink: true,
       title: 'Approve MCP server',
-      message: 'Allow ShadRox to start this MCP process?',
-      detail: `Command: ${server.command}\nArguments: ${(server.args || []).join(' ') || '(none)'}\nDirectory: ${server.cwd || '(default)'}`
+      message: server.transport === 'http'
+        ? 'Allow ShadRox to connect to this MCP server?'
+        : 'Allow ShadRox to start this MCP process?',
+      detail: targetDetail
     });
     if (choice.response !== 1) throw new Error('MCP connection cancelled.');
     mcpConsentHashes.add(consentKey);

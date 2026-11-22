@@ -49,15 +49,15 @@ const places: {
     icon: HardDrive,
     tag: 'stays local',
     title: 'On your computer',
-    lead: 'Everything the app needs to open, debug, and clean your project lives on this machine.',
+    lead: 'Everything the app needs to open, edit, and debug your project lives on this machine.',
     rows: [
       {
         label: 'Project files',
         text: 'Opened and edited locally. There is no ShadRox cloud project sync — the app works in the folder you pick.',
       },
       {
-        label: 'Offline junk scan & local debugger',
-        text: 'Dead-code scanning walks your disk locally with zero external API calls and moves items only to OS Trash; the bundled Node debugger inspects local scripts exclusively.',
+        label: 'Bundled local debugger',
+        text: 'The bundled @vscode/js-debug adapter inspects local scripts exclusively on your device with zero external API calls.',
       },
       {
         label: 'Provider keys & rules',
@@ -112,8 +112,8 @@ const places: {
 const guards: { icon: typeof ShieldCheck; title: string; text: string }[] = [
   {
     icon: ShieldCheck,
-    title: 'Shell approval is default-deny',
-    text: 'Every agent shell command — including npm test, pytest, tsc --noEmit and Git status/diff — opens a native approval dialog with a plain-language risk notice. The workspace is re-checked between approval and execution.',
+    title: 'Shell commands are risk-tiered',
+    text: 'Every command is parsed with shell-quote before running. Mutating, network, and dangerous commands stop for a native approval dialog with a plain-language risk notice, and the workspace is re-checked between approval and execution.',
   },
   {
     icon: FileDiff,
@@ -272,9 +272,9 @@ export default function PrivacyPage() {
                   <Terminal className="size-4 text-[var(--ac)]" strokeWidth={1.75} />
                 </span>
                 <div>
-                  <h3 className="text-sm font-bold text-[var(--ink)]">Every command asks first</h3>
+                  <h3 className="text-sm font-bold text-[var(--ink)]">Risk-tiered shell guard</h3>
                   <p className="mt-0.5 text-xs leading-5 text-[var(--mut)]">
-                    Even routine verification — nothing runs without your OK.
+                    Read-only checks &amp; tests stay confined; mutating, network, and dangerous commands ask first.
                   </p>
                 </div>
               </div>

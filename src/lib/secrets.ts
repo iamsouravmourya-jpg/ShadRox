@@ -22,10 +22,16 @@ const KEY_SHAPES: RegExp[] = [
   /\bgsk_[A-Za-z0-9_-]{10,}/g,
   /\bxai-[A-Za-z0-9_-]{10,}/g,
   /\bAIza[0-9A-Za-z_-]{10,}/g,
-  /\bAKIA[0-9A-Z]{12,}/g,
+  /\bAQ\.[0-9A-Za-z_-]{10,}/g,
+  /\b(?:gh[pousr]_[0-9A-Za-z]{20,}|github_pat_[0-9A-Za-z_]{20,})/g,
+  /\b(?:AKIA|ASIA)[0-9A-Z]{12,}/g,
+  /\bxox[baprs]-[0-9A-Za-z-]{10,}/g,
   // A JWT is three base64 segments; the payload is readable text, which is worse.
   /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g
 ];
+
+const PEM_PRIVATE_KEY =
+  /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----/g;
 
 /**
  * `api_key: "…"`, `token=…` — the name makes the value a credential.
@@ -45,7 +51,8 @@ const MARKER = '[redacted]';
 
 /** Replaces anything that reads like a credential with a marker. */
 export function redactSecrets(text: string): string {
-  let redacted = text.replace(BEARER, (_all, scheme: string) => `${scheme}${MARKER}`);
+  let redacted = text.replace(PEM_PRIVATE_KEY, MARKER);
+  redacted = redacted.replace(BEARER, (_all, scheme: string) => `${scheme}${MARKER}`);
   for (const shape of KEY_SHAPES) redacted = redacted.replace(shape, MARKER);
   return redacted.replace(ASSIGNED_SECRET, (_all, name: string, separator: string) => `${name}${separator}${MARKER}`);
 }

@@ -21,6 +21,7 @@
 import { ceilingReached, toolCallsReported, type WorkUsage } from '../autonomy/budget';
 import { countPending, findBlocked, nextRunnable } from '../autonomy/dag';
 import { buildRepairBrief } from '../autonomy/feedback';
+import { auditRequirementCoverage, extractRequirements } from '../autonomy/requirements';
 import type { DiagnosticLine, PlanError, TurnUnit, VerificationReport } from '../autonomy/types';
 import { dedupePaths, hasTrackedPath, mergeTrackedPaths, pathsEqual, resolveCanonicalPath } from '../paths';
 import { extractErrorMessage } from './coordinatorResilience';
@@ -197,7 +198,8 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
     status: 'planning',
     tasks: [],
     messages: [],
-    startedAt: deps.now()
+    startedAt: deps.now(),
+    requirements: extractRequirements(goal)
   };
   deps.persist(state);
   deps.ports.onEvent({ type: 'team:log', text: `Coordinating: ${goal}` });
@@ -440,6 +442,127 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
     deps.persist(state);
   }
 
+  // Multi-requirement coverage gate: spawn one bounded catch-up task if requirements were dropped.
+  state.requirements = auditRequirementCoverage(
+    state.requirements ?? extractRequirements(goal),
+    state.tasks,
+    state.tasks.flatMap((t) => t.touchedFiles ?? [])
+  );
+
+  if (
+    state.status === 'running' &&
+    userHalt(deps.ports) === null &&
+    endedByUser === null &&
+    state.requirements.length > 1 &&
+    state.tasks.every((task) => task.status !== 'failed' && task.status !== 'blocked')
+  ) {
+    const pendingReqs = state.requirements.filter((req) => req.status === 'pending');
+    if (
+      pendingReqs.length > 0 &&
+      !ceilingReached(deps.budget, workUsage(state.tasks, deps.now() - clockStart))
+    ) {
+      const catchupTargets = dedupePaths(pendingReqs.flatMap((req) => req.explicitPaths));
+      const allUi = catchupTargets.length > 0 && catchupTargets.every((p) => /\.(?:tsx|jsx|css|scss|html)$/i.test(p));
+      const catchupTask: TeamTask = {
+        id: state.tasks.some((t) => t.id === 't-catchup') ? `t-catchup-${state.tasks.length + 1}` : 't-catchup',
+        title: `Cover remaining requirement(s): ${pendingReqs.map((r) => r.id).join(', ')}`,
+        instruction: [
+          'Complete and verify the following remaining requirements that lack touched-file evidence:',
+          ...pendingReqs.map((r) => `- [${r.id}] ${r.text}${r.evidence ? ` (${r.evidence})` : ''}`)
+        ].join('\n'),
+        expectedFiles: catchupTargets,
+        dependsOn: [],
+        assignee: allUi ? 'frontend' : 'backend',
+        status: 'running',
+        attempts: 0,
+        lastReport: null,
+        report: '',
+        patchesApplied: 0,
+        patchFailures: []
+      };
+      deps.ports.onEvent({
+        type: 'team:log',
+        text: `Requirement coverage audit found ${pendingReqs.length} pending requirement(s); assigning catch-up task.`
+      });
+      state.tasks.push(catchupTask);
+      if (!checkpointed) {
+        await deps.checkpoint(goal);
+        checkpointed = true;
+      }
+      deps.ports.onEvent({ type: 'task:start', id: catchupTask.id, assignee: catchupTask.assignee });
+      const catchupAttempts = Math.min(2, deps.budget.maxAttemptsPerTask);
+      let catchupOutcome: 'passed' | 'unverified' | 'failed' | 'stopped' = 'failed';
+      for (let attempt = 1; attempt <= catchupAttempts; attempt += 1) {
+        if (userHalt(deps.ports) !== null) {
+          catchupTask.status = catchupTask.attempts > 0 ? 'stopped' : 'pending';
+          catchupOutcome = 'stopped';
+          break;
+        }
+        catchupTask.attempts = attempt;
+        deps.ports.onEvent({ type: 'task:attempt', id: catchupTask.id, attempt });
+        const prior = previousFailure(catchupTask);
+        await deps.beforeTurn?.({ phase: 'task', taskId: catchupTask.id });
+        const unit: TurnUnit = {
+          ...catchupTask,
+          instruction: buildTaskInstruction(catchupTask, sharedContext(state), deps.workspaceManifest)
+        };
+        const feedbackText = prior ? buildRepairBrief(unit, prior, catchupTask.patchFailures, attempt - 1) : undefined;
+        const turn = await deps.ports.runTurn({
+          goal,
+          milestone: unit,
+          feedback: prior ?? undefined,
+          feedbackText,
+          signal: deps.turnSignal?.()
+        });
+        const canonicalTouched = (turn.touchedFiles ?? []).map((p) => resolveCanonicalPath(p, files));
+        catchupTask.touchedFiles = mergeTrackedPaths(catchupTask.touchedFiles ?? [], canonicalTouched);
+        catchupTask.filesRead = mergeTrackedPaths(
+          catchupTask.filesRead ?? [],
+          (turn.filesRead ?? []).map((p) => resolveCanonicalPath(p, files))
+        );
+        const report = await deps.ports.verify(catchupTask, {
+          patchesApplied: turn.patchesApplied,
+          changedFiles: turn.changedFiles ?? canonicalTouched.length
+        });
+        catchupTask.lastReport = report;
+        catchupTask.report = trim(turn.reply, REPORT_LIMIT);
+        catchupTask.patchesApplied += turn.patchesApplied;
+        catchupTask.patchFailures = turn.patchFailures;
+        if (typeof turn.toolCalls === 'number') {
+          catchupTask.toolCalls = (catchupTask.toolCalls ?? 0) + turn.toolCalls;
+        }
+        deps.ports.onEvent({ type: 'task:verdict', id: catchupTask.id, verdict: report.verdict, report });
+        deps.persist(state);
+        if (turn.aborted) {
+          const byUser = turn.stopped === true || userHalt(deps.ports) !== null;
+          catchupTask.status = byUser ? 'stopped' : 'failed';
+          catchupOutcome = byUser ? 'stopped' : 'failed';
+          if (byUser) endedByUser = userHalt(deps.ports) ?? 'cancelled';
+          break;
+        }
+        if (report.verdict === 'passed') {
+          catchupTask.status = 'passed';
+          catchupOutcome = 'passed';
+          break;
+        }
+        if (report.verdict === 'unverified') {
+          catchupTask.status = 'unverified';
+          catchupOutcome = 'unverified';
+          break;
+        }
+        if (attempt >= catchupAttempts) {
+          catchupTask.status = 'failed';
+          catchupOutcome = 'failed';
+          break;
+        }
+      }
+      if (catchupOutcome !== 'stopped') {
+        postMessage(state, catchupTask, catchupOutcome, deps);
+      }
+      deps.persist(state);
+    }
+  }
+
   const halt = userHalt(deps.ports) ?? endedByUser;
   if (halt && state.status === 'running') {
     state.status = halt;
@@ -476,11 +599,25 @@ export async function runTeam(goal: string, deps: TeamDeps): Promise<TeamState> 
     ...state.tasks.flatMap((t) => t.touchedFiles ?? []),
     ...(state.mergeReport?.files ?? [])
   ]);
+  state.requirements = auditRequirementCoverage(
+    state.requirements ?? extractRequirements(goal),
+    state.tasks,
+    touchedFiles
+  );
   const taskMetrics = selectTaskMetrics(state.tasks);
   const completedTasks = taskMetrics.passed;
   const testsPassed = state.tasks.filter((t) => t.assignee === 'tests' && t.status === 'passed').length;
   const testsRun = state.tasks.filter((t) => t.assignee === 'tests').length;
-  const openIssues = state.tasks.filter((t) => t.status === 'failed' || t.status === 'blocked').map((t) => `${t.assignee}: ${t.title}`);
+  const uncoveredIssues =
+    state.requirements.length > 1
+      ? state.requirements
+          .filter((req) => req.status === 'pending')
+          .map((req) => `requirement ${req.id}: ${req.title}`)
+      : [];
+  const openIssues = [
+    ...state.tasks.filter((t) => t.status === 'failed' || t.status === 'blocked').map((t) => `${t.assignee}: ${t.title}`),
+    ...uncoveredIssues
+  ];
 
   state.summaryReport = {
     overview: state.status === 'done'
@@ -559,8 +696,11 @@ async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Pro
   const notes: string[] = [];
 
   // Diagnostics arrive through the port a task's own check uses; the only thing
-  // wider here is the unit it names — every changed file at once, not one task's.
+  // wider here is the unit it names — every changed file at once, not one task's —
+  // plus any workspace-wide errors reported by verifyWorkspace.
   const before = await deps.ports.verify({ id: INTEGRATION_TASK_ID, expectedFiles: mergedFiles });
+  const wsBefore = typeof deps.ports.verifyWorkspace === 'function' ? await deps.ports.verifyWorkspace() : null;
+  const beforeDiagnostics = mergeDiagnosticLists(before.diagnostics, wsBefore?.diagnostics ?? []);
 
   const skipped = deps.ports.isCancellationRequested();
 
@@ -583,7 +723,7 @@ async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Pro
       byRole,
       ownership,
       overlaps,
-      diagnostics: before.diagnostics,
+      diagnostics: beforeDiagnostics,
       awaitingReview
     });
     const instruction = deps.workspaceManifest?.trim()
@@ -625,7 +765,8 @@ async function integrateRun(goal: string, state: TeamState, deps: TeamDeps): Pro
     );
   }
 
-  const diagnostics = checked.diagnostics;
+  const wsAfter = !skipped && typeof deps.ports.verifyWorkspace === 'function' ? await deps.ports.verifyWorkspace() : wsBefore;
+  const diagnostics = mergeDiagnosticLists(checked.diagnostics, wsAfter?.diagnostics ?? []);
   const errors = diagnostics.filter((line) => line.severity === 'error').length;
   const warnings = diagnostics.filter((line) => line.severity === 'warning').length;
 
@@ -764,6 +905,22 @@ function postMessage(state: TeamState, task: TeamTask, outcome: 'passed' | 'unve
   state.messages.push(message);
   deps.ports.onEvent({ type: 'message', message });
   deps.ports.onEvent({ type: 'task:done', id: task.id, status: task.status });
+}
+
+function mergeDiagnosticLists(
+  primary: readonly DiagnosticLine[],
+  secondary: readonly DiagnosticLine[]
+): DiagnosticLine[] {
+  if (secondary.length === 0) return [...primary];
+  const seen = new Set(primary.map((d) => `${d.severity}:${d.path}:${d.line}:${d.column}:${d.message}`));
+  const merged = [...primary];
+  for (const line of secondary) {
+    const key = `${line.severity}:${line.path}:${line.line}:${line.column}:${line.message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(line);
+  }
+  return merged;
 }
 
 /** Exposed for the panel's rollup: the statuses that mean "the team is stuck". */

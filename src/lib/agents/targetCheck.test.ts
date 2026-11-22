@@ -73,3 +73,20 @@ test('findMissingTaskTargets ignores files created by upstream dependencies', ()
   assert.equal(flagged.length, 1);
   assert.equal(flagged[0].path, 'src/auth/missing.ts');
 });
+
+test('allows brand-new files alongside existing file modifications in mixed mega-prompts', () => {
+  const megaPrompt = [
+    'Upgrade api/ai/_endpoint.ts with DNS SSRF protection;',
+    'then create new file src/lib/security/dnsGuard.ts,',
+    'plus extract into src/components/WorkspaceShell.tsx (new file).'
+  ].join('\n');
+  const missing = findMissingExplicitTargets(megaPrompt, ['api/ai/_endpoint.ts', 'package.json'], false);
+  assert.deepEqual(missing, []);
+
+  const missingWithBadModify = findMissingExplicitTargets(
+    'Create new file src/utils/newMod.ts; also refactor src/missingExisting.ts',
+    ['package.json'],
+    false
+  );
+  assert.deepEqual(missingWithBadModify, ['src/missingExisting.ts']);
+});

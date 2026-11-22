@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { classifyToolEffect, describeTools, locateUniqueMatch, runTool } from './tools';
+import { beginTurn, noteRead, noteWrite, resetTurns } from './turnState';
 
 function withBridge(stub: Record<string, unknown>, body: () => Promise<void>) {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
@@ -294,5 +295,42 @@ test('write_file and edit_file reject placeholder stub code before saving', asyn
     assert.equal(badEdit.ok, false);
     assert.match(badEdit.error as string, /Placeholder/i);
     assert.equal(disk.writes.length, 0);
+  });
+});
+
+test('write_file allows monolith shrinking inside an active turn after creating extracted files and taking a backup', async () => {
+  const monolith = Array.from({ length: 120 }, (_, i) => `export const sym${i} = ${i};`).join('\n');
+  const backups: string[] = [];
+  const disk = diskStub({ 'src/monolith.ts': monolith });
+  const bridge = {
+    ...disk.bridge,
+    backupFile: async (_id: string, path: string) => {
+      backups.push(path);
+      return { backupPath: `/userData/backups/${path}.bak` };
+    }
+  };
+  await withBridge(bridge, async () => {
+    const turn = beginTurn('ws', 'decompose src/monolith.ts', { scaffold: false, addPage: false });
+    try {
+      const created = await runTool('ws', {
+        name: 'write_file',
+        args: { path: 'src/extracted.ts', content: 'export const sym0 = 0;\n' }
+      });
+      assert.equal(created.ok, true);
+      noteWrite(turn, created.changedPaths ?? ['src/extracted.ts'], created.createdPaths ?? ['src/extracted.ts']);
+      noteRead(turn, 'src/monolith.ts');
+
+      const slim = "export { sym0 } from './extracted';\n";
+      const outcome = await runTool('ws', {
+        name: 'write_file',
+        args: { path: 'src/monolith.ts', content: slim }
+      });
+      assert.equal(outcome.ok, true, outcome.error ?? 'expected monolith extraction rewrite to succeed');
+      assert.match(outcome.content, /backed up outside workspace/);
+      assert.deepEqual(backups, ['src/monolith.ts']);
+      assert.equal(disk.files.get('src/monolith.ts')?.content, slim);
+    } finally {
+      resetTurns();
+    }
   });
 });

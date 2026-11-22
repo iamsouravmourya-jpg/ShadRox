@@ -9,7 +9,13 @@ test('every published key shape is replaced by a marker', () => {
     ['Groq rejected gsk_abcdefghijklmnopqrstuvwxyz12', 'Groq rejected [redacted]'],
     ['xAI uses xai-abcdefghijklmnopqrstuvwx', 'xAI uses [redacted]'],
     ['Google accepts AIzaabcdefghijklmnopqrstuvwxyz0123456789', 'Google accepts [redacted]'],
+    ['Google token AQ.Abcdefghijklmnopqrstuvwxyz12', 'Google token [redacted]'],
+    ['GitHub PAT ghp_abcdefghijklmnopqrstuvwxyz12345678', 'GitHub PAT [redacted]'],
+    ['GitHub fine-grained github_pat_1234567890_abcdefghijklmno', 'GitHub fine-grained [redacted]'],
     ['an AWS key AKIAABCDEFGHIJKLMNOPQRSTUVWXYZ on line 4', 'an AWS key [redacted] on line 4'],
+    ['an AWS temp key ASIAABCDEFGHIJKLMNOPQRSTUVWXYZ on line 5', 'an AWS temp key [redacted] on line 5'],
+    ['Slack bot xoxb-1234567890-abcdefghijkl', 'Slack bot [redacted]'],
+    ['key:\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQE=\n-----END PRIVATE KEY-----', 'key:\n[redacted]'],
     [
       'session eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5EYjG ended',
       'session [redacted] ended'

@@ -1,11 +1,9 @@
-import { Bug, FolderTree, GitBranch, History, LogOut, MonitorPlay, Search, Trash2, UserRound } from 'lucide-react';
+import { Bug, FolderTree, GitBranch, History, LogOut, MonitorPlay, Search, UserRound } from 'lucide-react';
 
 export interface ActivityRailProps {
   hasDesktop: boolean;
-  hasNativeWorkspace: boolean;
   isPreviewOpen: boolean;
   isSearchPanelOpen: boolean;
-  isJunkScannerOpen: boolean;
   isScmPanelOpen: boolean;
   isDebugPanelOpen: boolean;
   showTaskInspector: boolean;
@@ -14,7 +12,6 @@ export interface ActivityRailProps {
   onSelectWorkspaceView: () => void;
   onSelectPreviewView: () => void;
   onToggleSearchPanel: () => void;
-  onToggleJunkScanner: () => void;
   onToggleScmPanel: () => void;
   onToggleDebugPanel: () => void;
   onToggleTaskInspector: () => void;
@@ -25,10 +22,8 @@ export interface ActivityRailProps {
 
 export function ActivityRail({
   hasDesktop,
-  hasNativeWorkspace,
   isPreviewOpen,
   isSearchPanelOpen,
-  isJunkScannerOpen,
   isScmPanelOpen,
   isDebugPanelOpen,
   showTaskInspector,
@@ -37,7 +32,6 @@ export function ActivityRail({
   onSelectWorkspaceView,
   onSelectPreviewView,
   onToggleSearchPanel,
-  onToggleJunkScanner,
   onToggleScmPanel,
   onToggleDebugPanel,
   onToggleTaskInspector,
@@ -50,10 +44,10 @@ export function ActivityRail({
       <button
         type="button"
         onClick={onSelectWorkspaceView}
-        aria-pressed={!isPreviewOpen && !isSearchPanelOpen && !isScmPanelOpen && !isJunkScannerOpen}
+        aria-pressed={!isPreviewOpen && !isSearchPanelOpen && !isScmPanelOpen}
         title="Open the code workspace"
         className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-colors cursor-pointer ${
-          !isPreviewOpen && !isSearchPanelOpen && !isScmPanelOpen && !isJunkScannerOpen
+          !isPreviewOpen && !isSearchPanelOpen && !isScmPanelOpen
             ? 'border-accent-line bg-accent-soft text-accent'
             : 'border-transparent text-ink-4 hover:bg-overlay-2 hover:text-ink'
         }`}
@@ -85,20 +79,6 @@ export function ActivityRail({
         }`}
       >
         <Search className="h-[18px] w-[18px]" />
-      </button>
-      <button
-        type="button"
-        onClick={onToggleJunkScanner}
-        aria-pressed={isJunkScannerOpen}
-        disabled={!hasDesktop || !hasNativeWorkspace}
-        title={!hasDesktop ? 'Junk & Dead-Code Scanner (Desktop app)' : isJunkScannerOpen ? 'Close Junk Scanner' : 'Junk & Dead-Code Scanner'}
-        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 ${
-          isJunkScannerOpen
-            ? 'border-accent-line bg-accent-soft text-accent'
-            : 'border-transparent text-ink-4 hover:bg-overlay-2 hover:text-ink'
-        }`}
-      >
-        <Trash2 className="h-[18px] w-[18px]" />
       </button>
       <button
         type="button"

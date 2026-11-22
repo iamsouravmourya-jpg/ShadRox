@@ -630,3 +630,27 @@ test('a summarizer that fails minimum progress falls back to plain dropping, Ope
   assert.ok(!result.messages.includes(messages[3]), 'a digest that would not shrink enough is refused; the message just goes');
   assert.match(result.folds.join(' '), /dropped 1 oldest message to fit the budget/);
 });
+
+test('pinned WORKING MEMORY survives compactHistory folding, condensation, and drops', () => {
+  const workingMem = user(
+    '[WORKING MEMORY — PINNED ACROSS COMPACTION]\n\nCompleted edits:\n- api/ai/_endpoint.ts (edit_file)\n\nPending requirements:\n- Bump v0.1.4'
+  );
+  const filler = (tag: string): TestMessage => user(`${tag} ${'x'.repeat(1_200)}`);
+  const messages = [
+    user('execute upgrade'),
+    workingMem,
+    filler('old-1'),
+    filler('old-2'),
+    filler('old-3'),
+    user('continue'),
+    model('working')
+  ];
+  const result = compactHistory(messages, {
+    contextWindow: CONTEXT_WINDOW,
+    keepRecent: 2,
+    maxHistoryChars: 1_500
+  });
+  const keptMemory = result.messages.find((entry) => entry.content.includes('PINNED ACROSS COMPACTION'));
+  assert.ok(keptMemory, 'working memory must never be dropped or condensed');
+  assert.match(keptMemory.content, /api\/ai\/_endpoint\.ts/);
+});

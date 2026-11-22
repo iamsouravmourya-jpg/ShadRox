@@ -179,7 +179,6 @@ const workspaceService = createWorkspaceService({
   app,
   dialog,
   ipcMain,
-  shell,
   workspaceAccess,
   workspaceConsent,
   previewRuntime,
@@ -326,6 +325,14 @@ async function createWindow() {
     }
   });
 
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    const allowed = permission === 'media' || permission === 'clipboard-sanitized-write';
+    return Boolean(
+      allowed &&
+      webContents === mainWindow?.webContents &&
+      isSameOriginAsRenderer(requestingOrigin, rendererOrigin)
+    );
+  });
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const allowed = permission === 'media' || permission === 'clipboard-sanitized-write';
     callback(webContents === mainWindow?.webContents && details.isMainFrame && allowed);
@@ -365,6 +372,9 @@ async function createWindow() {
     }
     if (url.startsWith('https://')) void shell.openExternal(url);
     return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-attach-webview', (event) => {
+    event.preventDefault();
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (!isSameOriginAsRenderer(url, rendererOrigin)) event.preventDefault();

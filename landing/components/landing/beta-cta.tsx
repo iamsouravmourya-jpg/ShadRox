@@ -66,7 +66,7 @@ export function BetaCta() {
               </p>
 
               <p className="mt-6 text-xs text-white/70">
-                Built in the open by{' '}
+                Founded &amp; built by{' '}
                 <strong className="font-bold text-white">Sourav Maurya</strong>,
                 a 19-year-old developer from Delhi, India 🇮🇳
               </p>

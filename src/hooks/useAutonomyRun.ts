@@ -14,6 +14,7 @@ import { runGoal } from '../lib/autonomy/engine';
 import { MAX_LOG_LINES, describeEvent } from '../lib/autonomy/events';
 import { browserRunJournal, type RunJournal } from '../lib/autonomy/journal';
 import { createAutonomyPorts, type AutonomyHost } from '../lib/autonomy/ports';
+import { computeElasticRunBudget } from '../lib/autonomy/plan';
 import type { RunStore } from '../lib/autonomy/runStore';
 import {
   DEFAULT_RUN_BUDGET,
@@ -123,7 +124,7 @@ export function useAutonomyRun(options: UseAutonomyRunOptions): AutonomyRun {
               const root = rootRef.current;
               if (root) storeRef.current.save(root, live);
             },
-            budget: budgetRef.current,
+            budget: computeElasticRunBudget(goal, budgetRef.current),
             resumeFrom: startOptions?.resumeFrom,
             dryRun: startOptions?.dryRun,
             turnSignal: helpers.turnSignal

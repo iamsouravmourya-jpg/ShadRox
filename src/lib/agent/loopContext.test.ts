@@ -4,6 +4,7 @@ import type { ChatTurn } from '../ai';
 import { serializeResults } from './toolProtocol';
 import {
   compactToolObservations, computeLoopContextBudgetChars, summarizeObservation, isToolObservation, transcriptChars,
+  upsertWorkingMemory, WORKING_MEMORY_HEADER,
   LOOP_CONTEXT_BUDGET_CHARS, MIN_LOOP_CONTEXT_BUDGET_CHARS, COMPACT_TRIGGER_SHARE, KEEP_RECENT_OBSERVATIONS
 } from './loopContext';
 
@@ -80,4 +81,25 @@ test('computeLoopContextBudgetChars scales safely with small and large context w
   assert.ok(small >= MIN_LOOP_CONTEXT_BUDGET_CHARS && small < LOOP_CONTEXT_BUDGET_CHARS);
   const large = computeLoopContextBudgetChars(128_000, 8_192, 16_000);
   assert.equal(large, LOOP_CONTEXT_BUDGET_CHARS);
+});
+
+test('upsertWorkingMemory pins right after the first user turn and is never compacted', () => {
+  const base: ChatTurn[] = [{ role: 'user', content: 'upgrade app' }];
+  for (let i = 0; i < 6; i += 1) {
+    base.push({ role: 'assistant', content: `round ${i}` });
+    base.push(observation(`${'y'.repeat(500)} ${i}`));
+  }
+  const withMemory = upsertWorkingMemory(base, {
+    inspectedRanges: [{ path: 'src/App.tsx', startLine: 1, endLine: 200, totalLines: 1200 }],
+    completedEdits: [{ path: 'api/ai/_endpoint.ts', op: 'edit_file' }],
+    pendingRequirements: ['Update landing page version'],
+    latestDiagnostics: []
+  });
+  assert.ok(withMemory[1].content.startsWith(WORKING_MEMORY_HEADER));
+  const compacted = compactToolObservations(withMemory, 1_000);
+  assert.ok(compacted.compacted > 0);
+  const pinned = compacted.messages.find((m) => m.content.startsWith(WORKING_MEMORY_HEADER));
+  assert.ok(pinned, 'working memory survives compaction');
+  assert.match(pinned.content, /api\/ai\/_endpoint\.ts/);
+  assert.match(pinned.content, /lines 1-200 of 1200/);
 });

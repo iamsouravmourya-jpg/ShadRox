@@ -598,3 +598,46 @@ test('resume re-runs the milestone a pause left stopped, and keeps what passed',
   );
   assert.equal(state.milestones[0].status, 'passed');
 });
+
+test('multi-requirement mega-prompt triggers bounded m-catchup turn when an explicit requirement was left pending', async () => {
+  const h = harness([milestone('m1', { expectedFiles: ['src/a.ts'] })]);
+  h.setTurn((unit) => ({
+    reply: `finished ${unit.id}`,
+    patchesApplied: 1,
+    patchFailures: [],
+    aborted: false,
+    touchedFiles: unit.id === 'm1' ? ['src/a.ts'] : ['src/b.ts']
+  }));
+  const state = await runAutonomous('1. Create src/a.ts\n2. Update src/b.ts to wire the route', h.deps);
+  assert.equal(state.status, 'done');
+  assert.equal(state.milestones.some((m) => m.id === 'm-catchup'), true);
+  assert.equal(state.requirements?.every((r) => r.status === 'covered'), true);
+  assert.ok(h.turns.some((t) => t.milestone === 'm-catchup'));
+});
+
+test('verifyWorkspace runs m-ws-repair when cross-file errors appear and rolls back if workspace remains broken', async () => {
+  const h1 = harness([milestone('m1', { expectedFiles: ['src/a.ts'] })]);
+  let wsChecks = 0;
+  h1.deps.ports.verifyWorkspace = async () => {
+    wsChecks += 1;
+    return wsChecks === 1
+      ? { verdict: 'failed', diagnostics: [{ path: 'src/other.ts', line: 4, column: 2, message: 'Bad import', severity: 'error' }], notes: ['1 ws error'] }
+      : PASSED;
+  };
+  const repaired = await runAutonomous('fix src/a.ts', h1.deps);
+  assert.equal(repaired.status, 'done');
+  assert.equal(wsChecks, 2);
+  assert.equal(repaired.milestones.some((m) => m.id === 'm-ws-repair'), true);
+
+  const h2 = harness([milestone('m1', { expectedFiles: ['src/a.ts'] })]);
+  h2.deps.ports.verifyWorkspace = async () => ({
+    verdict: 'failed',
+    diagnostics: [{ path: 'src/other.ts', line: 4, column: 2, message: 'Still broken', severity: 'error' }],
+    notes: ['Workspace check failed']
+  });
+  const broken = await runAutonomous('fix src/a.ts', h2.deps);
+  assert.equal(broken.status, 'failed');
+  assert.equal(broken.rolledBack, true);
+  assert.deepEqual(h2.rollbacks, ['checkpoint-1']);
+});
+

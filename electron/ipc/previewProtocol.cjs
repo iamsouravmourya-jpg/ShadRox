@@ -20,12 +20,17 @@ const APP_SCHEME = 'shadrox-app';
 const APP_ORIGIN = `${APP_SCHEME}://localhost`;
 const RENDERER_CSP = [
   "default-src 'self'", "base-uri 'self'", "object-src 'none'",
-  "frame-ancestors 'none'", "script-src 'self' 'unsafe-inline'",
+  "frame-ancestors 'none'", "form-action 'none'",
+  "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob: http: https:",
   "font-src 'self' data: http: https:", "connect-src 'self' https: http://127.0.0.1:* http://localhost:*",
   "frame-src 'self' http://127.0.0.1:* http://localhost:* shadrox-preview:",
   "worker-src 'self' blob:"
 ].join('; ');
+const DEV_RENDERER_CSP = RENDERER_CSP.replace(
+  "script-src 'self' 'wasm-unsafe-eval'",
+  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'"
+);
 
 const PREVIEW_ENTRY_CANDIDATES = [
   'index.html',
@@ -270,7 +275,16 @@ function createPreviewProtocolService(deps) {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
       const rendererOrigin = getRendererOrigin();
       if (rendererOrigin && details.url.startsWith(rendererOrigin)) {
-        callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [RENDERER_CSP] } });
+        const policy = rendererOrigin.startsWith('http://') ? DEV_RENDERER_CSP : RENDERER_CSP;
+        callback({
+          responseHeaders: {
+            ...details.responseHeaders,
+            'Content-Security-Policy': [policy],
+            'X-Content-Type-Options': ['nosniff'],
+            'X-Frame-Options': ['DENY'],
+            'Referrer-Policy': ['no-referrer']
+          }
+        });
         return;
       }
       callback({});
@@ -580,7 +594,10 @@ function createPreviewProtocolService(deps) {
     const headers = {
       'Cache-Control': 'no-store',
       'Content-Type': getPreviewMimeType(filePath),
-      'X-Content-Type-Options': 'nosniff'
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY'
     };
     const extension = path.extname(filePath).toLowerCase();
     if (extension === '.html' || extension === '.htm') {

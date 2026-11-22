@@ -613,3 +613,41 @@ test('executedToolCallCount charges only calls that ran, never control tools', (
     'a turn that only planned and finished charges nothing'
   );
 });
+
+test('native write tools populate toolChangedPaths, toolCreatedPaths, and wroteNothing=false without shadrox:edits fences', async () => {
+  const files = new Map<string, string>([
+    ['src/a.ts', 'export const a = 1;\n'],
+    ['src/other.ts', 'export const untouched = true;\n']
+  ]);
+  await withBridge({
+    readFile: async (_id: string, path: string) => {
+      if (!files.has(path)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { name: path, content: files.get(path), version: 'v1' };
+    },
+    verifyChangeSet: async () => ({ ok: true, issues: [] }),
+    saveFiles: async (_id: string, entries: Array<{ name: string; content: string }>) => {
+      for (const entry of entries) files.set(entry.name, entry.content);
+      return { errors: [], saved: entries.map((entry) => ({ name: entry.name })) };
+    }
+  }, async () => {
+    const { result } = await turn({
+      responses: [
+        toolBlock([
+          { name: 'write_file', args: { path: 'src/other.ts', content: 'clobbered' } },
+          { name: 'write_file', args: { path: 'src/helper.ts', content: 'export const h = 1;\n' } },
+          { name: 'edit_file', args: { path: 'src/a.ts', original: 'export const a = 1;', updated: 'export const a = 2;' } }
+        ]),
+        'Updated via native write tools.'
+      ],
+      files: Object.fromEntries(files),
+      expectedFiles: ['src/a.ts']
+    });
+    assert.equal(files.get('src/other.ts'), 'export const untouched = true;\n');
+    assert.equal(result.wroteNothing, false);
+    assert.deepEqual(result.applied, []);
+    assert.ok(result.toolChangedPaths?.includes('src/a.ts'));
+    assert.ok(result.toolChangedPaths?.includes('src/helper.ts'));
+    assert.deepEqual(result.toolCreatedPaths, ['src/helper.ts']);
+  });
+});
+

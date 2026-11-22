@@ -48,7 +48,7 @@ export function Hero() {
           style={{ '--rise-delay': '160ms' } as React.CSSProperties}
         >
           Open a project folder and work with its files, code editor, autonomous AI agents, bundled
-          Node debugger, offline dead-code scanner, live preview, Git tools, and terminal in one
+          Node debugger, live preview, Git tools, and terminal in one
           desktop app. Your code stays on your computer.
         </p>
 
@@ -78,7 +78,7 @@ export function Hero() {
           <span aria-hidden className="text-[var(--line)]">·</span>
           <span>Bring your own key</span>
           <span aria-hidden className="text-[var(--line)]">·</span>
-          <span>AGPL-3.0 open source</span>
+          <span>Proprietary · All rights reserved</span>
         </p>
       </div>
 
