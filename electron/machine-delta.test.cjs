@@ -5,7 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { execFile } = require('node:child_process');
 const { createWorkspaceAccess } = require('./workspace.cjs');
-const { createMachineDelta, LIMITS } = require('./machine-delta.cjs');
+const { createMachineDelta, assertSafeRegularFile, LIMITS } = require('./machine-delta.cjs');
 const { createMachineGit } = require('./machine-git.cjs');
 const { createPreviewRuntime } = require('./preview-runtime.cjs');
 const { buildGitArgv, buildIsolatedGitEnv, resolveGitExecutable } = require('./desktop-security.cjs');
@@ -162,8 +162,54 @@ test('hardlinked files block rewind instead of modifying a foreign inode', async
   await f.write('a.txt', 'after');
   await f.service.finish(f.id, 'cp-links');
   await fs.link(path.join(f.root, 'a.txt'), path.join(f.root, 'alias.txt'));
-  await assert.rejects(f.service.restore(f.id, 'cp-links', async () => true), /safely/);
+  await assert.rejects(f.service.restore(f.id, 'cp-links', async () => true), /safely|refuses links/i);
   assert.equal(await f.read('a.txt'), 'after');
+});
+
+test('win32 NTFS hardlink detection checks handle link count, file index mismatch, and fsutil entries', async () => {
+  const makeFs = ({ lstatNlink = 1n, hstatNlink = 1n, lstatIno = 100n, hstatIno = 100n } = {}) => ({
+    lstat: async () => ({
+      isSymbolicLink: () => false,
+      isFile: () => true,
+      nlink: lstatNlink,
+      dev: 1n,
+      ino: lstatIno
+    }),
+    open: async () => ({
+      stat: async () => ({
+        isFile: () => true,
+        nlink: hstatNlink,
+        dev: 1n,
+        ino: hstatIno
+      }),
+      close: async () => {}
+    })
+  });
+
+  await assert.rejects(
+    assertSafeRegularFile('C:\\proj\\a.txt', { platform: 'win32', fsImpl: makeFs({ lstatNlink: 1n, hstatNlink: 2n }) }),
+    /refuses links/i
+  );
+  await assert.rejects(
+    assertSafeRegularFile('C:\\proj\\a.txt', { platform: 'win32', fsImpl: makeFs({ lstatIno: 100n, hstatIno: 200n }) }),
+    /refuses links/i
+  );
+  await assert.rejects(
+    assertSafeRegularFile('C:\\proj\\a.txt', {
+      platform: 'win32',
+      checkWindowsNtfsLinks: true,
+      fsImpl: makeFs(),
+      queryNtfsHardlinks: async () => ['\\proj\\a.txt', '\\proj\\alias.txt']
+    }),
+    /refuses links/i
+  );
+  const safe = await assertSafeRegularFile('C:\\proj\\a.txt', {
+    platform: 'win32',
+    checkWindowsNtfsLinks: true,
+    fsImpl: makeFs(),
+    queryNtfsHardlinks: async () => ['\\proj\\a.txt']
+  });
+  assert.equal(safe.fileIndex, '1:100');
 });
 
 test('snapshot identity is validated and cannot cross workspaces', async (t) => {

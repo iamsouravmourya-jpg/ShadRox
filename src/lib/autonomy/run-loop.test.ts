@@ -496,6 +496,35 @@ test('a zero-write pass is annotated and logged through the real verifier', asyn
   );
 });
 
+test('a zero-write turn on a pre-existing file fails verification and triggers repair', async () => {
+  const h = harness([milestone('m1', { title: 'Update component', instruction: 'update src/a.ts' })]);
+  let calls = 0;
+  h.setTurn(() => {
+    calls += 1;
+    if (calls === 1) return { reply: 'no changes needed', patchesApplied: 0, changedFiles: 0, patchFailures: [], aborted: false };
+    return { reply: 'patched src/a.ts', patchesApplied: 1, changedFiles: 0, patchFailures: [], aborted: false };
+  });
+  const realHost: AutonomyHost = {
+    runTurn: async () => ({ reply: '', patchesApplied: 0, patchFailures: [], aborted: false }),
+    getDiagnostics: async () => [],
+    listFiles: () => ['src/a.ts'],
+    readFile: async () => 'export const a = 1;',
+    askPlan: async () => '[]',
+    runCommand: async () => ({ argv: '', exitCode: 0, stdoutTail: '', stderrTail: '', timedOut: false })
+  };
+  const realPorts = createAutonomyPorts(realHost, {
+    rootPath: '/ws',
+    onEvent: h.deps.ports.onEvent,
+    isCancellationRequested: () => false
+  });
+  h.deps.ports.verify = realPorts.verify;
+  const state = await runAutonomous('update src/a.ts', h.deps);
+  assert.equal(state.status, 'done');
+  assert.equal(calls, 2, 'zero-write modification attempt fails and runs repair attempt');
+  assert.equal(state.milestones[0].attempts[0].verification?.verdict, 'failed');
+  assert.equal(state.milestones[0].attempts[1].verification?.verdict, 'passed');
+});
+
 test('a rollback that fails keeps the checkpoint id and says so', async () => {
   const h = harness([milestone('m1')]);
   h.setVerify(async () => FAILED);

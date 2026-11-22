@@ -18,7 +18,7 @@ import {
 /** POST /api/github/create-repo -> creates a repository for the authenticated user. */
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   if (req.method !== 'POST') {
-    sendError(res, 405, 'POST method chahiye.');
+    sendError(res, 405, 'Method not allowed. Use POST.', 'METHOD_NOT_ALLOWED');
     return;
   }
 
@@ -29,11 +29,23 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   try {
     const body = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.githubSmall });
-    cleanToken = requiredString(body, 'token', FIELD_LIMITS.apiKeyChars, 'Token aur repository name dono chahiye.');
-    repoName = requiredString(body, 'name', FIELD_LIMITS.repoNameChars, 'Token aur repository name dono chahiye.');
+    cleanToken = requiredString(
+      body,
+      'token',
+      FIELD_LIMITS.apiKeyChars,
+      'GitHub token and repository name are both required.',
+      'GITHUB_FIELDS_REQUIRED'
+    );
+    repoName = requiredString(
+      body,
+      'name',
+      FIELD_LIMITS.repoNameChars,
+      'GitHub token and repository name are both required.',
+      'GITHUB_FIELDS_REQUIRED'
+    );
     description = optionalString(body, 'description', FIELD_LIMITS.repoDescriptionChars).trim();
     if (body.isPrivate !== undefined && typeof body.isPrivate !== 'boolean') {
-      throw new RequestRejectedError(400, '`isPrivate` boolean hona chahiye.');
+      throw new RequestRejectedError(400, '`isPrivate` must be a boolean.', 'INVALID_FIELD_TYPE');
     }
     isPrivate = body.isPrivate === true;
   } catch (error) {
@@ -65,9 +77,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         res,
         response.status,
         sanitizeErrorMessage(
-          (data.message as string) || 'Repository create nahi ho payi.',
-          'Repository create nahi ho payi.'
-        )
+          (data.message as string) || 'Could not create the GitHub repository.',
+          'Could not create the GitHub repository.'
+        ),
+        'GITHUB_CREATE_REPO_FAILED'
       );
       return;
     }

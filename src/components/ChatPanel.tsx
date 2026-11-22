@@ -586,8 +586,61 @@ interface ToolCardProps {
   tool: NonNullable<ChatMessage['toolActivity']>[number];
 }
 
+function parsePatchFailureSummary(failure: string, filePath?: string): { headline: string; hasDetails: boolean } {
+  const trimmed = failure.trim();
+  const lines = trimmed.split(/\r?\n/);
+  const firstLine = lines[0] ?? '';
+  const cleaned = firstLine
+    .replace(/^Not applied\s*[—-]\s*/i, '')
+    .replace(/\s*—\s*re-read the file and copy the current text exactly$/i, '')
+    .trim();
+  const prefix = filePath && !cleaned.toLowerCase().startsWith(filePath.toLowerCase()) ? `${filePath}: ` : '';
+  const headline = `Not applied — ${prefix}${cleaned || 'patch could not match file'}`;
+  const hasDetails = lines.length > 1 || trimmed.length > headline.length + 12;
+  return { headline, hasDetails };
+}
+
+function CollapsiblePatchFailurePill({
+  failure,
+  filePath,
+  expanded,
+  onToggle
+}: {
+  failure: string;
+  filePath?: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const { headline, hasDetails } = parsePatchFailureSummary(failure, filePath);
+  if (!hasDetails) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full border border-danger/30 bg-danger/10 px-2 py-0.5 text-[10px] font-medium text-danger min-w-0 max-w-full"
+        title={failure}
+      >
+        <AlertTriangle className="w-3 h-3 shrink-0" />
+        <span className="truncate">{headline}</span>
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      title={failure}
+      className="inline-flex items-center gap-1 rounded-full border border-danger/30 bg-danger/10 px-2 py-0.5 text-[10px] font-medium text-danger min-w-0 max-w-full cursor-pointer transition-colors hover:bg-danger/15"
+    >
+      <AlertTriangle className="w-3 h-3 shrink-0" />
+      <span className="truncate">{headline}</span>
+      <ChevronRight className={`w-3 h-3 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+    </button>
+  );
+}
+
 function ToolCard({ tool }: ToolCardProps) {
   const [open, setOpen] = useState(false);
+  const [errorDetailsOpen, setErrorDetailsOpen] = useState(false);
   const stage = tool.stage ?? (tool.ok ? (tool.name.includes('read') || tool.name.includes('list') ? 'reading' : 'completed') : 'failed');
   
   const stageStyles: Record<string, { label: string; tone: string }> = {
@@ -601,6 +654,9 @@ function ToolCard({ tool }: ToolCardProps) {
   const config = tool.refused
     ? { label: 'HELD', tone: 'text-warn border-warn/30 bg-warn/10' }
     : stageStyles[stage] || { label: 'TOOL', tone: 'text-ink-3 border-line-2 bg-overlay' };
+  const isPatchMismatchError = Boolean(
+    tool.error && /(?:not applied|closest region on disk|text not found|old text not found)/i.test(tool.error)
+  );
 
   return (
     <div className="rounded-lg border border-line bg-base/80 transition-colors hover:border-line-2">
@@ -638,9 +694,24 @@ function ToolCard({ tool }: ToolCardProps) {
       {open && (
         <div className="border-t border-line bg-base/30 p-2.5 space-y-2 text-[10.5px]">
           {tool.error && (
-            <div className="rounded border border-danger/30 bg-danger/10 p-2 text-danger font-mono break-all">
-              {tool.error}
-            </div>
+            isPatchMismatchError ? (
+              <div className="space-y-1.5">
+                <CollapsiblePatchFailurePill
+                  failure={tool.error}
+                  expanded={errorDetailsOpen}
+                  onToggle={() => setErrorDetailsOpen((prev) => !prev)}
+                />
+                {errorDetailsOpen && (
+                  <pre className="max-h-40 overflow-auto rounded border border-danger/25 bg-danger/5 p-2 text-danger font-mono text-[10px] leading-relaxed whitespace-pre-wrap break-words">
+                    {tool.error}
+                  </pre>
+                )}
+              </div>
+            ) : (
+              <div className="rounded border border-danger/30 bg-danger/10 p-2 text-danger font-mono break-all">
+                {tool.error}
+              </div>
+            )
           )}
           {tool.input && Object.keys(tool.input).length > 0 && (
             <div>
@@ -1159,6 +1230,7 @@ export function ChatPanel({
   const [isRunMenuOpen, setIsRunMenuOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [isContextOpen, setIsContextOpen] = useState(false);
+  const [expandedPatchFailures, setExpandedPatchFailures] = useState<Record<string, boolean>>({});
   const [pastedTexts, setPastedTexts] = useState<PastedText[]>([]);
   const activePermission = PERMISSION_MODES.find((mode) => mode.id === permissionMode) || PERMISSION_MODES[2];
   const ActivePermissionIcon = activePermission.icon;
@@ -1813,13 +1885,17 @@ export function ChatPanel({
                                   {patch.kind === 'searchReplace' ? `${patch.blocks?.length ?? 0} s/r` : 'rewrite'}
                                 </span>
                                 {patch.failure && (
-                                  <span
-                                    className="flex items-center gap-1 text-danger min-w-0"
-                                    title={patch.failure}
-                                  >
-                                    <AlertTriangle className="w-3 h-3 shrink-0" />
-                                    <span className="truncate">{patch.failure}</span>
-                                  </span>
+                                  <CollapsiblePatchFailurePill
+                                    failure={patch.failure}
+                                    filePath={patch.path}
+                                    expanded={Boolean(expandedPatchFailures[`failure:${message.id}:${index}`])}
+                                    onToggle={() =>
+                                      setExpandedPatchFailures((prev) => ({
+                                        ...prev,
+                                        [`failure:${message.id}:${index}`]: !prev[`failure:${message.id}:${index}`]
+                                      }))
+                                    }
+                                  />
                                 )}
                               </div>
                               <div className="flex items-center gap-1.5 shrink-0">
@@ -1890,6 +1966,11 @@ export function ChatPanel({
                                 )}
                               </div>
                             </div>
+                            {patch.failure && expandedPatchFailures[`failure:${message.id}:${index}`] && (
+                              <pre className="mx-2 mb-2 max-h-40 overflow-auto rounded-md border border-danger/25 bg-danger/5 p-2 font-mono text-[10px] leading-relaxed text-danger whitespace-pre-wrap break-words">
+                                {patch.failure}
+                              </pre>
+                            )}
                             {patch.status === 'pending' && (
                               <PatchHunkReview
                                 sections={

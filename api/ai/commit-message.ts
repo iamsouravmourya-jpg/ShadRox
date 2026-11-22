@@ -37,7 +37,7 @@ const SYSTEM_INSTRUCTION =
  */
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   if (req.method !== 'POST') {
-    sendError(res, 405, 'POST method chahiye.');
+    sendError(res, 405, 'Method not allowed. Use POST.', 'METHOD_NOT_ALLOWED');
     return;
   }
 
@@ -55,9 +55,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     model = optionalString(body, 'model', FIELD_LIMITS.modelChars).trim();
     apiKey = optionalKey(body);
     if (provider === 'custom') {
-      baseUrl = resolveCustomEndpoint(body.baseUrl);
+      baseUrl = await resolveCustomEndpoint(body.baseUrl);
       // Unlike tab completion, this is a deliberate click: say what is missing.
-      if (!model) throw new RequestRejectedError(400, 'Custom endpoint par model id chahiye — Settings → Models & Keys me endpoint verify karo ya “Model ids” me id daalo.');
+      if (!model) {
+        throw new RequestRejectedError(
+          400,
+          'A model id is required for custom endpoints — verify your endpoint in Settings → Models & Keys or add one under "Model ids".',
+          'MODEL_ID_REQUIRED'
+        );
+      }
     } else {
       model = model || ADAPTERS[provider].defaultModel;
     }
@@ -73,13 +79,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   const resolved = resolveKeyAccess(apiKey);
   if ('error' in resolved) {
-    sendError(res, 400, resolved.error);
+    sendError(res, 400, resolved.error, 'BYOK_KEY_REQUIRED');
     return;
   }
   const { apiKey: spendKey } = resolved.access;
 
   if (!status.trim() && !diff.trim()) {
-    sendError(res, 400, 'Working tree me koi change nahi hai — message generate karne ke liye kuch nahi hai.');
+    sendError(res, 400, 'There are no changes in the working tree to generate a commit message for.', 'NO_WORKING_TREE_CHANGES');
     return;
   }
 
@@ -113,7 +119,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       .trim()
       .slice(0, 400);
     if (!message) {
-      sendError(res, 502, 'Model ne koi message nahi banaya. Dobara try karo.');
+      sendError(res, 502, 'The model did not produce a commit message. Please try again.', 'EMPTY_MODEL_RESPONSE');
       return;
     }
     sendJson(res, 200, { message });

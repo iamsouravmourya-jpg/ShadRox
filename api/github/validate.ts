@@ -18,14 +18,20 @@ const GH_HEADERS = (token: string) => ({
 /** POST /api/github/validate -> verifies the PAT and returns the user + recent repos. */
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   if (req.method !== 'POST') {
-    sendError(res, 405, 'POST method chahiye.');
+    sendError(res, 405, 'Method not allowed. Use POST.', 'METHOD_NOT_ALLOWED');
     return;
   }
 
   let cleanToken: string;
   try {
     const body = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.githubSmall });
-    cleanToken = requiredString(body, 'token', FIELD_LIMITS.apiKeyChars, 'GitHub personal access token required hai.');
+    cleanToken = requiredString(
+      body,
+      'token',
+      FIELD_LIMITS.apiKeyChars,
+      'GitHub personal access token is required.',
+      'GITHUB_TOKEN_REQUIRED'
+    );
   } catch (error) {
     if (sendIfRejected(res, error)) return;
     throw error;
@@ -40,9 +46,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         res,
         userResponse.status,
         sanitizeErrorMessage(
-          (userData.message as string) || 'GitHub token invalid hai. `repo` scope check karo.',
-          'GitHub token invalid hai. `repo` scope check karo.'
-        )
+          (userData.message as string) || 'GitHub token is invalid. Verify that it includes the `repo` scope.',
+          'GitHub token is invalid. Verify that it includes the `repo` scope.'
+        ),
+        'GITHUB_TOKEN_INVALID'
       );
       return;
     }

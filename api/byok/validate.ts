@@ -54,8 +54,8 @@ async function listGeminiModels(apiKey: string): Promise<RawModel[]> {
     if (!response.ok) {
       throw new Error(
         sanitizeErrorMessage(
-          data?.error?.message || 'Gemini ne is API key ko reject kar diya.',
-          'Gemini ne is API key ko reject kar diya.'
+          data?.error?.message || 'Gemini rejected this API key.',
+          'Gemini rejected this API key.'
         )
       );
     }
@@ -92,8 +92,8 @@ async function listGroqModels(apiKey: string): Promise<RawModel[]> {
   if (!response.ok) {
     throw new Error(
       sanitizeErrorMessage(
-        data?.error?.message || 'Groq ne is API key ko reject kar diya.',
-        'Groq ne is API key ko reject kar diya.'
+        data?.error?.message || 'Groq rejected this API key.',
+        'Groq rejected this API key.'
       )
     );
   }
@@ -136,14 +136,14 @@ export async function listCustomModels(baseUrl: string, apiKey: string): Promise
   try {
     data = JSON.parse(text) as typeof data;
   } catch {
-    throw new Error('Endpoint ne /models par JSON nahi bheja. Model id manually daalo.');
+    throw new Error('The custom endpoint did not return JSON from /models. Enter the model id manually.');
   }
 
   if (!response.ok) {
     throw new Error(
       sanitizeErrorMessage(
-        data?.error?.message || 'Endpoint ne is API key ko reject kar diya.',
-        'Endpoint ne is API key ko reject kar diya.'
+        data?.error?.message || 'The custom endpoint rejected this API key.',
+        'The custom endpoint rejected this API key.'
       )
     );
   }
@@ -172,7 +172,7 @@ export async function listCustomModels(baseUrl: string, apiKey: string): Promise
  */
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   if (req.method !== 'POST') {
-    sendError(res, 405, 'POST method chahiye.');
+    sendError(res, 405, 'Method not allowed. Use POST.', 'METHOD_NOT_ALLOWED');
     return;
   }
 
@@ -185,9 +185,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   try {
     const body = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.byokValidate });
     provider = parseProviderId(body);
-    key = requiredString(body, 'apiKey', FIELD_LIMITS.apiKeyChars, 'API key required hai.');
+    key = requiredString(body, 'apiKey', FIELD_LIMITS.apiKeyChars, 'API key is required.', 'API_KEY_REQUIRED');
     // A custom endpoint's URL is vetted before anything is fetched from it.
-    endpoint = provider === 'custom' ? resolveCustomEndpoint(body.baseUrl) : '';
+    endpoint = provider === 'custom' ? await resolveCustomEndpoint(body.baseUrl) : '';
   } catch (error) {
     if (sendIfRejected(res, error)) return;
     throw error;
@@ -206,7 +206,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     // Only Gemini and Groq promise a listing. A gateway that returns no models
     // is still a working key — the user types the model ids in Settings.
     if (models.length === 0 && provider !== 'custom') {
-      sendError(res, 422, 'Key valid hai par is par koi chat model available nahi mila.');
+      sendError(res, 422, 'The API key is valid, but no chat models are available for it.', 'NO_MODELS_AVAILABLE');
       return;
     }
 

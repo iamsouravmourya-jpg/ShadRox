@@ -178,7 +178,7 @@ export function Stage2Hub({
 
           {/* Unboxed release metadata */}
           <p className="mb-4 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-accent tabular-nums">
-            Desktop beta · v0.1.3 · Windows &amp; Browser
+            Desktop beta · v0.1.4 · Windows &amp; Browser
           </p>
 
           {/* Heading */}

@@ -6,17 +6,17 @@
 
 **Your project, code, AI, and preview — in one Windows workspace.**
 
-[![Version](https://img.shields.io/badge/version-0.1.3-violet?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
+[![Version](https://img.shields.io/badge/version-0.1.4-violet?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0d0f13?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](./LICENSE)
 
-[Download for Windows](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.3-Setup.exe) · [All releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Report an issue](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
+[Download for Windows](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.4-Setup.exe) · [All releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Report an issue](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
 
 </div>
 
 ShadRox is a native Electron desktop app that puts a code editor, BYOK AI chat and agent, live project preview, Git tools, a bundled Node debugger, an offline dead-code scanner, and an integrated terminal in one window. Open a local folder, edit files, ask your own AI provider for help, run the project, and commit — without leaving the workspace. Project files stay on your disk; only the prompt and context you choose are sent to the provider you configure. ShadRox is free, bring-your-own-key only, and has no billing.
 
-> **Beta software (v0.1.3).** Agent output and model-generated edits can be incorrect. Review changes, keep backups or use Git, and do not approve commands you do not understand. See [BETA_TERMS.md](./BETA_TERMS.md).
+> **Beta software (v0.1.4).** Agent output and model-generated edits can be incorrect. Review changes, keep backups or use Git, and do not approve commands you do not understand. See [BETA_TERMS.md](./BETA_TERMS.md).
 
 ## Features
 
@@ -33,7 +33,7 @@ ShadRox is a native Electron desktop app that puts a code editor, BYOK AI chat a
 
 ## Quick start
 
-1. **Download** the installer: [ShadRox-v0.1.3-Setup.exe](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.3-Setup.exe) (Windows 10/11, 64-bit). The build is unsigned — if SmartScreen warns, verify the download source, then choose **More info → Run anyway**. Details in [INSTALL.md](./INSTALL.md) and [docs/troubleshooting.md](./docs/troubleshooting.md).
+1. **Download** the installer: [ShadRox-v0.1.4-Setup.exe](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.4-Setup.exe) (Windows 10/11, 64-bit). The build is unsigned — if SmartScreen warns, verify the download source, then choose **More info → Run anyway**. Details in [INSTALL.md](./INSTALL.md) and [docs/troubleshooting.md](./docs/troubleshooting.md).
 2. **Install and sign in** with Google (required; you must accept the Terms and Privacy Policy first).
 3. **Add your own API key** in **Settings → Models & Keys** — Gemini, Groq, or a custom OpenAI-compatible endpoint. See [docs/byok.md](./docs/byok.md).
 4. **Open a folder** and start editing, asking, running, and committing.

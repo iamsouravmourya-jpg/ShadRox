@@ -7,7 +7,10 @@ const { randomUUID } = require('node:crypto');
 // main.cjs boots Electron when required, so the terminal output forwarder and
 // the terminal IPC handlers are extracted from source and evaluated with their
 // free variables injected (the same approach main.test.cjs uses).
-const mainSource = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8');
+const mainSource = [
+  fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'ipc', 'terminalJobsIpc.cjs'), 'utf8')
+].join('\n');
 
 function extractFunction(name) {
   const start = mainSource.indexOf(`function ${name}(`);

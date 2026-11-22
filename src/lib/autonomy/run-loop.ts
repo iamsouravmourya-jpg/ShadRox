@@ -21,6 +21,7 @@ import type {
   Verdict
 } from './types';
 import { ceilingReached, type CeilingStop, workUsageOf } from './budget';
+import { canonicalPathKey, isCaseInsensitivePlatform } from '../paths';
 
 export interface DriverDeps {
   ports: AutonomyPorts;
@@ -183,6 +184,15 @@ export async function runAutonomous(
     next.status = 'running';
     deps.ports.onEvent({ type: 'milestone:start', id: next.id });
 
+    // Snapshot which expected files already exist on disk before this milestone
+    // attempts any writes, so a no-op turn targeting an existing file is caught
+    // as an unfulfilled modification rather than passing on stale bytes.
+    const caseInsensitive = isCaseInsensitivePlatform() || /^[a-z]:/i.test(files[0] ?? '');
+    const existingSet = new Set(deps.ports.listFiles().map((file) => canonicalPathKey(file, caseInsensitive)));
+    const preExistingExpectedFiles = next.expectedFiles.filter((file) =>
+      existingSet.has(canonicalPathKey(file, caseInsensitive))
+    );
+
     let outcome: 'passed' | 'unverified' | 'failed' | 'blocked' | 'stopped' = 'failed';
     for (let attempt = 1; attempt <= deps.budget.maxAttemptsPerMilestone; attempt += 1) {
       if (userHalt(deps.ports) !== null) {
@@ -235,7 +245,8 @@ export async function runAutonomous(
       // that passed a clean check without touching a byte says so in its notes.
       const report = await deps.ports.verify(next, {
         patchesApplied: turn.patchesApplied,
-        changedFiles: turn.changedFiles
+        changedFiles: turn.changedFiles,
+        preExistingExpectedFiles
       });
       const verdict = verdictOf(report);
       const attemptRecord: Attempt = {

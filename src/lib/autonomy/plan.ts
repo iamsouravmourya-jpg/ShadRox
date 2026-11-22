@@ -14,6 +14,7 @@
  */
 
 import { findCycles } from './dag';
+import { canonicalPathKey, isCaseInsensitivePlatform } from '../paths';
 import type { Milestone, PlanError, RunBudget } from './types';
 
 /**
@@ -119,6 +120,124 @@ export function parsePlanReply(text: string): ParsedPlan {
   return { milestones, errors: [] };
 }
 
+function normalizePlanPath(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+/g, '/');
+}
+
+function mergeMilestoneGroup(group: Milestone[], targetFile: string, extraDeps: string[] = []): Milestone {
+  const head = group[0];
+  const groupIds = new Set(group.map((item) => item.id));
+  const combinedTitle =
+    group.length === 1
+      ? head.title
+      : `Update ${targetFile} (${group.map((item) => item.title).join('; ').slice(0, 140)})`;
+  const combinedInstruction =
+    group.length === 1
+      ? head.instruction
+      : group
+          .map((item, idx) => `${idx + 1}. ${item.title}: ${item.instruction}`)
+          .join('\n');
+  const dependsOn: string[] = [];
+  const seenDeps = new Set<string>();
+  for (const dep of [...extraDeps, ...group.flatMap((item) => item.dependsOn)]) {
+    if (!dep || groupIds.has(dep) || dep === head.id || seenDeps.has(dep)) continue;
+    seenDeps.add(dep);
+    dependsOn.push(dep);
+  }
+  const verifyCommand = [...group].reverse().find((item) => Boolean(item.verifyCommand))?.verifyCommand;
+  return {
+    id: head.id,
+    title: combinedTitle,
+    instruction: combinedInstruction,
+    expectedFiles: [targetFile],
+    dependsOn,
+    ...(verifyCommand ? { verifyCommand } : {}),
+    status: 'pending',
+    attempts: []
+  };
+}
+
+/**
+ * Collapses fragmented consecutive milestones that all edit the exact same
+ * pre-existing file (for example 5-7 separate section updates to `src/App.jsx`)
+ * into 1-2 structured milestones while remapping downstream dependencies cleanly.
+ */
+export function coalesceSingleFileMilestones(milestones: Milestone[], files: readonly string[]): Milestone[] {
+  if (milestones.length < 3 || files.length === 0) return milestones;
+
+  const caseInsensitive = isCaseInsensitivePlatform() || files.some((file) => /^[a-z]:/i.test(file));
+  const existingMap = new Map<string, string>();
+  for (const file of files) {
+    const clean = normalizePlanPath(file);
+    if (clean) existingMap.set(canonicalPathKey(clean, caseInsensitive), clean);
+  }
+
+  const keyForSingleExistingFile = (milestone: Milestone): string | null => {
+    if (milestone.expectedFiles.length !== 1) return null;
+    const clean = normalizePlanPath(milestone.expectedFiles[0]);
+    if (!clean) return null;
+    const key = canonicalPathKey(clean, caseInsensitive);
+    return existingMap.has(key) ? key : null;
+  };
+
+  const result: Milestone[] = [];
+  const idRemap = new Map<string, string>();
+  let index = 0;
+
+  while (index < milestones.length) {
+    const key = keyForSingleExistingFile(milestones[index]);
+    if (!key) {
+      result.push(milestones[index]);
+      index += 1;
+      continue;
+    }
+
+    let end = index + 1;
+    while (end < milestones.length && keyForSingleExistingFile(milestones[end]) === key) {
+      end += 1;
+    }
+
+    const run = milestones.slice(index, end);
+    if (run.length < 3) {
+      result.push(...run);
+      index = end;
+      continue;
+    }
+
+    const canonicalFile = existingMap.get(key) ?? normalizePlanPath(run[0].expectedFiles[0]);
+    if (run.length <= 4) {
+      const merged = mergeMilestoneGroup(run, canonicalFile);
+      for (const member of run) idRemap.set(member.id, merged.id);
+      result.push(merged);
+    } else {
+      const splitAt = Math.ceil(run.length / 2);
+      const firstHalf = run.slice(0, splitAt);
+      const secondHalf = run.slice(splitAt);
+      const firstMerged = mergeMilestoneGroup(firstHalf, canonicalFile);
+      const secondMerged = mergeMilestoneGroup(secondHalf, canonicalFile, [firstMerged.id]);
+      for (const member of firstHalf) idRemap.set(member.id, firstMerged.id);
+      for (const member of secondHalf) idRemap.set(member.id, secondMerged.id);
+      result.push(firstMerged, secondMerged);
+    }
+
+    index = end;
+  }
+
+  if (idRemap.size === 0) return milestones;
+
+  return result.map((milestone) => {
+    const mappedDeps: string[] = [];
+    const seen = new Set<string>();
+    for (const dep of milestone.dependsOn) {
+      const resolved = idRemap.get(dep) ?? dep;
+      if (resolved === milestone.id || seen.has(resolved)) continue;
+      seen.add(resolved);
+      mappedDeps.push(resolved);
+    }
+    return { ...milestone, dependsOn: mappedDeps };
+  });
+}
+
 /**
  * Every reason the plan must not run, in one pass. Returns an empty array for a
  * runnable plan. Milestone-scoped errors carry the offending id so the panel can
@@ -204,6 +323,7 @@ export function buildPlannerPrompt(goal: string, files: string[], budget: RunBud
     '  "expectedFiles": ["repo/relative/path.ts"], "dependsOn": ["m0"], "verifyCommand": "optional command to prove it" }',
     '',
     'Rules: ids are unique; dependsOn only references ids in this array; every path is repo-relative (no leading slash, no "..");',
+    'when updating multiple cohesive UI sections inside a single existing file (e.g. App.jsx or one page component), group those edits into 1-2 structured milestones rather than creating 5-7 section-by-section milestones;',
     'omit verifyCommand when there is nothing to run; do not wrap the array in prose.',
     '',
     'FILES CURRENTLY IN THE WORKSPACE:',
@@ -219,6 +339,8 @@ export function buildPlannerPrompt(goal: string, files: string[], budget: RunBud
 export function createPlanGoal(askPlan: (prompt: string) => Promise<string>) {
   return async (goal: string, files: string[], budget: RunBudget): Promise<ParsedPlan> => {
     const reply = await askPlan(buildPlannerPrompt(goal, files, budget));
-    return parsePlanReply(reply);
+    const parsed = parsePlanReply(reply);
+    if (parsed.errors.length > 0) return parsed;
+    return { milestones: coalesceSingleFileMilestones(parsed.milestones, files), errors: [] };
   };
 }

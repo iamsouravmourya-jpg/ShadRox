@@ -32,7 +32,7 @@ const FIM_MAX_OUTPUT_CHARS = 600;
  */
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   if (req.method !== 'POST') {
-    sendError(res, 405, 'POST method chahiye.');
+    sendError(res, 405, 'Method not allowed. Use POST.', 'METHOD_NOT_ALLOWED');
     return;
   }
 
@@ -49,7 +49,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     provider = parseProviderId(body);
     model = optionalString(body, 'model', FIELD_LIMITS.modelChars).trim() || ADAPTERS[provider].defaultModel;
     apiKey = optionalKey(body);
-    baseUrl = provider === 'custom' ? resolveCustomEndpoint(body.baseUrl) : undefined;
+    baseUrl = provider === 'custom' ? await resolveCustomEndpoint(body.baseUrl) : undefined;
     prefix = optionalString(body, 'prefix', FIELD_LIMITS.fimContextChars);
     suffix = optionalString(body, 'suffix', FIELD_LIMITS.fimContextChars);
     language = optionalString(body, 'language', FIELD_LIMITS.languageChars) || 'code';
@@ -72,7 +72,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   const resolved = resolveKeyAccess(apiKey);
   if ('error' in resolved) {
-    sendError(res, 400, resolved.error);
+    sendError(res, 400, resolved.error, 'BYOK_KEY_REQUIRED');
     return;
   }
   const { apiKey: spendKey } = resolved.access;

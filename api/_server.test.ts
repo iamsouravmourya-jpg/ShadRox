@@ -11,36 +11,44 @@ function makeStaticDir(): string {
   return dir;
 }
 
-test('startServer binds 127.0.0.1 by default when HOST is unset', async () => {
-  const previousHost = process.env.HOST;
-  delete process.env.HOST;
-  const staticDir = makeStaticDir();
-  const handle = await startServer({ mode: 'production', port: 0, staticDirectory: staticDir });
-  try {
-    const parsed = new URL(handle.origin);
-    assert.equal(parsed.hostname, '127.0.0.1');
-    const health = await fetch(`${handle.origin}/api/health`);
-    assert.equal(health.status, 200);
-  } finally {
-    await handle.close();
-    fs.rmSync(staticDir, { recursive: true, force: true });
-    if (previousHost === undefined) delete process.env.HOST;
-    else process.env.HOST = previousHost;
-  }
-});
+test.describe('startServer', { concurrency: false }, () => {
+  test('startServer binds 127.0.0.1 by default when HOST is unset', async () => {
+    const previousHost = process.env.HOST;
+    const previousLocalBackend = process.env.SHADROX_LOCAL_BACKEND;
+    delete process.env.HOST;
+    const staticDir = makeStaticDir();
+    const handle = await startServer({ mode: 'production', port: 0, staticDirectory: staticDir });
+    try {
+      const parsed = new URL(handle.origin);
+      assert.equal(parsed.hostname, '127.0.0.1');
+      const health = await fetch(`${handle.origin}/api/health`);
+      assert.equal(health.status, 200);
+    } finally {
+      await handle.close();
+      fs.rmSync(staticDir, { recursive: true, force: true });
+      if (previousHost === undefined) delete process.env.HOST;
+      else process.env.HOST = previousHost;
+      if (previousLocalBackend === undefined) delete process.env.SHADROX_LOCAL_BACKEND;
+      else process.env.SHADROX_LOCAL_BACKEND = previousLocalBackend;
+    }
+  });
 
-test('startServer honors explicit HOST env opt-in', async () => {
-  const previousHost = process.env.HOST;
-  process.env.HOST = '0.0.0.0';
-  const staticDir = makeStaticDir();
-  const handle = await startServer({ mode: 'production', port: 0, staticDirectory: staticDir });
-  try {
-    const parsed = new URL(handle.origin);
-    assert.equal(parsed.hostname, 'localhost');
-  } finally {
-    await handle.close();
-    fs.rmSync(staticDir, { recursive: true, force: true });
-    if (previousHost === undefined) delete process.env.HOST;
-    else process.env.HOST = previousHost;
-  }
+  test('startServer honors explicit HOST env opt-in', async () => {
+    const previousHost = process.env.HOST;
+    const previousLocalBackend = process.env.SHADROX_LOCAL_BACKEND;
+    process.env.HOST = '0.0.0.0';
+    const staticDir = makeStaticDir();
+    const handle = await startServer({ mode: 'production', port: 0, staticDirectory: staticDir });
+    try {
+      const parsed = new URL(handle.origin);
+      assert.equal(parsed.hostname, 'localhost');
+    } finally {
+      await handle.close();
+      fs.rmSync(staticDir, { recursive: true, force: true });
+      if (previousHost === undefined) delete process.env.HOST;
+      else process.env.HOST = previousHost;
+      if (previousLocalBackend === undefined) delete process.env.SHADROX_LOCAL_BACKEND;
+      else process.env.SHADROX_LOCAL_BACKEND = previousLocalBackend;
+    }
+  });
 });

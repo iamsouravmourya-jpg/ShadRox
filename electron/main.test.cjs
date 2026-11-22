@@ -7,7 +7,10 @@ const test = require('node:test');
 // helpers are extracted from source and evaluated as the pure functions they
 // are (the same source-inspection approach ts-ipc.test.cjs uses). Free variables
 // (spawn, timers, the job registry, IPC emission) are injected as parameters.
-const mainSource = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8');
+const mainSource = [
+  fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'ipc', 'terminalJobsIpc.cjs'), 'utf8')
+].join('\n');
 const { classifyCommand, READINESS_LOG_PATTERN, extractReadyUrl } = require('./command-risk.cjs');
 const { findPlantedShim, WINDOWS_CMD_SHIMS } = require('./verify-allowlist.cjs');
 
@@ -254,7 +257,7 @@ function buildExecutor(overrides = {}) {
     // Coalesced output rides its own channel in production; the harness records
     // both streams in one array so lifecycle assertions stay simple.
     (event) => events.push(event),
-    async (child) => { kills.push(child); child.emitClose(1); },
+    overrides.killProcessTree || (async (child) => { kills.push(child); child.emitClose(1); return true; }),
     overrides.checkReadyUrl || (async () => true),
     async (workspaceId, command, run) => proofs.push({ workspaceId, command, run }),
     READINESS_LOG_PATTERN,
@@ -524,4 +527,67 @@ test('constants match the owner decisions: 300s idle, 120s auto-bg, 30min ceilin
   assert.equal(JOB_CEILING_MS, 30 * 60_000);
   assert.equal(JOB_BUFFER_BYTES, 200 * 1024);
   assert.ok(JOB_READ_DEFAULT_CHARS > 0);
+});
+
+test('killProcessTree tries Windows taskkill and POSIX fallbacks and reports failure accurately', async () => {
+  const execCalls = [];
+  const winKillTree = new Function(
+    'process', 'treeKill', 'execFile', 'console',
+    `${extractFunction('killProcessTree')}\nreturn killProcessTree;`
+  )(
+    { platform: 'win32', kill: () => {} },
+    (_pid, _sig, cb) => cb(new Error('tree-kill failed')),
+    (file, args, _opts, cb) => { execCalls.push([file, ...args]); cb(null); },
+    { error: () => {} }
+  );
+  assert.equal(await winKillTree({ pid: 999, exitCode: null, signalCode: null, kill: () => false }), true);
+  assert.deepEqual(execCalls, [['taskkill', '/F', '/T', '/PID', '999']]);
+
+  const errors = [];
+  const winFailTree = new Function(
+    'process', 'treeKill', 'execFile', 'console',
+    `${extractFunction('killProcessTree')}\nreturn killProcessTree;`
+  )(
+    { platform: 'win32', kill: () => {} },
+    (_pid, _sig, cb) => cb(new Error('tree-kill failed')),
+    (_file, _args, _opts, cb) => cb(new Error('access denied')),
+    { error: (...args) => errors.push(args) }
+  );
+  assert.equal(await winFailTree({ pid: 999, exitCode: null, signalCode: null, kill: () => false }), false);
+  assert.equal(errors.length, 1);
+
+  const posixKillTree = new Function(
+    'process', 'treeKill', 'execFile', 'console',
+    `${extractFunction('killProcessTree')}\nreturn killProcessTree;`
+  )(
+    { platform: 'linux', kill: (pid) => { if (pid < 0) throw new Error('no group'); } },
+    (_pid, _sig, cb) => cb(new Error('tree-kill failed')),
+    () => {},
+    { error: () => {} }
+  );
+  assert.equal(await posixKillTree({ pid: 888, exitCode: null, signalCode: null, kill: () => false }), true);
+});
+
+test('failed killProcessTree keeps job running without setting killedReason or abandoning watchdog', async () => {
+  let killCalls = 0;
+  const harness = buildExecutor({
+    killProcessTree: async () => { killCalls += 1; return false; }
+  });
+  const pending = harness.executeCommand('node long.js', 'C:\\proj', { workspaceId: 'w1' });
+  const job = harness.registry.get('J1');
+  harness.timers.advance(COMMAND_AUTO_BACKGROUND_MS);
+  const bgResult = await pending;
+  assert.equal(bgResult.backgrounded, true);
+  harness.timers.advance(JOB_CEILING_MS);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(killCalls, 1);
+  assert.equal(job.status, 'running');
+  assert.equal(job.killedReason, null);
+  harness.spawns[0].child.emitClose(0);
+  assert.equal(job.status, 'exited');
+  assert.equal(job.exitCode, 0);
+});
+
+test('blob: window openings enforce sandbox, contextIsolation, and nodeIntegration false', () => {
+  assert.match(mainSource, /url\.startsWith\('blob:'\)[\s\S]{0,260}sandbox:\s*true[\s\S]{0,160}contextIsolation:\s*true[\s\S]{0,160}nodeIntegration:\s*false/);
 });

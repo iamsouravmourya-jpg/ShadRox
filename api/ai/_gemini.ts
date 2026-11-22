@@ -179,7 +179,7 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
 
     const blockReason = parsed?.promptFeedback?.blockReason;
     if (blockReason) {
-      throw new UpstreamError(`Model ne request block kar di (${blockReason}).`, 400);
+      throw new UpstreamError(`Model blocked the request (${blockReason}).`, 400);
     }
 
     const candidate = parsed?.candidates?.[0];
@@ -235,7 +235,7 @@ export async function streamGemini(request: StreamRequest, sink: StreamSink): Pr
   if (toolCalls.length > 0) sink.toolCalls(toolCalls);
 
   if (!fullText.trim() && toolCalls.length === 0) {
-    if (finishReason === 'SAFETY') throw new UpstreamError('Model ne response safety filter se block kar diya.', 400);
+    if (finishReason === 'SAFETY') throw new UpstreamError('Model blocked the response due to safety filters.', 400);
     // Same length-specific honesty as the OpenAI-family adapters: an empty
     // reply cut at the output limit is not a generic "empty response".
     throw new Error(

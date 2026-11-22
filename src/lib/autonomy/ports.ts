@@ -469,24 +469,35 @@ export async function verifyMilestone(
     }
   }
 
+  const MODIFICATION_INTENT_PATTERN = /\b(update|edit|modify|refactor|fix|patch|replace|rename|remove|wire|integrate|extend|enhance|improve|style|convert|migrate)\b/i;
+
   if (writes && writes.patchesApplied === 0 && (writes.changedFiles ?? 0) === 0) {
     notes.push('the milestone touched nothing: the turn applied no patches and changed no files.');
     if (verdict === 'passed' && unit.expectedFiles.length > 0) {
       // A clean check is not proof of work: a turn that wrote nothing can only
-      // pass when the files the milestone was meant to produce already exist
-      // on disk. Anything less is a no-op being laundered into a pass.
+      // pass when a creation milestone's outputs are already on disk. When the
+      // milestone targets pre-existing files or explicitly asks for an edit,
+      // zero writes means the requested modification never happened.
       if (typeof host.readFile === 'function') {
         const missing: string[] = [];
         for (const file of unit.expectedFiles) {
           try {
-            await host.readFile(file);
+            const content = await host.readFile(file);
+            if (content === null) missing.push(file);
           } catch {
             missing.push(file);
           }
         }
+        const hasPreExistingTarget = (writes.preExistingExpectedFiles?.length ?? 0) > 0;
+        const unitText = `${unit.title ?? ''} ${unit.instruction ?? ''}`;
+        const explicitModification = MODIFICATION_INTENT_PATTERN.test(unitText);
         if (missing.length > 0) {
           verdict = 'failed';
           notes.push(`the turn produced no changes and ${missing.length} expected file(s) are absent: ${missing.slice(0, 5).join(', ')}.`);
+        } else if (hasPreExistingTarget || explicitModification) {
+          verdict = 'failed';
+          const targets = (writes.preExistingExpectedFiles?.length ? writes.preExistingExpectedFiles : unit.expectedFiles).slice(0, 5);
+          notes.push(`the turn produced no changes to existing target file(s): ${targets.join(', ')}.`);
         }
       } else {
         verdict = 'unverified';

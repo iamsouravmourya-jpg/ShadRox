@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildPlannerPrompt, createPlanGoal, isSafeRelativePath, parsePlanReply, validatePlan } from './plan';
+import { buildPlannerPrompt, coalesceSingleFileMilestones, createPlanGoal, isSafeRelativePath, parsePlanReply, validatePlan } from './plan';
 import { DEFAULT_RUN_BUDGET, type Milestone, type PlanError, type RunBudget } from './types';
 
 const BUDGET: RunBudget = DEFAULT_RUN_BUDGET;
@@ -96,6 +96,43 @@ test('createPlanGoal hands the model the goal and the run constraints, and parse
   assert.deepEqual(planned.errors, []);
 });
 
-test('buildPlannerPrompt tolerates an empty workspace', () => {
-  assert.match(buildPlannerPrompt('goal', [], BUDGET), /no files yet/);
+test('buildPlannerPrompt tolerates an empty workspace and includes single-file grouping guidance', () => {
+  const prompt = buildPlannerPrompt('goal', [], BUDGET);
+  assert.match(prompt, /no files yet/);
+  assert.match(prompt, /1-2 structured milestones/);
+});
+
+test('coalesceSingleFileMilestones groups fragmented UI section updates targeting one existing file into 1-2 structured milestones', async () => {
+  const raw = JSON.stringify([
+    { id: 'm1', title: 'Setup theme CSS', instruction: 'update styles', expectedFiles: ['src/index.css'], dependsOn: [] },
+    { id: 'm2', title: 'Add Hero section', instruction: 'build hero', expectedFiles: ['src/App.jsx'], dependsOn: ['m1'] },
+    { id: 'm3', title: 'Add Features grid', instruction: 'build features', expectedFiles: ['src/App.jsx'], dependsOn: ['m2'] },
+    { id: 'm4', title: 'Add Stats strip', instruction: 'build stats', expectedFiles: ['src/App.jsx'], dependsOn: ['m3'] },
+    { id: 'm5', title: 'Add Pricing cards', instruction: 'build pricing', expectedFiles: ['src/App.jsx'], dependsOn: ['m4'] },
+    { id: 'm6', title: 'Add Testimonials', instruction: 'build reviews', expectedFiles: ['src/App.jsx'], dependsOn: ['m5'] },
+    { id: 'm7', title: 'Add Footer', instruction: 'build footer', expectedFiles: ['src/App.jsx'], dependsOn: ['m6'] },
+    { id: 'm8', title: 'Verify build', instruction: 'check bundle', expectedFiles: ['package.json'], dependsOn: ['m7'], verifyCommand: 'npm run build' }
+  ]);
+  const planGoal = createPlanGoal(async () => raw);
+  const parsed = await planGoal('Redesign landing page', ['src/index.css', 'src/App.jsx', 'package.json'], BUDGET);
+  assert.equal(parsed.errors.length, 0);
+  // m2..m7 (6 milestones all on src/App.jsx) coalesce into 2 structured milestones, preserving m1 and m8.
+  assert.equal(parsed.milestones.length, 4);
+  assert.deepEqual(parsed.milestones.map((m) => m.id), ['m1', 'm2', 'm5', 'm8']);
+  assert.deepEqual(parsed.milestones[1].dependsOn, ['m1']);
+  assert.deepEqual(parsed.milestones[2].dependsOn, ['m2']);
+  assert.deepEqual(parsed.milestones[3].dependsOn, ['m5']);
+  assert.deepEqual(validatePlan(parsed.milestones, ['src/index.css', 'src/App.jsx', 'package.json'], BUDGET), []);
+
+  // 3-4 fragmented milestones on one existing file coalesce into a single milestone.
+  const fourSingle = coalesceSingleFileMilestones(
+    [
+      milestone({ id: 'a1', title: 'Hero', expectedFiles: ['src/App.jsx'], dependsOn: [] }),
+      milestone({ id: 'a2', title: 'Body', expectedFiles: ['src/App.jsx'], dependsOn: ['a1'] }),
+      milestone({ id: 'a3', title: 'Footer', expectedFiles: ['src/App.jsx'], dependsOn: ['a2'] })
+    ],
+    ['src/App.jsx']
+  );
+  assert.equal(fourSingle.length, 1);
+  assert.match(fourSingle[0].instruction, /Hero[\s\S]*Body[\s\S]*Footer/);
 });

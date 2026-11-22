@@ -120,7 +120,7 @@ async function refineWithGroq(apiKey: string, rawPrompt: string, instruction: st
  */
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   if (req.method !== 'POST') {
-    sendError(res, 405, 'POST method chahiye.');
+    sendError(res, 405, 'Method not allowed. Use POST.', 'METHOD_NOT_ALLOWED');
     return;
   }
 
@@ -135,12 +135,12 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   try {
     const body = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.refine });
     provider = parseProviderId(body);
-    rawPrompt = requiredString(body, 'rawPrompt', FIELD_LIMITS.refinePromptChars, 'Prompt text chahiye.');
+    rawPrompt = requiredString(body, 'rawPrompt', FIELD_LIMITS.refinePromptChars, 'Prompt text is required.', 'PROMPT_REQUIRED');
     contextInfo = optionalString(body, 'contextInfo', FIELD_LIMITS.refineContextChars);
     mode = enumValue<RefineMode>(body, 'mode', ['code', 'plan', 'complex'] as const, 'code');
     model = optionalString(body, 'model', FIELD_LIMITS.modelChars).trim();
     // A custom endpoint is the user's own URL, vetted before anything is fetched.
-    endpoint = provider === 'custom' ? resolveCustomEndpoint(body.baseUrl) : '';
+    endpoint = provider === 'custom' ? await resolveCustomEndpoint(body.baseUrl) : '';
     // A plain `apiKey` is only honoured for the provider the caller named, which
     // is what the client used to do.
     const keys = keyByProvider(body, PROVIDERS);
@@ -152,7 +152,12 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   }
 
   if (provider === 'custom' && !model) {
-    sendError(res, 400, 'Custom endpoint ke liye model id chahiye. Settings → Models & Keys me endpoint verify karo ya “Model ids” me id daalo.');
+    sendError(
+      res,
+      400,
+      'A model id is required for custom endpoints. Verify your endpoint in Settings → Models & Keys or add one under "Model ids".',
+      'MODEL_ID_REQUIRED'
+    );
     return;
   }
 
@@ -160,7 +165,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   // the only path, and a request without one is refused here.
   const resolved = resolveKeyAccess(userKey);
   if ('error' in resolved) {
-    sendError(res, 400, resolved.error);
+    sendError(res, 400, resolved.error, 'BYOK_KEY_REQUIRED');
     return;
   }
   const { apiKey } = resolved.access;
@@ -173,7 +178,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         ? await refineWithGemini(apiKey, rawPrompt, instruction)
         : provider === 'groq'
           ? await refineWithGroq(apiKey, rawPrompt, instruction)
-          : await refineWithCompatibleEndpoint(endpoint, apiKey, model, rawPrompt, instruction);
+          : await refineWithCompatibleEndpoint(endpoint, apiKey, model, instruction, rawPrompt);
 
     const cleaned = produced.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
 

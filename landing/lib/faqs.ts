@@ -57,11 +57,11 @@ export const faqs = [
   },
   {
     q: 'Does the Junk & Dead-Code Scanner upload my code anywhere?',
-    a: 'No. In v0.1.3 the scanner walks your workspace locally in a non-blocking background pass, preserves serverless, edge, worker, Prisma, and Drizzle entry points, classifies High Confidence vs Needs Review files, and sends deleted items to the OS Trash / Recycle Bin.',
+    a: 'No. Since v0.1.3 and throughout v0.1.4, the scanner walks your workspace locally in a non-blocking background pass, preserves serverless, edge, worker, Prisma, and Drizzle entry points, classifies High Confidence vs Needs Review files, and sends deleted items to the OS Trash / Recycle Bin.',
   },
   {
     q: 'Do I have to install a debugger separately?',
-    a: 'No. ShadRox v0.1.3 bundles Microsoft\'s js-debug adapter directly inside the app and infers Node.js, TypeScript, Vite, and Next.js launch configs automatically when shadrox.debug.json is absent.',
+    a: 'No. ShadRox v0.1.4 bundles Microsoft\'s js-debug adapter directly inside the app and infers Node.js, TypeScript, Vite, and Next.js launch configs automatically when shadrox.debug.json is absent.',
   },
   {
     q: 'Where does feedback go?',

@@ -86,8 +86,8 @@ function neverAborts(): AbortSignal {
 }
 
 /** OpenAI-compatible chat completions always live at `{base}/chat/completions`. */
-function chatUrl(request: StreamRequest): string {
-  const base = resolveCustomEndpoint(request.baseUrl);
+async function chatUrl(request: StreamRequest): Promise<string> {
+  const base = await resolveCustomEndpoint(request.baseUrl);
   return `${base}/chat/completions`;
 }
 
@@ -96,7 +96,7 @@ export async function streamCustomEndpoint(
   sink: StreamSink
 ): Promise<StreamResult> {
   const { apiKey, model, temperature, signal } = request;
-  const url = chatUrl(request);
+  const url = await chatUrl(request);
   const mode = promptCacheMode(request.provider, model);
   const plan = shapeStablePrefix(request.provider, model, request.messages);
   const attempts = new AttemptCounter();
@@ -206,7 +206,7 @@ export async function streamCustomEndpoint(
 
   if (!response.ok) {
     throw new UpstreamError(
-      sanitizeErrorMessage(payload, 'Custom endpoint ne request reject kar diya.'),
+      sanitizeErrorMessage(payload, 'Custom endpoint rejected the request.'),
       response.status
     );
   }
@@ -294,7 +294,7 @@ export async function streamCustomEndpoint(
     response = await send(withTemperature, 1, withTools, withMarkers, withStreamOptions, withCacheKey);
     if (!response.ok) {
       throw new UpstreamError(
-        sanitizeErrorMessage(await readErrorPayload(response), 'Custom endpoint ne request reject kar diya.'),
+        sanitizeErrorMessage(await readErrorPayload(response), 'Custom endpoint rejected the request.'),
         response.status
       );
     }
@@ -349,7 +349,7 @@ export async function refineWithCompatibleEndpoint(
   userText: string,
   signal?: AbortSignal
 ): Promise<string> {
-  const url = `${resolveCustomEndpoint(rawBaseUrl)}/chat/completions`;
+  const url = `${await resolveCustomEndpoint(rawBaseUrl)}/chat/completions`;
   const response = await fetchUpstream(
     url,
     {
@@ -371,7 +371,7 @@ export async function refineWithCompatibleEndpoint(
 
   if (!response.ok) {
     throw new UpstreamError(
-      sanitizeErrorMessage(await readErrorPayload(response), 'Custom endpoint ne request reject kar diya.'),
+      sanitizeErrorMessage(await readErrorPayload(response), 'Custom endpoint rejected the request.'),
       response.status
     );
   }

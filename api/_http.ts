@@ -71,7 +71,7 @@ export async function readJsonBody<T = Record<string, unknown>>(
 export const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
 
 export function bodyTooLargeMessage(maxBytes: number): string {
-  return `Request body bahut bada hai — maximum ${Math.max(1, Math.round(maxBytes / 1024))}KB allowed hai.`;
+  return `Request body is too large — maximum ${Math.max(1, Math.round(maxBytes / 1024))}KB allowed.`;
 }
 
 /** Longest upstream/provider message we are willing to echo to the client. */
@@ -127,7 +127,7 @@ export function sanitizeErrorMessage(raw: unknown, fallback = 'Request failed.')
  */
 export function sendIfRejected(res: ApiResponse, error: unknown): boolean {
   if (error instanceof RequestRejectedError) {
-    sendError(res, error.status, error.message);
+    sendError(res, error.status, error.message, error.code);
     return true;
   }
   return false;
@@ -139,8 +139,8 @@ export function sendJson(res: ApiResponse, status: number, payload: unknown): vo
   res.end(JSON.stringify(payload));
 }
 
-export function sendError(res: ApiResponse, status: number, message: string): void {
-  sendJson(res, status, { error: message });
+export function sendError(res: ApiResponse, status: number, message: string, code?: string): void {
+  sendJson(res, status, code ? { error: message, code } : { error: message });
 }
 
 export function sendSseHeaders(res: ApiResponse): void {

@@ -1,7 +1,7 @@
 {
   "name": "shadrox",
   "private": true,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Native desktop AI engineering workspace with BYOK and live project preview.",
   "author": "Sourav Maurya",
   "license": "AGPL-3.0-only",
@@ -104,6 +104,9 @@
       "src/lib/**/*",
       "server.ts",
       "package.json",
+      "!.env",
+      "!.env.*",
+      "!.env.local",
       "!node_modules/.cache/**",
       "!**/.next/**",
       "!dist_desktop/**",

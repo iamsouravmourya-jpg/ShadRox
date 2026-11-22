@@ -225,7 +225,7 @@ test('verifyMilestone: a proof command killed by its time limit cannot carry a p
   assert.match(timedOut.notes.join(' '), /killed by its time limit/);
 });
 
-test('verifyMilestone: a zero-write turn fails while its expected files are absent, passes once they exist', async () => {
+test('verifyMilestone: a zero-write turn fails while its expected files are absent, passes once a creation milestone\'s outputs exist', async () => {
   const absent = await verifyMilestone(
     milestone(),
     host({ readFile: async () => { throw new Error('ENOENT'); } }),
@@ -244,6 +244,20 @@ test('verifyMilestone: a zero-write turn fails while its expected files are abse
   );
   assert.equal(present.verdict, 'passed', 'the expected files already on disk are the milestone\'s work');
   assert.match(present.notes.join(' '), /touched nothing/);
+});
+
+test('verifyMilestone: a zero-write turn fails when modifying a pre-existing file instead of passing falsely', async () => {
+  const preExisting = await verifyMilestone(
+    milestone({ title: 'Update App layout', instruction: 'update src/a.ts with hero section' }),
+    host({
+      listFiles: () => ['src/a.ts'],
+      readFile: async () => 'export const old = 1;'
+    }),
+    ROOT,
+    { patchesApplied: 0, changedFiles: 0, preExistingExpectedFiles: ['src/a.ts'] }
+  );
+  assert.equal(preExisting.verdict, 'failed');
+  assert.match(preExisting.notes.join(' '), /no changes to existing target file\(s\): src\/a\.ts/);
 });
 
 test('verifyMilestone: a host that reports no non-patch writes is taken at its word', async () => {

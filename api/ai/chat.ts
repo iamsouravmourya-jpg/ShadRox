@@ -65,7 +65,7 @@ function errorMessage(error: unknown, provider: ProviderId): string {
  */
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   if (req.method !== 'POST') {
-    sendError(res, 405, 'POST method chahiye.');
+    sendError(res, 405, 'Method not allowed. Use POST.', 'METHOD_NOT_ALLOWED');
     return;
   }
 
@@ -87,11 +87,12 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     model = optionalString(raw, 'model', FIELD_LIMITS.modelChars).trim() || adapter.defaultModel;
     apiKey = optionalKey(raw);
     if (provider === 'custom') {
-      baseUrl = resolveCustomEndpoint(raw.baseUrl);
+      baseUrl = await resolveCustomEndpoint(raw.baseUrl);
       if (!model) {
         throw new RequestRejectedError(
           400,
-          'Custom endpoint par model id chahiye. Settings → Models & Keys me endpoint verify karo ya “Model ids” me id daalo.'
+          'A model id is required for custom endpoints. Verify your endpoint in Settings → Models & Keys or add one under "Model ids".',
+          'MODEL_ID_REQUIRED'
         );
       }
     }
@@ -114,7 +115,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   }
 
   if (rawMessages.length === 0) {
-    sendError(res, 400, 'Kam se kam ek message chahiye.');
+    sendError(res, 400, 'At least one non-empty message is required.', 'EMPTY_MESSAGES');
     return;
   }
 
@@ -135,7 +136,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   const resolved = resolveKeyAccess(apiKey);
   if ('error' in resolved) {
-    sendError(res, 400, resolved.error);
+    sendError(res, 400, resolved.error, 'BYOK_KEY_REQUIRED');
     return;
   }
   const { apiKey: spendKey } = resolved.access;

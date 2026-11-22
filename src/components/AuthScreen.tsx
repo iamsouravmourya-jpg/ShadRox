@@ -59,7 +59,7 @@ export function AuthScreen({ status, busy, error, onSignIn }: AuthScreenProps) {
           <span className="text-xs font-semibold tracking-[-0.02em]">ShadRox</span>
         </span>
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-3 tabular-nums">
-          Desktop beta · v0.1.3 · Windows
+          Desktop beta · v0.1.4 · Windows
         </span>
       </header>
 

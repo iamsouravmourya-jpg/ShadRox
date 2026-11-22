@@ -58,9 +58,9 @@ async function safeCurrentHash(root, name) {
     if (stat.isSymbolicLink() || !stat.isDirectory() || !isWithinRoot(realRoot, await fs.realpath(parent))) return { status: 'unsafe' };
   }
   const destination = path.join(parent, parts[parts.length - 1]);
-  const stat = await fs.lstat(destination).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  const stat = await fs.lstat(destination, { bigint: true }).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
   if (!stat) return { status: 'missing' };
-  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1) return { status: 'unsafe' };
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1n) return { status: 'unsafe' };
   return { status: 'present', hash: hash(await fs.readFile(destination)) };
 }
 

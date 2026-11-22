@@ -15,7 +15,6 @@ import githubPush from './api/github/push';
 import type { ApiRequest, ApiResponse } from './api/_http';
 import { sendJson } from './api/_http';
 
-dotenv.config();
 
 const serverFile = typeof __filename === 'string' ? __filename : fileURLToPath(import.meta.url);
 const serverDirectory = path.dirname(serverFile);
@@ -116,6 +115,7 @@ export async function startServer(options: {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === serverFile) {
+  dotenv.config();
   void startServer().catch((error) => {
     console.error('[server] failed to start', error);
     process.exitCode = 1;

@@ -14,11 +14,13 @@
 /** Raised for input we reject on purpose; `_http.sendIfRejected` turns it into a response. */
 export class RequestRejectedError extends Error {
   readonly status: number;
+  readonly code?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.name = 'RequestRejectedError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -66,20 +68,21 @@ export function optionalString(raw: Raw, key: string, maxChars: number): string 
   const value = raw[key];
   if (value === undefined || value === null) return '';
   if (typeof value !== 'string') {
-    throw new RequestRejectedError(400, `\`${key}\` string hona chahiye.`);
+    throw new RequestRejectedError(400, `\`${key}\` must be a string.`, 'INVALID_FIELD_TYPE');
   }
   if (value.length > maxChars) {
     throw new RequestRejectedError(
       413,
-      `\`${key}\` bahut bada hai — maximum ${maxChars} characters allowed hai.`
+      `\`${key}\` is too large — maximum ${maxChars} characters allowed.`,
+      'FIELD_TOO_LARGE'
     );
   }
   return value;
 }
 
-export function requiredString(raw: Raw, key: string, maxChars: number, message: string): string {
+export function requiredString(raw: Raw, key: string, maxChars: number, message: string, code = 'MISSING_REQUIRED_FIELD'): string {
   const value = optionalString(raw, key, maxChars).trim();
-  if (!value) throw new RequestRejectedError(400, message);
+  if (!value) throw new RequestRejectedError(400, message, code);
   return value;
 }
 
@@ -127,12 +130,13 @@ export function chatMessages(raw: Raw, key = 'messages'): ChatMessageInputShape[
   const value = raw[key];
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
-    throw new RequestRejectedError(400, `\`${key}\` array hona chahiye.`);
+    throw new RequestRejectedError(400, `\`${key}\` must be an array.`, 'INVALID_FIELD_TYPE');
   }
   if (value.length > FIELD_LIMITS.chatMessages) {
     throw new RequestRejectedError(
       413,
-      `History me maximum ${FIELD_LIMITS.chatMessages} messages bhej sakte ho.`
+      `Too many messages in history — maximum ${FIELD_LIMITS.chatMessages} messages allowed.`,
+      'TOO_MANY_MESSAGES'
     );
   }
 
@@ -147,13 +151,14 @@ export function chatMessages(raw: Raw, key = 'messages'): ChatMessageInputShape[
       if (content.length > FIELD_LIMITS.chatMessageChars) {
         throw new RequestRejectedError(
           413,
-          `Ek message bahut bada hai — maximum ${FIELD_LIMITS.chatMessageChars} characters.`
+          `Message exceeds the maximum length of ${FIELD_LIMITS.chatMessageChars} characters.`,
+          'MESSAGE_TOO_LARGE'
         );
       }
       if (!CHAT_ROLES.includes(role as (typeof CHAT_ROLES)[number])) return null;
       const imageData = entry.imageData;
       if (imageData !== undefined && (typeof imageData !== 'string' || imageData.length > 1_200_000 || !/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\r\n]+$/i.test(imageData))) {
-        throw new RequestRejectedError(400, '`imageData` valid data URL hona chahiye.');
+        throw new RequestRejectedError(400, '`imageData` must be a valid base64 image data URL.', 'INVALID_IMAGE_DATA');
       }
       return {
         role: role as ChatMessageInputShape['role'],
@@ -173,12 +178,13 @@ export interface PushFile {
 export function pushFiles(raw: Raw, key = 'files'): PushFile[] {
   const value = raw[key];
   if (!Array.isArray(value)) {
-    throw new RequestRejectedError(400, `\`${key}\` array hona chahiye.`);
+    throw new RequestRejectedError(400, `\`${key}\` must be an array.`, 'INVALID_FIELD_TYPE');
   }
   if (value.length > FIELD_LIMITS.pushFiles) {
     throw new RequestRejectedError(
       413,
-      `Ek push me maximum ${FIELD_LIMITS.pushFiles} files bhej sakte ho.`
+      `Too many files in a single push — maximum ${FIELD_LIMITS.pushFiles} files allowed.`,
+      'TOO_MANY_FILES'
     );
   }
 
@@ -187,17 +193,18 @@ export function pushFiles(raw: Raw, key = 'files'): PushFile[] {
     const name = typeof file?.name === 'string' ? file.name.trim() : '';
     const content = typeof file?.content === 'string' ? file.content : '';
     if (!name || name.length > FIELD_LIMITS.pushFileNameChars) {
-      throw new RequestRejectedError(400, 'File ka naam required hai (max 300 characters).');
+      throw new RequestRejectedError(400, 'File name is required (max 300 characters).', 'INVALID_FILE_NAME');
     }
     // The name is interpolated into the GitHub contents path, so absolute and
     // parent-traversing names are refused rather than sanitised.
     if (name.startsWith('/') || name.includes('\\') || /(^|\/)\.\.(\/|$)/.test(name)) {
-      throw new RequestRejectedError(400, `File ka naam \`${name.slice(0, 40)}\` valid path nahi hai.`);
+      throw new RequestRejectedError(400, `File name \`${name.slice(0, 40)}\` is not a valid relative path.`, 'INVALID_FILE_PATH');
     }
     if (content.length > FIELD_LIMITS.pushFileContentChars) {
       throw new RequestRejectedError(
         413,
-        `File \`${name.slice(0, 60)}\` bahut badi hai — maximum ${FIELD_LIMITS.pushFileContentChars} characters.`
+        `File \`${name.slice(0, 60)}\` is too large — maximum ${FIELD_LIMITS.pushFileContentChars} characters.`,
+        'FILE_TOO_LARGE'
       );
     }
     return { name, content };
@@ -215,10 +222,10 @@ export function keyByProvider(raw: Raw, providers: readonly string[]): Record<st
     // user has no key for, so a missing entry is simply "no key".
     if (entry === undefined || entry === null) continue;
     if (typeof entry !== 'string') {
-      throw new RequestRejectedError(400, `\`apiKeyByProvider.${provider}\` string hona chahiye.`);
+      throw new RequestRejectedError(400, `\`apiKeyByProvider.${provider}\` must be a string.`, 'INVALID_FIELD_TYPE');
     }
     if (entry.length > FIELD_LIMITS.apiKeyChars) {
-      throw new RequestRejectedError(413, `API key bahut badi hai (max ${FIELD_LIMITS.apiKeyChars}).`);
+      throw new RequestRejectedError(413, `API key exceeds the maximum length of ${FIELD_LIMITS.apiKeyChars} characters.`, 'API_KEY_TOO_LARGE');
     }
     const trimmed = entry.trim();
     if (trimmed) out[provider] = trimmed;

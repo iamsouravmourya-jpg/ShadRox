@@ -3,7 +3,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const mainSource = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8');
+const mainSource = [
+  fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'ipc', 'workspaceIpc.cjs'), 'utf8')
+].join('\n');
 const preloadSource = fs.readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8');
 
 const channels = [

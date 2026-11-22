@@ -37,7 +37,7 @@ const panels: Panel[] = [
     tab: 'Autonomous runs',
     title: 'Plan. Patch.',
     accent: 'Verify. Repair.',
-    text: 'Big goals compile into a validated task DAG of milestones. When TypeScript checks fail, v0.1.3 feeds exact line-numbered source and local import contracts back into the repair turn.',
+    text: 'Big goals compile into a validated task DAG of milestones. When TypeScript checks fail, v0.1.4 feeds exact line-numbered source and local import contracts back into the repair turn.',
     bullets: [
       'Verified with TypeScript diagnostics and allowlisted or approved commands',
       'Failure briefs include failing source lines + exported signatures of local imports',

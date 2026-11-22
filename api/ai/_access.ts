@@ -29,7 +29,11 @@ export function isProviderId(value: unknown): value is ProviderId {
 export function parseProviderId(raw: Record<string, unknown>): ProviderId {
   if (raw.provider === undefined || raw.provider === null || raw.provider === '') return 'gemini';
   if (!isProviderId(raw.provider)) {
-    throw new RequestRejectedError(400, `Provider unknown nahi hai — ${PROVIDER_IDS.join(', ')} me se ek chuno.`);
+    throw new RequestRejectedError(
+      400,
+      `Unknown provider — choose one of: ${PROVIDER_IDS.join(', ')}.`,
+      'UNKNOWN_PROVIDER'
+    );
   }
   return raw.provider;
 }
@@ -42,7 +46,7 @@ export interface KeyAccess {
 }
 
 const BYOK_REQUIRED_ERROR =
-  'ShadRox sirf BYOK par chalta hai — apni key ke bina request nahi chal sakti. Settings → BYOK me apni Gemini, Groq, ya custom endpoint key add karo.';
+  'ShadRox is BYOK-only — requests require your own API key. Add your Gemini, Groq, or custom endpoint key in Settings → BYOK.';
 
 /**
  * Resolves the key a request may spend: the caller's own BYOK key, and nothing

@@ -5,8 +5,8 @@ import {
   ArrowRight,
   ArrowUpRight,
   CalendarDays,
-  Bug,
-  Eraser,
+  Cpu,
+  Layers,
   ShieldCheck,
   RefreshCw,
   BellRing,
@@ -19,7 +19,7 @@ import { APP_VERSION, WINDOWS_DOWNLOAD_URL, GITHUB_REPO, RELEASES_URL } from '@/
 export const metadata: Metadata = {
   title: 'ShadRox — Releases',
   description:
-    'What is new in ShadRox v0.1.3: bundled zero-config Node debugger (@vscode/js-debug), 100% offline junk and dead-code scanner with confidence triage and OS Trash move, and source-aware autonomous repair with explicit missing-target checks.',
+    'What is new in ShadRox v0.1.4: enterprise security hardening (DNS-rebinding SSRF defense, sandboxed blob windows, strict env packaging), Windows NTFS rewind safety & verified process termination, modular Electron/React architecture, and sharper autonomous verification.',
   alternates: { canonical: '/releases' },
 }
 
@@ -27,19 +27,19 @@ const RELEASE_TAG_URL = `${GITHUB_REPO}/releases/tag/v${APP_VERSION}`
 
 const highlights = [
   {
-    icon: Bug,
-    title: 'Bundled zero-config Node debugger',
-    text: '@vscode/js-debug ships inside ShadRox with an automatic stdio-to-TCP bridge — inspect variables, pause on breakpoints, and view call stacks on local scripts without installing VS Code or extra extensions.',
-  },
-  {
-    icon: Eraser,
-    title: 'Offline junk & dead-code scanner',
-    text: 'A local static dependency walker scans 10,000+ files off the UI thread, whitelists serverless functions, workers, Prisma, and Drizzle schemas, classifies findings into High Confidence or Needs Review, and sends removals safely to OS Trash.',
-  },
-  {
     icon: ShieldCheck,
-    title: 'Contract-aware autonomous repair',
-    text: 'When a milestone fails TypeScript verification, retry prompts inject the failing source lines and imported local type signatures directly, and autonomous teams verify requested target files exist before dispatching.',
+    title: 'Enterprise security hardening',
+    text: 'Hosted AI endpoint requests resolve DNS A/AAAA records upfront to block DNS-rebinding SSRF attacks, blob: popups run strictly sandboxed, and desktop builds exclude local .env files automatically.',
+  },
+  {
+    icon: Cpu,
+    title: 'Windows NTFS & process safety',
+    text: 'Checkpoint rewinds reliably detect and refuse Windows NTFS hardlinks before restoring files, and stopped background jobs verify process-tree termination with taskkill/SIGKILL fallbacks.',
+  },
+  {
+    icon: Layers,
+    title: 'Modular architecture & agent polish',
+    text: 'Domain-split Electron IPC and React workspace hooks cut monolith size cleanly while tightening autonomous milestone change verification, single-file milestone coalescing, and compact patch feedback.',
   },
 ]
 
@@ -135,14 +135,14 @@ export default function ReleasesPage() {
                 </div>
 
                 <h2 className="mt-6 max-w-[700px] text-balance text-[clamp(26px,3.6vw,42px)] font-bold tracking-[-0.04em] leading-[1.1] text-[var(--ink)]">
-                  Bundled debugger, offline scanner,{' '}
-                  <em className="font-normal italic text-[var(--ac)]">sharper repairs.</em>
+                  Enterprise hardened, modularly rebuilt,{' '}
+                  <em className="font-normal italic text-[var(--ac)]">rock-solid on Windows.</em>
                 </h2>
                 <p className="mt-4 max-w-[680px] text-sm leading-7 text-[var(--mut)]">
-                  Building on the v0.1.2 workspace hub and day/night themes, v{APP_VERSION} bundles
-                  Microsoft&apos;s Node debugger out of the box, ships an offline workspace
-                  junk &amp; dead-code scanner with OS Trash recovery, and sharpens autonomous
-                  TypeScript repairs — still free, still BYOK, with zero billing.
+                  Building on the v0.1.3 bundled Node debugger and offline dead-code scanner, v{APP_VERSION} hardens
+                  custom endpoint SSRF protection, sandboxes popup windows, guarantees safe Windows NTFS rewind &amp;
+                  process-tree cleanup, decomposes the core desktop &amp; workspace architecture, and refines autonomous
+                  milestone verification — still free, still BYOK, with zero billing.
                 </p>
 
                 {/* Highlights */}

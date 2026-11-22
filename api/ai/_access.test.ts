@@ -19,7 +19,7 @@ test('an unkeyed request is refused even when a provider key sits in the environ
     const result = resolveKeyAccess(undefined);
     assert.ok('error' in result);
     assert.equal('access' in result, false);
-    assert.match(result.error, /apni key/);
+    assert.match(result.error, /own API key/i);
     assert.match(result.error, /Settings → BYOK/);
   } finally {
     if (previous.gemini === undefined) delete process.env.SHADROX_GEMINI_API_KEY;

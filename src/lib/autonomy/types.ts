@@ -241,6 +241,8 @@ export interface TurnUnit extends VerifiableUnit {
 /** The slice a verifier needs: which unit, what to check, and how. */
 export interface VerifiableUnit {
   id: string;
+  title?: string;
+  instruction?: string;
   expectedFiles: string[];
   touchedFiles?: string[];
   verifyCommand?: string;
@@ -317,6 +319,8 @@ export interface TurnWrites {
   patchesApplied: number;
   /** Non-patch workspace mutations, when the host reports them. */
   changedFiles?: number;
+  /** Expected files that already existed before the milestone ran. */
+  preExistingExpectedFiles?: string[];
 }
 
 /**

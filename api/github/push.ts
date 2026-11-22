@@ -23,7 +23,7 @@ import {
  */
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   if (req.method !== 'POST') {
-    sendError(res, 405, 'POST method chahiye.');
+    sendError(res, 405, 'Method not allowed. Use POST.', 'METHOD_NOT_ALLOWED');
     return;
   }
 
@@ -35,15 +35,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   try {
     const body = await readJsonBody<Record<string, unknown>>(req, { maxBytes: BODY_LIMITS.githubPush });
-    cleanToken = requiredString(body, 'token', FIELD_LIMITS.apiKeyChars, 'token, owner, repo aur files required hain.');
-    owner = requiredString(body, 'owner', FIELD_LIMITS.repoNameChars, 'token, owner, repo aur files required hain.')
+    const missingMsg = 'token, owner, repo, and files are required.';
+    cleanToken = requiredString(body, 'token', FIELD_LIMITS.apiKeyChars, missingMsg, 'GITHUB_FIELDS_REQUIRED');
+    owner = requiredString(body, 'owner', FIELD_LIMITS.repoNameChars, missingMsg, 'GITHUB_FIELDS_REQUIRED')
       .replace(/[^A-Za-z0-9._-]/g, '')
       .slice(0, FIELD_LIMITS.repoNameChars);
-    repo = requiredString(body, 'repo', FIELD_LIMITS.repoNameChars, 'token, owner, repo aur files required hain.')
+    repo = requiredString(body, 'repo', FIELD_LIMITS.repoNameChars, missingMsg, 'GITHUB_FIELDS_REQUIRED')
       .replace(/[^A-Za-z0-9._-]/g, '')
       .slice(0, FIELD_LIMITS.repoNameChars);
     if (!Array.isArray(body.files) || body.files.length === 0) {
-      throw new RequestRejectedError(400, 'token, owner, repo aur files required hain.');
+      throw new RequestRejectedError(400, missingMsg, 'GITHUB_FIELDS_REQUIRED');
     }
     // File count, file-name length and per-file size are all capped here.
     files = pushFiles(body);

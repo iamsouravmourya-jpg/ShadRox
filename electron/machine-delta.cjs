@@ -1,4 +1,6 @@
 const fs = require('node:fs/promises');
+const { constants: fsConstants } = require('node:fs');
+const { execFile } = require('node:child_process');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { normalizeRelativePath, isWithinRoot } = require('./workspace.cjs');
@@ -7,6 +9,55 @@ const LIMITS = { files: 400, bytes: 8 * 1024 * 1024, directories: 300, records: 
 const LOCKFILES = ['yarn.lock', 'poetry.lock', 'uv.lock', 'Cargo.lock', 'Pipfile.lock', 'bun.lock'];
 const DEPENDENCY = /(?:^|\/)(?:package\.json|package-lock\.json|requirements\.txt|pyproject\.toml|pnpm-lock\.yaml|yarn\.lock|poetry\.lock|uv\.lock|Cargo\.(?:toml|lock)|Pipfile(?:\.lock)?|bun\.lock)$/i;
 const EXCLUDED = /(?:^|\/)(?:\.[^/]*|node_modules|vendor|dist[^/]*|build|out|coverage|reference|__pycache__|[^/]*(?:secret|credential)[^/]*)(?:\/|$)|\.(?:pem|key|pfx|p12|exe|dll)$/i;
+
+function defaultQueryNtfsHardlinks(destination) {
+  return new Promise((resolve) => {
+    execFile('fsutil.exe', ['hardlink', 'list', destination], { windowsHide: true, timeout: 4000 }, (error, stdout) => {
+      if (error) { resolve(null); return; }
+      const links = String(stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      resolve(links);
+    });
+  });
+}
+
+async function assertSafeRegularFile(destination, options = {}) {
+  const fsImpl = options.fsImpl || fs;
+  const platform = options.platform || process.platform;
+  const queryNtfsHardlinks = options.queryNtfsHardlinks || defaultQueryNtfsHardlinks;
+  const checkWindowsNtfsLinks = Boolean(options.checkWindowsNtfsLinks);
+
+  const lstat = await fsImpl.lstat(destination, { bigint: true }).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!lstat) return null;
+  if (lstat.isSymbolicLink() || !lstat.isFile() || lstat.nlink > 1n) {
+    throw new Error('Restore refuses links and non-files.');
+  }
+
+  let fileIndex = lstat.ino ? `${lstat.dev}:${lstat.ino}` : null;
+  if (typeof fsImpl.open === 'function') {
+    const handle = await fsImpl.open(destination, fsConstants.O_RDONLY);
+    try {
+      const hstat = await handle.stat({ bigint: true });
+      if (!hstat.isFile() || hstat.nlink > 1n) {
+        throw new Error('Restore refuses links and non-files.');
+      }
+      if ((lstat.ino && hstat.ino !== lstat.ino) || (lstat.dev && hstat.dev !== lstat.dev)) {
+        throw new Error('Restore refuses links and non-files.');
+      }
+      if (hstat.ino) fileIndex = `${hstat.dev}:${hstat.ino}`;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  if (platform === 'win32' && checkWindowsNtfsLinks) {
+    const links = await queryNtfsHardlinks(destination);
+    if (Array.isArray(links) && links.length > 1) {
+      throw new Error('Restore refuses links and non-files.');
+    }
+  }
+
+  return { lstat, fileIndex };
+}
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
@@ -39,6 +90,7 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
     let count = 0;
     let directories = 0;
     const omissions = [];
+    const seenFileIndices = new Map();
     while (pending.length) {
       if (++directories > limits.directories) { omissions.push('Directory capture limit reached.'); break; }
       const directory = pending.shift();
@@ -60,7 +112,17 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
           if (++count > limits.files) { omissions.push('File capture limit reached.'); break; }
           try {
             const destination = await target(opened.root, entry.path);
-            const stat = await fs.stat(destination);
+            const safety = await assertSafeRegularFile(destination);
+            if (!safety) { omissions.push(`Could not capture: ${entry.path}`); continue; }
+            if (safety.fileIndex) {
+              const previous = seenFileIndices.get(safety.fileIndex);
+              if (previous && previous !== entry.path) {
+                omissions.push(`Could not capture: ${previous}`);
+                throw new Error('Restore refuses links and non-files.');
+              }
+              seenFileIndices.set(safety.fileIndex, entry.path);
+            }
+            const stat = safety.lstat;
             if (stat.size > 2 * 1024 * 1024) throw new Error('File too large.');
             const buffer = await fs.readFile(destination);
             const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer);
@@ -169,7 +231,7 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
     return view(record);
   }
 
-  async function target(root, name) {
+  async function target(root, name, safetyOptions = {}) {
     const clean = normalizeRelativePath(name);
     const rootStat = await fs.lstat(root);
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || path.resolve(await fs.realpath(root)) !== path.resolve(root)) throw new Error('The workspace root changed.');
@@ -183,8 +245,7 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
       if (stat.isSymbolicLink() || !stat.isDirectory() || !isWithinRoot(root, await fs.realpath(parent))) throw new Error('Unsafe restore directory.');
     }
     const destination = path.join(root, clean);
-    const stat = await fs.lstat(destination).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
-    if (stat && (stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1)) throw new Error('Restore refuses links and non-files.');
+    await assertSafeRegularFile(destination, safetyOptions);
     return destination;
   }
 
@@ -209,7 +270,7 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
       await fs.writeFile(temporary, content, { flag: 'wx', mode });
       const checked = await readCurrent(root, name);
       if (checked.hash !== expectedHash) throw new Error(`Restore conflict: ${name} changed while writing.`);
-      if (expectedHash === null) { await fs.link(temporary, current.destination); await fs.unlink(temporary); }
+      if (expectedHash === null) await fs.copyFile(temporary, current.destination, fsConstants.COPY_FILE_EXCL);
       else await fs.rename(temporary, current.destination);
     } finally { await fs.rm(temporary, { force: true }); }
   }
@@ -231,7 +292,7 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
       if (!same(current.system.git, record.after.system.git) || !same(current.system.previews, record.after.system.previews)) throw new Error('Git or preview state changed after this turn; nothing was restored.');
       for (const change of summary.files) {
         if ((current.files[change.path]?.hash ?? null) !== change.afterHash) throw new Error(`Restore conflict: ${change.path} changed after this turn.`);
-        await target(record.root, change.path);
+        await target(record.root, change.path, { checkWindowsNtfsLinks: true });
       }
       if (summary.git.positionChanged) gitTransaction = await prepareGitRestore(id, record.before.system.git, record.after.system.git);
       try {
@@ -271,4 +332,4 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
     assertWritable: () => { if (busy.size) throw new Error('Wait for machine rewind to finish.'); } };
 }
 
-module.exports = { createMachineDelta, changesBetween, LIMITS };
+module.exports = { createMachineDelta, changesBetween, assertSafeRegularFile, LIMITS };
