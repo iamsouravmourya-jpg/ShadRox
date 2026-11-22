@@ -6,7 +6,7 @@ Common problems on the Windows beta, and where to look when something fails.
 
 The Windows installer is **not code-signed**, so SmartScreen may show "Windows protected your PC". This is expected for the beta.
 
-1. Verify the download came from `https://github.com/iamsouravmourya-jpg/ShadRox/releases` (the direct asset is `ShadRox-v0.1.4-Setup.exe`).
+1. Verify the download came from [shadrox.cyou/download](https://www.shadrox.cyou/download) (the direct asset is `ShadRox-v0.1.4-Setup.exe`).
 2. Choose **More info → Run anyway**.
 
 Do not run installers from mirrors or re-uploads you cannot verify.
@@ -69,7 +69,7 @@ The user-data folder is Electron's per-app directory — on Windows under `%APPD
 
 ## Updates
 
-The app checks for a newer release 15 seconds after start and every 6 hours, and shows a badge when one exists. It does **not** download or install updates by itself — download the new installer from GitHub Releases and run it.
+The app checks for a newer release 15 seconds after start and every 6 hours, and shows a badge when one exists. It does **not** download or install updates by itself — download the new installer from [shadrox.cyou/download](https://www.shadrox.cyou/download) and run it.
 
 ## Sign-in and source builds
 
@@ -77,9 +77,9 @@ The app checks for a newer release 15 seconds after start and every 6 hours, and
 - Running from source needs a Supabase project configured in `.env` (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`). See [features.md](./features.md#building-from-source).
 - In the browser dev build your provider key sits in `localStorage` in plain text — see [byok.md](./byok.md#where-keys-are-stored).
 
-Still stuck? Open an issue at <https://github.com/iamsouravmourya-jpg/ShadRox/issues>. For suspected vulnerabilities, use private reporting per [SECURITY.md](../SECURITY.md) — never a public issue.
+Still stuck? Use the in-app **Feedback** button or visit <https://www.shadrox.cyou/faq#support>. For suspected vulnerabilities, use private reporting per [SECURITY.md](../SECURITY.md) — never disclose them publicly.
 
 ## Keep reading
 
 - [Features](./features.md) · [BYOK & keys](./byok.md) · [Agent tools](./agent-tools.md) · [Troubleshooting](./troubleshooting.md) · [FAQ](./faq.md)
-- [README](../README.md) · [Website](https://www.shadrox.cyou) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Contributors](https://www.shadrox.cyou/contributors)
+- [README](../README.md) · [Website](https://www.shadrox.cyou) · [Releases](https://www.shadrox.cyou/releases) · [Contributors](https://www.shadrox.cyou/contributors)

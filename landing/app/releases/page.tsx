@@ -3,7 +3,6 @@ import Link from 'next/link'
 import {
   Download,
   ArrowRight,
-  ArrowUpRight,
   CalendarDays,
   Cpu,
   Layers,
@@ -14,7 +13,7 @@ import {
 } from 'lucide-react'
 import { PageShell } from '@/components/landing/page-shell'
 import { Reveal } from '@/components/landing/reveal'
-import { APP_VERSION, WINDOWS_DOWNLOAD_URL, GITHUB_REPO, RELEASES_URL } from '@/lib/download'
+import { APP_VERSION, INSTALLER_DOWNLOAD_URL } from '@/lib/download'
 
 export const metadata: Metadata = {
   title: 'ShadRox — Releases',
@@ -22,8 +21,6 @@ export const metadata: Metadata = {
     'What is new in ShadRox v0.1.4: enterprise security hardening (DNS-rebinding SSRF defense, sandboxed blob windows, strict env packaging), Windows NTFS rewind safety & verified process termination, modular Electron/React architecture, and sharper autonomous verification.',
   alternates: { canonical: '/releases' },
 }
-
-const RELEASE_TAG_URL = `${GITHUB_REPO}/releases/tag/v${APP_VERSION}`
 
 const highlights = [
   {
@@ -107,10 +104,10 @@ export default function ReleasesPage() {
       eyebrow="Releases"
       title="What's new"
       accent="in ShadRox."
-      sub="Every ShadRox build is published on GitHub Releases. Here is what changed in the current version, how updates reach you, and where older installers went."
+      sub="Every official ShadRox build is distributed from shadrox.cyou. Here is what changed in the current version, how updates reach you, and how older installers are rotated."
     >
       {/* ── Current release ── */}
-      <section className="bg-[var(--bg)] px-5 pb-16 pt-2 lg:px-8 lg:pb-24">
+      <section id="latest" className="scroll-mt-28 bg-[var(--bg)] px-5 pb-16 pt-2 lg:px-8 lg:pb-24">
         <div className="mx-auto max-w-[1180px]">
           <Reveal variant="scale">
             <article className="relative overflow-hidden rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-10">
@@ -166,21 +163,19 @@ export default function ReleasesPage() {
                 {/* Actions */}
                 <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
                   <a
-                    href={WINDOWS_DOWNLOAD_URL}
+                    href={INSTALLER_DOWNLOAD_URL}
                     className="group inline-flex items-center justify-center gap-2.5 rounded-full bg-[linear-gradient(110deg,var(--ac),var(--pink))] px-7 py-3.5 text-sm font-bold text-white shadow-[0_12px_36px_var(--glow)] transition hover:-translate-y-0.5 hover:shadow-[0_20px_48px_var(--glow)]"
                   >
                     <Download className="size-4" />
                     Download v{APP_VERSION}
                   </a>
-                  <a
-                    href={RELEASE_TAG_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <Link
+                    href="/download#verify"
                     className="group inline-flex items-center justify-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--card)] px-7 py-3.5 text-sm font-semibold text-[var(--ink)] transition hover:border-[var(--ac)] hover:text-[var(--ac)]"
                   >
-                    Release page on GitHub
-                    <ArrowUpRight className="size-4 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
-                  </a>
+                    Verify SHA-512 checksum
+                    <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" />
+                  </Link>
                 </div>
                 <p className="mt-4 text-xs leading-5 text-[var(--mut)]">
                   Unsigned build — Windows SmartScreen may warn you; choose{' '}
@@ -236,20 +231,17 @@ export default function ReleasesPage() {
                     Only the latest installer is kept.
                   </h3>
                   <p className="mt-2 text-sm leading-7 text-[var(--mut)]">
-                    ShadRox keeps just the current installer on GitHub Releases. When a new build
-                    ships, older installers are removed — so this page documents the current version
-                    rather than a full history. For every release and its notes, go straight to
-                    GitHub.
+                    ShadRox keeps only the current official installer available on shadrox.cyou. When
+                    a new build ships, older installers are rotated out — so this page documents the
+                    current version directly without external mirrors.
                   </p>
-                  <a
-                    href={RELEASES_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <Link
+                    href="/download"
                     className="group mt-5 inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--bg2)] px-5 py-2.5 text-sm font-semibold text-[var(--ink)] transition hover:border-[var(--ac)] hover:text-[var(--ac)]"
                   >
-                    Browse all releases on GitHub
-                    <ArrowUpRight className="size-4 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
-                  </a>
+                    Go to download &amp; install guide
+                    <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" />
+                  </Link>
                 </div>
               </div>
             </div>
@@ -280,7 +272,7 @@ export default function ReleasesPage() {
                 </p>
                 <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
                   <a
-                    href={WINDOWS_DOWNLOAD_URL}
+                    href={INSTALLER_DOWNLOAD_URL}
                     className="group inline-flex items-center justify-center gap-2.5 rounded-full bg-[linear-gradient(110deg,var(--ac),var(--pink))] px-7 py-3.5 text-sm font-bold text-white shadow-[0_12px_36px_var(--glow)] transition hover:-translate-y-0.5 hover:shadow-[0_20px_48px_var(--glow)]"
                   >
                     <Download className="size-4" />

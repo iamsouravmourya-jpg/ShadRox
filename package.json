@@ -90,10 +90,8 @@
     },
     "publish": [
       {
-        "provider": "github",
-        "owner": "iamsouravmourya-jpg",
-        "repo": "ShadRox",
-        "releaseType": "release"
+        "provider": "generic",
+        "url": "https://www.shadrox.cyou/releases"
       }
     ],
     "files": [

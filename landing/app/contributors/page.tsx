@@ -1,9 +1,9 @@
 import type { Metadata } from 'next'
-import { ArrowUpRight, Briefcase, Crown, GitBranch, HeartHandshake, MessageSquareWarning, Sparkles } from 'lucide-react'
+import Link from 'next/link'
+import { ArrowRight, ArrowUpRight, Briefcase, Crown, HeartHandshake, MessageSquareWarning, Sparkles, UserRound } from 'lucide-react'
 import { PageShell } from '@/components/landing/page-shell'
 import { Reveal } from '@/components/landing/reveal'
 import { contributors } from '@/lib/contributors'
-import { GITHUB_REPO } from '@/lib/download'
 
 export const metadata: Metadata = {
   title: 'ShadRox — Contributors & supporters',
@@ -19,7 +19,7 @@ const COMPANY_LINKEDIN = 'https://www.linkedin.com/company/shadrox'
 const FOUNDER = {
   name: 'Sourav Maurya',
   linkedin: 'https://www.linkedin.com/company/shadrox',
-  github: 'https://github.com/iamsouravmourya-jpg',
+  about: '/about',
 }
 
 function initials(name: string) {
@@ -35,8 +35,8 @@ const ways = [
   {
     icon: MessageSquareWarning,
     title: 'Break the beta',
-    text: 'Install ShadRox, use it on your real projects and report what fails. Every honest bug report makes the app better.',
-    link: { label: 'Report an issue', href: `${GITHUB_REPO}/issues` },
+    text: 'Install ShadRox, use it on your real projects and report what fails via the in-app Feedback panel or FAQ support.',
+    link: { label: 'Report an issue', href: '/faq#support' },
   },
   {
     icon: Sparkles,
@@ -110,16 +110,14 @@ export default function ContributorsPage() {
                       LinkedIn
                       <ArrowUpRight className="size-3.5 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
                     </a>
-                    <a
-                      href={FOUNDER.github}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <Link
+                      href={FOUNDER.about}
                       className="group inline-flex items-center gap-2 text-[13px] font-bold text-[var(--ac)] transition hover:gap-3"
                     >
-                      <GitBranch className="size-4" strokeWidth={1.75} />
-                      GitHub
-                      <ArrowUpRight className="size-3.5 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
-                    </a>
+                      <UserRound className="size-4" strokeWidth={1.75} />
+                      About founder
+                      <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+                    </Link>
                   </div>
                 </div>
               </div>

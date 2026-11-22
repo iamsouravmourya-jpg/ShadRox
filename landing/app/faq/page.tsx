@@ -5,7 +5,6 @@ import { PageShell } from '@/components/landing/page-shell'
 import { Faq } from '@/components/landing/faq'
 import { faqs } from '@/lib/faqs'
 import { Reveal } from '@/components/landing/reveal'
-import { GITHUB_REPO } from '@/lib/download'
 
 export const metadata: Metadata = {
   title: 'ShadRox — FAQ',
@@ -37,7 +36,7 @@ export default function FaqPage() {
       <Faq />
 
       {/* ── Still stuck? ── */}
-      <section className="border-t border-[var(--line)] bg-[var(--bg)] px-5 py-16 lg:px-8 lg:py-20">
+      <section id="support" className="scroll-mt-28 border-t border-[var(--line)] bg-[var(--bg)] px-5 py-16 lg:px-8 lg:py-20">
         <div className="mx-auto max-w-3xl">
           <Reveal variant="scale">
             <div className="feature-card rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6 sm:p-8">
@@ -51,20 +50,20 @@ export default function FaqPage() {
                       Still stuck?
                     </h2>
                     <p className="mt-2 text-sm leading-6 text-[var(--mut)]">
-                      If the app does something these answers do not cover, open an issue on GitHub.
-                      Bugs and questions both go to the same tracker.
+                      If the app does something these answers do not cover, use the in-app Feedback
+                      panel or reach ShadRox directly on LinkedIn.
                     </p>
                   </div>
                 </div>
 
                 <div className="flex shrink-0 flex-col gap-3 sm:items-end">
                   <a
-                    href={`${GITHUB_REPO}/issues`}
+                    href="https://www.linkedin.com/company/shadrox"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="group inline-flex items-center justify-center gap-2 rounded-full bg-[linear-gradient(110deg,var(--ac),var(--pink))] px-6 py-3 text-sm font-bold text-white shadow-[0_10px_28px_var(--glow)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_36px_var(--glow)]"
                   >
-                    Report an issue
+                    Contact ShadRox
                     <ArrowUpRight className="size-4 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
                   </a>
                   <Link

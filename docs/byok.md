@@ -71,4 +71,4 @@ The URL is encoded at build time and decoded in memory — a speed bump against 
 ## Keep reading
 
 - [Features](./features.md) · [BYOK & keys](./byok.md) · [Agent tools](./agent-tools.md) · [Troubleshooting](./troubleshooting.md) · [FAQ](./faq.md)
-- [README](../README.md) · [Website](https://www.shadrox.cyou) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Contributors](https://www.shadrox.cyou/contributors)
+- [README](../README.md) · [Website](https://www.shadrox.cyou) · [Releases](https://www.shadrox.cyou/releases) · [Contributors](https://www.shadrox.cyou/contributors)

@@ -2,7 +2,6 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import {
   ArrowRight,
-  ArrowUpRight,
   CircleCheck,
   Download,
   FileDiff,
@@ -369,15 +368,13 @@ export default function AgentPage() {
                 <p className="mt-2 max-w-[720px] text-sm leading-7 text-[var(--mut)]">
                   Agent, autonomous run and team features are beta. Model output can be wrong —
                   review the results and keep backups of important work.{' '}
-                  <a
+                  <Link
                     href={RELEASES_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
                     className="inline-flex items-center gap-0.5 font-semibold text-[var(--ac)] transition hover:opacity-80"
                   >
                     See official releases &amp; changelog
-                    <ArrowUpRight className="size-3" />
-                  </a>
+                    <ArrowRight className="size-3" />
+                  </Link>
                 </p>
               </div>
             </div>

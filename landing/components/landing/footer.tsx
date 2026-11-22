@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { APP_VERSION, GITHUB_REPO, RELEASES_URL } from '@/lib/download'
+import { APP_VERSION, LATEST_RELEASE_URL, RELEASES_URL } from '@/lib/download'
 import { Logo } from './navbar'
 
 const cols = [
@@ -20,15 +20,15 @@ const cols = [
     title: 'Download',
     links: [
       { label: `Windows (v${APP_VERSION})`, href: '/download' },
-      { label: 'All releases',              href: '/releases' },
-      { label: `v${APP_VERSION} release notes`, href: `${GITHUB_REPO}/releases/tag/v${APP_VERSION}`, external: true },
+      { label: 'All releases',              href: RELEASES_URL },
+      { label: `v${APP_VERSION} release notes`, href: LATEST_RELEASE_URL },
     ],
   },
   {
     title: 'Support',
     links: [
       { label: 'FAQ',             href: '/faq' },
-      { label: 'Report an issue', href: `${GITHUB_REPO}/issues`, external: true },
+      { label: 'Report an issue', href: '/faq#support' },
     ],
   },
   {
@@ -36,7 +36,6 @@ const cols = [
     links: [
       { label: 'About the founder', href: '/about' },
       { label: 'Contributors',      href: '/contributors' },
-      { label: 'GitHub releases',   href: RELEASES_URL, external: true },
       { label: 'LinkedIn (company)', href: 'https://www.linkedin.com/company/shadrox', external: true },
       { label: 'shadrox.cyou',      href: 'https://www.shadrox.cyou', external: true },
     ],

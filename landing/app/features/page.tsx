@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { ArrowRight, ArrowUpRight, Check, Download } from 'lucide-react'
+import { ArrowRight, Check, Download } from 'lucide-react'
 import { PageShell } from '@/components/landing/page-shell'
 import { Reveal } from '@/components/landing/reveal'
 import { Features } from '@/components/landing/features'
@@ -104,13 +104,13 @@ export default function FeaturesPage() {
                     ))}
                   </ul>
                   <div className="mt-6 border-t border-[var(--line)] pt-5">
-                    <a
+                    <Link
                       href={RELEASES_URL}
                       className="group inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--mut)] transition hover:text-[var(--ac)]"
                     >
-                      Browse releases on GitHub
-                      <ArrowUpRight className="size-3.5 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
-                    </a>
+                      View release notes &amp; changelog
+                      <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+                    </Link>
                   </div>
                 </div>
               </div>

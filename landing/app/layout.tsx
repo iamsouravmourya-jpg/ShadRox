@@ -2,7 +2,7 @@ import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { Plus_Jakarta_Sans } from 'next/font/google'
 import { ThemeProvider } from '@/components/landing/theme-provider'
-import { APP_VERSION, GITHUB_REPO, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
+import { APP_VERSION } from '@/lib/download'
 import { SITE_URL, SITE_URL_CYOU, SITE_URL_TECH } from '@/lib/site'
 import './globals.css'
 
@@ -21,7 +21,7 @@ export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: TITLE,
   description: DESCRIPTION,
-  authors: [{ name: 'Sourav Maurya', url: 'https://github.com/iamsouravmourya-jpg' }],
+  authors: [{ name: 'Sourav Maurya', url: `${SITE_URL}/about` }],
   creator: 'Sourav Maurya',
   publisher: 'ShadRox',
   alternates: { canonical: '/' },
@@ -70,7 +70,6 @@ function buildJsonLd(siteUrl: string) {
         description: 'ShadRox is a founder-owned, local-first desktop AI coding workspace for Windows.',
         sameAs: [
           'https://www.linkedin.com/company/shadrox',
-          GITHUB_REPO,
           SITE_URL_TECH,
           SITE_URL_CYOU,
         ],
@@ -79,8 +78,8 @@ function buildJsonLd(siteUrl: string) {
         '@type': 'Person',
         '@id': `${siteUrl}/#sourav-maurya`,
         name: 'Sourav Maurya',
-        url: 'https://github.com/iamsouravmourya-jpg',
-        sameAs: ['https://github.com/iamsouravmourya-jpg', 'https://www.linkedin.com/in/sourav-maurya-45b272377'],
+        url: `${siteUrl}/about`,
+        sameAs: [`${siteUrl}/about`, 'https://www.linkedin.com/in/sourav-maurya-45b272377'],
         jobTitle: 'Founder, Solo Developer & AI Engineer',
         description: 'A full-stack developer and AI engineer from Delhi, India. Founder and owner of ShadRox.',
         address: { '@type': 'PostalAddress', addressLocality: 'Delhi', addressCountry: 'IN' },
@@ -100,7 +99,7 @@ function buildJsonLd(siteUrl: string) {
         softwareVersion: APP_VERSION,
         dateModified: '2026-11-18',
         url: siteUrl,
-        downloadUrl: WINDOWS_DOWNLOAD_URL,
+        downloadUrl: `${siteUrl}/download`,
         offers: { '@type': 'Offer', price: '0', priceCurrency: 'INR', availability: 'https://schema.org/InStock' },
         image: `${siteUrl}/brand-logo.png`,
         author: { '@id': `${siteUrl}/#sourav-maurya` },

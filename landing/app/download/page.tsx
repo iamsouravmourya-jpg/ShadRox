@@ -3,7 +3,6 @@ import Link from 'next/link'
 import {
   Download,
   ArrowRight,
-  ArrowUpRight,
   PackageCheck,
   ShieldAlert,
   LogIn,
@@ -18,7 +17,7 @@ import {
 } from 'lucide-react'
 import { PageShell } from '@/components/landing/page-shell'
 import { Reveal } from '@/components/landing/reveal'
-import { APP_VERSION, WINDOWS_DOWNLOAD_URL, LATEST_RELEASE_URL } from '@/lib/download'
+import { APP_VERSION, INSTALLER_DOWNLOAD_URL, LATEST_RELEASE_URL } from '@/lib/download'
 import { CopyButton } from './copy-button'
 import { SmartScreenMock } from './smartscreen-mock'
 
@@ -36,7 +35,7 @@ const steps = [
   {
     icon: PackageCheck,
     title: 'Download the installer',
-    text: `Save ${INSTALLER_NAME} with the button above. Make sure it comes from the official GitHub release — that is the only place the installer is published.`,
+    text: `Save ${INSTALLER_NAME} with the button above. Make sure it comes directly from shadrox.cyou — that is the only official source for ShadRox installers.`,
   },
   {
     icon: ShieldAlert,
@@ -93,7 +92,7 @@ const trustAnchors = [
   {
     icon: EyeOff,
     title: 'No hidden telemetry',
-    text: 'The app runs no usage analytics. Google sign-in stores only email, name, avatar, app version and platform — and the only background network call is the update check against GitHub Releases.',
+    text: 'The app runs no usage analytics. Google sign-in stores only email, name, avatar, app version and platform — and the only background network call is the update check against the official ShadRox release feed.',
   },
   {
     icon: KeyRound,
@@ -190,7 +189,7 @@ export default function DownloadPage() {
 
                 <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
                   <a
-                    href={WINDOWS_DOWNLOAD_URL}
+                    href={INSTALLER_DOWNLOAD_URL}
                     className="cta-primary group w-full whitespace-nowrap shrink-0 sm:w-auto"
                   >
                     <Download className="size-4" aria-hidden />
@@ -355,15 +354,13 @@ export default function DownloadPage() {
                   <h3 className="text-[15px] font-bold tracking-[-0.01em] text-[var(--ink)]">{title}</h3>
                   <p className="mt-1.5 text-[13px] leading-6 text-[var(--mut)]">{text}</p>
                   {link && (
-                    <a
+                    <Link
                       href={link.href}
-                      target="_blank"
-                      rel="noopener noreferrer"
                       className="group mt-4 inline-flex items-center gap-1 text-[13px] font-semibold text-[var(--ac)] hover:underline hover:underline-offset-4"
                     >
                       {link.label}
-                      <ArrowUpRight className="size-3.5" aria-hidden />
-                    </a>
+                      <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden />
+                    </Link>
                   )}
                 </article>
               </Reveal>
@@ -383,8 +380,8 @@ export default function DownloadPage() {
                   </h3>
                   <p className="mt-1.5 max-w-[520px] text-[13px] leading-6 text-[var(--mut)]">
                     A code-signing certificate is planned as the project grows. Until then,
-                    download only from the official GitHub release and verify the SHA-512
-                    digest against latest.yml before running.
+                    download only from shadrox.cyou and verify the SHA-512 digest against
+                    latest.yml before running.
                   </p>
                 </div>
               </div>
@@ -433,16 +430,14 @@ export default function DownloadPage() {
                   SHA-512 · published in latest.yml
                 </span>
                 <p className="mt-2.5 text-sm leading-6 text-[var(--mut)]">
-                  Each release workflow generates a fresh base64 SHA-512 digest inside{' '}
+                  Each release generates a fresh base64 SHA-512 digest inside{' '}
                   <code className="font-mono text-xs text-[var(--ink2)]">latest.yml</code> on{' '}
-                  <a
+                  <Link
                     href={LATEST_RELEASE_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
                     className="font-semibold text-[var(--ac)] underline-offset-2 hover:underline"
                   >
-                    the v{APP_VERSION} GitHub Release page
-                  </a>
+                    the v{APP_VERSION} release page
+                  </Link>
                   . Compare that published value against your local installer before running.
                 </p>
               </div>

@@ -153,7 +153,7 @@ const groups: Group[] = [
       {
         icon: RefreshCw,
         title: 'Update checks',
-        text: 'ShadRox checks GitHub Releases on start and every 6 hours, showing a badge when a new installer is ready — nothing downloads without you.',
+        text: 'ShadRox checks the official ShadRox release feed on start and every 6 hours, showing a badge when a new installer is ready — nothing downloads without you.',
         specs: ['checks on start', 'badge only', 'manual install'],
       },
       {

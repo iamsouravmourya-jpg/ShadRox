@@ -1,6 +1,7 @@
 'use client'
 
-import { ArrowUpRight, Download } from 'lucide-react'
+import Link from 'next/link'
+import { ArrowRight, Download } from 'lucide-react'
 import { APP_VERSION, RELEASES_URL, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import { Reveal } from './reveal'
 
@@ -51,13 +52,13 @@ export function BetaCta() {
                   <Download className="size-4" aria-hidden />
                   Download for Windows
                 </a>
-                <a
+                <Link
                   href={RELEASES_URL}
                   className="group inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-full border border-white/20 bg-white/[0.04] px-7 py-3 text-sm font-semibold text-white transition-colors duration-300 hover:border-white/40 hover:bg-white/10 sm:w-auto"
                 >
                   All releases
-                  <ArrowUpRight className="size-4 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" aria-hidden />
-                </a>
+                  <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" aria-hidden />
+                </Link>
               </div>
 
               <p className="mt-5 text-xs leading-5 text-white/65">

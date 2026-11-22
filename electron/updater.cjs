@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Automatic updates over GitHub Releases (electron-updater).
+ * Automatic updates over the official ShadRox release channel (electron-updater).
  *
  * Update failures are sent to the renderer so beta testers can report them.
  * Unsigned artifacts must never install themselves without an explicit user

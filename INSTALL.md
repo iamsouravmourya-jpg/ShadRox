@@ -1,6 +1,6 @@
 # ShadRox beta installation
 
-1. Download the Windows installer from the [latest release](https://github.com/iamsouravmourya-jpg/ShadRox/releases).
+1. Download the Windows installer from [shadrox.cyou/download](https://www.shadrox.cyou/download).
 2. If Windows SmartScreen warns, verify the download URL before choosing **More info -> Run anyway**. This beta installer is not code-signed.
 3. Open ShadRox and sign in with Google.
 4. Open a project folder, then add your own Gemini, Groq, or compatible endpoint key in **Settings -> Models & Keys**.

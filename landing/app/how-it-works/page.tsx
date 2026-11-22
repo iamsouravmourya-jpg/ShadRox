@@ -2,7 +2,6 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import {
   ArrowRight,
-  ArrowUpRight,
   Download,
   FileDiff,
   FolderOpen,
@@ -249,15 +248,13 @@ export default function HowItWorksPage() {
 
                 <p className="mt-5 text-xs leading-5 text-[var(--mut)]">
                   Windows may warn about an unsigned installer — More → Run anyway.{' '}
-                  <a
+                  <Link
                     href={RELEASES_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
                     className="inline-flex items-center gap-0.5 font-semibold text-[var(--ac)] transition hover:opacity-80"
                   >
                     View release notes
-                    <ArrowUpRight className="size-3" />
-                  </a>
+                    <ArrowRight className="size-3" />
+                  </Link>
                 </p>
               </div>
             </div>

@@ -4,7 +4,7 @@ Plain answers about the ShadRox beta (v0.1.4). These mirror the questions on the
 
 ## Can I download ShadRox now?
 
-Yes. The latest beta installer (v0.1.4) is for Windows 10 or 11, 64-bit: [ShadRox-v0.1.4-Setup.exe](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.4-Setup.exe). The build is unsigned, so SmartScreen may warn — verify the download source before choosing **More info → Run anyway**. See [troubleshooting.md](./troubleshooting.md).
+Yes. The latest beta installer (v0.1.4) is for Windows 10 or 11, 64-bit: download `ShadRox-v0.1.4-Setup.exe` from [shadrox.cyou/download](https://www.shadrox.cyou/download). The build is unsigned, so SmartScreen may warn — verify the download source before choosing **More info → Run anyway**. See [troubleshooting.md](./troubleshooting.md).
 
 ## Do I need an account?
 
@@ -61,4 +61,4 @@ The Feedback button in the app sends only the message you type — tagged as Bug
 ## Keep reading
 
 - [Features](./features.md) · [BYOK & keys](./byok.md) · [Agent tools](./agent-tools.md) · [Troubleshooting](./troubleshooting.md) · [FAQ](./faq.md)
-- [README](../README.md) · [Website](https://www.shadrox.cyou) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Contributors](https://www.shadrox.cyou/contributors)
+- [README](../README.md) · [Website](https://www.shadrox.cyou) · [Releases](https://www.shadrox.cyou/releases) · [Contributors](https://www.shadrox.cyou/contributors)

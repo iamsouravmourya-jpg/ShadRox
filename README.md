@@ -6,11 +6,11 @@
 
 **Your project, code, AI, and preview — in one Windows workspace.**
 
-[![Version](https://img.shields.io/badge/version-0.1.4-violet?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0d0f13?style=flat-square)](https://github.com/iamsouravmourya-jpg/ShadRox/releases)
+[![Version](https://img.shields.io/badge/version-0.1.4-violet?style=flat-square)](https://www.shadrox.cyou/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0d0f13?style=flat-square)](https://www.shadrox.cyou/download)
 [![License](https://img.shields.io/badge/license-Proprietary%20%C2%B7%20All%20Rights%20Reserved-blue?style=flat-square)](./LICENSE)
 
-[Download for Windows](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.4-Setup.exe) · [All releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Report an issue](https://github.com/iamsouravmourya-jpg/ShadRox/issues)
+[Download for Windows](https://www.shadrox.cyou/download) · [All releases](https://www.shadrox.cyou/releases) · [Support](https://www.shadrox.cyou/faq#support)
 
 </div>
 
@@ -32,7 +32,7 @@ ShadRox is a native Electron desktop app that puts a code editor, BYOK AI chat a
 
 ## Quick start
 
-1. **Download** the installer: [ShadRox-v0.1.4-Setup.exe](https://github.com/iamsouravmourya-jpg/ShadRox/releases/latest/download/ShadRox-v0.1.4-Setup.exe) (Windows 10/11, 64-bit). The build is unsigned — if SmartScreen warns, verify the download source, then choose **More info → Run anyway**. Details in [INSTALL.md](./INSTALL.md) and [docs/troubleshooting.md](./docs/troubleshooting.md).
+1. **Download** the installer from [shadrox.cyou/download](https://www.shadrox.cyou/download) (`ShadRox-v0.1.4-Setup.exe`, Windows 10/11, 64-bit). The build is unsigned — if SmartScreen warns, verify the download source, then choose **More info → Run anyway**. Details in [INSTALL.md](./INSTALL.md) and [docs/troubleshooting.md](./docs/troubleshooting.md).
 2. **Install and sign in** with Google (required; you must accept the Terms and Privacy Policy first).
 3. **Add your own API key** in **Settings → Models & Keys** — Gemini, Groq, or a custom OpenAI-compatible endpoint. See [docs/byok.md](./docs/byok.md).
 4. **Open a folder** and start editing, asking, running, and committing.
@@ -69,4 +69,4 @@ Full command list, benchmark, and packaging notes: [docs/features.md](./docs/fea
 
 ShadRox is proprietary software ([All Rights Reserved](./LICENSE)). Copyright (c) 2026 ShadRox — founded and owned by **Sourav Maurya**. Unauthorized copying, redistribution, modification, or commercial exploitation of ShadRox without written permission from the founder is prohibited. No warranty; third-party open-source dependencies retain their own licenses.
 
-Founded & built by [Sourav Maurya](https://github.com/iamsouravmourya-jpg). [Website](https://www.shadrox.cyou) · [LinkedIn](https://www.linkedin.com/in/sourav-maurya-45b272377)
+Founded & built by [Sourav Maurya](https://www.shadrox.cyou/about). [Website](https://www.shadrox.cyou) · [LinkedIn](https://www.linkedin.com/in/sourav-maurya-45b272377)

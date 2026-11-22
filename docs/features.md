@@ -96,7 +96,7 @@ These records stay local to the workspace/browser profile.
 - **Recent workspaces** reopen saved folders/file sets with persisted native consent, a visible loading state, and a ready-file count. Reopening requires a path the main process already accepted; an unknown path asks again.
 - **Themes** — one light/dark toggle; until you choose, the app follows your OS preference, then remembers your choice.
 - **Feedback drawer** — the top-bar Feedback button offers exactly two report types, Bug and Feature request, and sends only the message you typed (see [byok.md](./byok.md#feedback)).
-- **Update checks** — the app checks for a newer release 15 seconds after start and every 6 hours, and shows a badge when one exists. Downloading and installing stays manual from GitHub Releases.
+- **Update checks** — the app checks for a newer release 15 seconds after start and every 6 hours, and shows a badge when one exists. Downloading and installing stays manual from [shadrox.cyou/download](https://www.shadrox.cyou/download).
 
 ## Tech stack
 
@@ -180,4 +180,4 @@ Obfuscation and bytecode raise the cost of static inspection but cannot make a d
 ## Keep reading
 
 - [Features](./features.md) · [BYOK & keys](./byok.md) · [Agent tools](./agent-tools.md) · [Troubleshooting](./troubleshooting.md) · [FAQ](./faq.md)
-- [README](../README.md) · [Website](https://www.shadrox.cyou) · [Releases](https://github.com/iamsouravmourya-jpg/ShadRox/releases) · [Contributors](https://www.shadrox.cyou/contributors)
+- [README](../README.md) · [Website](https://www.shadrox.cyou) · [Releases](https://www.shadrox.cyou/releases) · [Contributors](https://www.shadrox.cyou/contributors)

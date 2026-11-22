@@ -31,15 +31,14 @@ export const metadata: Metadata = {
 
 const eyebrow = 'text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--ac)]'
 
-const GITHUB_PROFILE = 'https://github.com/iamsouravmourya-jpg'
 const LINKEDIN_PROFILE = 'https://www.linkedin.com/in/sourav-maurya-45b272377'
 const SITE_URL = 'https://www.shadrox.cyou'
 
-const makerLinks: { icon: typeof Globe; label: string; href: string }[] = [
-  { icon: CodeXml, label: 'GitHub', href: GITHUB_PROFILE },
+const makerLinks: { icon: typeof Globe; label: string; href: string; external?: boolean }[] = [
   { icon: Download, label: 'Releases', href: RELEASES_URL },
-  { icon: Briefcase, label: 'LinkedIn', href: LINKEDIN_PROFILE },
-  { icon: Globe, label: 'shadrox.cyou', href: SITE_URL },
+  { icon: Briefcase, label: 'LinkedIn', href: LINKEDIN_PROFILE, external: true },
+  { icon: Globe, label: 'shadrox.cyou', href: SITE_URL, external: true },
+  { icon: CodeXml, label: 'Contributors', href: '/contributors' },
 ]
 
 const before = ['editor', 'terminal', 'browser preview', 'debugger', 'separate AI tool']
@@ -140,19 +139,31 @@ export default function AboutPage() {
                   </p>
 
                   <div className="mt-6 grid gap-2.5 sm:grid-cols-2">
-                    {makerLinks.map(({ icon: Icon, label, href }) => (
-                      <a
-                        key={label}
-                        href={href}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="group inline-flex items-center gap-2.5 rounded-full border border-[var(--line)] bg-[var(--bg2)] px-4 py-2.5 text-[13px] font-semibold text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--ac)] hover:text-[var(--ac)]"
-                      >
-                        <Icon className="size-4 shrink-0 text-[var(--ac)]" strokeWidth={1.75} />
-                        <span className="truncate">{label}</span>
-                        <ArrowUpRight className="ml-auto size-3.5 shrink-0 text-[var(--mut)] transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-[var(--ac)]" />
-                      </a>
-                    ))}
+                    {makerLinks.map(({ icon: Icon, label, href, external }) =>
+                      external ? (
+                        <a
+                          key={label}
+                          href={href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="group inline-flex items-center gap-2.5 rounded-full border border-[var(--line)] bg-[var(--bg2)] px-4 py-2.5 text-[13px] font-semibold text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--ac)] hover:text-[var(--ac)]"
+                        >
+                          <Icon className="size-4 shrink-0 text-[var(--ac)]" strokeWidth={1.75} />
+                          <span className="truncate">{label}</span>
+                          <ArrowUpRight className="ml-auto size-3.5 shrink-0 text-[var(--mut)] transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-[var(--ac)]" />
+                        </a>
+                      ) : (
+                        <Link
+                          key={label}
+                          href={href}
+                          className="group inline-flex items-center gap-2.5 rounded-full border border-[var(--line)] bg-[var(--bg2)] px-4 py-2.5 text-[13px] font-semibold text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--ac)] hover:text-[var(--ac)]"
+                        >
+                          <Icon className="size-4 shrink-0 text-[var(--ac)]" strokeWidth={1.75} />
+                          <span className="truncate">{label}</span>
+                          <ArrowRight className="ml-auto size-3.5 shrink-0 text-[var(--mut)] transition-transform group-hover:translate-x-0.5 group-hover:text-[var(--ac)]" />
+                        </Link>
+                      ),
+                    )}
                   </div>
                 </div>
               </div>
@@ -183,8 +194,8 @@ export default function AboutPage() {
                   <p>
                     There is no outside company behind ShadRox. All intellectual property belongs
                     exclusively to ShadRox and its founder, Sourav Maurya. Official installers ship
-                    from GitHub Releases, and anything that behaves differently from these pages
-                    belongs in the issue tracker.
+                    directly from shadrox.cyou, and anything that behaves differently from these
+                    pages can be reported via the in-app Feedback panel or FAQ support section.
                   </p>
                 </div>
 
@@ -328,15 +339,13 @@ export default function AboutPage() {
                   </h3>
                   <p className="mt-2.5 text-sm leading-6 text-[var(--mut)]">{text}</p>
                   {link && (
-                    <a
+                    <Link
                       href={link.href}
-                      target="_blank"
-                      rel="noopener noreferrer"
                       className="group mt-auto inline-flex items-center gap-1.5 pt-5 text-[13px] font-bold text-[var(--ac)] transition hover:gap-2.5"
                     >
                       {link.label}
-                      <ArrowUpRight className="size-3.5 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
-                    </a>
+                      <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+                    </Link>
                   )}
                 </div>
               </Reveal>

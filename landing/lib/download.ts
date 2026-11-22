@@ -1,9 +1,11 @@
 export const APP_VERSION = '0.1.4'
 
-export const GITHUB_REPO = 'https://github.com/iamsouravmourya-jpg/ShadRox'
+export const RELEASES_URL = '/releases'
 
-export const LATEST_RELEASE_URL = `${GITHUB_REPO}/releases/latest`
+export const LATEST_RELEASE_URL = '/releases#latest'
 
-export const WINDOWS_DOWNLOAD_URL = `${LATEST_RELEASE_URL}/download/ShadRox-v${APP_VERSION}-Setup.exe`
+export const WINDOWS_DOWNLOAD_URL =
+  process.env.NEXT_PUBLIC_INSTALLER_URL?.trim() || '/download'
 
-export const RELEASES_URL = `${GITHUB_REPO}/releases`
+export const INSTALLER_DOWNLOAD_URL =
+  process.env.NEXT_PUBLIC_INSTALLER_URL?.trim() || '/releases#latest'
