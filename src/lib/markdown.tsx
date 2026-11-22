@@ -215,30 +215,30 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
   };
 
   return (
-    <div className="overflow-hidden rounded-xl border border-line bg-base/80">
-      <div className="flex items-center justify-between gap-2 bg-overlay px-2.5 py-1">
+    <div className="overflow-hidden rounded-xl border border-line bg-base">
+      <div className="flex items-center justify-between gap-2 bg-surface-2 px-2.5 py-1.5">
         <button
           type="button"
           onClick={() => setOpen((prev) => !prev)}
           title={open ? 'Collapse this block' : 'Expand this block'}
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left cursor-pointer"
         >
-          <ChevronRight className={`size-2.5 shrink-0 text-ink-4 transition-transform ${open ? 'rotate-90' : ''}`} />
-          <span className="font-mono text-[9.5px] uppercase tracking-wider text-ink-4">{lang ?? 'code'}</span>
-          <span className="font-mono text-[9px] text-ink-5">{lineCount} line{lineCount === 1 ? '' : 's'}</span>
+          <ChevronRight className={`size-3 shrink-0 text-ink-3 transition-transform ${open ? 'rotate-90' : ''}`} />
+          <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-ink-2">{lang ?? 'code'}</span>
+          <span className="font-mono tabular-nums text-[9.5px] text-ink-4">{lineCount} line{lineCount === 1 ? '' : 's'}</span>
         </button>
         <button
           type="button"
           onClick={copy}
           title="Copy this block"
-          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9.5px] text-ink-4 transition-colors hover:bg-overlay hover:text-ink-2 cursor-pointer"
+          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-ink-3 transition-colors hover:bg-surface hover:text-ink cursor-pointer"
         >
-          {copied ? <Check className="size-2.5 text-ok" /> : <Copy className="size-2.5" />}
+          {copied ? <Check className="size-3 text-ok" /> : <Copy className="size-3" />}
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
       {open && (
-        <pre className="overflow-x-auto border-t border-line p-3 font-mono text-[11.5px] leading-relaxed text-ink-2">
+        <pre className="overflow-x-auto border-t border-line p-3 font-mono text-[11.5px] leading-[1.6] text-ink">
           <code>{code}</code>
         </pre>
       )}
@@ -266,14 +266,14 @@ export function renderMarkdownContent(content: string): React.ReactNode {
       }
       if (block.level === 2) {
         return (
-          <h2 key={idx} className="mt-3.5 flex items-center gap-2 text-[13px] font-semibold tracking-tight text-ink">
+          <h2 key={idx} className="mt-3.5 flex items-center gap-2 text-[13.5px] font-semibold tracking-tight text-ink">
             <span className="h-3 w-[2px] shrink-0 rounded-full bg-gradient-to-b from-accent to-cool" />
             {text}
           </h2>
         );
       }
       return (
-        <h3 key={idx} className="mt-3 text-[12.5px] font-semibold text-ink-2">
+        <h3 key={idx} className="mt-3 text-[12.5px] font-semibold text-ink">
           {text}
         </h3>
       );
@@ -287,7 +287,7 @@ export function renderMarkdownContent(content: string): React.ReactNode {
       return (
         <blockquote
           key={idx}
-          className="mt-2.5 rounded-r-lg border-l-2 border-accent-line bg-overlay py-1.5 pl-3 pr-2.5 text-ink-3"
+          className="mt-2.5 rounded-r-lg border-l-2 border-accent-line bg-surface-2 py-1.5 pl-3 pr-2.5 text-ink-2"
         >
           {inlineNodes(parseInline(block.text), `q-${idx}`)}
         </blockquote>
@@ -297,7 +297,7 @@ export function renderMarkdownContent(content: string): React.ReactNode {
     if (block.kind === 'bullet') {
       return (
         <div key={idx} className="mt-1.5 flex items-start gap-2.5">
-          <span className="mt-[7px] size-1 shrink-0 rounded-full bg-accent/80" />
+          <span className="mt-[8px] size-1.5 shrink-0 rounded-full bg-accent/80" />
           <span className="min-w-0 flex-1">{inlineNodes(parseInline(block.text), `b-${idx}`)}</span>
         </div>
       );
@@ -306,8 +306,8 @@ export function renderMarkdownContent(content: string): React.ReactNode {
     if (block.kind === 'ordered') {
       return (
         <div key={idx} className="mt-1.5 flex items-start gap-2.5">
-          <span className="w-4 shrink-0 pt-px text-right font-mono text-[10.5px] tabular-nums text-accent/90">
-            {block.index}
+          <span className="w-4 shrink-0 pt-px text-right font-mono text-[10.5px] font-medium tabular-nums text-accent">
+            {block.index}.
           </span>
           <span className="min-w-0 flex-1">{inlineNodes(parseInline(block.text), `o-${idx}`)}</span>
         </div>
@@ -317,13 +317,13 @@ export function renderMarkdownContent(content: string): React.ReactNode {
     if (block.kind === 'table') {
       return (
         <div key={idx} className="mt-2.5 overflow-x-auto rounded-xl border border-line">
-          <table className="w-full border-collapse text-[11px] leading-relaxed">
+          <table className="w-full border-collapse text-[11.5px] leading-relaxed">
             <thead>
-              <tr className="bg-overlay">
+              <tr className="bg-surface-2">
                 {block.header.map((cell, column) => (
                   <th
                     key={column}
-                    className="border-b border-line px-2.5 py-1.5 text-left text-[9.5px] font-semibold uppercase tracking-wider text-ink-3"
+                    className="border-b border-line px-2.5 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider text-ink-2"
                   >
                     {inlineNodes(parseInline(cell), `th-${idx}-${column}`)}
                   </th>
@@ -332,7 +332,7 @@ export function renderMarkdownContent(content: string): React.ReactNode {
             </thead>
             <tbody className="divide-y divide-line">
               {block.rows.map((row, rowIdx) => (
-                <tr key={rowIdx} className="text-ink-3 transition-colors hover:bg-overlay">
+                <tr key={rowIdx} className="text-ink-2 transition-colors hover:bg-surface-2/60">
                   {row.map((cell, column) => (
                     <td key={column} className="px-2.5 py-1.5 align-top">
                       {inlineNodes(parseInline(cell), `td-${idx}-${rowIdx}-${column}`)}
@@ -347,14 +347,14 @@ export function renderMarkdownContent(content: string): React.ReactNode {
     }
 
     return (
-      <p key={idx} className="mt-2 text-ink-3">
+      <p key={idx} className="mt-2 text-ink-2">
         {inlineNodes(parseInline(block.text), `p-${idx}`)}
       </p>
     );
   });
 
   return (
-    <div className="break-words font-sans text-[12.5px] leading-[1.7] text-ink-3 [&>*:first-child]:mt-0">
+    <div className="break-words font-sans text-[12.5px] leading-[1.68] text-ink-2 [&>*:first-child]:mt-0">
       {blocks}
     </div>
   );
