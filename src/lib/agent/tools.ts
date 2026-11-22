@@ -600,7 +600,9 @@ export function describeTools(
     'FILES: write_file creates a new file or overwrites one you have read; edit_file replaces an exact original snippet in an existing file. Both save to disk immediately through the verified save path, so a run_command or problems call in the same or a later round sees the change. Prefer edit_file for an existing file: read it first, then copy original exactly (indentation and line breaks included) so it matches one place. A write_file that would erase most of an existing file is refused — use edit_file instead. You may also write path= edit blocks in your reply; the patch engine applies them before your next tool round. Never invent any other file tool.',
     'DELETING: only delete_file removes something. An empty path= block deletes nothing, and an edit block cannot remove a file. Never say a file was deleted unless delete_file returned a verified result.',
     'ATOMIC PATCHES: apply_patch takes {"patches":[{"path":"...","old":"exact text","new":"replacement"}]} and lands every hunk across files in one all-or-nothing transaction. old must match exactly once; an empty old creates a new file. On any mismatch nothing is written and the failing hunk plus the surrounding disk lines come back — fix that hunk and re-send the whole patch.',
-    'VERIFY: after changing files, call verify before finish. It detects the project kind (package.json scripts + lockfile, pytest, cargo, go), runs the real typecheck/build/test through the command runner and returns structured errors and failed tests. finish is refused after a write until verify, problems on the changed files, or a build/test command actually ran.',
+    ...(hasAny('verify')
+      ? ['VERIFY: after changing files, call verify before finish. It detects the project kind (package.json scripts + lockfile, pytest, cargo, go), runs the real typecheck/build/test through the command runner and returns structured errors and failed tests. finish is refused after a write until verify, problems on the changed files, or a build/test command actually ran.']
+      : ['DIAGNOSTICS: this is a read-only turn with no file writes; use problems (or read_file/search_text) instead of verify to inspect compiler diagnostics.']),
     ...(hasAny('checkpoint', 'list_checkpoints', 'restore')
       ? ['CHECKPOINTS: a checkpoint is taken automatically before this turn\'s first write. checkpoint {"label":"..."} saves another one; list_checkpoints shows the ids; restore {"id":"..."} rolls back (the user approves first). Use them before a risky refactor, never as a substitute for verifying.']
       : []),
@@ -1590,6 +1592,17 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         };
       }
       case 'verify': {
+        const activeTurn = getTurn(workspaceId);
+        if (
+          activeTurn &&
+          activeTurn.changed.size === 0 &&
+          activeTurn.created.size === 0 &&
+          activeTurn.unknownWrites === 0
+        ) {
+          return refusal(
+            'verify is disabled on read-only turns with no modified files. Use the problems tool to inspect compiler diagnostics instead.'
+          );
+        }
         let packageJson: string | null = null;
         try {
           packageJson = (await desktop.readFile(workspaceId, 'package.json')).content;
@@ -1676,7 +1689,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         }
         const ok = allOk && errors.length === 0 && failedTests.length === 0;
         const report: VerifyReport = { ok, errors: errors.slice(0, 60), failedTests: failedTests.slice(0, 30), commandsRun };
-        const content = formatVerifyReport(report, plan.kind);
+        const content = formatVerifyReport(report, plan.kind, { includeAgentDirective: false });
         return ok ? { ok: true, content, verifyReport: report } : { ok: false, content, error: content, verifyReport: report };
       }
       case 'checkpoint': {

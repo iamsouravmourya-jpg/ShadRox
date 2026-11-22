@@ -13,6 +13,7 @@
 import type {
   Attempt,
   AutonomyPorts,
+  DiagnosticLine,
   Milestone,
   PlanError,
   RunBudget,
@@ -21,9 +22,10 @@ import type {
   Verdict
 } from './types';
 import { ceilingReached, type CeilingStop, workUsageOf } from './budget';
-import { captureFileHashSnapshot } from './milestoneVerifier';
+import { captureFileHashSnapshot, inferMilestoneCategory } from './milestoneVerifier';
+import { extractGoalTargetFiles } from './plan';
 import { auditRequirementCoverage, extractRequirements } from './requirements';
-import { canonicalPathKey, dedupePaths, isCaseInsensitivePlatform } from '../paths';
+import { canonicalPathKey, dedupePaths, isCaseInsensitivePlatform, normalizeRepoPath } from '../paths';
 
 export interface DriverDeps {
   ports: AutonomyPorts;
@@ -256,6 +258,138 @@ function uniqueDerivedId(prefix: string, milestones: readonly Milestone[]): stri
   return `${prefix}-${suffix}`;
 }
 
+function diagnosticKey(diag: DiagnosticLine, caseInsensitive: boolean): string {
+  const clean = normalizeRepoPath(diag.path);
+  const pathKey = canonicalPathKey(clean, caseInsensitive);
+  return `${pathKey}::${diag.message}`;
+}
+
+function matchesScopedTarget(
+  diagPath: string,
+  scopedTargets: readonly string[],
+  caseInsensitive: boolean
+): boolean {
+  const cleanDiag = normalizeRepoPath(diagPath);
+  if (!cleanDiag) return false;
+  const diagKey = canonicalPathKey(cleanDiag, caseInsensitive);
+  const diagBase = cleanDiag.split('/').pop()?.toLowerCase() ?? '';
+  for (const target of scopedTargets) {
+    const cleanTarget = normalizeRepoPath(target);
+    if (!cleanTarget) continue;
+    if (canonicalPathKey(cleanTarget, caseInsensitive) === diagKey) return true;
+    if (!cleanTarget.includes('/') && diagBase && cleanTarget.toLowerCase() === diagBase) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export interface ScopedWorkspaceVerificationOutcome {
+  shouldFail: boolean;
+  blockingErrors: DiagnosticLine[];
+  preRunErrorCount: number | null;
+  postRunErrorCount: number;
+  scopedTargets: string[];
+  ignoredBaselineErrors: number;
+}
+
+/**
+ * Evaluates post-run workspace verification against a pre-run diagnostic baseline
+ * and the run's touched / explicitly targeted files. Pre-existing unrelated errors
+ * do not fail or roll back a clean targeted fix unless touched/targeted files still
+ * error or new workspace-wide regressions appeared.
+ */
+export function evaluateScopedWorkspaceVerification(params: {
+  report: VerificationReport;
+  baselineDiagnostics: readonly DiagnosticLine[] | null;
+  goal: string;
+  workspaceFiles: readonly string[];
+  milestones: readonly Milestone[];
+  caseInsensitive: boolean;
+}): ScopedWorkspaceVerificationOutcome {
+  const { report, baselineDiagnostics, goal, workspaceFiles, milestones, caseInsensitive } = params;
+  const postErrors = report.diagnostics.filter((d) => d.severity === 'error');
+  const explicitTargets = extractGoalTargetFiles(goal, workspaceFiles);
+  const touchedFiles = milestones.flatMap((m) => m.touchedFiles ?? []);
+  const mutationExpectedFiles = milestones
+    .filter((m) => inferMilestoneCategory(m) === 'file_mutation')
+    .flatMap((m) => m.expectedFiles);
+  const scopedTargets = dedupePaths(
+    [...touchedFiles, ...explicitTargets, ...mutationExpectedFiles],
+    caseInsensitive
+  );
+
+  if (baselineDiagnostics === null) {
+    return {
+      shouldFail: report.verdict === 'failed',
+      blockingErrors: postErrors,
+      preRunErrorCount: null,
+      postRunErrorCount: postErrors.length,
+      scopedTargets,
+      ignoredBaselineErrors: 0
+    };
+  }
+
+  const preErrors = baselineDiagnostics.filter((d) => d.severity === 'error');
+  const preRunErrorCount = preErrors.length;
+  const postRunErrorCount = postErrors.length;
+
+  if (report.verdict !== 'failed') {
+    return {
+      shouldFail: false,
+      blockingErrors: [],
+      preRunErrorCount,
+      postRunErrorCount,
+      scopedTargets,
+      ignoredBaselineErrors: 0
+    };
+  }
+
+  const targetedErrors =
+    scopedTargets.length > 0
+      ? postErrors.filter((d) => matchesScopedTarget(d.path, scopedTargets, caseInsensitive))
+      : [];
+
+  const baselineKeys = new Set(preErrors.map((d) => diagnosticKey(d, caseInsensitive)));
+  const newRegressionErrors = postErrors.filter((d) => !baselineKeys.has(diagnosticKey(d, caseInsensitive)));
+  const countRegressed = postRunErrorCount > preRunErrorCount;
+  const shouldFail = targetedErrors.length > 0 || countRegressed || newRegressionErrors.length > 0;
+
+  if (!shouldFail) {
+    return {
+      shouldFail: false,
+      blockingErrors: [],
+      preRunErrorCount,
+      postRunErrorCount,
+      scopedTargets,
+      ignoredBaselineErrors: postRunErrorCount
+    };
+  }
+
+  const blocking: DiagnosticLine[] = [];
+  const seen = new Set<string>();
+  const candidates = [
+    ...targetedErrors,
+    ...newRegressionErrors,
+    ...(countRegressed && targetedErrors.length === 0 && newRegressionErrors.length === 0 ? postErrors : [])
+  ];
+  for (const err of candidates) {
+    const k = `${diagnosticKey(err, caseInsensitive)}:${err.line}:${err.column}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    blocking.push(err);
+  }
+
+  return {
+    shouldFail: true,
+    blockingErrors: blocking,
+    preRunErrorCount,
+    postRunErrorCount,
+    scopedTargets,
+    ignoredBaselineErrors: 0
+  };
+}
+
 /**
  * Runs the goal to completion and returns the final state. The loop is
  * sequential on purpose: two milestones editing the same file at once produces a
@@ -355,6 +489,15 @@ export async function runAutonomous(
     endedByUser: null
   };
 
+  let preRunDiagnostics: DiagnosticLine[] | null = null;
+  if (typeof deps.ports.captureBaselineDiagnostics === 'function') {
+    try {
+      preRunDiagnostics = await deps.ports.captureBaselineDiagnostics();
+    } catch {
+      preRunDiagnostics = null;
+    }
+  }
+
   while (userHalt(deps.ports) === null) {
     const next = deps.nextRunnable(state.milestones);
     if (!next) break;
@@ -423,7 +566,8 @@ export async function runAutonomous(
     }
   }
 
-  // Workspace-wide verification gate: catches cross-file breakage outside milestone lists.
+  // Workspace-wide verification gate: baseline-aware and target-scoped so pre-existing
+  // unrelated repo errors never fail or roll back valid targeted work.
   if (
     state.status === 'running' &&
     userHalt(deps.ports) === null &&
@@ -432,20 +576,41 @@ export async function runAutonomous(
     state.milestones.every((m) => m.status !== 'failed' && m.status !== 'blocked')
   ) {
     let wsReport = await deps.ports.verifyWorkspace();
-    if (wsReport.verdict === 'failed') {
+    let scopedEval = evaluateScopedWorkspaceVerification({
+      report: wsReport,
+      baselineDiagnostics: preRunDiagnostics,
+      goal,
+      workspaceFiles: files,
+      milestones: state.milestones,
+      caseInsensitive
+    });
+
+    if (!scopedEval.shouldFail && scopedEval.ignoredBaselineErrors > 0) {
+      deps.ports.onEvent({
+        type: 'log',
+        text: `Scoped final verification passed (0 errors in touched/targeted files, ${scopedEval.postRunErrorCount}/${scopedEval.preRunErrorCount} baseline errors unchanged).`
+      });
+    } else if (scopedEval.shouldFail) {
+      const repairSourceDiagnostics =
+        scopedEval.blockingErrors.length > 0
+          ? scopedEval.blockingErrors
+          : wsReport.diagnostics.filter((d) => d.severity === 'error');
       const errorFiles = dedupePaths(
-        wsReport.diagnostics.filter((d) => d.severity === 'error').map((d) => d.path),
+        repairSourceDiagnostics.map((d) => d.path),
         caseInsensitive
       );
       if (!workStop(deps, state.milestones, deps.now() - shared.clockStart)) {
+        const scopedInitialReport: VerificationReport = {
+          ...wsReport,
+          diagnostics: repairSourceDiagnostics
+        };
         const repairMilestone: Milestone = {
           id: uniqueDerivedId('m-ws-repair', state.milestones),
           title: 'Repair workspace-wide verification errors',
           instruction: [
-            'Final workspace-wide verification detected errors outside individual milestones.',
-            'Fix every diagnostic listed below without regressing completed work:',
-            ...wsReport.diagnostics
-              .filter((d) => d.severity === 'error')
+            'Final verification detected errors in touched/targeted files or newly introduced regressions.',
+            'Fix every diagnostic listed below without modifying unrelated legacy files:',
+            ...repairSourceDiagnostics
               .slice(0, 12)
               .map((d) => `- ${d.path}:${d.line}:${d.column} ${d.message}`)
           ].join('\n'),
@@ -461,13 +626,24 @@ export async function runAutonomous(
         state.milestones.push(repairMilestone);
         await executeMilestoneUnit(repairMilestone, shared, {
           maxAttempts: Math.min(2, deps.budget.maxAttemptsPerMilestone),
-          initialReport: wsReport
+          initialReport: scopedInitialReport
         });
         wsReport = await deps.ports.verifyWorkspace();
+        scopedEval = evaluateScopedWorkspaceVerification({
+          report: wsReport,
+          baselineDiagnostics: preRunDiagnostics,
+          goal,
+          workspaceFiles: files,
+          milestones: state.milestones,
+          caseInsensitive
+        });
       }
-      if (wsReport.verdict === 'failed' && state.status === 'running') {
+      if (scopedEval.shouldFail && state.status === 'running') {
         state.status = 'failed';
-        state.error = wsReport.notes[0] ?? 'Workspace-wide verification failed after milestone completion.';
+        state.error =
+          scopedEval.blockingErrors.length > 0
+            ? `${scopedEval.blockingErrors.length} error diagnostic(s) remained in targeted files or introduced regressions (${scopedEval.blockingErrors[0].path}:${scopedEval.blockingErrors[0].line} ${scopedEval.blockingErrors[0].message}).`
+            : wsReport.notes[0] ?? 'Workspace-wide verification failed after milestone completion.';
         deps.ports.onEvent({ type: 'log', text: state.error });
       }
     }

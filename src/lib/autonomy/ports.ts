@@ -568,33 +568,16 @@ export async function verifyMilestone(
 }
 
 /**
- * Runs a full workspace diagnostics check across all workspace files (not only a
- * single milestone's expectedFiles) so cross-file breakage outside the milestone
- * list is caught before a run declares victory.
+ * Collects deduplicated workspace-relative error/warning diagnostics across the
+ * entire project, or returns `null` when no type checker is attached.
  */
-export async function verifyWorkspaceDiagnostics(
+export async function collectWorkspaceDiagnostics(
   host: AutonomyHost,
   rootPath: string
-): Promise<VerificationReport> {
+): Promise<DiagnosticLine[] | null> {
   const caseInsensitive = isCaseInsensitivePlatform() || isWindowsPathStyle(normalizeRelativePath(rootPath));
-  let raw: DesktopDiagnostic[] | null = null;
-  try {
-    raw = await host.getDiagnostics(undefined);
-  } catch (error) {
-    return {
-      verdict: 'unverified',
-      diagnostics: [],
-      notes: [`the type service did not answer during workspace verification: ${error instanceof Error ? error.message : String(error)}`]
-    };
-  }
-
-  if (raw === null) {
-    return {
-      verdict: 'unverified',
-      diagnostics: [],
-      notes: ['no type checker is attached to this workspace, so workspace-wide verification could not run.']
-    };
-  }
+  const raw = await host.getDiagnostics(undefined);
+  if (raw === null) return null;
 
   const seen = new Set<string>();
   const lines: DiagnosticLine[] = [];
@@ -607,6 +590,37 @@ export async function verifyWorkspaceDiagnostics(
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
     lines.push(line);
+  }
+  return lines;
+}
+
+/**
+ * Runs a full workspace diagnostics check across all workspace files (not only a
+ * single milestone's expectedFiles) so cross-file breakage outside the milestone
+ * list is caught before a run declares victory.
+ */
+export async function verifyWorkspaceDiagnostics(
+  host: AutonomyHost,
+  rootPath: string
+): Promise<VerificationReport> {
+  const caseInsensitive = isCaseInsensitivePlatform() || isWindowsPathStyle(normalizeRelativePath(rootPath));
+  let lines: DiagnosticLine[] | null = null;
+  try {
+    lines = await collectWorkspaceDiagnostics(host, rootPath);
+  } catch (error) {
+    return {
+      verdict: 'unverified',
+      diagnostics: [],
+      notes: [`the type service did not answer during workspace verification: ${error instanceof Error ? error.message : String(error)}`]
+    };
+  }
+
+  if (lines === null) {
+    return {
+      verdict: 'unverified',
+      diagnostics: [],
+      notes: ['no type checker is attached to this workspace, so workspace-wide verification could not run.']
+    };
   }
 
   const errorDiagnostics = lines.filter((line) => line.severity === 'error');
@@ -630,6 +644,7 @@ export function createAutonomyPorts(host: AutonomyHost, options: AutonomyPortsOp
     runTurn: (request) => host.runTurn(request),
     verify: (unit, writes) => verifyMilestone(unit, host, options.rootPath, writes),
     verifyWorkspace: () => verifyWorkspaceDiagnostics(host, options.rootPath),
+    captureBaselineDiagnostics: () => collectWorkspaceDiagnostics(host, options.rootPath).catch(() => null),
     listFiles: () => host.listFiles(),
     ...(host.readFile ? { readFile: (path) => host.readFile!(path) } : {}),
     askPlan: (prompt) => host.askPlan(prompt),

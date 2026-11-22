@@ -112,3 +112,21 @@ test('pretty tsc keeps error message and Next.js / Vite / module resolution erro
   assert.ok(missingMod.errors.some((e) => e.msg.includes("Cannot find module './missing'")));
   assert.ok(missingMod.errors.some((e) => e.file === 'src/components' && e.msg.includes("Cannot resolve module 'lucide-react'")));
 });
+
+test('formatVerifyReport omits raw internal agent directives when includeAgentDirective is false', () => {
+  const ok = formatVerifyReport(
+    { ok: true, errors: [], failedTests: [], commandsRun: ['npm run build'] },
+    'node',
+    { includeAgentDirective: false }
+  );
+  assert.match(ok, /verify: OK/);
+  assert.doesNotMatch(ok, /You may call finish/);
+
+  const failed = formatVerifyReport(
+    { ok: false, errors: [{ file: 'a.ts', line: 3, msg: 'boom' }], failedTests: [], commandsRun: ['npm test'] },
+    'node',
+    { includeAgentDirective: false }
+  );
+  assert.match(failed, /verify: FAILED/);
+  assert.doesNotMatch(failed, /run verify again before finishing/);
+});

@@ -130,7 +130,11 @@ export interface UseOrchestrationControllerOptions {
     query: string,
     mode: RefineModeMeta,
     picker?: (shortlist: string[], query: string) => Promise<string[]>,
-    contextSelection?: { attachedFiles: string[]; pinnedSymbols: PinnedSymbol[] }
+    contextSelection?: {
+      attachedFiles?: string[];
+      pinnedSymbols?: PinnedSymbol[];
+      toolContext?: WorkspaceToolContext;
+    }
   ) => Promise<SystemContext>;
   setContextManifest: (manifest: ContextManifest | null) => void;
   routingNoteRef: MutableRefObject<string>;
@@ -425,14 +429,18 @@ export function useOrchestrationController({
     const readerModel = autoReaderModel(text, mode.writesFiles ? 'edit' : 'chatter');
     const pickerReport: PickerReport = { model: readerModel ?? '', ran: false, shortlist: 0, answered: false, picked: 0, durationMs: 0 };
     let fit: ChatRequestFit;
-    const toolContext = getToolContext ? await getToolContext() : undefined;
+    const baseToolContext = getToolContext ? await getToolContext() : undefined;
+    const toolContext =
+      baseToolContext && !mode.writesFiles
+        ? { ...baseToolContext, isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }
+        : baseToolContext;
     const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), toolContext);
     try {
       const systemContext = await buildSystemContext(
         text,
         mode,
         readerModel ? runContextPicker(readerModel, pickerReport) : undefined,
-        { attachedFiles: requestFiles, pinnedSymbols: requestSymbols }
+        { attachedFiles: requestFiles, pinnedSymbols: requestSymbols, toolContext }
       );
       if (systemContext.manifest) setContextManifest(systemContext.manifest);
       fit = fitChatRequest({
@@ -1059,9 +1067,17 @@ export function useOrchestrationController({
 
       const contextWindow =
         activeModel?.contextWindow || resolveContextWindow(byok.activeProvider, byok.selectedModel);
-      const toolContext = getToolContext ? await getToolContext() : undefined;
+      const milestoneCategory = inferMilestoneCategory(request.milestone);
+      const isReadOnlyMilestone = milestoneCategory === 'read_only' || milestoneCategory === 'checkpoint';
+      const baseToolContext = getToolContext ? await getToolContext() : undefined;
+      const toolContext = baseToolContext
+        ? {
+            ...baseToolContext,
+            ...(isReadOnlyMilestone ? { isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] } : {})
+          }
+        : undefined;
       const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), toolContext);
-      const system = await buildSystemContext(instruction, mode);
+      const system = await buildSystemContext(instruction, mode, undefined, { toolContext });
       const fit = fitChatRequest({
         contextWindow,
         messages: [{ role: 'user', content: instruction }],
@@ -1071,7 +1087,6 @@ export function useOrchestrationController({
       });
       const runPolicy = { mode: permissionMode };
       const runId = makeId('run');
-      const milestoneCategory = inferMilestoneCategory(request.milestone);
       const requireFileMutation = milestoneCategory === 'file_mutation' && request.milestone.expectedFiles.length > 0;
       const machineCheckpoint = await workspace.markCheckpoint(runId, instruction);
       try {

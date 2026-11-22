@@ -14,8 +14,9 @@
  */
 
 import { findCycles } from './dag';
+import { inferMilestoneCategory } from './milestoneVerifier';
 import { extractExplicitPathsFromText, extractRequirements, formatRequirementChecklistForPrompt } from './requirements';
-import { canonicalPathKey, isCaseInsensitivePlatform, normalizeRepoPath } from '../paths';
+import { canonicalPathKey, dedupePaths, isCaseInsensitivePlatform, normalizeRepoPath } from '../paths';
 import type { Milestone, MilestoneCategory, PlanError, RunBudget } from './types';
 
 /**
@@ -83,14 +84,19 @@ function normalizeCategory(value: unknown): MilestoneCategory | undefined {
 
 function normalizeMilestone(raw: RawMilestone, index: number): Milestone {
   const title = asString(raw.title) || asString(raw.description);
-  const category = normalizeCategory(raw.category);
+  const instruction = asString(raw.instruction) || title;
+  const expectedFiles = asStringArray(raw.expectedFiles);
+  const verifyCommand = asString(raw.verifyCommand) || undefined;
+  const explicitCategory = normalizeCategory(raw.category);
+  const inferred = explicitCategory ?? inferMilestoneCategory({ title, instruction, expectedFiles, verifyCommand });
+  const category = explicitCategory ?? (inferred === 'read_only' || inferred === 'checkpoint' ? inferred : undefined);
   return {
     id: asString(raw.id) || `m${index + 1}`,
     title,
-    instruction: asString(raw.instruction) || title,
-    expectedFiles: asStringArray(raw.expectedFiles),
+    instruction,
+    expectedFiles,
     dependsOn: asStringArray(raw.dependsOn),
-    verifyCommand: asString(raw.verifyCommand) || undefined,
+    verifyCommand,
     ...(category ? { category } : {}),
     status: 'pending',
     attempts: []
@@ -189,6 +195,7 @@ export function coalesceSingleFileMilestones(milestones: Milestone[], files: rea
   }
 
   const keyForSingleExistingFile = (milestone: Milestone): string | null => {
+    if (inferMilestoneCategory(milestone) !== 'file_mutation') return null;
     if (milestone.expectedFiles.length !== 1) return null;
     const clean = normalizePlanPath(milestone.expectedFiles[0]);
     if (!clean) return null;
@@ -288,7 +295,7 @@ export function consolidateSmallTaskMilestones(
 
   const hasLeadingPhase =
     body.length > 2 &&
-    (body[0].category === 'read_only' || body[0].category === 'checkpoint') &&
+    (inferMilestoneCategory(body[0]) === 'read_only' || inferMilestoneCategory(body[0]) === 'checkpoint') &&
     body[0].expectedFiles.length === 0;
   const leading = hasLeadingPhase ? [body[0]] : [];
   const mutableBody = hasLeadingPhase ? body.slice(1) : body;
@@ -317,9 +324,9 @@ export function consolidateSmallTaskMilestones(
       }
     }
     const verifyCommand = [...slice].reverse().find((m) => Boolean(m.verifyCommand))?.verifyCommand;
-    const category = slice.some((m) => m.category === 'file_mutation' || m.expectedFiles.length > 0)
+    const category = slice.some((m) => inferMilestoneCategory(m) === 'file_mutation')
       ? 'file_mutation'
-      : head.category;
+      : inferMilestoneCategory(head);
     const dependsOn: string[] = [];
     const seenDeps = new Set<string>();
     for (const m of slice) {
@@ -551,11 +558,58 @@ export function computeElasticRunBudget(goal: string, base: RunBudget): RunBudge
   };
 }
 
+/**
+ * Extracts explicit file paths mentioned in a goal and resolves bare filenames
+ * (e.g. `platformFacade.ts`) to matching workspace paths when available.
+ */
+export function extractGoalTargetFiles(goal: string, workspaceFiles: readonly string[] = []): string[] {
+  const caseInsensitive = isCaseInsensitivePlatform() || workspaceFiles.some((file) => /^[a-z]:/i.test(file));
+  const extracted = extractExplicitPathsFromText(goal);
+  if (extracted.length === 0) return [];
+  if (workspaceFiles.length === 0) return dedupePaths(extracted, caseInsensitive);
+
+  const byCanonical = new Map<string, string>();
+  const byBasename = new Map<string, string[]>();
+  for (const raw of workspaceFiles) {
+    const clean = normalizeRepoPath(raw);
+    if (!clean) continue;
+    byCanonical.set(canonicalPathKey(clean, caseInsensitive), clean);
+    const base = clean.split('/').pop()?.toLowerCase() ?? '';
+    if (base) {
+      const list = byBasename.get(base);
+      if (list) list.push(clean);
+      else byBasename.set(base, [clean]);
+    }
+  }
+
+  const resolved: string[] = [];
+  for (const rawTarget of extracted) {
+    const clean = normalizeRepoPath(rawTarget);
+    if (!clean) continue;
+    const exact = byCanonical.get(canonicalPathKey(clean, caseInsensitive));
+    if (exact) {
+      resolved.push(exact);
+      continue;
+    }
+    if (!clean.includes('/')) {
+      const matches = byBasename.get(clean.toLowerCase());
+      if (matches && matches.length > 0) {
+        resolved.push(...matches);
+        continue;
+      }
+    }
+    resolved.push(clean);
+  }
+
+  return dedupePaths(resolved, caseInsensitive);
+}
+
 /** The instruction handed to the model that must return the milestone JSON. */
 export function buildPlannerPrompt(goal: string, files: string[], budget: RunBudget): string {
   const inventory = selectPrioritizedWorkspaceFiles(goal, files, 800);
   const fileList = inventory.join('\n') || '(the workspace has no files yet)';
   const checklist = formatRequirementChecklistForPrompt(extractRequirements(goal));
+  const explicitTargets = extractGoalTargetFiles(goal, files);
   const sections = [
     'You are the architect for an autonomous coding run inside one project folder.',
     'Decompose the goal below into an ordered set of milestones and return them as JSON.',
@@ -577,6 +631,11 @@ export function buildPlannerPrompt(goal: string, files: string[], budget: RunBud
     'Rules: ids are unique; dependsOn only references ids in this array; every path is repo-relative (no leading slash, no "..");',
     'category is optional: "file_mutation" | "read_only" | "command_execution" | "checkpoint";',
     'ensure EVERY item in the requirement checklist and EVERY target file in the goal is assigned to a milestone;',
+    ...(explicitTargets.length > 0
+      ? [
+          `when explicit target file(s) (${explicitTargets.slice(0, 6).join(', ')}) are named in the goal, scope edits to those target files unless direct callers require updates; do NOT schedule cleanup of pre-existing errors in unrelated files;`
+        ]
+      : []),
     'Keep 1-2 file tasks consolidated into 1-3 cohesive milestones — do NOT emit separate search/read/verify/checkpoint milestones unless explicitly requested;',
     'when updating multiple cohesive UI sections inside a single existing file (e.g. App.jsx or one page component), group those edits into 1-2 structured milestones rather than creating 5-7 section-by-section milestones;',
     'never emit shell file-existence commands (test -f, ls, dir, Test-Path) as verifyCommand — file presence is verified automatically; only set verifyCommand for real build/test/typecheck scripts and omit verifyCommand otherwise; do not wrap the array in prose.',

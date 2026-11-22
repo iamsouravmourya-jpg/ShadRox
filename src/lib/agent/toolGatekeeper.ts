@@ -20,6 +20,12 @@ export interface WorkspaceToolContext {
   terminalAwaitingInput: boolean;
   hasActiveTerminal?: boolean;
   checkpointCount: number;
+  /** True when the turn is read-only (Ask/Plan mode or read_only milestone); hides verify. */
+  isReadOnlyTurn?: boolean;
+  /** False when zero files were modified on disk this turn; gates off verify in favor of problems. */
+  hasMutatedFiles?: boolean;
+  /** Optional list of paths modified so far this turn; an empty array [] gates off verify. */
+  touchedFiles?: readonly string[];
 }
 
 /**
@@ -37,7 +43,6 @@ export const ALWAYS_ON_TOOL_NAMES: ReadonlySet<string> = new Set([
   'write_file',
   'delete_file',
   'problems',
-  'verify',
   'git_state',
   'run_command',
   'memory_read',
@@ -79,6 +84,13 @@ export function isToolEnabledInContext(toolName: string, state: WorkspaceToolCon
   if (toolName === 'update_tasks' || toolName === 'finish') return true;
   if (!state.workspaceOpen) {
     return toolName === 'web_search' || toolName === 'fetch_url';
+  }
+
+  if (toolName === 'verify') {
+    if (state.isReadOnlyTurn === true) return false;
+    if (state.hasMutatedFiles === false) return false;
+    if (state.touchedFiles !== undefined && state.touchedFiles.length === 0) return false;
+    return true;
   }
 
   if (ALWAYS_ON_TOOL_NAMES.has(toolName)) return true;
@@ -135,6 +147,9 @@ export function buildWorkspaceToolContext(options: {
   terminalAwaitingInput?: boolean;
   hasActiveTerminal?: boolean;
   checkpointCount?: number;
+  isReadOnlyTurn?: boolean;
+  hasMutatedFiles?: boolean;
+  touchedFiles?: readonly string[];
 }): WorkspaceToolContext {
   const status = options.debugStatus ?? 'idle';
   const preview = options.previewStatus ?? 'idle';
@@ -149,6 +164,9 @@ export function buildWorkspaceToolContext(options: {
     activeJobCount: Math.max(0, options.activeJobCount ?? 0),
     terminalAwaitingInput: Boolean(options.terminalAwaitingInput),
     hasActiveTerminal: Boolean(options.hasActiveTerminal),
-    checkpointCount: Math.max(0, options.checkpointCount ?? 0)
+    checkpointCount: Math.max(0, options.checkpointCount ?? 0),
+    ...(options.isReadOnlyTurn !== undefined ? { isReadOnlyTurn: options.isReadOnlyTurn } : {}),
+    ...(options.hasMutatedFiles !== undefined ? { hasMutatedFiles: options.hasMutatedFiles } : {}),
+    ...(options.touchedFiles !== undefined ? { touchedFiles: options.touchedFiles } : {})
   };
 }

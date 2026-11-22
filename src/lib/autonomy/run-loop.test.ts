@@ -641,3 +641,121 @@ test('verifyWorkspace runs m-ws-repair when cross-file errors appear and rolls b
   assert.deepEqual(h2.rollbacks, ['checkpoint-1']);
 });
 
+test('scoped final verification ignores pre-existing unrelated errors when targeted files are clean and no regressions occur', async () => {
+  const legacyErrors = Array.from({ length: 89 }, (_, i) => ({
+    path: `src/legacy/mod${i}.ts`,
+    line: 10,
+    column: 1,
+    message: `Legacy TS error #${i}`,
+    severity: 'error' as const
+  }));
+
+  const h = harness([
+    milestone('m1', {
+      title: 'Fix platformFacade and rateLimiter',
+      expectedFiles: ['src/services/platformFacade.ts', 'src/services/rateLimiter.ts']
+    })
+  ]);
+  h.deps.ports.listFiles = () => [
+    'src/services/platformFacade.ts',
+    'src/services/rateLimiter.ts',
+    ...legacyErrors.map((d) => d.path)
+  ];
+  h.setTurn(() => ({
+    reply: 'Fixed targeted services cleanly.',
+    patchesApplied: 2,
+    patchFailures: [],
+    aborted: false,
+    touchedFiles: ['src/services/platformFacade.ts', 'src/services/rateLimiter.ts']
+  }));
+  h.deps.ports.captureBaselineDiagnostics = async () => [
+    ...legacyErrors,
+    { path: 'src/services/platformFacade.ts', line: 5, column: 2, message: 'Old target error', severity: 'error' }
+  ];
+  let wsChecks = 0;
+  h.deps.ports.verifyWorkspace = async () => {
+    wsChecks += 1;
+    return {
+      verdict: 'failed',
+      diagnostics: legacyErrors,
+      notes: ['89 workspace-wide error diagnostic(s) found']
+    };
+  };
+
+  const state = await runAutonomous('Fix errors specifically inside platformFacade.ts and rateLimiter.ts', h.deps);
+  assert.equal(state.status, 'done');
+  assert.equal(wsChecks, 1, 'should not re-run after skipping unnecessary m-ws-repair');
+  assert.equal(state.milestones.some((m) => m.id === 'm-ws-repair'), false);
+  assert.deepEqual(h.rollbacks, []);
+  assert.equal(state.rolledBack, undefined);
+});
+
+test('scoped final verification triggers m-ws-repair when touched/targeted files still have errors or regressions exceed baseline', async () => {
+  const legacyErrors = [
+    { path: 'src/legacy/old.ts', line: 1, column: 1, message: 'Pre-existing error', severity: 'error' as const }
+  ];
+
+  // Case 1: Error remains inside touched target file even though postRunErrorCount <= preRunErrorCount.
+  const hTarget = harness([
+    milestone('m1', { expectedFiles: ['src/services/platformFacade.ts'] })
+  ]);
+  hTarget.deps.ports.listFiles = () => ['src/services/platformFacade.ts', 'src/legacy/old.ts'];
+  hTarget.setTurn(() => ({
+    reply: 'Attempted fix',
+    patchesApplied: 1,
+    patchFailures: [],
+    aborted: false,
+    touchedFiles: ['src/services/platformFacade.ts']
+  }));
+  hTarget.deps.ports.captureBaselineDiagnostics = async () => [
+    ...legacyErrors,
+    { path: 'src/services/platformFacade.ts', line: 8, column: 1, message: 'Missing export', severity: 'error' }
+  ];
+  let targetWsChecks = 0;
+  hTarget.deps.ports.verifyWorkspace = async () => {
+    targetWsChecks += 1;
+    return {
+      verdict: 'failed',
+      diagnostics:
+        targetWsChecks === 1
+          ? [
+              ...legacyErrors,
+              { path: 'src/services/platformFacade.ts', line: 8, column: 1, message: 'Missing export', severity: 'error' }
+            ]
+          : legacyErrors,
+      notes: ['target error check']
+    };
+  };
+  const targetRes = await runAutonomous('Fix errors in platformFacade.ts', hTarget.deps);
+  assert.equal(targetRes.status, 'done');
+  assert.equal(targetWsChecks, 2);
+  assert.equal(targetRes.milestones.some((m) => m.id === 'm-ws-repair'), true);
+
+  // Case 2: New regression error appears above baseline count and remains unresolved -> fails and rolls back.
+  const hReg = harness([
+    milestone('m1', { expectedFiles: ['src/services/rateLimiter.ts'] })
+  ]);
+  hReg.deps.ports.listFiles = () => ['src/services/rateLimiter.ts', 'src/legacy/old.ts', 'src/caller.ts'];
+  hReg.setTurn(() => ({
+    reply: 'Edited rateLimiter',
+    patchesApplied: 1,
+    patchFailures: [],
+    aborted: false,
+    touchedFiles: ['src/services/rateLimiter.ts']
+  }));
+  hReg.deps.ports.captureBaselineDiagnostics = async () => legacyErrors;
+  hReg.deps.ports.verifyWorkspace = async () => ({
+    verdict: 'failed',
+    diagnostics: [
+      ...legacyErrors,
+      { path: 'src/caller.ts', line: 12, column: 3, message: 'New regression breaking caller', severity: 'error' }
+    ],
+    notes: ['2 workspace errors']
+  });
+  const regRes = await runAutonomous('Fix rateLimiter.ts', hReg.deps);
+  assert.equal(regRes.status, 'failed');
+  assert.equal(regRes.rolledBack, true);
+  assert.deepEqual(hReg.rollbacks, ['checkpoint-1']);
+});
+
+

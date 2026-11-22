@@ -246,8 +246,29 @@ export function filesReadFromActivity(activity: readonly ToolActivity[]): string
   return [...paths];
 }
 
+const INTERNAL_AGENT_DIRECTIVE_PATTERNS: readonly RegExp[] = [
+  /^[ \t]*Fix the errors above, then run verify again before finishing\.?[ \t]*$/gim,
+  /^[ \t]*All checks passed\. You may call finish with "verified": true\.?[ \t]*$/gim,
+  /^[ \t]*Verification blocked: You have not applied any file edits yet\.[^\n]*$/gim
+];
+
+/**
+ * Strips raw internal agent loop directives/nudges so they never leak into
+ * user-facing assistant markdown replies or summaries.
+ */
+export function sanitizeUserFacingReply(text: string): string {
+  if (!text) return text;
+  let cleaned = text;
+  for (const pattern of INTERNAL_AGENT_DIRECTIVE_PATTERNS) {
+    cleaned = cleaned.replace(pattern, '');
+  }
+  return cleaned.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function trimmedSummary(text: string): string {
-  const line = text.split('\n').find((candidate) => candidate.trim().length > 0) ?? '';
+  const line = sanitizeUserFacingReply(text)
+    .split('\n')
+    .find((candidate) => candidate.trim().length > 0) ?? '';
   const value = line.trim();
   return value.length <= SUMMARY_LIMIT ? value : `${value.slice(0, SUMMARY_LIMIT)}…`;
 }
@@ -338,8 +359,12 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
   const observations = readObservations(loop.activity);
   const toolChangedPaths = loop.changedPaths ?? [];
   const toolCreatedPaths = loop.createdPaths ?? [];
+  const sanitizedReply = sanitizeUserFacingReply(loop.text);
+  const sanitizedFinish = loop.finish
+    ? { ...loop.finish, summary: sanitizeUserFacingReply(loop.finish.summary) }
+    : undefined;
   const base = {
-    reply: loop.text,
+    reply: sanitizedReply,
     filesRead,
     readCoverage: readCoverageFromActivity(loop.activity),
     toolActivity: loop.activity,
@@ -353,7 +378,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
     toolEvents: loop.toolEvents,
     failureProof: loop.failureProof,
     plan: loop.plan,
-    finish: loop.finish
+    finish: sanitizedFinish
   };
 
   const emitActivity = (): void => {
@@ -432,7 +457,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
   if (allowed.length === 0) {
     return {
       ...base,
-      summary: loop.finish?.summary ?? trimmedSummary(loop.text),
+      summary: sanitizedFinish?.summary || trimmedSummary(sanitizedReply),
       applied: [],
       pendingReview: [],
       reviewNotes: [],
@@ -492,7 +517,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnOutc
 
   return {
     ...base,
-    summary: loop.finish?.summary ?? trimmedSummary(loop.text),
+    summary: sanitizedFinish?.summary || trimmedSummary(sanitizedReply),
     applied,
     pendingReview,
     reviewNotes: partition.reviewNotes,

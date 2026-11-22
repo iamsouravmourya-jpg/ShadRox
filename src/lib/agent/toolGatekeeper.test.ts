@@ -107,3 +107,40 @@ test('hasDebuggableScriptFiles and hasPreviewableFiles detect script and project
   assert.equal(hasPreviewableFiles(['README.md']), false);
   assert.equal(hasPreviewableFiles(['package.json']), true);
 });
+
+test('verify tool is gated off on read-only or zero-write turns while problems remains available', () => {
+  const readOnlyCtx = buildWorkspaceToolContext({
+    workspaceOpen: true,
+    filePaths: ['src/App.tsx', 'package.json'],
+    isReadOnlyTurn: true
+  });
+  const zeroWriteCtx = buildWorkspaceToolContext({
+    workspaceOpen: true,
+    filePaths: ['src/App.tsx', 'package.json'],
+    touchedFiles: []
+  });
+  const mutatedCtx = buildWorkspaceToolContext({
+    workspaceOpen: true,
+    filePaths: ['src/App.tsx', 'package.json'],
+    hasMutatedFiles: true,
+    touchedFiles: ['src/App.tsx']
+  });
+
+  assert.equal(isToolEnabledInContext('verify', readOnlyCtx), false);
+  assert.equal(isToolEnabledInContext('problems', readOnlyCtx), true);
+  assert.equal(isToolEnabledInContext('verify', zeroWriteCtx), false);
+  assert.equal(isToolEnabledInContext('verify', mutatedCtx), true);
+
+  const readOnlyPrompt = describeTools(10, [], [], readOnlyCtx).join('\n');
+  assert.equal(readOnlyPrompt.includes('VERIFY: after changing files'), false);
+  assert.match(readOnlyPrompt, /use problems .* instead of verify/i);
+  assert.equal(
+    nativeToolDefinitions(true, readOnlyCtx).some((tool) => tool.name === 'verify'),
+    false
+  );
+  assert.equal(
+    nativeToolDefinitions(true, mutatedCtx).some((tool) => tool.name === 'verify'),
+    true
+  );
+});
+

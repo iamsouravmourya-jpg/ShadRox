@@ -9,7 +9,7 @@ import { createFailureReceipt } from '../repairProof';
 import { globalProofLedger } from '../proofLedger';
 import { globalRepairSession } from '../repairSession';
 import type { AgentTurnPorts, TurnPatch } from './turnRunner';
-import { executedToolCallCount, filesReadFromActivity, runAgentTurn, turnReviewLine } from './turnRunner';
+import { executedToolCallCount, filesReadFromActivity, runAgentTurn, sanitizeUserFacingReply, turnReviewLine } from './turnRunner';
 
 /**
  * The real chat tool loop is driven here, not a stand-in: the whole point of this
@@ -650,4 +650,35 @@ test('native write tools populate toolChangedPaths, toolCreatedPaths, and wroteN
     assert.deepEqual(result.toolCreatedPaths, ['src/helper.ts']);
   });
 });
+
+test('read-only turn refuses verify in favor of problems and strips leaked internal directives from reply and summary', async () => {
+  let commandCalled = false;
+  await withBridge({
+    readFile: async (_id: string, path: string) => ({ name: path, content: 'export const x = 1;', version: 'v1' }),
+    runCommand: async () => {
+      commandCalled = true;
+      return { stdout: '', stderr: '', exitCode: 1 };
+    }
+  }, async () => {
+    const { result } = await turn({
+      responses: [
+        toolBlock([{ name: 'verify', args: {} }]),
+        'Inspection complete.\n\nFix the errors above, then run verify again before finishing.\nAll checks passed. You may call finish with "verified": true.'
+      ],
+      files: { 'src/a.ts': 'export const x = 1;' },
+      expectedFiles: []
+    });
+    assert.equal(commandCalled, false, 'verify must not execute commands on a read-only turn with zero writes');
+    assert.equal(result.toolActivity[0]?.ok, false);
+    assert.equal(result.toolActivity[0]?.refused, true);
+    assert.match(result.toolActivity[0]?.error ?? '', /problems tool/i);
+    assert.equal(result.reply, 'Inspection complete.');
+    assert.equal(result.summary, 'Inspection complete.');
+    assert.equal(
+      sanitizeUserFacingReply('Hello\nFix the errors above, then run verify again before finishing.\nDone.'),
+      'Hello\n\nDone.'
+    );
+  });
+});
+
 

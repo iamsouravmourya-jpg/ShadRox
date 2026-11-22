@@ -383,6 +383,11 @@ export interface AutonomyPorts {
    * catch cross-file type breakages outside individual milestone lists.
    */
   verifyWorkspace?: () => Promise<VerificationReport>;
+  /**
+   * Optional pre-run baseline diagnostics snapshot captured before m1 runs so
+   * final verification can scope checks to touched/targeted files and regressions.
+   */
+  captureBaselineDiagnostics?: () => Promise<DiagnosticLine[] | null>;
 }
 
 export type AutonomyEvent =

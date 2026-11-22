@@ -180,7 +180,11 @@ export function parseVerifyOutput(text: string): { errors: VerifyError[]; failed
 }
 
 /** The structured text a verify outcome carries; the model and the UI both read it. */
-export function formatVerifyReport(report: VerifyReport, kind: VerifyPlan['kind']): string {
+export function formatVerifyReport(
+  report: VerifyReport,
+  kind: VerifyPlan['kind'],
+  options?: { includeAgentDirective?: boolean }
+): string {
   const lines = [
     `verify: ${report.ok ? 'OK' : 'FAILED'} (project kind: ${kind})`,
     `commands run: ${report.commandsRun.length > 0 ? report.commandsRun.join(' && ') : '(none — no project manifest; compiler diagnostics only)'}`
@@ -193,7 +197,11 @@ export function formatVerifyReport(report: VerifyReport, kind: VerifyPlan['kind'
     lines.push(`failed tests (${report.failedTests.length}):`);
     for (const test of report.failedTests.slice(0, 20)) lines.push(`  ${test}`);
   }
-  if (report.ok) lines.push('All checks passed. You may call finish with "verified": true.');
-  else lines.push('Fix the errors above, then run verify again before finishing.');
+  if (options?.includeAgentDirective === false) {
+    lines.push(report.ok ? 'All checks passed.' : 'Verification failed with the errors listed above.');
+  } else {
+    if (report.ok) lines.push('All checks passed. You may call finish with "verified": true.');
+    else lines.push('Fix the errors above, then run verify again before finishing.');
+  }
   return lines.join('\n');
 }

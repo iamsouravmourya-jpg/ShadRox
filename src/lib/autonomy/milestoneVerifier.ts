@@ -138,8 +138,11 @@ export function normalizeVerifyPath(path: string): string {
  * ------------------------------------------------------------------ */
 
 const CHECKPOINT_INTENT_RE = /\b(create|save|take|list|verify)?\s*checkpoint\b|\bsnapshot\b/i;
+const LEADING_READ_ONLY_VERB_RE = /^(?:verify|check|inspect|audit|analy[sz]e|read|review|list|search)\b/i;
 const READ_ONLY_INTENT_RE =
   /\b(inspect|audit|review|analyze|analyse|check\s+preview|verify\s+preview|read|list|search|save\s+memory|record\s+memory|memory\s+note|check\s+problems|diagnostics)\b/i;
+const EXPLICIT_MUTATION_VERB_RE =
+  /\b(create|write|add|implement|update|edit|modify|refactor|fix|patch|replace|rename|remove|delete|wire|integrate|extend|enhance|style|convert|migrate|rewrite)\b/i;
 const MUTATION_VERB_RE =
   /\b(create|write|add|build|implement|update|edit|modify|refactor|fix|patch|replace|rename|remove|delete|wire|integrate|extend|enhance|style|convert|migrate)\b/i;
 
@@ -147,9 +150,20 @@ export function inferMilestoneCategory(
   unit: Pick<VerifiableUnit, 'category' | 'title' | 'instruction' | 'expectedFiles' | 'verifyCommand'>
 ): MilestoneCategory {
   if (unit.category) return unit.category;
+  const rawTitle = (unit.title ?? '').trim().replace(/^(?:\d+[.)]\s*|[-*]\s*)/, '').trim();
+  const rawInstruction = (unit.instruction ?? '').trim();
   const text = `${unit.title ?? ''} ${unit.instruction ?? ''}`.trim();
+
+  if (unit.expectedFiles.length === 0 && CHECKPOINT_INTENT_RE.test(text)) {
+    return 'checkpoint';
+  }
+
+  const leadingSubject = rawTitle || rawInstruction;
+  if (LEADING_READ_ONLY_VERB_RE.test(leadingSubject) && !EXPLICIT_MUTATION_VERB_RE.test(text)) {
+    return 'read_only';
+  }
+
   if (unit.expectedFiles.length === 0) {
-    if (CHECKPOINT_INTENT_RE.test(text)) return 'checkpoint';
     if (READ_ONLY_INTENT_RE.test(text) && !MUTATION_VERB_RE.test(text)) return 'read_only';
     if (unit.verifyCommand) return 'command_execution';
     return 'file_mutation';

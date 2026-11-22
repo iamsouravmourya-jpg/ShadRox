@@ -348,7 +348,11 @@ export function useContextBuilder({
       query: string,
       mode: RefineModeMeta,
       picker?: (shortlist: string[], query: string) => Promise<string[]>,
-      contextSelection?: { attachedFiles: string[]; pinnedSymbols: PinnedSymbol[] }
+      contextSelection?: {
+        attachedFiles?: string[];
+        pinnedSymbols?: PinnedSymbol[];
+        toolContext?: WorkspaceToolContext;
+      }
     ): Promise<SystemContext> => {
       const folder = workspace.workspace;
       const tree = folder?.diskFileTree ?? [];
@@ -471,7 +475,12 @@ export function useContextBuilder({
           );
         }
         if (nativeWorkspaceId) {
-          const toolContext = getToolContext ? await getToolContext() : undefined;
+          const baseToolContext =
+            contextSelection?.toolContext ?? (getToolContext ? await getToolContext() : undefined);
+          const toolContext =
+            baseToolContext && !mode.writesFiles
+              ? { ...baseToolContext, isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }
+              : baseToolContext;
           core.push(...describeTools(DEFAULT_MAX_TOOL_ROUNDS, mcpDiscovery.tools, mcpNotes, toolContext));
         }
         const signatureMap = repoMapFiles.files.length > 0 ? await buildRankedRepoMap(folder.path, {

@@ -269,6 +269,14 @@ export function writeSecretItem(key: string, value: string): void {
   if (!isSecretKey(key)) return;
   secretMemory.set(key, value);
   if (!usesEncryptedSecrets()) {
+    if (!canUseWebCryptoKeystore()) {
+      try {
+        localStorage.setItem(key, value);
+      } catch (error) {
+        console.warn(`[shadrox] could not persist ${key}`, error);
+      }
+      return;
+    }
     enqueueBrowserWrite(async () => {
       const encrypted = await encryptForBrowserStorage(value);
       // Only commit if the in-memory value wasn't subsequently changed or deleted.
@@ -276,9 +284,6 @@ export function writeSecretItem(key: string, value: string): void {
       try {
         if (encrypted) {
           localStorage.setItem(key, encrypted);
-        } else if (!canUseWebCryptoKeystore()) {
-          // Non-browser minimal environments without WebCrypto+IDB fall back safely.
-          localStorage.setItem(key, value);
         }
       } catch (error) {
         console.warn(`[shadrox] could not persist ${key}`, error);
@@ -296,6 +301,14 @@ export function deleteSecretItem(key: string): void {
   if (!isSecretKey(key)) return;
   secretMemory.delete(key);
   if (!usesEncryptedSecrets()) {
+    if (!canUseWebCryptoKeystore()) {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     enqueueBrowserWrite(async () => {
       if (secretMemory.has(key)) return;
       try {

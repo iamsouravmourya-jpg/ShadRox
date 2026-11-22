@@ -7,6 +7,7 @@ import {
   computeElasticRunBudget,
   consolidateSmallTaskMilestones,
   createPlanGoal,
+  extractGoalTargetFiles,
   isSafeRelativePath,
   parsePlanReply,
   selectPrioritizedWorkspaceFiles,
@@ -217,4 +218,44 @@ test('consolidateSmallTaskMilestones compresses bloated <=2-file plans to at mos
   assert.ok(planned.milestones.length <= 3);
   assert.equal(planned.milestones[0].category, 'read_only');
 });
+
+test('parsePlanReply classifies leading read-only milestones as read_only even with expectedFiles, and extractGoalTargetFiles resolves bare filenames', () => {
+  const parsed = parsePlanReply(
+    JSON.stringify([
+      {
+        id: 'm1',
+        title: 'Verify src/App.tsx for TypeScript errors',
+        instruction: 'Inspect diagnostics on src/App.tsx',
+        expectedFiles: ['src/App.tsx']
+      },
+      {
+        id: 'm2',
+        title: 'Fix src/App.tsx props',
+        instruction: 'Fix prop typing in src/App.tsx',
+        expectedFiles: ['src/App.tsx'],
+        dependsOn: ['m1']
+      }
+    ])
+  );
+  assert.equal(parsed.errors.length, 0);
+  assert.equal(parsed.milestones[0].category, 'read_only');
+  assert.equal(parsed.milestones[1].category, undefined);
+
+  const coalesced = coalesceSingleFileMilestones(parsed.milestones, ['src/App.tsx']);
+  assert.equal(coalesced.length, 2, 'read-only check step is not merged into file_mutation step');
+
+  const resolved = extractGoalTargetFiles(
+    'Fix errors specifically inside platformFacade.ts and rateLimiter.ts',
+    ['src/core/platformFacade.ts', 'src/core/rateLimiter.ts', 'src/other.ts']
+  );
+  assert.deepEqual(resolved, ['src/core/platformFacade.ts', 'src/core/rateLimiter.ts']);
+
+  const prompt = buildPlannerPrompt(
+    'Fix errors specifically inside platformFacade.ts and rateLimiter.ts',
+    ['src/core/platformFacade.ts', 'src/core/rateLimiter.ts', 'src/legacy.ts'],
+    BUDGET
+  );
+  assert.match(prompt, /scope edits to those target files/i);
+});
+
 

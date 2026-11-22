@@ -173,3 +173,58 @@ test('evaluateNativeFileCheckCommand handles nested directory paths cleanly', as
   assert.ok(res);
   assert.equal(res.ok, true);
 });
+
+test('verb-first read-only milestones classify as read_only even when expectedFiles is non-empty and verify cleanly without mutations', async () => {
+  const files = new Map<string, string>([['src/App.tsx', 'export function App() { return null; }\n']]);
+  const host = makeHost(files);
+
+  assert.equal(
+    inferMilestoneCategory({
+      title: 'Verify src/App.tsx for TypeScript errors',
+      instruction: 'Check src/App.tsx diagnostics',
+      expectedFiles: ['src/App.tsx']
+    }),
+    'read_only'
+  );
+  assert.equal(
+    inferMilestoneCategory({
+      title: 'Inspect src/App.tsx for unused imports',
+      instruction: 'Read src/App.tsx and report issues',
+      expectedFiles: ['src/App.tsx']
+    }),
+    'read_only'
+  );
+  assert.equal(
+    inferMilestoneCategory({
+      title: 'Analyze src/App.tsx build output',
+      instruction: 'Check for problems in src/App.tsx',
+      expectedFiles: ['src/App.tsx']
+    }),
+    'read_only'
+  );
+  assert.equal(
+    inferMilestoneCategory({
+      title: 'Verify and fix src/App.tsx',
+      instruction: 'Fix any TypeScript errors in src/App.tsx',
+      expectedFiles: ['src/App.tsx']
+    }),
+    'file_mutation'
+  );
+
+  const report = await verifyMilestone(
+    makeUnit({
+      title: 'Verify src/App.tsx for TypeScript errors',
+      instruction: 'Check src/App.tsx diagnostics',
+      expectedFiles: ['src/App.tsx']
+    }),
+    host,
+    '/repo',
+    {
+      patchesApplied: 0,
+      toolEvents: [{ name: 'problems', ok: true, summary: '0 errors' }]
+    }
+  );
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.notes.join(' ').includes('touched nothing'), false);
+});
+
