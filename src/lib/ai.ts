@@ -18,6 +18,7 @@ import {
 import type { RefineMode } from './types';
 import type { UsageSource } from './taskUsage';
 import { flightRecorder } from './observability/flightRecorder';
+import { hardCapChatHistory } from './agent/loopContext';
 
 export type { UsageSource };
 
@@ -514,7 +515,7 @@ async function runStreamAttemptCore(
         model,
         apiKey,
         baseUrl: provider === 'custom' ? baseUrl : undefined,
-        messages,
+        messages: hardCapChatHistory(messages),
         systemInstruction,
         temperature,
         thinking,

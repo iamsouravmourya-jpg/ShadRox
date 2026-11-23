@@ -406,7 +406,7 @@ export interface PreviewInspectResponse {
   dataUrl?: string;
   width?: number;
   height?: number;
-  logs?: Array<{ level: string; message: string; timestamp: number }>;
+  logs?: Array<{ level: string; message: string; timestamp: number; url?: string }>;
   errors?: Array<{ url: string; status?: number; error?: string; timestamp: number }>;
   found?: boolean;
   count?: number;
@@ -460,6 +460,15 @@ function inspectRefusal(message: string): ToolOutcome {
   return { ok: false, content: '', error: message, refused: true };
 }
 
+function extractRoutePath(urlStr: string): string {
+  try {
+    const u = new URL(urlStr);
+    return u.pathname || '/';
+  } catch {
+    return urlStr || '/';
+  }
+}
+
 export async function handlePreviewInspect(workspaceId: string, args: Record<string, unknown>): Promise<ToolOutcome> {
   if (!workspaceId) return inspectRefusal('preview_inspect needs an opened folder workspace with a running preview.');
   const action = typeof args.action === 'string' ? args.action : '';
@@ -509,13 +518,13 @@ export async function handlePreviewInspect(workspaceId: string, args: Record<str
     if (action === 'console') {
       const logs = Array.isArray(response.logs) ? response.logs : [];
       const runTag = typeof response.previewRunId === 'number' ? ` (run #${response.previewRunId})` : '';
-      const body = logs.slice(-60).map((entry) => `[${entry.level}] ${String(entry.message).slice(0, 300)}`).join('\n');
+      const body = logs.slice(-60).map((entry) => `[Route: ${extractRoutePath(entry.url || '/')}] [${entry.level}] ${String(entry.message).slice(0, 300)}`).join('\n');
       return { ok: true, content: `${logs.length} console message(s) buffered since inspection started${runTag}${response.note ? ` (${response.note})` : ''}:\n${body || '(none)'}` };
     }
     if (action === 'network') {
       const errors = Array.isArray(response.errors) ? response.errors : [];
       const runTag = typeof response.previewRunId === 'number' ? ` (run #${response.previewRunId})` : '';
-      const body = errors.slice(-40).map((entry) => `${entry.status ? `HTTP ${entry.status}` : entry.error ?? 'failed'} ${String(entry.url).slice(0, 300)}`).join('\n');
+      const body = errors.slice(-40).map((entry) => `[Route: ${extractRoutePath(entry.url || '/')}] ${entry.status ? `HTTP ${entry.status}` : entry.error ?? 'failed'} ${String(entry.url).slice(0, 300)}`).join('\n');
       return { ok: true, content: `${errors.length} network error(s) buffered since inspection started${runTag}${response.note ? ` (${response.note})` : ''}:\n${body || '(none)'}` };
     }
     if (action === 'dom') {

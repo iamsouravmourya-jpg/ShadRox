@@ -238,25 +238,15 @@ function parseBareToolCalls(text: string): ParsedToolBlock | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
+  const repaired = repairJsonValue(trimmed);
+  if ('error' in repaired) return null;
 
-  const list = Array.isArray(parsed) ? parsed : [parsed];
-  if (list.length === 0 || !list.every((entry) => {
-    if (!isStrictToolCall(entry)) return false;
-    return entry.args !== undefined
-      && typeof entry.args === 'object'
-      && entry.args !== null
-      && !Array.isArray(entry.args);
-  })) return null;
-  const calls = list.slice(0, MAX_PARSED_CALLS).map((call) => ({
-    name: call.name.trim(),
-    args: (call.args ?? {}) as Record<string, unknown>
-  }));
+  const list = Array.isArray(repaired.value) ? repaired.value : [repaired.value];
+  const calls = list
+    .map(normalizeCallEntry)
+    .filter((call): call is ToolCall => call !== null)
+    .slice(0, MAX_PARSED_CALLS);
+  if (calls.length === 0) return null;
   const lost = list.length - calls.length;
   return {
     calls,

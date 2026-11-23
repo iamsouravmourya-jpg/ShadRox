@@ -843,6 +843,10 @@ export type UniqueMatchResult =
   | { status: 'ambiguous'; lines: number[] }
   | { status: 'not_found' };
 
+function stripLineNumberPrefixes(text: string): string {
+  return text.split(/\r?\n/).map((line) => line.replace(/^\d+\|\s?/, '')).join('\n');
+}
+
 function detectLineEnding(content: string): '\r\n' | '\n' {
   const crlfCount = content.match(/\r\n/g)?.length ?? 0;
   if (crlfCount === 0) return '\n';
@@ -1473,10 +1477,12 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             }
           }
         } else {
-          const original = call.args.original;
-          const updated = call.args.updated;
-          if (typeof original !== 'string' || !original) return refusal('edit_file needs original: a non-empty exact snippet from the file.');
-          if (typeof updated !== 'string') return refusal('edit_file needs updated: the replacement text as a string.');
+          const rawOriginal = call.args.original;
+          const rawUpdated = call.args.updated;
+          if (typeof rawOriginal !== 'string' || !rawOriginal) return refusal('edit_file needs original: a non-empty exact snippet from the file.');
+          if (typeof rawUpdated !== 'string') return refusal('edit_file needs updated: the replacement text as a string.');
+          const original = stripLineNumberPrefixes(rawOriginal);
+          const updated = stripLineNumberPrefixes(rawUpdated);
           if (!current) {
             return { ok: false, content: '', error: `${path} does not exist on disk, so there is nothing to edit. Use write_file to create it.` };
           }

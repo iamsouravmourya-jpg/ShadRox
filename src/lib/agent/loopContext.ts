@@ -312,3 +312,12 @@ function capObservation(content: string): string {
   const tail = tailChars > 0 ? content.slice(-tailChars) : '';
   return `${head}${marker}${tail}`;
 }
+
+export function hardCapChatHistory(messages: ChatTurn[], maxMessages = 90): ChatTurn[] {
+  if (messages.length <= maxMessages) return messages;
+  const systemTurns = messages.filter((m) => m.role === 'system' || m.content.includes('WORKSPACE TOOLS'));
+  const nonSystem = messages.filter((m) => !systemTurns.includes(m));
+  const keepCount = Math.max(10, maxMessages - systemTurns.length);
+  const trimmedNonSystem = nonSystem.slice(-keepCount);
+  return [...systemTurns, ...trimmedNonSystem];
+}
