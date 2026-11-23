@@ -18,6 +18,8 @@ export const MIN_LOOP_CONTEXT_BUDGET_CHARS = 20_000;
 export const COMPACT_TRIGGER_SHARE = 0.7;
 /** The newest observations stay verbatim — they are the working evidence. */
 export const KEEP_RECENT_OBSERVATIONS = 4;
+/** Even the newest observations are capped individually so one huge result cannot blow the window. */
+export const CAP_RECENT_OBSERVATION_CHARS = 12_000;
 const SUMMARY_ENTRY_CHARS = 160;
 const SUMMARY_MESSAGE_CHARS = 1_800;
 const MIN_COMPACT_CHARS = 400;
@@ -26,14 +28,18 @@ const MIN_COMPACT_CHARS = 400;
  * Computes an appropriate character budget for intermediate tool-loop
  * transcripts from the active model's context window so smaller/free BYOK
  * models compact stale file dumps before overflowing their window.
+ *
+ * `schemaChars` accounts for the native tool schemas that ride in every
+ * request but are not part of the message array — they consume tokens too.
  */
 export function computeLoopContextBudgetChars(
   contextWindowTokens: number,
   reservedOutputTokens = 4_096,
-  systemInstructionChars = 0
+  systemInstructionChars = 0,
+  schemaChars = 0
 ): number {
   const usableTokens = Math.max(2_000, contextWindowTokens - Math.max(512, reservedOutputTokens));
-  const systemTokens = Math.ceil(Math.max(0, systemInstructionChars) / 4);
+  const systemTokens = Math.ceil(Math.max(0, systemInstructionChars + schemaChars) / 4);
   const loopTokens = Math.max(5_000, Math.floor((usableTokens - systemTokens) * 0.75));
   return Math.max(MIN_LOOP_CONTEXT_BUDGET_CHARS, Math.min(LOOP_CONTEXT_BUDGET_CHARS, loopTokens * 4));
 }
@@ -191,11 +197,31 @@ export function compactToolObservations(messages: ChatTurn[], budget = LOOP_CONT
     if (isToolObservation(turn) && !isWorkingMemoryMessage(turn)) observationIndices.push(index);
   });
   const compactable = observationIndices.slice(0, Math.max(0, observationIndices.length - KEEP_RECENT_OBSERVATIONS));
+  const recent = observationIndices.slice(Math.max(0, observationIndices.length - KEEP_RECENT_OBSERVATIONS));
   let compacted = 0;
   const next = messages.map((turn, index) => {
-    if (!compactable.includes(index) || turn.content.length < MIN_COMPACT_CHARS) return turn;
-    compacted += 1;
-    return { ...turn, content: summarizeObservation(turn.content) };
+    if (!compactable.includes(index) && !recent.includes(index)) return turn;
+    if (turn.content.length < MIN_COMPACT_CHARS) return turn;
+    if (compactable.includes(index)) {
+      // Old observations → summarized to what was found/decided.
+      compacted += 1;
+      return { ...turn, content: summarizeObservation(turn.content) };
+    }
+    // Newest observations stay but are individually capped.
+    const capped = capObservation(turn.content);
+    if (capped !== turn.content) compacted += 1;
+    return { ...turn, content: capped };
   });
   return compacted > 0 ? { messages: next, compacted } : { messages, compacted: 0 };
+}
+
+/** Truncate one observation to the per-observation cap, keeping head and tail. */
+function capObservation(content: string): string {
+  if (content.length <= CAP_RECENT_OBSERVATION_CHARS) return content;
+  const marker = `\n… [observation trimmed, ${content.length} chars total; head and tail kept] …\n`;
+  const headChars = Math.floor((CAP_RECENT_OBSERVATION_CHARS - marker.length) * 0.6);
+  const tailChars = CAP_RECENT_OBSERVATION_CHARS - marker.length - headChars;
+  const head = content.slice(0, headChars);
+  const tail = tailChars > 0 ? content.slice(-tailChars) : '';
+  return `${head}${marker}${tail}`;
 }

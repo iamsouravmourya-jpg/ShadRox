@@ -400,6 +400,19 @@ export function useLocalPreviewController({
   }, [stopLocalPreview]);
   const handleClearLocalPreviewLogs = useCallback(() => setLocalRuntimeLogs([]), []);
   const handleDismissPreviewError = useCallback(() => setRuntimeError(null), []);
+  const handleBrowserConsoleLog = useCallback(
+    (entries: { type: string; message: string }[]) => {
+      setLocalRuntimeLogs((previous) => [
+        ...previous,
+        ...entries.map((entry) => ({
+          type: entry.type as DesktopPreviewOutput['type'],
+          message: entry.message,
+          workspaceId: nativeWorkspaceId ?? ''
+        }))
+      ].slice(-200));
+    },
+    [nativeWorkspaceId]
+  );
   const handleTogglePreviewFullscreen = useCallback(
     () => setIsPreviewFullscreen((fullscreen) => !fullscreen),
     [setIsPreviewFullscreen]
@@ -431,6 +444,7 @@ export function useLocalPreviewController({
     handleStopLocalPreview,
     handleClearLocalPreviewLogs,
     handleDismissPreviewError,
+    handleBrowserConsoleLog,
     handleTogglePreviewFullscreen,
     handleClosePreview
   };

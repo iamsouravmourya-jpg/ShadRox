@@ -511,8 +511,8 @@ function renderFile(excerpt: SystemFileExcerpt, content: string, truncated: bool
  */
 export function fitSystemContext(system: SystemContext, maxChars: number, extraInputChars = 0): FittedSystemContext {
   maxChars = Math.max(0, maxChars - Math.max(0, extraInputChars));
-  const core = system.core.map(scrubWorkspaceText).filter((section) => section.trim().length > 0);
-  let kept = system.chunks.map(scrubWorkspaceText);
+  const core = system.core.map((text) => scrubWorkspaceText(text)).filter((section) => section.trim().length > 0);
+  let kept = system.chunks.map((text) => scrubWorkspaceText(text));
   const files = system.files.map((excerpt) => ({
     excerpt,
     content: scrubWorkspaceText(excerpt.content).slice(0, excerpt.maxChars),

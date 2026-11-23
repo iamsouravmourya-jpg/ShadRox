@@ -68,6 +68,8 @@ export interface UseContextBuilderOptions {
   ruleDocsRef: MutableRefObject<RuleSource[]>;
   skillDocsRef: MutableRefObject<Skill[]>;
   getToolContext?: () => Promise<WorkspaceToolContext> | WorkspaceToolContext;
+  /** When the provider receives native tool schemas, skip the duplicate text protocol. */
+  useNativeTools?: boolean;
 }
 
 export function useContextBuilder({
@@ -85,7 +87,8 @@ export function useContextBuilder({
   intentGetContext,
   ruleDocsRef,
   skillDocsRef,
-  getToolContext
+  getToolContext,
+  useNativeTools = false
 }: UseContextBuilderOptions) {
   /** Auto pays a cheap model to pick the context before the answer model sees it. */
   const [autoContext, setAutoContext] = useState<boolean>(() => {
@@ -474,7 +477,7 @@ export function useContextBuilder({
             ...describeSkills(skillDocsRef.current)
           );
         }
-        if (nativeWorkspaceId) {
+        if (nativeWorkspaceId && !useNativeTools) {
           const baseToolContext =
             contextSelection?.toolContext ?? (getToolContext ? await getToolContext() : undefined);
           const toolContext =
@@ -710,7 +713,8 @@ export function useContextBuilder({
       intentGetContext,
       ruleDocsRef,
       skillDocsRef,
-      getToolContext
+      getToolContext,
+      useNativeTools
     ]
   );
 

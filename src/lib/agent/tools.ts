@@ -28,6 +28,62 @@ import { resolveActiveTools, type WorkspaceToolContext } from './toolGatekeeper'
 
 const fallbackFileBackups = new Map<string, string>();
 
+/** Per-workspace, per-file edit_file failure count this turn. */
+const editFailureCounts = new Map<string, Map<string, number>>();
+
+/** Files this turn where edit_file has failed 2x — write_file is now allowed to overwrite. */
+const writeFileAllowedAfterEditFailure = new Set<string>();
+
+/** Per-workspace count of identical failed calls (key = serialized call). Resets implicitly per workspace. */
+const identicalFailureCounts = new Map<string, number>();
+
+/** Max identical failed call retries before returning an actionable hint instead of re-executing. */
+const MAX_IDENTICAL_FAILURES = 2;
+
+/** Preview run tracking: increments on every start/restart so status only shows the latest run's logs. */
+const previewRunIds = new Map<string, number>();
+
+function nextPreviewRunId(workspaceId: string): number {
+  const next = (previewRunIds.get(workspaceId) ?? 0) + 1;
+  previewRunIds.set(workspaceId, next);
+  return next;
+}
+
+function serializeCallKey(call: ToolCall): string {
+  return `${call.name}:${JSON.stringify(call.args)}`;
+}
+
+function recordEditFailure(workspaceId: string, path: string): number {
+  const byFile = editFailureCounts.get(workspaceId) ?? new Map<string, number>();
+  const count = (byFile.get(path) ?? 0) + 1;
+  byFile.set(path, count);
+  editFailureCounts.set(workspaceId, byFile);
+  if (count >= 2) writeFileAllowedAfterEditFailure.add(`${workspaceId}:${path}`);
+  return count;
+}
+
+function recordIdenticalFailure(call: ToolCall): number {
+  const key = serializeCallKey(call);
+  const count = (identicalFailureCounts.get(key) ?? 0) + 1;
+  identicalFailureCounts.set(key, count);
+  return count;
+}
+
+function peekIdenticalFailureCount(call: ToolCall): number {
+  return identicalFailureCounts.get(serializeCallKey(call)) ?? 0;
+}
+
+function isWriteFileAllowedAfterEditFailure(workspaceId: string, path: string): boolean {
+  return writeFileAllowedAfterEditFailure.has(`${workspaceId}:${path}`);
+}
+
+function identicalFailureHint(call: ToolCall): string | null {
+  const count = peekIdenticalFailureCount(call);
+  if (count <= MAX_IDENTICAL_FAILURES) return null;
+  const path = asString(call.args.path) ?? '';
+  return `The same ${call.name} call has failed ${count} times on ${path || '(unknown)'}. Stop retrying — re-read the exact line range with read_file, or use write_file to rewrite the file outright.`;
+}
+
 function storeFallbackBackup(workspaceId: string, path: string, content: string): string {
   const key = `${workspaceId}:${normalizeRepoPath(path)}:${Date.now()}`;
   fallbackFileBackups.set(key, content);
@@ -597,9 +653,10 @@ export function describeTools(
     'You get ' + maxRounds + ' tool rounds per answer. Ask for several files in one round instead of one per round.',
     'Rules: never invent a path — read it or list it first. Prefer search_text and find_files to locate code, then read only what you need. Paths must stay inside the workspace. Never invent a tool name either: use only the names listed below.',
     'When the user quotes text they saw in their app or page, they paraphrase and typo: search 1-3 distinctive words (a noun, a year, an identifier), never the whole quoted sentence. A full-sentence miss is not proof the text is absent — search_text falls back to partial word matches, and you must read the top-ranked file before claiming anything is missing.',
-    'FILES: write_file creates a new file or overwrites one you have read; edit_file replaces an exact original snippet in an existing file. Both save to disk immediately through the verified save path, so a run_command or problems call in the same or a later round sees the change. Prefer edit_file for an existing file: read it first, then copy original exactly (indentation and line breaks included) so it matches one place. A write_file that would erase most of an existing file is refused — use edit_file instead. You may also write path= edit blocks in your reply; the patch engine applies them before your next tool round. Never invent any other file tool.',
+    'FILES: write_file creates a new file or overwrites one you have read; edit_file replaces an exact original snippet in an existing file. Prefer edit_file for an existing file: read it first, then copy original exactly (indentation and line breaks included) so it matches one place. A write_file that would erase most of an existing file is refused — use edit_file instead. You may also write path= edit blocks in your reply; the patch engine applies them before your next tool round. Never invent any other file tool.',
+    'WRITE TOOL CHOICE: use edit_file for single-file edits (default), write_file only for brand-new files or full rewrites, and apply_patch only when changing 2+ files atomically in one transaction. Do not call write_file and edit_file on the same file in one turn.',
     'DELETING: only delete_file removes something. An empty path= block deletes nothing, and an edit block cannot remove a file. Never say a file was deleted unless delete_file returned a verified result.',
-    'ATOMIC PATCHES: apply_patch takes {"patches":[{"path":"...","old":"exact text","new":"replacement"}]} and lands every hunk across files in one all-or-nothing transaction. old must match exactly once; an empty old creates a new file. On any mismatch nothing is written and the failing hunk plus the surrounding disk lines come back — fix that hunk and re-send the whole patch.',
+    'ATOMIC PATCHES: apply_patch takes {"patches":[{"path":"...","old":"exact text","new":"replacement"}]} and lands every hunk across files in one all-or-nothing transaction. Only use apply_patch when changing 2+ files in one atomic operation — for a single file, use edit_file instead. old must match exactly once; an empty old creates a new file. On any mismatch nothing is written and the failing hunk plus the surrounding disk lines come back — fix that hunk and re-send the whole patch.',
     ...(hasAny('verify')
       ? ['VERIFY: after changing files, call verify before finish. It detects the project kind (package.json scripts + lockfile, pytest, cargo, go), runs the real typecheck/build/test through the command runner and returns structured errors and failed tests. finish is refused after a write until verify, problems on the changed files, or a build/test command actually ran.']
       : ['DIAGNOSTICS: this is a read-only turn with no file writes; use problems (or read_file/search_text) instead of verify to inspect compiler diagnostics.']),
@@ -1078,6 +1135,11 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
   if (!desktop) return refusal('The desktop bridge is unavailable, so tools cannot read the workspace.');
   if (!isKnownTool(call.name)) return refusal(`Unknown tool "${call.name}".`);
 
+  // Cap identical failed tool calls: after MAX_IDENTICAL_FAILURES failures on
+  // the same call signature, stop retrying and return an actionable hint.
+  const hint = identicalFailureHint(call);
+  if (hint) return refusal(hint);
+
   try {
     switch (call.name) {
       case 'list_directory': {
@@ -1128,17 +1190,25 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         const file = await desktop.readFile(workspaceId, path);
         // Env config is readable for diagnosis, but secret values must not enter
         // the model context or the transcript: show presence, not the secret.
-        const raw = /(^|\/)\.env[^/]*$/.test(path) ? maskEnvSecrets(file.content) : file.content;
+        // .ts/.tsx/.js/.jsx source is never redacted — only .env* files mask values.
+        const isEnvFile = /(^|\/)\.env[^/]*$/.test(path);
+        const raw = isEnvFile ? maskEnvSecrets(file.content) : file.content;
+        const lines = raw.split('\n');
+        const totalLines = lines.length;
         const start = asNumber(call.args.start_line);
         const end = asNumber(call.args.end_line);
-        if (start === undefined && end === undefined) {
-          return { ok: true, content: clip(`// ${file.name} (${raw.length} chars)\n${raw}`) };
-        }
-        const lines = raw.split('\n');
         const from = Math.max(1, start ?? 1);
         const to = Math.min(lines.length, end ?? lines.length);
+        const truncated = (start !== undefined || end !== undefined) && totalLines > (to - from + 1);
         const slice = lines.slice(from - 1, to).map((line, index) => `${from + index}| ${line}`).join('\n');
-        return { ok: true, content: clip(`// ${file.name} lines ${from}-${to} of ${lines.length}\n${slice}`) };
+        const header = `[File: ${path} | Total lines: ${totalLines} | Showing lines ${from}-${to}]`;
+        const truncationHint = truncated && totalLines > 300
+          ? '\nFile is truncated. Use read_file with startLine/endLine or search_text to inspect the rest of the file before editing.'
+          : '';
+        if (start === undefined && end === undefined) {
+          return { ok: true, content: clip(`${header}\n${raw}`) };
+        }
+        return { ok: true, content: clip(`${header}\n${slice}${truncationHint}`) };
       }
       case 'find_files': {
         const query = asString(call.args.query);
@@ -1275,9 +1345,16 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
                 return { ok: false, content: '', error: `Not written — ${path} is a large existing file (${current.content.length} chars) and its backup failed: ${error instanceof Error ? error.message : String(error)}. Use edit_file for targeted changes instead.` };
               }
             }
-            const risk = assessRewriteRisk(path, content, current.content, { extractedFilesCreated, backupCreated });
-            if (risk) {
-              return { ok: false, content: '', error: `${risk} Use edit_file with an exact original snippet for targeted changes instead.` };
+            // If edit_file failed 2+ times on this file this turn, allow write_file
+            // to overwrite outright instead of gate-keeping on rewrite risk.
+            const editFailedTwice = isWriteFileAllowedAfterEditFailure(workspaceId, normalized);
+            if (!editFailedTwice) {
+              const risk = assessRewriteRisk(path, content, current.content, { extractedFilesCreated, backupCreated });
+              if (risk) {
+                return { ok: false, content: '', error: `${risk} Use edit_file with an exact original snippet for targeted changes instead.` };
+              }
+            } else {
+              matchModeNote = ' (write_file allowed after repeated edit_file failures on this file)';
             }
           }
         } else {
@@ -1290,11 +1367,15 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           }
           const matched = locateUniqueMatch(current.content, original);
           if (matched.status === 'not_found') {
+            recordEditFailure(workspaceId, normalized);
+            recordIdenticalFailure(call);
             const region = closestRegion(current.content, original);
             const hint = region ? `\nClosest region on disk (around line ${region.line}):\n${region.excerpt}` : '';
             return { ok: false, content: '', error: `The original snippet was not found in ${path}. Read the file again and copy its exact current text — including indentation and line breaks — into original.${hint}` };
           }
           if (matched.status === 'ambiguous') {
+            recordEditFailure(workspaceId, normalized);
+            recordIdenticalFailure(call);
             return { ok: false, content: '', error: `The original snippet appears more than once in ${path} (lines ${matched.lines.join(', ')}). Include more surrounding lines so it matches exactly one place.` };
           }
           const matchedSlice = current.content.slice(matched.start, matched.end);
@@ -1521,9 +1602,11 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           if (matched.status === 'not_found') {
             const region = closestRegion(base, hunk.old);
             const hint = region ? `\nClosest region on disk (around line ${region.line}):\n${region.excerpt}` : '';
+            recordIdenticalFailure(call);
             return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): old text not found. ${atomicNote}\nFailing old text:\n${hunk.old.slice(0, 800)}${hint}` };
           }
           if (matched.status === 'ambiguous') {
+            recordIdenticalFailure(call);
             return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): old text appears more than once (lines ${matched.lines.join(', ')}). ${atomicNote} Include more surrounding lines so it matches exactly one place.` };
           }
           working.set(hunk.path, base.slice(0, matched.start) + hunk.next + base.slice(matched.end));
@@ -1603,6 +1686,8 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             'verify is disabled on read-only turns with no modified files. Use the problems tool to inspect compiler diagnostics instead.'
           );
         }
+        // Files modified this turn — verify only fails on errors in these files.
+        const modifiedFiles = activeTurn ? new Set([...activeTurn.changed, ...activeTurn.created]) : null;
         let packageJson: string | null = null;
         try {
           packageJson = (await desktop.readFile(workspaceId, 'package.json')).content;
@@ -1621,7 +1706,8 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           /* root listing unavailable — plan from package.json alone */
         }
         const plan = planVerification({ packageJson, rootEntries });
-        const errors: VerifyError[] = [];
+        const errors: VerifyError[] = [];           // errors in modified files → fail verify
+        const preExistingErrors: VerifyError[] = []; // errors in untouched files → warning only
         const failedTests: string[] = [];
         const commandsRun: string[] = [];
         let allOk = true;
@@ -1656,7 +1742,10 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           }
           commandsRun.push(command);
           const parsed = parseVerifyOutput([result.stdout, result.stderr].filter(Boolean).join('\n'));
-          errors.push(...parsed.errors);
+          for (const err of parsed.errors) {
+            const inModified = modifiedFiles ? modifiedFiles.has(err.file.replace(/\\/g, '/')) : true;
+            if (inModified) errors.push(err); else preExistingErrors.push(err);
+          }
           failedTests.push(...parsed.failedTests);
           if (result.exitCode !== 0) {
             allOk = false;
@@ -1676,20 +1765,27 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             const diagnostics = await desktop.diagnostics(workspaceId, undefined, paths);
             diagnosticsRan = true;
             for (const entry of diagnostics.diagnostics.filter((item) => item.severity === 'error').slice(0, 60)) {
-              errors.push({ file: entry.file, line: entry.line + 1, msg: entry.message });
+              const inModified = modifiedFiles ? modifiedFiles.has(entry.file.replace(/\\/g, '/')) : true;
+              if (inModified) errors.push({ file: entry.file, line: entry.line + 1, msg: entry.message });
+              else preExistingErrors.push({ file: entry.file, line: entry.line + 1, msg: entry.message });
             }
           } catch {
             /* diagnostics unavailable — command results still count */
           }
         }
-        if (commandsRun.length === 0 && !diagnosticsRan && errors.length === 0) {
+        if (commandsRun.length === 0 && !diagnosticsRan && errors.length === 0 && preExistingErrors.length === 0) {
           const report: VerifyReport = { ok: false, errors: [], failedTests: [], commandsRun: [] };
           const message = 'verify: no checks available — no project manifest with runnable scripts was found and compiler diagnostics are unavailable. Run a build or test with run_command instead.';
           return { ok: false, content: message, error: message, verifyReport: report };
         }
+        // Verify fails only on errors in files this turn modified. Pre-existing
+        // errors in untouched files are reported as warnings, not failures.
         const ok = allOk && errors.length === 0 && failedTests.length === 0;
         const report: VerifyReport = { ok, errors: errors.slice(0, 60), failedTests: failedTests.slice(0, 30), commandsRun };
-        const content = formatVerifyReport(report, plan.kind, { includeAgentDirective: false });
+        const content = formatVerifyReport(report, plan.kind, {
+          includeAgentDirective: false,
+          preExistingErrors
+        });
         return ok ? { ok: true, content, verifyReport: report } : { ok: false, content, error: content, verifyReport: report };
       }
       case 'checkpoint': {
@@ -1893,6 +1989,8 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             return { ok: true, content: 'Preview status channel is unavailable in this build. Use preview_control start to run or preview_inspect to check the pane.' };
           }
           const lines: string[] = [];
+          const currentRunId = previewRunIds.get(workspaceId);
+          if (currentRunId !== undefined) lines.push(`preview runId: ${currentRunId}`);
           if (runtimeStatus) {
             lines.push(`status: ${runtimeStatus.status}`);
             if (runtimeStatus.url) lines.push(`url: ${runtimeStatus.url}`);
@@ -1902,8 +2000,10 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             if (runtimeStatus.backendUrl) lines.push(`backend: ${runtimeStatus.backendUrl}${typeof runtimeStatus.backendPort === 'number' ? ` (port ${runtimeStatus.backendPort})` : ''}`);
             if (runtimeStatus.lastError) lines.push(`lastError: ${runtimeStatus.lastError}`);
             if (runtimeStatus.recentOutput && runtimeStatus.recentOutput.trim()) {
-              const tail = runtimeStatus.recentOutput.trim().slice(-2_000);
-              lines.push(`recent output:\n${tail}`);
+              // Only the latest run's last 30 lines — stale crash history from previous runs is not shown.
+              const allLines = runtimeStatus.recentOutput.trim().split(/\r?\n/);
+              const latest = allLines.slice(-30);
+              lines.push(`recent output (latest run, last ${latest.length} lines):\n${latest.join('\n')}`);
             }
           }
           if (runtimeVerdict) {
@@ -1915,9 +2015,11 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           window.dispatchEvent(new CustomEvent(PREVIEW_AGENT_CONTROL_EVENT, { detail: { action } }));
         }
         if (action === 'stop' || action === 'restart') await desktop.stopPreview(workspaceId);
+        if (action === 'restart') nextPreviewRunId(workspaceId);
         if (action === 'stop') {
           return { ok: true, content: 'Preview stopped; the pane is idle. Use preview_control start to run it again.' };
         }
+        if (action === 'start') nextPreviewRunId(workspaceId);
         const result = await desktop.startPreview(workspaceId);
         if (result.status === 'ready') {
           return { ok: true, content: `Preview ready at ${result.url} (script: ${result.script}${result.hmr ? ', HMR on' : ''}). The preview pane now points at this URL.` };

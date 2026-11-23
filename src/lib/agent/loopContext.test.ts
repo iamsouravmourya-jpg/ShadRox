@@ -5,7 +5,8 @@ import { serializeResults } from './toolProtocol';
 import {
   compactToolObservations, computeLoopContextBudgetChars, summarizeObservation, isToolObservation, transcriptChars,
   upsertWorkingMemory, WORKING_MEMORY_HEADER,
-  LOOP_CONTEXT_BUDGET_CHARS, MIN_LOOP_CONTEXT_BUDGET_CHARS, COMPACT_TRIGGER_SHARE, KEEP_RECENT_OBSERVATIONS
+  LOOP_CONTEXT_BUDGET_CHARS, MIN_LOOP_CONTEXT_BUDGET_CHARS, COMPACT_TRIGGER_SHARE, KEEP_RECENT_OBSERVATIONS,
+  CAP_RECENT_OBSERVATION_CHARS
 } from './loopContext';
 
 const observation = (text: string, name = 'read_file'): ChatTurn => ({

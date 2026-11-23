@@ -56,12 +56,23 @@ const SECRET_TEXT_PATTERNS: readonly RegExp[] = [
 const SECRET_ASSIGNMENT_RE =
   /\b((?:[A-Za-z0-9.-]*_)?(?:API[_-]?KEY|ACCESS[_-]?KEY(?:[_-]?ID)?|SECRET(?:[_-]?(?:ACCESS[_-]?)?KEY)?|(?:(?:AUTH|ACCESS|REFRESH)[_-]?)?TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET|CREDENTIALS?))\b(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|`[^`\r\n]*`|[^\s,;}\]]+)/gi;
 
-/** Removes provider-bound credentials from automatically included workspace text. */
-export function scrubWorkspaceText(text: string): string {
-  let scrubbed = text.replace(
-    SECRET_ASSIGNMENT_RE,
-    (_match, name: string, separator: string) => `${name}${separator}[REDACTED_SECRET]`
-  );
+/** Removes provider-bound credentials from automatically included workspace text.
+ *
+ * `filePath` is optional: when the text is TypeScript/JavaScript source
+ * (.ts/.tsx/.js/.jsx), the assignment-pattern redaction (`SECRET_ASSIGNMENT_RE`)
+ * is skipped so valid code syntax like `const apiKey = (...)` is never shredded
+ * into `[REDACTED_SECRET]`. Only actual secret string literals (`sk-...`,
+ * `AIza...`, `ghp_...`, PEM blocks, bearer tokens) are still masked in source.
+ */
+export function scrubWorkspaceText(text: string, filePath?: string): string {
+  const isSourceFile = filePath ? /\.(?:[cm]?ts|tsx|[cm]?js|jsx)$/i.test(filePath) : false;
+  let scrubbed = text;
+  if (!isSourceFile) {
+    scrubbed = scrubbed.replace(
+      SECRET_ASSIGNMENT_RE,
+      (_match, name: string, separator: string) => `${name}${separator}[REDACTED_SECRET]`
+    );
+  }
   scrubbed = scrubbed.replace(/[?&](?:[A-Za-z0-9_-]*api[_-]?key|key|access[_-]?token)=([^&#\s]+)/gi, (_match, value: string) =>
     _match.replace(value, '[REDACTED_SECRET]')
   );

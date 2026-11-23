@@ -548,13 +548,20 @@ export function computeElasticRunBudget(goal: string, base: RunBudget): RunBudge
   const maxTurns = Math.min(80, Math.max(base.maxTurns, maxMilestones * 3 + 6));
   const maxToolCalls = Math.max(base.maxToolCalls, maxTurns * 200);
   const maxWallClockMs = Math.max(base.maxWallClockMs, 45 * 60 * 1000);
+  // Scale attempts per milestone so retries have headroom: more milestones =
+  // more total attempts budgeted, not a hard 3-attempt wall on every unit.
+  const maxAttemptsPerMilestone = Math.min(
+    5,
+    Math.max(base.maxAttemptsPerMilestone, Math.ceil(maxTurns / Math.max(1, maxMilestones)))
+  );
 
   return {
     ...base,
     maxMilestones,
     maxTurns,
     maxToolCalls,
-    maxWallClockMs
+    maxWallClockMs,
+    maxAttemptsPerMilestone
   };
 }
 

@@ -4,7 +4,7 @@ import { commandApprovalNotice } from '../lib/agent/commandGuard';
 import { computeLoopContextBudgetChars } from '../lib/agent/loopContext';
 import type { McpToolHandle } from '../lib/agent/mcpTools';
 import type { PermissionMode } from '../lib/agent/runPolicy';
-import { DEFAULT_MAX_TOOL_ROUNDS, runToolRounds } from '../lib/agent/toolLoop';
+import { DEFAULT_MAX_TOOL_ROUNDS, runToolRounds, type ToolLoopResumeState } from '../lib/agent/toolLoop';
 import { parseToolBlocks, repairAndParseNativeToolArgs, stripToolBlocks } from '../lib/agent/toolProtocol';
 import type { WorkspaceToolContext } from '../lib/agent/toolGatekeeper';
 import { nativeToolDefinitions, summarizeCall } from '../lib/agent/tools';
@@ -224,6 +224,8 @@ export function useOrchestrationController({
   const [contextNotice, setContextNotice] = useState<string | null>(null);
   const [activeStatusMessage, setActiveStatusMessage] = useState<string | null>(null);
   const [resumePrefixes, setResumePrefixes] = useState<Record<string, string>>({});
+  /** Tool loop resume states keyed by model message id, so a Continue button can re-run runToolRounds from where provider_error/step_cap stopped. */
+  const toolLoopResumeRef = useRef<Record<string, ToolLoopResumeState>>({});
 
   const snapshotStore = useMemo(() => createBackgroundStore(), []);
   const [resumeSnapshot, setResumeSnapshot] = useState<BackgroundRunSnapshot | null>(null);
@@ -606,6 +608,16 @@ export function useOrchestrationController({
         )));
       };
       try {
+        // Re-resolve the tool context every round so job_control, preview_inspect,
+        // terminal_* etc. appear as soon as their backing state appears mid-turn,
+        // instead of being frozen at turn start.
+        const baseToolContext = getToolContext ? await getToolContext() : undefined;
+        const roundToolContext =
+          baseToolContext && !mode.writesFiles
+            ? { ...baseToolContext, isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }
+            : baseToolContext;
+        const roundNativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), roundToolContext);
+
         await streamChat(
           {
             provider: byok.activeProvider,
@@ -617,7 +629,7 @@ export function useOrchestrationController({
             temperature: byok.temperature,
             thinking: mode.thinking,
             signal: controller.signal,
-            toolDefinitions: nativeTools
+            toolDefinitions: roundNativeTools
           },
           {
             onDelta: (chunk) => {
@@ -797,7 +809,8 @@ export function useOrchestrationController({
         loopContextBudgetChars: computeLoopContextBudgetChars(
           contextWindow,
           resolveBudgetCapabilities(byok.activeProvider, byok.selectedModel).maxOutput ?? DEFAULT_MAX_OUTPUT,
-          fit.systemInstruction?.length ?? 0
+          fit.systemInstruction?.length ?? 0,
+          JSON.stringify(nativeTools).length
         ),
         stream: streamOnce,
         applyRoundPatches,
@@ -846,8 +859,24 @@ export function useOrchestrationController({
         }
       });
       if (loop.error && !controller.signal.aborted) {
-        markInterrupted(loop.error);
         turnSignals.streamError = loop.error;
+        // provider_error / step_cap / stuck carry a resumable snapshot: store it so
+        // a Continue button can re-run runToolRounds from where the loop stopped.
+        if (loop.resume) {
+          toolLoopResumeRef.current[modelMessage.id] = loop.resume;
+          const prefix = (reply || loop.text || '').trim();
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === modelMessage.id
+                ? { ...message, streaming: false, resumable: true }
+                : message
+            )
+          );
+          setResumePrefixes((previous) => ({ ...previous, [modelMessage.id]: prefix }));
+          markInterrupted(loop.error);
+        } else {
+          markInterrupted(loop.error);
+        }
       } else {
         const answer = reply || loop.text;
         turnSignals.activity = loop.activity;
@@ -1103,7 +1132,8 @@ export function useOrchestrationController({
           loopContextBudgetChars: computeLoopContextBudgetChars(
             contextWindow,
             resolveBudgetCapabilities(byok.activeProvider, byok.selectedModel).maxOutput ?? DEFAULT_MAX_OUTPUT,
-            fit.systemInstruction?.length ?? 0
+            fit.systemInstruction?.length ?? 0,
+            JSON.stringify(nativeTools).length
           ),
           ports: {
             workspaceId: nativeWorkspaceId,
@@ -1913,6 +1943,174 @@ export function useOrchestrationController({
       if (index < 0) return;
       const target = messages[index];
       const prefix = (resumePrefixes[messageId] || target.content || '').trim();
+      // Tool loop resume: re-run runToolRounds from the stored snapshot (provider_error,
+      // step_cap, stuck). Skip the normal streamChat path.
+      const toolLoopResume = toolLoopResumeRef.current[messageId];
+      if (toolLoopResume) {
+        delete toolLoopResumeRef.current[messageId];
+        setResumePrefixes((previous) => {
+          const next = { ...previous };
+          delete next[messageId];
+          return next;
+        });
+
+        const mode = getRefineMode(refineMode);
+        const contextWindow =
+          activeModel?.contextWindow || resolveContextWindow(byok.activeProvider, byok.selectedModel);
+        const baseToolContext = getToolContext ? await getToolContext() : undefined;
+        const toolContext =
+          baseToolContext && !mode.writesFiles
+            ? { ...baseToolContext, isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }
+            : baseToolContext;
+        const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), toolContext);
+
+        setMessages((previous) =>
+          previous.map((message) =>
+            message.id === messageId ? { ...message, streaming: true, resumable: false } : message
+          )
+        );
+        setIsGenerating(true);
+
+        const controller = new AbortController();
+        abortRef.current = controller;
+        chatDispatchLockRef.current = true;
+        let toolLoopDone = false;
+
+        try {
+          const loopResult = await runToolRounds({
+            messages: toolLoopResume.messages,
+            workspaceId: nativeWorkspaceId,
+            maxRounds: toolLoopResume.maxRounds,
+            external: mcpToolHandleRef.current ?? undefined,
+            aborted: () => controller.signal.aborted,
+            policy: { mode: permissionMode },
+            signal: controller.signal,
+            loopContextBudgetChars: computeLoopContextBudgetChars(
+              contextWindow,
+              resolveBudgetCapabilities(byok.activeProvider, byok.selectedModel).maxOutput ?? DEFAULT_MAX_OUTPUT,
+              0,
+              JSON.stringify(nativeTools).length
+            ),
+            stream: async (loopMessages: ChatTurn[], round: number): Promise<{ text: string; error: string | null }> => {
+              let roundText = '';
+              let roundError: string | null = null;
+              try {
+                await streamChat({
+                  provider: byok.activeProvider,
+                  baseUrl: byok.baseUrl,
+                  model: byok.selectedModel,
+                  apiKey: byok.activeKey,
+                  messages: loopMessages,
+                  systemInstruction: toolLoopResume.messages.find((m) => m.role === 'system')?.content ?? undefined,
+                  temperature: byok.temperature,
+                  thinking: mode.thinking,
+                  signal: controller.signal,
+                  toolDefinitions: nativeTools
+                }, {
+                  onDelta: (chunk) => {
+                    if (!chunk) return;
+                    roundText += chunk;
+                    setMessages((previous) =>
+                      previous.map((message) =>
+                        message.id === messageId ? { ...message, content: message.content + chunk } : message
+                      )
+                    );
+                  },
+                  onDone: (info) => {
+                    // usage is best-effort on resume
+                  },
+                  onError: (error) => { roundError = error; }
+                });
+              } catch (error) {
+                if (!controller.signal.aborted) roundError = error instanceof Error ? error.message : 'Unknown error';
+              }
+              return { text: roundText, error: roundError };
+            },
+            applyRoundPatches: async () => {},
+            onRound: (_round, text) => {
+              const asked = parseToolBlocks(text).flatMap((block) => block.calls);
+              if (asked.length === 0) return;
+              setMessages((previous) => previous.map((message) => (
+                message.id === messageId
+                  ? { ...message, toolActivity: asked.map((call) => ({ name: call.name, label: summarizeCall(call), ok: true, stage: 'planning' })) }
+                  : message
+              )));
+            },
+            onPlan: (taskPlan) => {
+              setMessages((previous) => previous.map((message) => (
+                message.id === messageId ? { ...message, taskPlan } : message
+              )));
+            },
+            onStatus: (status) => {
+              setActiveStatusMessage(status);
+              setMessages((previous) => previous.map((message) => (
+                message.id === messageId ? { ...message, activeStatus: status } : message
+              )));
+            }
+          });
+          toolLoopDone = true;
+
+          if (loopResult.error && !controller.signal.aborted) {
+            const err = loopResult.error;
+            const lower = err.toLowerCase();
+            const hint = /api key|authenticate|unauthorized|invalid.*key|permission denied|\b401\b|\b403\b/.test(lower)
+              ? 'Check your key or model selection in Settings.'
+              : /rate.?limit|quota|too many requests|\b429\b/.test(lower)
+                ? 'Limits are usually per model — switch models in Settings or retry in a minute.'
+                : 'Retry, or switch the model in Settings if it keeps happening.';
+            setMessages((previous) =>
+              previous.map((message) =>
+                message.id === messageId
+                  ? { ...message, streaming: false, resumable: true, content: `**Generation Error:** ${err}\n\n${hint}` }
+                  : message
+              )
+            );
+            setResumePrefixes((previous) => ({ ...previous, [messageId]: loopResult.text || '' }));
+          }
+
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === messageId
+                ? {
+                    ...message,
+                    streaming: false,
+                    resumable: false,
+                    content: loopResult.text || message.content,
+                    toolActivity: loopResult.activity.length > 0 ? loopResult.activity : undefined,
+                    toolRounds: loopResult.rounds,
+                    taskPlan: loopResult.plan.length > 0 ? loopResult.plan : undefined,
+                    finishedWith: loopResult.finish ?? undefined,
+                    selfHealingProof: loopResult.failureProof ?? message.selfHealingProof
+                  }
+                : message
+            )
+          );
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          const lower = message.toLowerCase();
+          const hint = /api key|authenticate|unauthorized|invalid.*key|permission denied|\b401\b|\b403\b/.test(lower)
+            ? 'Check your key or model selection in Settings.'
+            : /rate.?limit|quota|too many requests|\b429\b/.test(lower)
+              ? 'Limits are usually per model — switch models in Settings or retry in a minute.'
+              : 'Retry, or switch the model in Settings if it keeps happening.';
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === messageId
+                ? { ...message, streaming: false, resumable: true, content: `**Generation Error:** ${message}\n\n${hint}` }
+                : message
+            )
+          );
+          setResumePrefixes((previous) => ({ ...previous, [messageId]: '' }));
+        } finally {
+          setIsGenerating(false);
+          setActiveStatusMessage(null);
+          chatDispatchLockRef.current = false;
+          abortRef.current = null;
+        }
+        return;
+      }
+
       if (!prefix) return;
 
       const origin = messages.slice(0, index).reverse().find((message) => message.role === 'user');

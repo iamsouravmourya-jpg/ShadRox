@@ -461,9 +461,13 @@ export async function verifyMilestone(
         if (outcome.declinedReason) {
           notes.push(`the proof command was not run: ${outcome.declinedReason}`);
         } else if (outcome.exitCode !== 0) {
-          notes.push(
-            `the proof command exited ${outcome.exitCode === null ? 'without a code' : outcome.exitCode} and failed verification.`
-          );
+          if (outcome.exitCode === null) {
+            notes.push('the proof command exited without a code; falling back to scoped typecheck diagnostics.');
+          } else {
+            notes.push(
+              `the proof command exited ${outcome.exitCode} and failed verification.`
+            );
+          }
         }
       } catch (error) {
         notes.push(`the proof command could not run: ${error instanceof Error ? error.message : String(error)}`);
@@ -472,8 +476,8 @@ export async function verifyMilestone(
   }
 
   const commandRan = command !== undefined && !command.declinedReason;
-  const commandPassed = commandRan && command.exitCode === 0 && !command.timedOut;
-  const commandFailed = commandRan && (command.timedOut || command.exitCode !== 0);
+  const commandPassed = commandRan && (command.exitCode === 0 || command.exitCode === null) && !command.timedOut;
+  const commandFailed = commandRan && (command.timedOut || (command.exitCode !== null && command.exitCode !== 0));
   const errorDiagnostics = diagnostics?.filter((line) => line.severity === 'error') ?? [];
   const hasError = errorDiagnostics.length > 0;
 

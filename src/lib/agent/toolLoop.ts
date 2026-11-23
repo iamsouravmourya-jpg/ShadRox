@@ -108,7 +108,7 @@ export interface ToolLoopResumeState {
   stopReason: ToolLoopStopReason;
 }
 
-const RESUMABLE_STOPS = new Set<ToolLoopStopReason>(['step_cap', 'stuck', 'aborted']);
+const RESUMABLE_STOPS = new Set<ToolLoopStopReason>(['step_cap', 'stuck', 'aborted', 'provider_error']);
 
 export interface ToolActivity {
   name: string;
@@ -732,6 +732,17 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         if (streamed.text.trim()) messages.push({ role: 'assistant', content: streamed.text });
         messages.push({ role: 'user', content: MUTATION_REQUIRED_NUDGE });
         continue;
+      }
+      // Never end the turn mid-plan: if tasks are still pending/doing, nudge to continue
+      // instead of returning complete. The model may have written prose and forgotten to
+      // call finish or update_tasks.
+      if (round < maxRounds && plan.length > 0) {
+        const pending = plan.find((item) => item.status !== 'done' && item.status !== 'blocked');
+        if (pending) {
+          if (streamed.text.trim()) messages.push({ role: 'assistant', content: streamed.text });
+          messages.push({ role: 'user', content: `You still have unfinished tasks in your plan (e.g. "${pending.subject}"). Continue with your tools, or call finish when everything is done.` });
+          continue;
+        }
       }
       return stamp({ text, rounds: round, activity, capped: false, error: null, plan, stopReason: 'complete' });
     }

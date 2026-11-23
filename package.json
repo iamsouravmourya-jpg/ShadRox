@@ -68,6 +68,7 @@
     "esbuild-wasm": "^0.28.2",
     "javascript-obfuscator": "^4.2.2",
     "lucide-react": "^0.546.0",
+    "playwright-core": "^1.65.1",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "tailwindcss": "^4.3.3",

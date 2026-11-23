@@ -54,6 +54,8 @@ interface PreviewPaneProps {
    */
   onRevealSource?: (target: RevealSourceTarget) => void;
   onBehaviorEvent?: (event: BehaviorEvent) => void;
+  /** Browser console errors captured from the preview iframe — added to agent context. */
+  onBrowserConsoleLog?: (entries: { type: string; message: string }[]) => void;
   /**
    * Fires when the preview frame finishes loading a document, with the frame's
    * box. An acceptance check waits on this so it never grades the page from
@@ -208,6 +210,7 @@ export const PreviewPane = memo(function PreviewPane({
   lastReloadAt = null,
   onRevealSource,
   onBehaviorEvent,
+  onBrowserConsoleLog,
   onFramePaint,
   workspaceId = null,
   backendEnabled = true,
@@ -344,6 +347,8 @@ export const PreviewPane = memo(function PreviewPane({
         setIsConsoleOpen(true);
         onRuntimeError(message);
         onBehaviorEvent?.(createBehaviorEvent('error', { target: 'preview', message }));
+        // Also forward browser console errors to the agent context via localRuntimeLogs.
+        onBrowserConsoleLog?.([{ type: 'error', message }]);
       }
     };
     window.addEventListener('message', handleMessage);
@@ -449,7 +454,7 @@ export const PreviewPane = memo(function PreviewPane({
           </div>
         </div>
 
-        {/* Right: Viewport, Console toggle, and Reload */}
+        {/* Right: Viewport, Console toggle, Send Errors, and Reload */}
         <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
@@ -467,6 +472,28 @@ export const PreviewPane = memo(function PreviewPane({
               <span className="ml-0.5 text-[10px] text-ink-3">({displayedLogs.length})</span>
             )}
           </button>
+
+          {/* Send console errors to the agent context */}
+          {displayedLogs.some((log) => log.type === 'error') && (
+            <button
+              type="button"
+              onClick={() => {
+                const errorLogs = displayedLogs
+                  .filter((log) => log.type === 'error')
+                  .slice(-10)
+                  .map((log) => `[${log.timestamp}] ${log.message}`);
+                onRuntimeError(
+                  `Browser console errors (${errorLogs.length}):\n${errorLogs.join('\n')}`
+                );
+              }}
+              title="Send console errors to the agent so it can fix preview crashes"
+              className="flex items-center gap-1 rounded-lg border border-danger/40 bg-danger/[.10] px-2 py-1 text-[11px] font-mono text-danger hover:border-danger/60 hover:bg-danger/[.20] cursor-pointer"
+            >
+              <AlertTriangle className="w-3 h-3" />
+              <span className="hidden @sm:inline">Send errors</span>
+              <span className="text-[10px]">({displayedLogs.filter((l) => l.type === 'error').length})</span>
+            </button>
+          )}
 
           {/* Viewport size buttons */}
           <div className="hidden @sm:flex items-center gap-0.5 rounded-lg border border-line bg-overlay p-0.5">

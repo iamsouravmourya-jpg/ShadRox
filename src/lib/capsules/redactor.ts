@@ -8,8 +8,8 @@ function countMarkers(text: string): number {
   return (text.match(MARKER_RE) ?? []).length;
 }
 
-export function redactText(text: string): { text: string; count: number } {
-  const scrubbed = scrubWorkspaceText(text);
+export function redactText(text: string, filePath?: string): { text: string; count: number } {
+  const scrubbed = scrubWorkspaceText(text, filePath);
   // Pre-existing markers are not fresh masks, so subtract them from the total.
   const count = Math.max(0, countMarkers(scrubbed) - countMarkers(text));
   return { text: scrubbed, count };
@@ -29,7 +29,7 @@ export function redactCapsule(capsule: ChangeCapsule): { capsule: ChangeCapsule;
     let before = diff.before;
     let after = diff.after;
     if (diff.before !== null) {
-      const result = redactText(diff.before);
+      const result = redactText(diff.before, diff.path);
       before = result.text;
       if (result.count > 0) {
         fields.push(`diffs[${index}].before`);
@@ -37,7 +37,7 @@ export function redactCapsule(capsule: ChangeCapsule): { capsule: ChangeCapsule;
       }
     }
     if (diff.after !== null) {
-      const result = redactText(diff.after);
+      const result = redactText(diff.after, diff.path);
       after = result.text;
       if (result.count > 0) {
         fields.push(`diffs[${index}].after`);

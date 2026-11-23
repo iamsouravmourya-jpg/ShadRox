@@ -278,15 +278,19 @@ export default function App() {
       }
     }
     const termSummary = terminalStateManager.getSummary();
+    const filePaths = workspace.workspace?.diskFileTree?.map((entry) => entry.path) ?? workspace.files.map((file) => file.name);
     return buildWorkspaceToolContext({
       workspaceOpen: Boolean(nativeWorkspaceId && workspace.workspace?.kind === 'folder'),
-      filePaths: workspace.workspace?.diskFileTree?.map((entry) => entry.path) ?? workspace.files.map((file) => file.name),
+      filePaths,
       debugStatus: debug.state.status,
       previewStatus: localPreview.localRuntime.status,
       activeJobCount,
       terminalAwaitingInput: termSummary.awaitingInput,
       hasActiveTerminal: terminalStateManager.getSessionIds().length > 0,
-      checkpointCount: workspace.checkpoints.length
+      checkpointCount: workspace.checkpoints.length,
+      hasMultiFileEdit: filePaths.length > 1,
+      hasGitRepo: filePaths.some((p) => p.includes('.git')),
+      webAvailable: true
     });
   }, [
     desktop,
@@ -313,7 +317,8 @@ export default function App() {
     intentGetContext: intent.getContext,
     ruleDocsRef: pluginAutomations.ruleDocsRef,
     skillDocsRef: pluginAutomations.skillDocsRef,
-    getToolContext
+    getToolContext,
+    useNativeTools: true
   });
 
   const languageActions = useLanguageActions({
@@ -803,6 +808,7 @@ export default function App() {
       lastReloadAt={localPreview.previewSync.lastReloadAt}
       onRevealSource={(target) => void languageActions.handleRevealSource(target)}
       onBehaviorEvent={governance.handleBehaviorEvent}
+      onBrowserConsoleLog={localPreview.handleBrowserConsoleLog}
       onFramePaint={acceptance.onFramePaint}
       fullscreen={isPreviewFullscreen}
       onToggleFullscreen={localPreview.handleTogglePreviewFullscreen}

@@ -183,15 +183,20 @@ export function parseVerifyOutput(text: string): { errors: VerifyError[]; failed
 export function formatVerifyReport(
   report: VerifyReport,
   kind: VerifyPlan['kind'],
-  options?: { includeAgentDirective?: boolean }
+  options?: { includeAgentDirective?: boolean; preExistingErrors?: VerifyError[] }
 ): string {
   const lines = [
     `verify: ${report.ok ? 'OK' : 'FAILED'} (project kind: ${kind})`,
     `commands run: ${report.commandsRun.length > 0 ? report.commandsRun.join(' && ') : '(none — no project manifest; compiler diagnostics only)'}`
   ];
   if (report.errors.length > 0) {
-    lines.push(`errors (${report.errors.length}):`);
+    lines.push(`errors in modified files (${report.errors.length}):`);
     for (const error of report.errors.slice(0, 40)) lines.push(`  ${error.file}:${error.line} ${error.msg}`);
+  }
+  const preExisting = options?.preExistingErrors;
+  if (preExisting && preExisting.length > 0) {
+    lines.push(`pre-existing errors in untouched files (${preExisting.length}) — not caused by your changes:`);
+    for (const error of preExisting.slice(0, 20)) lines.push(`  ${error.file}:${error.line} ${error.msg}`);
   }
   if (report.failedTests.length > 0) {
     lines.push(`failed tests (${report.failedTests.length}):`);

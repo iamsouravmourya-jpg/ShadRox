@@ -26,11 +26,19 @@ export interface WorkspaceToolContext {
   hasMutatedFiles?: boolean;
   /** Optional list of paths modified so far this turn; an empty array [] gates off verify. */
   touchedFiles?: readonly string[];
+  /** True when this turn is editing multiple files; gates apply_patch on. */
+  hasMultiFileEdit?: boolean;
+  /** True when a git repo is present; gates git_state on. */
+  hasGitRepo?: boolean;
+  /** True when web access is configured; gates web_search/fetch_url on. */
+  webAvailable?: boolean;
 }
 
 /**
  * Always-available baseline tools across every active workspace turn.
- * Matches exact registered names in `TOOL_DEFINITIONS`.
+ * Core set: read, search, edit, write, delete, problems, plan, finish.
+ * Everything else is gated behind context so small models aren't drowned
+ * in schemas they can't use.
  */
 export const ALWAYS_ON_TOOL_NAMES: ReadonlySet<string> = new Set([
   'list_directory',
@@ -39,23 +47,10 @@ export const ALWAYS_ON_TOOL_NAMES: ReadonlySet<string> = new Set([
   'search_text',
   'outline',
   'edit_file',
-  'apply_patch',
   'write_file',
   'delete_file',
   'problems',
-  'git_state',
   'run_command',
-  'memory_read',
-  'memory_note',
-  'semantic_search',
-  'find_references',
-  'go_to_definition',
-  'rename_symbol',
-  'diff_review',
-  'ask_user',
-  'spawn_subagent',
-  'web_search',
-  'fetch_url',
   'update_tasks',
   'finish'
 ]);
@@ -94,6 +89,20 @@ export function isToolEnabledInContext(toolName: string, state: WorkspaceToolCon
   }
 
   if (ALWAYS_ON_TOOL_NAMES.has(toolName)) return true;
+
+  // apply_patch is for coordinated multi-file edits only — keeps the surface
+  // small so small models don't reach for it instead of edit_file.
+  if (toolName === 'apply_patch') {
+    return state.hasMultiFileEdit === true;
+  }
+
+  if (toolName === 'git_state') {
+    return state.hasGitRepo === true;
+  }
+
+  if (toolName === 'web_search' || toolName === 'fetch_url') {
+    return state.webAvailable === true;
+  }
 
   if (toolName === 'debug_set_breakpoint') {
     return hasDebuggableScriptFiles(state.filePaths);
@@ -150,6 +159,9 @@ export function buildWorkspaceToolContext(options: {
   isReadOnlyTurn?: boolean;
   hasMutatedFiles?: boolean;
   touchedFiles?: readonly string[];
+  hasMultiFileEdit?: boolean;
+  hasGitRepo?: boolean;
+  webAvailable?: boolean;
 }): WorkspaceToolContext {
   const status = options.debugStatus ?? 'idle';
   const preview = options.previewStatus ?? 'idle';
@@ -167,6 +179,9 @@ export function buildWorkspaceToolContext(options: {
     checkpointCount: Math.max(0, options.checkpointCount ?? 0),
     ...(options.isReadOnlyTurn !== undefined ? { isReadOnlyTurn: options.isReadOnlyTurn } : {}),
     ...(options.hasMutatedFiles !== undefined ? { hasMutatedFiles: options.hasMutatedFiles } : {}),
-    ...(options.touchedFiles !== undefined ? { touchedFiles: options.touchedFiles } : {})
+    ...(options.touchedFiles !== undefined ? { touchedFiles: options.touchedFiles } : {}),
+    ...(options.hasMultiFileEdit !== undefined ? { hasMultiFileEdit: options.hasMultiFileEdit } : {}),
+    ...(options.hasGitRepo !== undefined ? { hasGitRepo: options.hasGitRepo } : {}),
+    ...(options.webAvailable !== undefined ? { webAvailable: options.webAvailable } : {})
   };
 }

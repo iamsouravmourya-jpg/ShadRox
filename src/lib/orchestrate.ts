@@ -95,11 +95,25 @@ export function decideOrchestration(input: OrchestrationInput): OrchestrationDec
   const crossCutting = CROSS_CUTTING_RE.test(prompt) || explicitPaths >= 6 || structuredItems >= 5;
   const explicitTeam = TEAM_WORDS.test(prompt);
 
+  // UI-only areas (frontend, UI) describe a single domain. A prompt whose every
+  // detected area is UI/frontend is a single-component UI task — it stays in
+  // single-agent (chat/autonomy) mode and is never handed to a 5-role team
+  // that would spin up unnecessary backend/database/auth specialists.
+  const UI_ONLY_AREAS = new Set(['frontend', 'UI']);
+  const hasNonUiArea = areas.some((a) => !UI_ONLY_AREAS.has(a));
+  const uiOnly = areas.length > 0 && !hasNonUiArea;
+
+  // Multi-area or multi-file requests escalate even when the prompt is short:
+  // "login add karo aur dashboard bhi" touches auth + UI + files, which is
+  // real multi-area work even in Hindi/Hinglish.
+  const multiAreaOrMultiFile = (areas.length >= 2 && hasNonUiArea) || explicitPaths >= 2;
+
   // Explicit team wording always goes to the team. Otherwise, multi-area work
   // goes to the team ONLY when it is not a cross-cutting mega-refactor spanning
   // 6+ files or 5+ numbered/bulleted workstreams (which autonomous runs handle
-  // cleanly without 4-role ownership collisions).
-  const wantsTeam = explicitTeam || (action && areas.length >= 3 && words >= 18 && !crossCutting);
+  // cleanly without 4-role ownership collisions). UI-only prompts never form a
+  // team — there are no backend/database tasks to distribute.
+  const wantsTeam = explicitTeam || (action && areas.length >= 3 && hasNonUiArea && words >= 18 && !crossCutting && !uiOnly);
   if (wantsTeam) {
     return {
       kind: 'team',
@@ -112,8 +126,11 @@ export function decideOrchestration(input: OrchestrationInput): OrchestrationDec
 
   // A one-liner edit ("fix this", "add a button") is chat; the engines are for
   // work with enough moving parts that planning and verification pay for themselves.
-  const substantive = input.mode === 'complex' ? words >= 8 : words >= 28 || broad;
-  if (action && substantive && (broad || input.workspaceFileCount >= 8 || input.mode === 'complex')) {
+  // Multi-area or multi-file work is substantive even at lower word counts.
+  const substantive = input.mode === 'complex'
+    ? words >= 8
+    : words >= 28 || broad || multiAreaOrMultiFile;
+  if (action && substantive && (broad || multiAreaOrMultiFile || input.workspaceFileCount >= 8 || input.mode === 'complex')) {
     return {
       kind: 'autonomy',
       reason: 'Auto: multi-step change with real files to touch, so it will plan, edit and verify milestones.'
