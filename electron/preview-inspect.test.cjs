@@ -217,4 +217,13 @@ test('console and network rings are readable per workspace', async () => {
   assert.equal(errorsAlias.errors[0].status, 500);
   const other = await run(trustedEvent, 'ws-2', { action: 'get_console_logs' });
   assert.equal(other.logs.length, 0);
+
+  registered.resetWorkspaceBuffers('ws-1', 2);
+  const afterResetLogs = await run(trustedEvent, 'ws-1', { action: 'get_console_logs' });
+  assert.equal(afterResetLogs.ok, true);
+  assert.equal(afterResetLogs.previewRunId, 2);
+  assert.equal(afterResetLogs.logs.length, 0);
+  const afterResetNet = await run(trustedEvent, 'ws-1', { action: 'get_network_errors' });
+  assert.equal(afterResetNet.previewRunId, 2);
+  assert.equal(afterResetNet.errors.length, 0);
 });

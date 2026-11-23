@@ -758,4 +758,76 @@ test('scoped final verification triggers m-ws-repair when touched/targeted files
   assert.deepEqual(hReg.rollbacks, ['checkpoint-1']);
 });
 
+test('runAutonomous skips TS/linter diagnostics on read_only milestones even before a subsequent edit milestone fixes the file', async () => {
+  const h = harness([
+    milestone('m1', {
+      id: 'm1',
+      title: 'Read and outline platformFacade.ts',
+      instruction: 'Read platformFacade.ts structure',
+      expectedFiles: ['src/services/platformFacade.ts'],
+      category: 'read_only'
+    }),
+    milestone('m2', {
+      id: 'm2',
+      title: 'Fix types in platformFacade.ts',
+      instruction: 'Edit src/services/platformFacade.ts to resolve TS errors',
+      expectedFiles: ['src/services/platformFacade.ts'],
+      dependsOn: ['m1'],
+      category: 'file_mutation'
+    })
+  ]);
+  h.deps.ports.verify = async (unit) => {
+    if (unit.id === 'm1') {
+      // Simulate an aggressive port returning TS errors that exist prior to m2
+      return {
+        verdict: 'failed',
+        diagnostics: [
+          { path: 'src/services/platformFacade.ts', line: 3, column: 5, message: 'Pre-existing TS error', severity: 'error' }
+        ],
+        notes: ['1 error diagnostic(s) found']
+      };
+    }
+    return PASSED;
+  };
+  h.setTurn((unit) => ({
+    reply: `Completed ${unit.id}`,
+    patchesApplied: unit.id === 'm2' ? 1 : 0,
+    patchFailures: [],
+    aborted: false,
+    toolEvents: unit.id === 'm1' ? [{ name: 'read_file', ok: true }] : [{ name: 'apply_patch', ok: true }]
+  }));
+
+  const state = await runAutonomous('Read platformFacade.ts then fix its TypeScript errors', h.deps);
+  assert.equal(state.status, 'done');
+  assert.equal(state.milestones[0].status, 'passed');
+  assert.equal(state.milestones[0].attempts.length, 1, 'read_only m1 should pass on the first attempt without retry');
+  assert.equal(state.milestones[1].status, 'passed');
+
+  // Purely read_only run skips verifyWorkspace completely when nothing was written
+  const hReadOnly = harness([
+    milestone('m1', {
+      title: 'Read and outline platformFacade.ts',
+      instruction: 'Inspect platformFacade.ts',
+      expectedFiles: ['src/services/platformFacade.ts'],
+      category: 'read_only'
+    })
+  ]);
+  hReadOnly.setTurn(() => ({
+    reply: 'Outlined platformFacade.ts cleanly.',
+    patchesApplied: 0,
+    patchFailures: [],
+    aborted: false,
+    toolEvents: [{ name: 'read_file', ok: true }]
+  }));
+  let wsVerifyCalled = 0;
+  hReadOnly.deps.ports.verifyWorkspace = async () => {
+    wsVerifyCalled += 1;
+    return PASSED;
+  };
+  const roState = await runAutonomous('Read and outline platformFacade.ts', hReadOnly.deps);
+  assert.equal(roState.status, 'done');
+  assert.equal(wsVerifyCalled, 0);
+});
+
+
 

@@ -245,6 +245,7 @@ function registerPreviewInspect({ ipcMain, app, BrowserWindow, nativeImage, getW
     let buffers = buffersByWorkspace.get(workspaceId);
     if (!buffers) {
       buffers = createInspectBuffers();
+      buffers.previewRunId = 1;
       buffersByWorkspace.set(workspaceId, buffers);
       // Keep the map bounded even if workspaces churn.
       if (buffersByWorkspace.size > 24) {
@@ -253,6 +254,16 @@ function registerPreviewInspect({ ipcMain, app, BrowserWindow, nativeImage, getW
       }
     }
     return buffers;
+  }
+
+  function resetWorkspaceBuffers(workspaceId, previewRunId) {
+    if (typeof workspaceId !== 'string' || !workspaceId) return null;
+    buffersByWorkspace.delete(workspaceId);
+    const fresh = buffersFor(workspaceId);
+    if (typeof previewRunId === 'number' && Number.isFinite(previewRunId)) {
+      fresh.previewRunId = previewRunId;
+    }
+    return fresh;
   }
 
   function attachListeners(contents) {
@@ -417,15 +428,19 @@ function registerPreviewInspect({ ipcMain, app, BrowserWindow, nativeImage, getW
       const action = Object.hasOwn(aliases, request.action) ? aliases[request.action] : request.action;
 
       if (action === 'get_console_logs') {
-        const logs = buffersFor(workspaceId).consoleLogs().map((entry) => ({
+        const buffers = buffersFor(workspaceId);
+        const previewRunId = buffers.previewRunId ?? 1;
+        const logs = buffers.consoleLogs().map((entry) => ({
           level: entry.level,
           message: entry.text,
-          timestamp: entry.timestamp
+          timestamp: entry.timestamp,
+          previewRunId
         }));
-        return { ok: true, logs };
+        return { ok: true, logs, previewRunId };
       }
       if (action === 'get_network_errors') {
-        return { ok: true, errors: buffersFor(workspaceId).networkErrors() };
+        const buffers = buffersFor(workspaceId);
+        return { ok: true, errors: buffers.networkErrors(), previewRunId: buffers.previewRunId ?? 1 };
       }
 
       const frame = findPreviewFrame(win, workspaceId);
@@ -473,7 +488,7 @@ function registerPreviewInspect({ ipcMain, app, BrowserWindow, nativeImage, getW
     }
   });
 
-  return { buffersFor, attachListeners };
+  return { buffersFor, attachListeners, resetWorkspaceBuffers };
 }
 
 module.exports = {

@@ -416,6 +416,7 @@ export interface PreviewInspectResponse {
   clicked?: boolean;
   typed?: boolean;
   note?: string;
+  previewRunId?: number;
 }
 
 /**
@@ -507,13 +508,15 @@ export async function handlePreviewInspect(workspaceId: string, args: Record<str
     }
     if (action === 'console') {
       const logs = Array.isArray(response.logs) ? response.logs : [];
+      const runTag = typeof response.previewRunId === 'number' ? ` (run #${response.previewRunId})` : '';
       const body = logs.slice(-60).map((entry) => `[${entry.level}] ${String(entry.message).slice(0, 300)}`).join('\n');
-      return { ok: true, content: `${logs.length} console message(s) buffered since inspection started${response.note ? ` (${response.note})` : ''}:\n${body || '(none)'}` };
+      return { ok: true, content: `${logs.length} console message(s) buffered since inspection started${runTag}${response.note ? ` (${response.note})` : ''}:\n${body || '(none)'}` };
     }
     if (action === 'network') {
       const errors = Array.isArray(response.errors) ? response.errors : [];
+      const runTag = typeof response.previewRunId === 'number' ? ` (run #${response.previewRunId})` : '';
       const body = errors.slice(-40).map((entry) => `${entry.status ? `HTTP ${entry.status}` : entry.error ?? 'failed'} ${String(entry.url).slice(0, 300)}`).join('\n');
-      return { ok: true, content: `${errors.length} network error(s) buffered since inspection started${response.note ? ` (${response.note})` : ''}:\n${body || '(none)'}` };
+      return { ok: true, content: `${errors.length} network error(s) buffered since inspection started${runTag}${response.note ? ` (${response.note})` : ''}:\n${body || '(none)'}` };
     }
     if (action === 'dom') {
       if (!response.found) return { ok: true, content: `Selector "${selector}" matched nothing in the preview DOM (count 0).` };

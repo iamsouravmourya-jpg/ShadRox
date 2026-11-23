@@ -1578,6 +1578,7 @@ export function useOrchestrationController({
     const decision = decideOrchestration({
       prompt: modelText,
       mode: submission.refineMode,
+      permissionMode: submission.envelope.permissionMode,
       workspaceFileCount: workspace.workspace?.diskFileTree?.length ?? workspace.files.length,
       hasKey: Boolean(byok.activeKey),
       canRun: Boolean(desktop && nativeWorkspaceId && workspaceRootPath),
@@ -1991,9 +1992,10 @@ export function useOrchestrationController({
               0,
               JSON.stringify(nativeTools).length
             ),
-            stream: async (loopMessages: ChatTurn[], round: number): Promise<{ text: string; error: string | null }> => {
+            stream: async (loopMessages: ChatTurn[], _round: number): Promise<{ text: string; error: string | null }> => {
               let roundText = '';
               let roundError: string | null = null;
+              let streamedVisible = '';
               try {
                 await streamChat({
                   provider: byok.activeProvider,
@@ -2010,13 +2012,33 @@ export function useOrchestrationController({
                   onDelta: (chunk) => {
                     if (!chunk) return;
                     roundText += chunk;
+                    const nextVisible = stripToolBlocks(roundText);
+                    const added = nextVisible.slice(streamedVisible.length);
+                    streamedVisible = nextVisible;
+                    if (!added) return;
                     setMessages((previous) =>
                       previous.map((message) =>
-                        message.id === messageId ? { ...message, content: message.content + chunk } : message
+                        message.id === messageId ? { ...message, content: message.content + added } : message
                       )
                     );
                   },
-                  onDone: (info) => {
+                  onReasoning: (chunk) => {
+                    if (!chunk) return;
+                    setMessages((previous) =>
+                      previous.map((message) =>
+                        message.id === messageId ? { ...message, reasoning: (message.reasoning ?? '') + chunk } : message
+                      )
+                    );
+                  },
+                  onToolCalls: (calls) => {
+                    const normalized = calls.map((call) => ({
+                      name: call.name,
+                      args: repairAndParseNativeToolArgs(call.arguments)
+                    }));
+                    const serialized = JSON.stringify(normalized).replaceAll('`', '\\u0060');
+                    roundText += `${roundText ? '\n\n' : ''}\`\`\`shadrox:tools\n${serialized}\n\`\`\``;
+                  },
+                  onDone: () => {
                     // usage is best-effort on resume
                   },
                   onError: (error) => { roundError = error; }

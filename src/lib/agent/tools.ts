@@ -25,20 +25,26 @@ import { WEB_TOOLS, WEB_TOOL_SCHEMAS, handleWebSearch, handleFetchUrl, handlePre
 import { INTERACTION_TOOLS, INTERACTION_SCHEMAS, handleAskUser, handleSpawnSubagent } from './subagent';
 import { DIFF_REVIEW_TOOLS, DIFF_REVIEW_SCHEMA, handleDiffReview } from './diffReview';
 import { resolveActiveTools, type WorkspaceToolContext } from './toolGatekeeper';
+import { serializeCallKey as canonicalSerializeCallKey } from './toolProtocol';
 
 const fallbackFileBackups = new Map<string, string>();
 
-/** Per-workspace, per-file edit_file failure count this turn. */
+/** Active turnToken per workspace so failure/fallback tracking resets automatically every turn. */
+const activeTurnTokens = new Map<string, number>();
+
+/** Per-workspace, per-file edit/patch failure count this turn. */
 const editFailureCounts = new Map<string, Map<string, number>>();
 
-/** Files this turn where edit_file has failed 2x — write_file is now allowed to overwrite. */
+/** Files this turn where edit_file/apply_patch has failed 2x — write_file is now allowed to overwrite. */
 const writeFileAllowedAfterEditFailure = new Set<string>();
 
-/** Per-workspace count of identical failed calls (key = serialized call). Resets implicitly per workspace. */
+/** Per-workspace count of identical failed calls (key = `${workspaceId}:${canonicalCall}`). */
 const identicalFailureCounts = new Map<string, number>();
 
-/** Max identical failed call retries before returning an actionable hint instead of re-executing. */
+/** Max identical failed call retries on file edit/patch/write tools before returning a recovery hint. */
 const MAX_IDENTICAL_FAILURES = 2;
+
+const EDIT_RETRY_CAPPED_TOOLS = new Set(['edit_file', 'apply_patch', 'write_file']);
 
 /** Preview run tracking: increments on every start/restart so status only shows the latest run's logs. */
 const previewRunIds = new Map<string, number>();
@@ -49,39 +55,86 @@ function nextPreviewRunId(workspaceId: string): number {
   return next;
 }
 
-function serializeCallKey(call: ToolCall): string {
-  return `${call.name}:${JSON.stringify(call.args)}`;
+/** Normalize workspace-relative paths cleanly across Windows backslashes and leading `./`. */
+function normalizeWorkspacePathArg(rawPath: string): string | null {
+  const normalized = rawPath.trim().replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!normalized || normalized.startsWith('/') || /^[a-z]:/i.test(normalized)
+    || normalized.split('/').some((part) => !part || part === '.' || part === '..')) {
+    return null;
+  }
+  return normalized;
+}
+
+/** Clears per-turn failure counters and write_file fallback unlocks for one or all workspaces. */
+export function resetToolTurnTracking(workspaceId?: string): void {
+  if (!workspaceId) {
+    activeTurnTokens.clear();
+    editFailureCounts.clear();
+    writeFileAllowedAfterEditFailure.clear();
+    identicalFailureCounts.clear();
+    return;
+  }
+  activeTurnTokens.delete(workspaceId);
+  editFailureCounts.delete(workspaceId);
+  const prefix = `${workspaceId}:`;
+  for (const key of writeFileAllowedAfterEditFailure) {
+    if (key.startsWith(prefix)) writeFileAllowedAfterEditFailure.delete(key);
+  }
+  for (const key of identicalFailureCounts.keys()) {
+    if (key.startsWith(prefix)) identicalFailureCounts.delete(key);
+  }
+}
+
+function syncTurnToolTracking(workspaceId: string): void {
+  const turn = getTurn(workspaceId);
+  if (!turn) return;
+  if (activeTurnTokens.get(workspaceId) !== turn.turnToken) {
+    resetToolTurnTracking(workspaceId);
+    activeTurnTokens.set(workspaceId, turn.turnToken);
+  }
+}
+
+function serializeScopedCallKey(workspaceId: string, call: ToolCall): string {
+  const args = { ...(call.args ?? {}) };
+  if (typeof args.path === 'string') {
+    const normalized = normalizeWorkspacePathArg(args.path);
+    if (normalized) args.path = normalized;
+  }
+  return `${workspaceId}:${canonicalSerializeCallKey({ name: call.name, args })}`;
 }
 
 function recordEditFailure(workspaceId: string, path: string): number {
+  const normalized = normalizeWorkspacePathArg(path) ?? normalizeRepoPath(path);
   const byFile = editFailureCounts.get(workspaceId) ?? new Map<string, number>();
-  const count = (byFile.get(path) ?? 0) + 1;
-  byFile.set(path, count);
+  const count = (byFile.get(normalized) ?? 0) + 1;
+  byFile.set(normalized, count);
   editFailureCounts.set(workspaceId, byFile);
-  if (count >= 2) writeFileAllowedAfterEditFailure.add(`${workspaceId}:${path}`);
+  if (count >= 2) writeFileAllowedAfterEditFailure.add(`${workspaceId}:${normalized}`);
   return count;
 }
 
-function recordIdenticalFailure(call: ToolCall): number {
-  const key = serializeCallKey(call);
+function recordIdenticalFailure(workspaceId: string, call: ToolCall): number {
+  const key = serializeScopedCallKey(workspaceId, call);
   const count = (identicalFailureCounts.get(key) ?? 0) + 1;
   identicalFailureCounts.set(key, count);
   return count;
 }
 
-function peekIdenticalFailureCount(call: ToolCall): number {
-  return identicalFailureCounts.get(serializeCallKey(call)) ?? 0;
+function peekIdenticalFailureCount(workspaceId: string, call: ToolCall): number {
+  return identicalFailureCounts.get(serializeScopedCallKey(workspaceId, call)) ?? 0;
 }
 
 function isWriteFileAllowedAfterEditFailure(workspaceId: string, path: string): boolean {
-  return writeFileAllowedAfterEditFailure.has(`${workspaceId}:${path}`);
+  const normalized = normalizeWorkspacePathArg(path) ?? normalizeRepoPath(path);
+  return writeFileAllowedAfterEditFailure.has(`${workspaceId}:${normalized}`);
 }
 
-function identicalFailureHint(call: ToolCall): string | null {
-  const count = peekIdenticalFailureCount(call);
-  if (count <= MAX_IDENTICAL_FAILURES) return null;
+function identicalFailureHint(workspaceId: string, call: ToolCall): string | null {
+  if (!EDIT_RETRY_CAPPED_TOOLS.has(call.name)) return null;
+  const count = peekIdenticalFailureCount(workspaceId, call);
+  if (count < MAX_IDENTICAL_FAILURES) return null;
   const path = asString(call.args.path) ?? '';
-  return `The same ${call.name} call has failed ${count} times on ${path || '(unknown)'}. Stop retrying — re-read the exact line range with read_file, or use write_file to rewrite the file outright.`;
+  return `The same ${call.name} call has already failed ${count} times this turn on ${path || '(unknown)'}. Stop retrying identical arguments — re-read the exact startLine/endLine range with read_file, adjust your snippet, or use write_file to rewrite the file cleanly.`;
 }
 
 function storeFallbackBackup(workspaceId: string, path: string, content: string): string {
@@ -778,12 +831,44 @@ function occurrenceLines(content: string, snippet: string, cap = 5): number[] {
   return lines;
 }
 
-export type UniqueMatchMode = 'exact' | 'crlf-normalized' | 'trimmed-lines' | 'indent-normalized';
+export type UniqueMatchMode =
+  | 'exact'
+  | 'crlf-normalized'
+  | 'trimmed-lines'
+  | 'indent-normalized'
+  | 'whitespace-collapsed';
 
 export type UniqueMatchResult =
   | { status: 'found'; start: number; end: number; mode: UniqueMatchMode }
   | { status: 'ambiguous'; lines: number[] }
   | { status: 'not_found' };
+
+function detectLineEnding(content: string): '\r\n' | '\n' {
+  const crlfCount = content.match(/\r\n/g)?.length ?? 0;
+  if (crlfCount === 0) return '\n';
+  const lfCount = content.match(/(?:^|[^\r])\n/g)?.length ?? 0;
+  return crlfCount >= lfCount ? '\r\n' : '\n';
+}
+
+function applyLineEnding(text: string, eol: '\r\n' | '\n'): string {
+  const lfOnly = text.replace(/\r\n/g, '\n');
+  return eol === '\r\n' ? lfOnly.replace(/\n/g, '\r\n') : lfOnly;
+}
+
+function matchesModifiedFile(filePath: string, modifiedFiles: Set<string>): boolean {
+  const normalized = filePath.trim().replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!normalized) return false;
+  if (modifiedFiles.has(normalized)) return true;
+  const lower = normalized.toLowerCase();
+  for (const mod of modifiedFiles) {
+    const modNorm = mod.replace(/\\/g, '/').replace(/^\.\//, '');
+    const modLower = modNorm.toLowerCase();
+    if (lower === modLower || lower.endsWith(`/${modLower}`)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 interface DiskLineSpan {
   start: number;
@@ -936,6 +1021,22 @@ export function locateUniqueMatch(content: string, snippet: string): UniqueMatch
         return indentMatch.status === 'found'
           ? { ...indentMatch, mode: 'indent-normalized' }
           : indentMatch;
+      }
+    }
+
+    // Pass 5: collapsed internal whitespace match (ONLY for >= 3 non-empty lines and strictly unique)
+    if (nonEmptyCount >= 3) {
+      const collapsedTargets = rawLines.map((line) => line.trim().replace(/[ \t]+/g, ' '));
+      const wsMatch = matchLineWindow(
+        spans,
+        collapsedTargets,
+        includesTrailingNewline,
+        (span, target) => span.trimmed.replace(/[ \t]+/g, ' ') === target
+      );
+      if (wsMatch) {
+        return wsMatch.status === 'found'
+          ? { ...wsMatch, mode: 'whitespace-collapsed' }
+          : wsMatch;
       }
     }
   }
@@ -1135,9 +1236,10 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
   if (!desktop) return refusal('The desktop bridge is unavailable, so tools cannot read the workspace.');
   if (!isKnownTool(call.name)) return refusal(`Unknown tool "${call.name}".`);
 
-  // Cap identical failed tool calls: after MAX_IDENTICAL_FAILURES failures on
-  // the same call signature, stop retrying and return an actionable hint.
-  const hint = identicalFailureHint(call);
+  syncTurnToolTracking(workspaceId);
+
+  // Cap identical failed edit/patch/write calls per turn cleanly at MAX_IDENTICAL_FAILURES.
+  const hint = identicalFailureHint(workspaceId, call);
   if (hint) return refusal(hint);
 
   try {
@@ -1185,29 +1287,41 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         return { ok: true, content: clip(`${lines.length} entries${capped ? ' (walk capped — narrow the path or depth)' : ''}\n${lines.join('\n')}`) };
       }
       case 'read_file': {
-        const path = asString(call.args.path);
-        if (!path) return refusal('read_file needs a path.');
-        const file = await desktop.readFile(workspaceId, path);
+        const rawPath = asString(call.args.path);
+        if (!rawPath) return refusal('read_file needs a path.');
+        const normalized = normalizeWorkspacePathArg(rawPath);
+        if (!normalized) return refusal('read_file needs a workspace-relative path inside the opened folder.');
+        const file = await desktop.readFile(workspaceId, normalized);
         // Env config is readable for diagnosis, but secret values must not enter
         // the model context or the transcript: show presence, not the secret.
         // .ts/.tsx/.js/.jsx source is never redacted — only .env* files mask values.
-        const isEnvFile = /(^|\/)\.env[^/]*$/.test(path);
+        const isEnvFile = /(^|\/)\.env[^/]*$/.test(normalized);
         const raw = isEnvFile ? maskEnvSecrets(file.content) : file.content;
-        const lines = raw.split('\n');
+        const lines = raw.split(/\r?\n/);
         const totalLines = lines.length;
-        const start = asNumber(call.args.start_line);
-        const end = asNumber(call.args.end_line);
-        const from = Math.max(1, start ?? 1);
-        const to = Math.min(lines.length, end ?? lines.length);
-        const truncated = (start !== undefined || end !== undefined) && totalLines > (to - from + 1);
-        const slice = lines.slice(from - 1, to).map((line, index) => `${from + index}| ${line}`).join('\n');
-        const header = `[File: ${path} | Total lines: ${totalLines} | Showing lines ${from}-${to}]`;
-        const truncationHint = truncated && totalLines > 300
-          ? '\nFile is truncated. Use read_file with startLine/endLine or search_text to inspect the rest of the file before editing.'
-          : '';
+        const start = asNumber(call.args.start_line) ?? asNumber(call.args.startLine);
+        const end = asNumber(call.args.end_line) ?? asNumber(call.args.endLine);
         if (start === undefined && end === undefined) {
-          return { ok: true, content: clip(`${header}\n${raw}`) };
+          const cap = totalLines > 300 ? 250 : totalLines;
+          const slice = lines.slice(0, cap).map((line, index) => `${index + 1}| ${line}`).join('\n');
+          const header = `[File: ${normalized} | Total lines: ${totalLines} | Showing lines 1-${cap}]`;
+          const bottomStart = Math.max(251, totalLines - 100);
+          const guidance = totalLines > 300
+            ? `\nFile has ${totalLines} lines (>300). Showing lines 1-${cap}. Use read_file with startLine/endLine (for example startLine: ${bottomStart}, endLine: ${totalLines}) or search_text before editing.`
+            : '';
+          return { ok: true, content: clip(`${header}\n${slice}${guidance}`) };
         }
+        const from = Math.max(1, Math.trunc(start ?? 1));
+        const to = Math.min(totalLines, Math.trunc(end ?? totalLines));
+        if (from > to) {
+          return { ok: true, content: `[File: ${normalized} | Total lines: ${totalLines}] Requested range ${from}-${to} is past EOF.` };
+        }
+        const truncated = totalLines > (to - from + 1);
+        const slice = lines.slice(from - 1, to).map((line, index) => `${from + index}| ${line}`).join('\n');
+        const header = `[File: ${normalized} | Total lines: ${totalLines} | Showing lines ${from}-${to}]`;
+        const truncationHint = truncated && totalLines > 300
+          ? '\nPartial slice shown. Use read_file with startLine/endLine or search_text to inspect the rest of the file before editing.'
+          : '';
         return { ok: true, content: clip(`${header}\n${slice}${truncationHint}`) };
       }
       case 'find_files': {
@@ -1268,13 +1382,13 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
       }
       case 'write_file':
       case 'edit_file': {
-        const path = asString(call.args.path);
-        if (!path) return refusal(`${call.name} needs a path.`);
-        const normalized = path.replace(/\\/g, '/').replace(/^\.\//, '');
-        if (!normalized || normalized.startsWith('/') || /^[a-z]:/i.test(normalized)
-          || normalized.split('/').some((part) => !part || part === '.' || part === '..')) {
+        const rawPath = asString(call.args.path);
+        if (!rawPath) return refusal(`${call.name} needs a path.`);
+        const normalized = normalizeWorkspacePathArg(rawPath);
+        if (!normalized) {
           return refusal(`${call.name} needs a workspace-relative path inside the opened folder.`);
         }
+        const path = normalized;
         if (isProtectedAgentWritePath(normalized)) {
           return refusal(`${path}: agent edits to plugin and automation manifests are blocked.`);
         }
@@ -1297,7 +1411,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
 
         let current: { content: string; version: string } | null = null;
         try {
-          const file = await desktop.readFile(workspaceId, path);
+          const file = await desktop.readFile(workspaceId, normalized);
           current = { content: file.content, version: file.version };
         } catch (error) {
           if (!isNotFoundError(error)) {
@@ -1323,7 +1437,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         let matchModeNote = '';
         if (call.name === 'write_file') {
           if (typeof call.args.content !== 'string') return refusal('write_file needs content: the full file text as a string.');
-          content = call.args.content;
+          content = current ? applyLineEnding(call.args.content, detectLineEnding(current.content)) : call.args.content;
           if (current) {
             const extractedFilesCreated = turn?.created.size ?? 0;
             const shouldBackup = current.content.length >= LARGE_FILE_BACKUP_THRESHOLD || extractedFilesCreated > 0;
@@ -1345,12 +1459,13 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
                 return { ok: false, content: '', error: `Not written — ${path} is a large existing file (${current.content.length} chars) and its backup failed: ${error instanceof Error ? error.message : String(error)}. Use edit_file for targeted changes instead.` };
               }
             }
-            // If edit_file failed 2+ times on this file this turn, allow write_file
+            // If edit_file/apply_patch failed 2+ times on this file this turn, allow write_file
             // to overwrite outright instead of gate-keeping on rewrite risk.
             const editFailedTwice = isWriteFileAllowedAfterEditFailure(workspaceId, normalized);
             if (!editFailedTwice) {
               const risk = assessRewriteRisk(path, content, current.content, { extractedFilesCreated, backupCreated });
               if (risk) {
+                recordIdenticalFailure(workspaceId, call);
                 return { ok: false, content: '', error: `${risk} Use edit_file with an exact original snippet for targeted changes instead.` };
               }
             } else {
@@ -1368,31 +1483,34 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           const matched = locateUniqueMatch(current.content, original);
           if (matched.status === 'not_found') {
             recordEditFailure(workspaceId, normalized);
-            recordIdenticalFailure(call);
+            recordIdenticalFailure(workspaceId, call);
             const region = closestRegion(current.content, original);
             const hint = region ? `\nClosest region on disk (around line ${region.line}):\n${region.excerpt}` : '';
             return { ok: false, content: '', error: `The original snippet was not found in ${path}. Read the file again and copy its exact current text — including indentation and line breaks — into original.${hint}` };
           }
           if (matched.status === 'ambiguous') {
             recordEditFailure(workspaceId, normalized);
-            recordIdenticalFailure(call);
+            recordIdenticalFailure(workspaceId, call);
             return { ok: false, content: '', error: `The original snippet appears more than once in ${path} (lines ${matched.lines.join(', ')}). Include more surrounding lines so it matches exactly one place.` };
           }
           const matchedSlice = current.content.slice(matched.start, matched.end);
-          if (matchedSlice === updated) {
+          const eol = detectLineEnding(current.content);
+          const normalizedUpdated = applyLineEnding(updated, eol);
+          if (matchedSlice === normalizedUpdated) {
             return { ok: true, content: `${path}: original and updated are identical — nothing to change.` };
           }
           if (matched.mode !== 'exact') {
             matchModeNote = ` (matched after ${matched.mode} normalization)`;
           }
-          content = current.content.slice(0, matched.start) + updated + current.content.slice(matched.end);
+          content = current.content.slice(0, matched.start) + normalizedUpdated + current.content.slice(matched.end);
         }
 
         // The same pre-apply gate the review path uses: nothing reaches disk
         // that the change-set verifier refused or could not check.
         try {
-          const verdict = await desktop.verifyChangeSet(workspaceId, [{ path, content }]);
+          const verdict = await desktop.verifyChangeSet(workspaceId, [{ path: normalized, content }]);
           if (!verdict.ok) {
+            recordIdenticalFailure(workspaceId, call);
             const issue = verdict.issues.find((entry) => entry.severity === 'error') ?? verdict.issues[0];
             return { ok: false, content: '', error: issue ? `Not written — ${issue.path}:${issue.line + 1} ${issue.message}` : 'Not written — the change failed pre-apply verification.' };
           }
@@ -1402,6 +1520,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
 
         const prePlaceholderIssues = placeholderDiagnostics(normalized, content);
         if (prePlaceholderIssues.length > 0) {
+          recordIdenticalFailure(workspaceId, call);
           const first = prePlaceholderIssues[0];
           return {
             ok: false,
@@ -1413,7 +1532,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         // Version-pinned atomic save: the bridge refuses a path outside the
         // workspace, a symlink, a read-only rule doc, or a file that changed
         // since the read above, and reads the saved bytes back to confirm.
-        const result = await desktop.saveFiles(workspaceId, [{ name: path, content, expectedVersion: current?.version ?? null }]);
+        const result = await desktop.saveFiles(workspaceId, [{ name: normalized, content, expectedVersion: current?.version ?? null }]);
         if (result.errors.length > 0 || result.saved.length !== 1) {
           const message = result.errors[0]?.message ?? 'the save returned no confirmation';
           return { ok: false, content: '', error: `${path} was not saved: ${message}` };
@@ -1600,16 +1719,19 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           }
           const matched = locateUniqueMatch(base, hunk.old);
           if (matched.status === 'not_found') {
+            recordEditFailure(workspaceId, hunk.path);
+            recordIdenticalFailure(workspaceId, call);
             const region = closestRegion(base, hunk.old);
             const hint = region ? `\nClosest region on disk (around line ${region.line}):\n${region.excerpt}` : '';
-            recordIdenticalFailure(call);
             return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): old text not found. ${atomicNote}\nFailing old text:\n${hunk.old.slice(0, 800)}${hint}` };
           }
           if (matched.status === 'ambiguous') {
-            recordIdenticalFailure(call);
+            recordEditFailure(workspaceId, hunk.path);
+            recordIdenticalFailure(workspaceId, call);
             return { ok: false, content: '', error: `apply_patch failed at hunk ${index + 1} (${hunk.path}): old text appears more than once (lines ${matched.lines.join(', ')}). ${atomicNote} Include more surrounding lines so it matches exactly one place.` };
           }
-          working.set(hunk.path, base.slice(0, matched.start) + hunk.next + base.slice(matched.end));
+          const normalizedNext = applyLineEnding(hunk.next, detectLineEnding(base));
+          working.set(hunk.path, base.slice(0, matched.start) + normalizedNext + base.slice(matched.end));
         }
 
         const writes = [...working.entries()]
@@ -1726,8 +1848,9 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           }
           // A verify that outlived the foreground wait is NOT a failure. Wait for
           // the job's real exit and judge that; only an unbounded still-running
-          // job stays unresolved, reported as such instead of "verify again".
-          if (result.backgrounded || result.exitCode === null) {
+          // job stays unresolved. On Windows shell shims where exitCode can come back
+          // null without backgrounding, treat non-timed-out direct completion safely.
+          if (result.backgrounded || (result.exitCode === null && Boolean(result.jobId))) {
             const finished = await waitForJobExit(desktop, workspaceId, result.jobId ?? null);
             if (!finished) {
               allOk = false;
@@ -1739,20 +1862,28 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
               kind: 'result', command, source: 'assistant', exitCode: result.exitCode,
               durationMs: Date.now() - started, stdout: result.stdout, stderr: ''
             });
+          } else if (result.exitCode === null) {
+            result = { ...result, exitCode: result.timedOut ? 1 : 0 };
           }
           commandsRun.push(command);
           const parsed = parseVerifyOutput([result.stdout, result.stderr].filter(Boolean).join('\n'));
+          const errorsBefore = errors.length;
+          const failedTestsBefore = failedTests.length;
           for (const err of parsed.errors) {
-            const inModified = modifiedFiles ? modifiedFiles.has(err.file.replace(/\\/g, '/')) : true;
+            const inModified = modifiedFiles ? matchesModifiedFile(err.file, modifiedFiles) : true;
             if (inModified) errors.push(err); else preExistingErrors.push(err);
           }
           failedTests.push(...parsed.failedTests);
           if (result.exitCode !== 0) {
-            allOk = false;
-            if (parsed.errors.length === 0 && parsed.failedTests.length === 0) {
-              errors.push({ file: '(command)', line: 0, msg: `${command} exited ${result.exitCode}` });
+            const addedModifiedErrors = errors.length > errorsBefore || failedTests.length > failedTestsBefore;
+            const onlyUntouchedErrors = parsed.errors.length > 0 && !addedModifiedErrors;
+            if (!onlyUntouchedErrors) {
+              allOk = false;
+              if (parsed.errors.length === 0 && parsed.failedTests.length === 0) {
+                errors.push({ file: '(command)', line: 0, msg: `${command} exited ${result.exitCode}` });
+              }
+              break;
             }
-            break;
           }
         }
         // Compiler diagnostics are part of every verify: changed files when the
@@ -1765,7 +1896,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             const diagnostics = await desktop.diagnostics(workspaceId, undefined, paths);
             diagnosticsRan = true;
             for (const entry of diagnostics.diagnostics.filter((item) => item.severity === 'error').slice(0, 60)) {
-              const inModified = modifiedFiles ? modifiedFiles.has(entry.file.replace(/\\/g, '/')) : true;
+              const inModified = modifiedFiles ? matchesModifiedFile(entry.file, modifiedFiles) : true;
               if (inModified) errors.push({ file: entry.file, line: entry.line + 1, msg: entry.message });
               else preExistingErrors.push({ file: entry.file, line: entry.line + 1, msg: entry.message });
             }
@@ -1855,7 +1986,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         // The main process may background a long runner: exitCode null plus a job
         // id. That is not a failure and earns no repair receipt — the job is still
         // producing the real result, which job_control must read.
-        if (result.backgrounded || result.exitCode === null) {
+        if (result.backgrounded || (result.exitCode === null && Boolean(result.jobId))) {
           const jobId = result.jobId ?? '(unknown)';
           const detail = [
             `$ ${command}`,
@@ -1865,27 +1996,28 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           ].join('\n');
           return { ok: true, content: clip(detail) };
         }
+        const effectiveExitCode = result.exitCode === null ? (result.timedOut ? 1 : 0) : result.exitCode;
         const body = [
           `$ ${command}`,
           capCommandSection(result.stdout.trim()) || '(no stdout)',
           ...(result.stderr.trim() ? [`[stderr]\n${capCommandSection(result.stderr.trim())}`] : []),
-          `exit ${result.exitCode}`,
+          `exit ${effectiveExitCode}`,
           `ran in the opened folder · ${Date.now() - started} ms`,
           'The command ran on disk; this output is the real result.'
         ].join('\n');
-        if (result.exitCode !== 0) {
+        if (effectiveExitCode !== 0) {
           // A repair that was proposed for this exact command is refuted, not
           // replaced: the same receipt moves to healing_failed with the new exit.
           const observed = globalRepairSession.observeCommand(
             command,
-            result.exitCode,
+            effectiveExitCode,
             [result.stdout, result.stderr].filter(Boolean).join('\n')
           );
           const receipt = observed[0] ?? globalRepairSession.capture({
             source: failureSourceForCommand(command),
             target: command,
-            errorMessage: result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`,
-            exitCode: result.exitCode,
+            errorMessage: result.stderr.trim() || result.stdout.trim() || `exit ${effectiveExitCode}`,
+            exitCode: effectiveExitCode,
             stackTrace: [result.stdout, result.stderr].filter(Boolean).join('\n').slice(0, 4000),
             checkpointId: globalRepairSession.currentCheckpointId()
           });
@@ -1989,8 +2121,11 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             return { ok: true, content: 'Preview status channel is unavailable in this build. Use preview_control start to run or preview_inspect to check the pane.' };
           }
           const lines: string[] = [];
-          const currentRunId = previewRunIds.get(workspaceId);
-          if (currentRunId !== undefined) lines.push(`preview runId: ${currentRunId}`);
+          const currentRunId = runtimeStatus?.previewRunId ?? previewRunIds.get(workspaceId);
+          if (currentRunId !== undefined) {
+            previewRunIds.set(workspaceId, currentRunId);
+            lines.push(`preview runId: ${currentRunId}`);
+          }
           if (runtimeStatus) {
             lines.push(`status: ${runtimeStatus.status}`);
             if (runtimeStatus.url) lines.push(`url: ${runtimeStatus.url}`);

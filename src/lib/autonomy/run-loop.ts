@@ -22,7 +22,12 @@ import type {
   Verdict
 } from './types';
 import { ceilingReached, type CeilingStop, workUsageOf } from './budget';
-import { captureFileHashSnapshot, inferMilestoneCategory } from './milestoneVerifier';
+import {
+  captureFileHashSnapshot,
+  inferMilestoneCategory,
+  shouldSkipDiagnostics,
+  verifyToolTelemetry
+} from './milestoneVerifier';
 import { extractGoalTargetFiles } from './plan';
 import { auditRequirementCoverage, extractRequirements } from './requirements';
 import { canonicalPathKey, dedupePaths, isCaseInsensitivePlatform, normalizeRepoPath } from '../paths';
@@ -137,8 +142,10 @@ async function executeMilestoneUnit(
       : '';
     const baseFeedback = prior ? deps.feedbackFor(next, prior, lastFailures(next), next.attempts.length) : '';
     const feedbackText = [baseFeedback, heldNote].filter(Boolean).join('\n\n') || undefined;
+    const skipDiag = shouldSkipDiagnostics(next);
+    const milestoneCategory = inferMilestoneCategory(next);
     const preTurnHashes =
-      typeof deps.ports.readFile === 'function' && next.expectedFiles.length > 0
+      !skipDiag && typeof deps.ports.readFile === 'function' && next.expectedFiles.length > 0
         ? await captureFileHashSnapshot(next.expectedFiles, deps.ports.readFile)
         : undefined;
     const turn = await deps.ports.runTurn({
@@ -155,10 +162,10 @@ async function executeMilestoneUnit(
     }
     const snapshotTargets = [...new Set([...next.expectedFiles, ...(turn.touchedFiles ?? [])])];
     const postTurnHashes =
-      typeof deps.ports.readFile === 'function' && snapshotTargets.length > 0
+      !skipDiag && typeof deps.ports.readFile === 'function' && snapshotTargets.length > 0
         ? await captureFileHashSnapshot(snapshotTargets, deps.ports.readFile)
         : undefined;
-    const report = await deps.ports.verify(next, {
+    const rawReport = await deps.ports.verify(next, {
       patchesApplied: turn.patchesApplied,
       changedFiles: turn.changedFiles,
       preExistingExpectedFiles,
@@ -166,6 +173,33 @@ async function executeMilestoneUnit(
       ...(postTurnHashes ? { postTurnHashes } : {}),
       ...(turn.toolEvents ? { toolEvents: turn.toolEvents } : {})
     });
+    const telemetryCheck = skipDiag
+      ? verifyToolTelemetry(milestoneCategory, next, {
+          patchesApplied: turn.patchesApplied,
+          changedFiles: turn.changedFiles,
+          toolEvents: turn.toolEvents
+        })
+      : null;
+    const reportCommandFailed =
+      rawReport.command !== undefined &&
+      !rawReport.command.declinedReason &&
+      (rawReport.command.timedOut || rawReport.command.exitCode !== 0);
+    const report: VerificationReport =
+      skipDiag &&
+      rawReport.verdict === 'failed' &&
+      !reportCommandFailed &&
+      telemetryCheck?.ok !== false
+        ? {
+            ...rawReport,
+            verdict: 'passed',
+            diagnostics: [],
+            failureContext: undefined,
+            notes: [
+              ...rawReport.notes.filter((note) => !/error diagnostic/i.test(note)),
+              `skipped TypeScript/linter diagnostics for ${milestoneCategory} milestone.`
+            ]
+          }
+        : rawReport;
     const verdict = verdictOf(report);
     const attemptRecord: Attempt = {
       index: attempt,
@@ -568,10 +602,14 @@ export async function runAutonomous(
 
   // Workspace-wide verification gate: baseline-aware and target-scoped so pre-existing
   // unrelated repo errors never fail or roll back valid targeted work.
+  // Purely read-only/checkpoint runs with no writes skip diagnostic verification altogether.
+  const allMilestonesSkipDiagnostics =
+    state.milestones.length > 0 && state.milestones.every((m) => shouldSkipDiagnostics(m));
   if (
     state.status === 'running' &&
     userHalt(deps.ports) === null &&
     shared.endedByUser === null &&
+    !(allMilestonesSkipDiagnostics && !shared.wrote) &&
     typeof deps.ports.verifyWorkspace === 'function' &&
     state.milestones.every((m) => m.status !== 'failed' && m.status !== 'blocked')
   ) {

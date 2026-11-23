@@ -482,11 +482,16 @@ function executeCommand(command, cwd, meta = {}) {
       });
     };
 
+    let observedExitCode = null;
+    let observedSignal = null;
+    let exitDrainTimer = null;
+
     const clearTimers = () => {
       clearTimeout(ceilingTimer);
       if (idleTimer) clearTimeout(idleTimer);
       if (autoBgTimer) clearTimeout(autoBgTimer);
       if (killTimer) clearTimeout(killTimer);
+      if (exitDrainTimer) clearTimeout(exitDrainTimer);
       if (flushTimer) { clearTimeout(flushTimer); flushOutput(); }
     };
 
@@ -506,16 +511,41 @@ function executeCommand(command, cwd, meta = {}) {
       commandJobs.prune();
     };
 
-    child.stdout?.on('data', onData('stdout'));
-    child.stderr?.on('data', onData('stderr'));
-    child.once('close', (code) => {
+    const resolveExitResult = (closeCode) => {
       const timedOut = job.killedReason === 'idle' || job.killedReason === 'ceiling';
       const note = job.killedReason === 'idle'
         ? `\n[killed after ${COMMAND_IDLE_TIMEOUT_MS / 1000}s with no output]`
         : job.killedReason === 'ceiling'
           ? `\n[killed at the ${JOB_CEILING_MS / 60000}-minute job ceiling]`
           : job.killedReason === 'user' ? '\n[killed by job_control]' : '';
-      finalize(typeof code === 'number' ? code : 1, timedOut, note);
+      const rawCode = typeof closeCode === 'number'
+        ? closeCode
+        : (typeof child.exitCode === 'number' ? child.exitCode : observedExitCode);
+      // Windows cmd.exe / shell shims occasionally report `null` on close after
+      // a clean exit; only treat null as failure when signaled or explicitly killed.
+      const finalCode = typeof rawCode === 'number'
+        ? rawCode
+        : (observedSignal || job.killedReason ? 1 : 0);
+      return { finalCode, timedOut, note };
+    };
+
+    child.stdout?.on('data', onData('stdout'));
+    child.stderr?.on('data', onData('stderr'));
+    child.once('exit', (code, signal) => {
+      observedExitCode = typeof code === 'number' ? code : observedExitCode;
+      observedSignal = signal || observedSignal;
+      if (exitDrainTimer) clearTimeout(exitDrainTimer);
+      exitDrainTimer = setTimeout(() => {
+        if (job.status === 'running') {
+          const { finalCode, timedOut, note } = resolveExitResult(null);
+          finalize(finalCode, timedOut, note);
+        }
+      }, 250);
+      exitDrainTimer.unref?.();
+    });
+    child.once('close', (code) => {
+      const { finalCode, timedOut, note } = resolveExitResult(code);
+      finalize(finalCode, timedOut, note);
     });
     child.once('error', (error) => {
       const message = error && error.code === 'ENOENT'

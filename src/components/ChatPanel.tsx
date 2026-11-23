@@ -25,6 +25,7 @@ import {
   Sparkles,
   Square,
   Undo2,
+  Users,
   Wand2,
   X,
   Zap
@@ -233,15 +234,22 @@ const PERMISSION_MODES: Array<{ id: PermissionMode; label: string; hint: string;
   {
     id: 'agent',
     label: 'Agent',
-    hint: 'Full agent: may edit files and run commands you approve.',
+    hint: 'Direct single-agent loop: reads, edits, and verifies cleanly in one flow.',
     icon: Zap
+  },
+  {
+    id: 'team',
+    label: 'Team',
+    hint: 'Specialist team: explicit multi-agent coordinator and specialists.',
+    icon: Users
   }
 ];
 
 const PERMISSION_BUTTON_STYLE: Record<PermissionMode, string> = {
   ask: 'border-line bg-surface-2 text-cool hover:border-cool/40',
   plan: 'border-line bg-surface-2 text-warn hover:border-warn/40',
-  agent: 'border-line bg-surface-2 text-ink hover:border-accent-line'
+  agent: 'border-line bg-surface-2 text-ink hover:border-accent-line',
+  team: 'border-line bg-surface-2 text-accent hover:border-accent-line'
 };
 
 /**

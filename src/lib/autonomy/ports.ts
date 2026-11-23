@@ -19,6 +19,7 @@ import {
   evaluateNativeFileCheckCommand,
   inferMilestoneCategory,
   parseNativeFileCheckCommand,
+  shouldSkipDiagnostics,
   verifyToolTelemetry
 } from './milestoneVerifier';
 import type {
@@ -404,34 +405,40 @@ export async function verifyMilestone(
   const caseInsensitive = isCaseInsensitivePlatform() || isWindowsPathStyle(normalizeRelativePath(rootPath));
   const targetFiles = dedupePaths([...unit.expectedFiles, ...(unit.touchedFiles ?? [])], caseInsensitive);
 
-  try {
-    const answer = await host.getDiagnostics(targetFiles.length > 0 ? targetFiles : undefined);
-    if (answer === null) notes.push('no type checker is attached to this workspace, so nothing was actually checked.');
-    diagnostics = collectMilestoneDiagnostics(unit, answer, rootPath);
-  } catch (error) {
-    notes.push(`the type service did not answer: ${error instanceof Error ? error.message : String(error)}`);
-    diagnostics = null;
-  }
+  const category = inferMilestoneCategory(unit);
+  const skipDiagnostics = shouldSkipDiagnostics(unit);
 
-  // Zero-placeholder enforcement on written/expected source files.
-  if (targetFiles.length > 0 && typeof host.readFile === 'function') {
-    const placeholderLines: DiagnosticLine[] = [];
-    for (const file of targetFiles) {
-      try {
-        const content = await host.readFile(file);
-        if (typeof content === 'string') {
-          placeholderLines.push(...placeholderDiagnostics(file, content));
+  if (!skipDiagnostics) {
+    try {
+      const answer = await host.getDiagnostics(targetFiles.length > 0 ? targetFiles : undefined);
+      if (answer === null) notes.push('no type checker is attached to this workspace, so nothing was actually checked.');
+      diagnostics = collectMilestoneDiagnostics(unit, answer, rootPath);
+    } catch (error) {
+      notes.push(`the type service did not answer: ${error instanceof Error ? error.message : String(error)}`);
+      diagnostics = null;
+    }
+
+    // Zero-placeholder enforcement on written/expected source files.
+    if (targetFiles.length > 0 && typeof host.readFile === 'function') {
+      const placeholderLines: DiagnosticLine[] = [];
+      for (const file of targetFiles) {
+        try {
+          const content = await host.readFile(file);
+          if (typeof content === 'string') {
+            placeholderLines.push(...placeholderDiagnostics(file, content));
+          }
+        } catch {
+          /* ignore unreadable or missing files during static placeholder inspection */
         }
-      } catch {
-        /* ignore unreadable or missing files during static placeholder inspection */
+      }
+      if (placeholderLines.length > 0) {
+        diagnostics = [...(diagnostics ?? []), ...placeholderLines];
       }
     }
-    if (placeholderLines.length > 0) {
-      diagnostics = [...(diagnostics ?? []), ...placeholderLines];
-    }
+  } else {
+    diagnostics = [];
+    notes.push(`skipped TypeScript/linter diagnostics for ${category} milestone.`);
   }
-
-  const category = inferMilestoneCategory(unit);
   let command: CommandOutcome | undefined;
 
   if (unit.verifyCommand) {
@@ -498,20 +505,16 @@ export async function verifyMilestone(
   }
 
   // Deterministic read-only & checkpoint category telemetry check: never reject
-  // for zero patches when no files were expected.
-  if (category === 'read_only' || category === 'checkpoint') {
+  // for zero patches or pre-existing diagnostics when skipping diagnostic checks.
+  if (skipDiagnostics) {
     const telemetry = verifyToolTelemetry(category, unit, writes);
     if (telemetry.notes.length > 0) notes.push(...telemetry.notes);
-    if (!telemetry.ok && writes?.toolEvents && writes.toolEvents.length > 0 && telemetry.ranRelevantTool) {
+    if (commandFailed || (!telemetry.ok && writes?.toolEvents && writes.toolEvents.length > 0 && telemetry.ranRelevantTool)) {
       verdict = 'failed';
-    } else if (!hasError && !commandFailed && (telemetry.ok || commandPassed || diagnostics !== null)) {
+    } else {
       verdict = 'passed';
     }
-    const failureContext =
-      verdict === 'failed' && hasError
-        ? await buildFailureContext(errorDiagnostics, host, caseInsensitive)
-        : undefined;
-    return { verdict, diagnostics: diagnostics ?? [], command, ...(failureContext ? { failureContext } : {}), notes };
+    return { verdict, diagnostics: [], ...(command ? { command } : {}), notes };
   }
 
   const MODIFICATION_INTENT_PATTERN = /\b(update|edit|modify|refactor|fix|patch|replace|rename|remove|wire|integrate|extend|enhance|improve|style|convert|migrate)\b/i;

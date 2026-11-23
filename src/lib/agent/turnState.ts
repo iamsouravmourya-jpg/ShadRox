@@ -56,9 +56,12 @@ export interface AgentTurnState {
   addPageNudged: boolean;
   previewNudged: boolean;
   previewVerified: boolean;
+  /** Monotonic token identifying this specific turn instance for per-turn caches. */
+  turnToken: number;
 }
 
 const turns = new Map<string, AgentTurnState>();
+let nextTurnToken = 1;
 
 export function beginTurn(workspaceId: string, userAsk: string, intent: { scaffold: boolean; addPage: boolean }): AgentTurnState {
   const turn: AgentTurnState = {
@@ -80,7 +83,8 @@ export function beginTurn(workspaceId: string, userAsk: string, intent: { scaffo
     scaffoldNudged: false,
     addPageNudged: false,
     previewNudged: false,
-    previewVerified: false
+    previewVerified: false,
+    turnToken: nextTurnToken++
   };
   turns.set(workspaceId, turn);
   return turn;

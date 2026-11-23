@@ -19,6 +19,18 @@ import type { AssetMap } from '../lib/assets';
 import type { SecretItem, WorkspaceFile } from '../lib/types';
 import { usePreviewSync } from './usePreviewSync';
 
+/** Keep only entries matching the highest active previewRunId so stale run logs never bleed into context. */
+export function filterLogsForLatestPreviewRun(logs: DesktopPreviewOutput[]): DesktopPreviewOutput[] {
+  let latestRunId = 0;
+  for (const entry of logs) {
+    if (typeof entry.previewRunId === 'number' && Number.isFinite(entry.previewRunId) && entry.previewRunId > latestRunId) {
+      latestRunId = entry.previewRunId;
+    }
+  }
+  if (latestRunId <= 0) return logs;
+  return logs.filter((entry) => entry.previewRunId === latestRunId);
+}
+
 export interface UseLocalPreviewControllerOptions {
   desktop: ShadRoxDesktopAPI | null;
   desktopBridge: (ShadRoxDesktopAPI & AutomationDesktopApi) | null;
@@ -77,6 +89,8 @@ export function useLocalPreviewController({
   // does not eat the startup budget; hard deadline caps total startup time.
   const previewDeadlineRef = useRef({ soft: 0, hard: 0 });
   const previewLogFlushRef = useRef<number | null>(null);
+  const currentPreviewRunIdRef = useRef<number>(1);
+  const activeRemoteRunIdRef = useRef<number | null>(null);
 
   const localPreviewAvailable = useMemo(() => {
     return Boolean(desktop && nativeWorkspaceId && workspaceKind === 'folder');
@@ -123,6 +137,8 @@ export function useLocalPreviewController({
 
   useEffect(() => {
     previewStartAttemptRef.current += 1;
+    currentPreviewRunIdRef.current = 1;
+    activeRemoteRunIdRef.current = null;
     setLocalRuntime({ status: 'idle', url: null });
     setLocalRuntimeLogs([]);
     previewLogBufferRef.current = [];
@@ -132,6 +148,22 @@ export function useLocalPreviewController({
 
     return desktop.onPreviewOutput((output) => {
       if (output.workspaceId !== nativeWorkspaceId) return;
+      const incomingRunId = typeof output.previewRunId === 'number' && Number.isFinite(output.previewRunId)
+        ? output.previewRunId
+        : null;
+      if (incomingRunId !== null) {
+        if (activeRemoteRunIdRef.current !== null && incomingRunId < activeRemoteRunIdRef.current) {
+          return;
+        }
+        if (activeRemoteRunIdRef.current === null || incomingRunId > activeRemoteRunIdRef.current) {
+          if (activeRemoteRunIdRef.current !== null && incomingRunId > activeRemoteRunIdRef.current) {
+            previewLogBufferRef.current = [];
+            setLocalRuntimeLogs([]);
+          }
+          activeRemoteRunIdRef.current = incomingRunId;
+          currentPreviewRunIdRef.current = Math.max(currentPreviewRunIdRef.current, incomingRunId);
+        }
+      }
       queuePreviewLog(output);
       if (
         previewActiveRef.current
@@ -182,8 +214,12 @@ export function useLocalPreviewController({
         setLocalRuntime({ status: 'idle', url: null });
         return;
       }
+      currentPreviewRunIdRef.current += 1;
       previewActiveRef.current = true;
+      previewLogBufferRef.current = [];
       previewDeadlineRef.current = { soft: Date.now() + 120_000, hard: Date.now() + 600_000 };
+      setLocalRuntimeLogs([]);
+      setRuntimeError(null);
       setPreviewProjects([]);
       setLocalRuntime({ status: 'starting', url: null });
     };
@@ -224,8 +260,10 @@ export function useLocalPreviewController({
       });
       return Promise.race([request, timeout]).finally(() => window.clearTimeout(timeoutId));
     };
+    currentPreviewRunIdRef.current += 1;
     previewActiveRef.current = true;
     previewLogBufferRef.current = [];
+    setRuntimeError(null);
     setLocalRuntime({ status: 'starting', url: null });
     setLocalRuntimeLogs([]);
     setPreviewProjects([]);
@@ -303,7 +341,8 @@ export function useLocalPreviewController({
   }, [desktop, desktopBridge, nativeWorkspaceId]);
 
   const previewDiagnostics = useMemo(() => {
-    const entries = localRuntimeLogs.slice(-50).map((entry) => {
+    const latestLogs = filterLogsForLatestPreviewRun(localRuntimeLogs);
+    const entries = latestLogs.slice(-50).map((entry) => {
       const safeMessage = secrets.reduce(
         (message, secret) => secret.value ? message.split(secret.value).join('[REDACTED]') : message,
         entry.message
@@ -402,12 +441,14 @@ export function useLocalPreviewController({
   const handleDismissPreviewError = useCallback(() => setRuntimeError(null), []);
   const handleBrowserConsoleLog = useCallback(
     (entries: { type: string; message: string }[]) => {
+      const previewRunId = activeRemoteRunIdRef.current ?? currentPreviewRunIdRef.current;
       setLocalRuntimeLogs((previous) => [
         ...previous,
         ...entries.map((entry) => ({
           type: entry.type as DesktopPreviewOutput['type'],
           message: entry.message,
-          workspaceId: nativeWorkspaceId ?? ''
+          workspaceId: nativeWorkspaceId ?? '',
+          previewRunId
         }))
       ].slice(-200));
     },

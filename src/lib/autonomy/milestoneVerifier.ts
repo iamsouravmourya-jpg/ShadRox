@@ -140,7 +140,7 @@ export function normalizeVerifyPath(path: string): string {
 const CHECKPOINT_INTENT_RE = /\b(create|save|take|list|verify)?\s*checkpoint\b|\bsnapshot\b/i;
 const LEADING_READ_ONLY_VERB_RE = /^(?:verify|check|inspect|audit|analy[sz]e|read|review|list|search|outline|explore|examine|view)\b/i;
 const READ_ONLY_INTENT_RE =
-  /\b(inspect|audit|review|analyze|analyse|check\s+preview|verify\s+preview|read|list|search|save\s+memory|record\s+memory|memory\s+note|check\s+problems|diagnostics|outline|explore|examine)\b/i;
+  /\b(inspect|audit|review|analyze|analyse|check\s+preview|verify\s+preview|read|list|search|save\s+memory|record\s+memory|memory\s+note|check\s+problems|diagnostics|outline|explore|examine|view)\b/i;
 const EXPLICIT_MUTATION_VERB_RE =
   /\b(create|write|add|implement|update|edit|modify|refactor|fix|patch|replace|rename|remove|delete|wire|integrate|extend|enhance|style|convert|migrate|rewrite)\b/i;
 const MUTATION_VERB_RE =

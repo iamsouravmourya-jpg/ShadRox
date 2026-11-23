@@ -1,5 +1,5 @@
 import type { ChatTurn } from '../ai';
-import { availableToolNames, classifyToolEffect, isControlTool, isKnownTool, MAX_CALLS_PER_ROUND, runTool, summarizeCall, TOOL_DEFINITIONS, type ToolCall, type ToolOutcome } from './tools';
+import { availableToolNames, classifyToolEffect, isControlTool, isKnownTool, MAX_CALLS_PER_ROUND, resetToolTurnTracking, runTool, summarizeCall, TOOL_DEFINITIONS, type ToolCall, type ToolOutcome } from './tools';
 import type { McpToolHandle } from './mcpTools';
 import { parseToolBlocks, serializeCallKey, serializeResults, stripToolBlocks } from './toolProtocol';
 import { applyTaskUpdates, completionGuard, renderTaskPlan, type TaskPlan } from './taskPlan';
@@ -452,6 +452,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
       addPage: detectAddPageIntent(latestUserAsk)
     })
     : null;
+  if (input.workspaceId) resetToolTurnTracking(input.workspaceId);
 
   // One flight-recorder run per turn. Every boundary below lands here; the
   // recorder is fail-open, so logging can never break or block the loop.
@@ -502,6 +503,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   let stuckNudged = false;
   let budgetNoteUsed = false;
   let wrapNudgeUsed = false;
+  let emptyAfterToolsNudged = false;
   let consecutiveParseFailures = 0;
   let changedFilesTotal = 0;
   const changedPathsSet = new Set<string>();
@@ -519,7 +521,10 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   // stop reason, the resumable summary and the recorder's stop event are
   // attached even on early exits and forceFinal.
   const stamp = (result: Omit<ToolLoopResult, 'changedFiles' | 'changedPaths' | 'createdPaths' | 'stopReason' | 'resume'> & { stopReason: ToolLoopStopReason }): ToolLoopResult => {
-    if (input.workspaceId) endTurn(input.workspaceId);
+    if (input.workspaceId) {
+      endTurn(input.workspaceId);
+      resetToolTurnTracking(input.workspaceId);
+    }
     const pendingIntent = (plan.find((item) => item.status !== 'done' && item.status !== 'blocked')?.subject ?? latestUserAsk).slice(0, 300);
     const resume: ToolLoopResumeState | undefined = RESUMABLE_STOPS.has(result.stopReason)
       ? {
@@ -743,6 +748,14 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
           messages.push({ role: 'user', content: `You still have unfinished tasks in your plan (e.g. "${pending.subject}"). Continue with your tools, or call finish when everything is done.` });
           continue;
         }
+      }
+      if (!streamed.text.trim() && activity.length > 0 && !emptyAfterToolsNudged && round < maxRounds) {
+        emptyAfterToolsNudged = true;
+        messages.push({
+          role: 'user',
+          content: 'Your last response was empty. Summarize what you inspected or changed clearly, or call finish now.'
+        });
+        continue;
       }
       return stamp({ text, rounds: round, activity, capped: false, error: null, plan, stopReason: 'complete' });
     }
@@ -990,15 +1003,25 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         }
       }
       const t0 = Date.now();
-      // One batch: an MCP call and a file read in the same round run together, and
-      // an MCP call does not need an open folder.
-      const batchOutcomes = await Promise.all(
-        batch.map((call, position) =>
-          isExternal[position] && external
-            ? external.call(call)
-            : runTool(input.workspaceId as string, call)
-        )
+      const hasSequentialStep = batch.some(
+        (call, position) => isExternal[position] || classifyToolEffect(call.name) !== 'read'
       );
+      let batchOutcomes: ToolOutcome[];
+      if (hasSequentialStep) {
+        batchOutcomes = [];
+        for (let position = 0; position < batch.length; position += 1) {
+          const call = batch[position];
+          batchOutcomes.push(
+            isExternal[position] && external
+              ? await external.call(call)
+              : await runTool(input.workspaceId as string, call)
+          );
+        }
+      } else {
+        batchOutcomes = await Promise.all(
+          batch.map((call) => runTool(input.workspaceId as string, call))
+        );
+      }
       batchDurationMs = Math.max(1, Date.now() - t0);
       runnable.forEach((index, cursor) => {
         outcomes[index] = batchOutcomes[cursor];

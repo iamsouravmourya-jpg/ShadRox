@@ -399,6 +399,7 @@ export interface DesktopPreviewOutput {
   message: string;
   level?: 'log' | 'warn' | 'error';
   timestamp?: number;
+  previewRunId?: number;
 }
 
 export interface PreviewApprovalRequest {
@@ -474,6 +475,7 @@ export interface DesktopPreviewStatus {
   backendPort?: number | null;
   lastError: string | null;
   recentOutput: string;
+  previewRunId?: number;
 }
 
 export type DesktopScreenshotCapture =

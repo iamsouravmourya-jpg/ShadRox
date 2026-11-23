@@ -8,6 +8,7 @@ import {
   inferMilestoneCategory,
   parseNativeFileCheckCommand,
   sha256Hex,
+  shouldSkipDiagnostics,
   verifyToolTelemetry
 } from './milestoneVerifier';
 import { verifyMilestone, type AutonomyHost } from './ports';
@@ -227,4 +228,63 @@ test('verb-first read-only milestones classify as read_only even when expectedFi
   assert.equal(report.verdict, 'passed');
   assert.equal(report.notes.join(' ').includes('touched nothing'), false);
 });
+
+test('read_only and checkpoint milestones completely skip TS/linter diagnostics and pass immediately on files with existing errors', async () => {
+  const files = new Map<string, string>([
+    ['src/services/platformFacade.ts', 'export const broken: number = "oops"; // TODO: fix later\n']
+  ]);
+  let diagnosticsCalls = 0;
+  const host: AutonomyHost = {
+    ...makeHost(files),
+    getDiagnostics: async () => {
+      diagnosticsCalls += 1;
+      return [
+        {
+          file: '/repo/src/services/platformFacade.ts',
+          line: 0,
+          character: 13,
+          endLine: 0,
+          endCharacter: 20,
+          code: 'TS2322',
+          message: "Type 'string' is not assignable to type 'number'.",
+          severity: 'error',
+          source: 'ts'
+        }
+      ];
+    }
+  };
+
+  const readUnit = makeUnit({
+    title: 'Read and outline platformFacade.ts',
+    instruction: 'Read platformFacade.ts and inspect its exported methods',
+    expectedFiles: ['src/services/platformFacade.ts']
+  });
+  assert.equal(inferMilestoneCategory(readUnit), 'read_only');
+  assert.equal(shouldSkipDiagnostics(readUnit), true);
+
+  const report = await verifyMilestone(readUnit, host, '/repo', {
+    patchesApplied: 0,
+    changedFiles: 0,
+    toolEvents: [{ name: 'read_file', ok: true, summary: 'Read platformFacade.ts' }]
+  });
+  assert.equal(report.verdict, 'passed');
+  assert.equal(diagnosticsCalls, 0, 'getDiagnostics must not run for read_only milestones');
+  assert.deepEqual(report.diagnostics, []);
+
+  const checkpointUnit = makeUnit({
+    category: 'checkpoint',
+    title: 'Create checkpoint',
+    instruction: 'Save pre-edit snapshot',
+    expectedFiles: ['src/services/platformFacade.ts']
+  });
+  assert.equal(shouldSkipDiagnostics(checkpointUnit), true);
+  const cpReport = await verifyMilestone(checkpointUnit, host, '/repo', {
+    patchesApplied: 0,
+    toolEvents: [{ name: 'checkpoint', ok: true }]
+  });
+  assert.equal(cpReport.verdict, 'passed');
+  assert.equal(diagnosticsCalls, 0, 'getDiagnostics must not run for checkpoint milestones');
+  assert.deepEqual(cpReport.diagnostics, []);
+});
+
 

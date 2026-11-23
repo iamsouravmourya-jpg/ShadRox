@@ -416,29 +416,37 @@ export function useContextBuilder({
       }
 
       if (mode.writesFiles) {
-        core.push(
-          'FILE EDIT PROTOCOL:',
-          '- Decide which file to change from the user request and the real file names listed below. Never invent a path.',
-          '- EDITING A FILE THAT EXISTS: use SEARCH/REPLACE blocks. Never restate the whole file — a partial restatement deletes the rest of it:',
-          '```path=src/App.tsx',
-          '<<<<<<< ORIGINAL',
-          '// the exact lines being replaced, copied verbatim from the file',
-          '=======',
-          '// the replacement lines',
-          '>>>>>>> UPDATED',
-          '```',
-          '- Each ORIGINAL must match the file exactly (same whitespace) and must be unique. Blocks that match several places are rejected, so include enough surrounding lines.',
-          '- Several blocks are allowed per file; put them in one fenced block in file order.',
-          '- CREATING A NEW FILE (or the user explicitly asks to rewrite it): output a fenced block whose info line names the exact path, with the COMPLETE file content in the body:',
-          '```tsx path=src/App.tsx',
-          '// full file contents, nothing omitted',
-          '```',
-          '- Never write partial snippets, comments like "// rest unchanged", or placeholders inside a path= block.',
-          '- Always write the file name in the fence line. This is how changes reach the editor and the disk.',
-          '- Briefly explain changes before outputting code blocks.'
-        );
-        if (nativeWorkspaceId) {
-          core.push('- Prefer structured workspace tools (`write_file`, `edit_file`, `apply_patch`, `verify`, `preview_control`) over large inline code fences, and verify before calling `finish`.');
+        if (nativeWorkspaceId && useNativeTools) {
+          core.push(
+            'FILE EDIT PROTOCOL:',
+            '- Choose real files from the workspace; never invent paths or leave placeholders (`// ...`, `TODO`).',
+            '- Use `read_file` (with `startLine`/`endLine` on >300-line files), `edit_file` / `apply_patch` / `write_file`, `verify`, and `preview_control` before calling `finish`.'
+          );
+        } else {
+          core.push(
+            'FILE EDIT PROTOCOL:',
+            '- Decide which file to change from the user request and the real file names listed below. Never invent a path.',
+            '- EDITING A FILE THAT EXISTS: use SEARCH/REPLACE blocks. Never restate the whole file — a partial restatement deletes the rest of it:',
+            '```path=src/App.tsx',
+            '<<<<<<< ORIGINAL',
+            '// the exact lines being replaced, copied verbatim from the file',
+            '=======',
+            '// the replacement lines',
+            '>>>>>>> UPDATED',
+            '```',
+            '- Each ORIGINAL must match the file exactly (same whitespace) and must be unique. Blocks that match several places are rejected, so include enough surrounding lines.',
+            '- Several blocks are allowed per file; put them in one fenced block in file order.',
+            '- CREATING A NEW FILE (or the user explicitly asks to rewrite it): output a fenced block whose info line names the exact path, with the COMPLETE file content in the body:',
+            '```tsx path=src/App.tsx',
+            '// full file contents, nothing omitted',
+            '```',
+            '- Never write partial snippets, comments like "// rest unchanged", or placeholders inside a path= block.',
+            '- Always write the file name in the fence line. This is how changes reach the editor and the disk.',
+            '- Briefly explain changes before outputting code blocks.'
+          );
+          if (nativeWorkspaceId) {
+            core.push('- Prefer structured workspace tools (`write_file`, `edit_file`, `apply_patch`, `verify`, `preview_control`) over large inline code fences, and verify before calling `finish`.');
+          }
         }
         if (pathOnly > 0) {
           core.push(nativeWorkspaceId

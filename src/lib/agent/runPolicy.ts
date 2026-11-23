@@ -1,4 +1,4 @@
-export type PermissionMode = 'ask' | 'plan' | 'agent';
+export type PermissionMode = 'ask' | 'plan' | 'agent' | 'team';
 
 export type ToolEffect = 'read' | 'write' | 'execute' | 'external' | 'control';
 
@@ -16,7 +16,7 @@ export interface RunPolicy {
 
 export function allowsEffect(mode: PermissionMode, effect: ToolEffect): boolean {
   if (effect === 'control' || effect === 'read') return true;
-  return mode === 'agent';
+  return mode === 'agent' || mode === 'team';
 }
 
 export type ApplyHold = 'none' | 'auto-apply-off' | 'plan-approval' | 'permission-mode';
@@ -40,5 +40,5 @@ export function holdReplyApply(input: {
 }
 
 export function normalizePermissionMode(value: unknown): PermissionMode {
-  return value === 'plan' || value === 'agent' ? value : 'ask';
+  return value === 'plan' || value === 'agent' || value === 'team' ? value : 'ask';
 }

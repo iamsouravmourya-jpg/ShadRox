@@ -1,13 +1,18 @@
+import type { PermissionMode } from './agent/runPolicy';
+
 /**
- * Decides whether a typed request should stay a normal chat turn or be handed
- * to the autonomous run / agent-team engines. It is deliberately deterministic:
- * an extra model round-trip just to classify a prompt would add cost and latency
- * to every message, and the signals below are the ones that actually distinguish
- * a multi-step, multi-area job from a question or a one-file edit.
+ * Decides whether a typed request runs in the direct single-agent tool loop
+ * ('chat'), the autonomous milestone runner ('autonomy'), or the specialist
+ * team ('team').
  *
- * The decision is advisory. The caller still gates on key, workspace, quota and
- * budget, and the chat shows the returned reason so an escalation is never
- * silent.
+ * Strict mode routing contract:
+ *  - Specialist Team ('team') runs ONLY when the user explicitly selected Team mode.
+ *    Prompt keywords ("team", "agent", "full-stack") or multi-area asks NEVER
+ *    auto-escalate an Agent turn into Specialist Team.
+ *  - Agent mode ('permissionMode === "agent"' / 'mode === "code"') ALWAYS runs in
+ *    the fast, direct single-agent loop (Read -> Plan/Edit -> Scoped Verify).
+ *  - Only explicit complex refinement ('mode === "complex"') escalates broad multi-step
+ *    edits to the autonomous milestone runner.
  */
 
 export type OrchestrationKind = 'chat' | 'autonomy' | 'team';
@@ -15,7 +20,9 @@ export type OrchestrationKind = 'chat' | 'autonomy' | 'team';
 export interface OrchestrationInput {
   prompt: string;
   mode: 'code' | 'plan' | 'complex';
-  /** Files currently known to the workspace; a tiny workspace rarely needs a team. */
+  /** Active permission mode chosen by the user ('ask' | 'plan' | 'agent' | 'team'). */
+  permissionMode?: PermissionMode;
+  /** Files currently known to the workspace. */
   workspaceFileCount: number;
   hasKey: boolean;
   /** Desktop shell plus an open folder: the engines cannot write without both. */
@@ -26,12 +33,10 @@ export interface OrchestrationInput {
 
 export interface OrchestrationDecision {
   kind: OrchestrationKind;
-  /** Why this kind was chosen. Empty for a normal chat turn. */
+  /** Why this kind was chosen. Empty for a direct single-agent turn. */
   reason: string;
 }
 
-const TEAM_WORDS =
-  /\b(team|agents?|multi[-\s]?agent|frontend.{0,40}backend|backend.{0,40}frontend|full[-\s]?stack|end[-\s]?to[-\s]?end|coordinator|specialists?)\b/i;
 const AREA_WORDS: Array<[string, RegExp]> = [
   ['frontend', /\bfront[-\s]?end\b/i],
   ['backend', /\bback[-\s]?end\b/i],
@@ -49,8 +54,6 @@ const NO_EDIT = /\b(just (?:answer|explain|tell)|don'?t (?:edit|change|modify|to
 const BROAD_SCOPE = /\b(across|every|all|whole|entire|project[-\s]?wide|codebase|multiple files|monolith|decompose|audit\s+report)\b/i;
 const EXPLICIT_PATH_COUNT_RE =
   /(?:^|[\s`'"(\[,])((?:\.\.?\/)?(?:[a-zA-Z0-9._-]+\/)+[a-zA-Z0-9._-]+\.[a-zA-Z0-9]{1,10})(?=$|[\s`'")\],:;?!])/g;
-const CROSS_CUTTING_RE =
-  /\b(?:decompose|modulariz\w+|monolith|security\s+hardening|version\s+bump|cross[-\s]?cutting|workstream|subsystem|architecture\s+upgrade|audit\s+fix)\b/i;
 
 function areasIn(prompt: string): string[] {
   return AREA_WORDS.filter(([, pattern]) => pattern.test(prompt)).map(([name]) => name);
@@ -78,13 +81,25 @@ export function decideOrchestration(input: OrchestrationInput): OrchestrationDec
   const prompt = input.prompt.trim();
 
   if (input.busy || !input.hasKey || !input.canRun) return chat();
-  // Plan mode is read-only by contract; handing it to an engine that writes
-  // files would break the one promise that mode makes.
-  if (input.mode === 'plan') return chat();
+  // Ask and Plan modes are strictly read-only — never route them into Team or Autonomy.
+  if (input.mode === 'plan' || input.permissionMode === 'ask' || input.permissionMode === 'plan') return chat();
   if (prompt.length < 40) return chat();
   if (NO_EDIT.test(prompt)) return chat();
-  // A pure question stays a question even when it is long.
   if (QUESTION_START.test(prompt) && !ACTION.test(prompt)) return chat();
+
+  // Specialist Team runs ONLY when the user explicitly selected Team mode.
+  if (input.permissionMode === 'team') {
+    return {
+      kind: 'team',
+      reason: 'Team mode selected: coordinator and specialist agents will handle this task.'
+    };
+  }
+
+  // Agent mode ('code' refine mode or explicit 'agent' permission mode) ALWAYS stays in the
+  // direct single-agent loop (Read -> Plan/Edit -> Scoped Verify) — never auto-escalating.
+  if (input.mode !== 'complex') {
+    return chat();
+  }
 
   const words = prompt.split(/\s+/).length;
   const areas = areasIn(prompt);
@@ -92,48 +107,15 @@ export function decideOrchestration(input: OrchestrationInput): OrchestrationDec
   const explicitPaths = explicitPathCount(prompt);
   const structuredItems = structuredItemCount(prompt);
   const broad = BROAD_SCOPE.test(prompt) || explicitPaths >= 4 || structuredItems >= 4;
-  const crossCutting = CROSS_CUTTING_RE.test(prompt) || explicitPaths >= 6 || structuredItems >= 5;
-  const explicitTeam = TEAM_WORDS.test(prompt);
-
-  // UI-only areas (frontend, UI) describe a single domain. A prompt whose every
-  // detected area is UI/frontend is a single-component UI task — it stays in
-  // single-agent (chat/autonomy) mode and is never handed to a 5-role team
-  // that would spin up unnecessary backend/database/auth specialists.
   const UI_ONLY_AREAS = new Set(['frontend', 'UI']);
   const hasNonUiArea = areas.some((a) => !UI_ONLY_AREAS.has(a));
-  const uiOnly = areas.length > 0 && !hasNonUiArea;
-
-  // Multi-area or multi-file requests escalate even when the prompt is short:
-  // "login add karo aur dashboard bhi" touches auth + UI + files, which is
-  // real multi-area work even in Hindi/Hinglish.
   const multiAreaOrMultiFile = (areas.length >= 2 && hasNonUiArea) || explicitPaths >= 2;
+  const substantive = words >= 8 || broad || multiAreaOrMultiFile;
 
-  // Explicit team wording always goes to the team. Otherwise, multi-area work
-  // goes to the team ONLY when it is not a cross-cutting mega-refactor spanning
-  // 6+ files or 5+ numbered/bulleted workstreams (which autonomous runs handle
-  // cleanly without 4-role ownership collisions). UI-only prompts never form a
-  // team — there are no backend/database tasks to distribute.
-  const wantsTeam = explicitTeam || (action && areas.length >= 3 && hasNonUiArea && words >= 18 && !crossCutting && !uiOnly);
-  if (wantsTeam) {
-    return {
-      kind: 'team',
-      reason:
-        areas.length >= 2
-          ? `Auto: this spans ${areas.join(', ')}, so a coordinator and specialists will split it.`
-          : 'Auto: this needs coordinated specialists, so a coordinator will split the work.'
-    };
-  }
-
-  // A one-liner edit ("fix this", "add a button") is chat; the engines are for
-  // work with enough moving parts that planning and verification pay for themselves.
-  // Multi-area or multi-file work is substantive even at lower word counts.
-  const substantive = input.mode === 'complex'
-    ? words >= 8
-    : words >= 28 || broad || multiAreaOrMultiFile;
-  if (action && substantive && (broad || multiAreaOrMultiFile || input.workspaceFileCount >= 8 || input.mode === 'complex')) {
+  if (action && substantive) {
     return {
       kind: 'autonomy',
-      reason: 'Auto: multi-step change with real files to touch, so it will plan, edit and verify milestones.'
+      reason: 'Auto: complex multi-step change with real files to touch, so it will plan, edit and verify milestones.'
     };
   }
 

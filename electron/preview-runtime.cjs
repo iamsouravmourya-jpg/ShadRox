@@ -723,6 +723,18 @@ function createPreviewRuntime({
   const backendProcesses = new Map();
   // Bounded per-workspace status and recent ANSI-stripped output for preview_control status.
   const statusStates = new Map();
+  const previewRunIds = new Map();
+  let inspectHandle = null;
+
+  function currentRunId(workspaceId) {
+    return previewRunIds.get(workspaceId) ?? 1;
+  }
+
+  function bumpPreviewRunId(workspaceId) {
+    const next = (previewRunIds.get(workspaceId) ?? 0) + 1;
+    previewRunIds.set(workspaceId, next);
+    return next;
+  }
 
   function recordStatus(workspaceId, type, message, extra = null) {
     if (typeof workspaceId !== 'string' || !workspaceId) return;
@@ -733,7 +745,8 @@ function createPreviewRuntime({
       script: null,
       hmr: false,
       lastError: null,
-      recentOutput: ''
+      recentOutput: '',
+      previewRunId: currentRunId(workspaceId)
     };
     const clean = String(message ?? '').replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
     const combined = clean ? `${prev.recentOutput}${prev.recentOutput && !prev.recentOutput.endsWith('\n') ? '\n' : ''}${clean}`.slice(-6000) : prev.recentOutput;
@@ -786,13 +799,14 @@ function createPreviewRuntime({
 
   function emit(workspaceId, type, message, extra = null) {
     const text = String(message);
+    const previewRunId = currentRunId(workspaceId);
     recordStatus(workspaceId, type, text, extra);
     if (type === 'stdout' || type === 'stderr') {
-      queueOutput(`${workspaceId}:out:${type}`, onOutput, { workspaceId, type, message: text });
+      queueOutput(`${workspaceId}:out:${type}`, onOutput, { workspaceId, type, message: text, previewRunId });
       return;
     }
     flushOutput();
-    onOutput({ workspaceId, type, message: text });
+    onOutput({ workspaceId, type, message: text, previewRunId });
   }
 
   function emitBackend(workspaceId, type, message) {
@@ -881,6 +895,18 @@ function createPreviewRuntime({
     // Only the frontend preview being replaced is stopped here; a backend
     // preview belongs to its own lifecycle and to preview:stop.
     await stopFrontend(workspaceId);
+    const runId = bumpPreviewRunId(workspaceId);
+    statusStates.set(workspaceId, {
+      status: 'starting',
+      url: null,
+      port: null,
+      script: null,
+      hmr: false,
+      lastError: null,
+      recentOutput: '',
+      previewRunId: runId
+    });
+    inspectHandle?.resetWorkspaceBuffers?.(workspaceId, runId);
     const realRoot = await fs.realpath(root);
     const entry = path.join(realRoot, 'index.html');
     const entryStat = await fs.stat(entry).catch(() => null);
@@ -1024,6 +1050,20 @@ function createPreviewRuntime({
       throw new Error('A valid folder workspace is required to start local preview.');
     }
     await stopFrontend(workspaceId);
+    if (retryCount === 0) {
+      const runId = bumpPreviewRunId(workspaceId);
+      statusStates.set(workspaceId, {
+        status: 'starting',
+        url: null,
+        port: null,
+        script: null,
+        hmr: false,
+        lastError: null,
+        recentOutput: '',
+        previewRunId: runId
+      });
+      inspectHandle?.resetWorkspaceBuffers?.(workspaceId, runId);
+    }
 
     const project = await findPreviewProject(root);
     if (approvedManifestHash && project.manifestHash !== approvedManifestHash) {
@@ -1510,7 +1550,7 @@ function createPreviewRuntime({
     const electron = require('electron');
     if (electron && electron.ipcMain) {
       const { registerPreviewInspect } = require('./preview-inspect.cjs');
-      registerPreviewInspect({
+      inspectHandle = registerPreviewInspect({
         ipcMain: electron.ipcMain,
         app: electron.app,
         BrowserWindow: electron.BrowserWindow,
@@ -1541,7 +1581,8 @@ function createPreviewRuntime({
       backendUrl,
       backendPort: backendUrl ? portOfUrl(backendUrl) : null,
       lastError: state?.lastError ?? null,
-      recentOutput: state?.recentOutput ?? ''
+      recentOutput: state?.recentOutput ?? '',
+      previewRunId: state?.previewRunId ?? currentRunId(workspaceId)
     };
   }
 
