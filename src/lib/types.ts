@@ -119,6 +119,8 @@ export interface ChatMessage {
   finishedWith?: { summary: string; blocked: string | null };
   /** Provider reasoning stream (Gemini thoughts / Groq reasoning models). */
   reasoning?: string;
+  /** Total duration in milliseconds for this agent turn. */
+  durationMs?: number;
   /** Latency and token usage reported by the streaming endpoint. */
   metrics?: {
     tokens: number;

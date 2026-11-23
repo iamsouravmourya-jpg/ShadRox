@@ -1148,7 +1148,7 @@ export function ChatPanel({
                 )}
 
                 {message.reasoning && (
-                  <ThinkingTrace reasoning={message.reasoning} streaming={message.streaming} />
+                  <ThinkingTrace reasoning={message.reasoning} streaming={message.streaming} durationMs={message.durationMs} />
                 )}
 
                 {(() => {

@@ -268,36 +268,33 @@ export function OrchestrationCard({
   );
 }
 
-export function ThinkingTrace({ reasoning, streaming }: { reasoning: string; streaming?: boolean }) {
-  const [open, setOpen] = useState(Boolean(streaming));
+export function ThinkingTrace({ reasoning, streaming, durationMs }: { reasoning: string; streaming?: boolean; durationMs?: number }) {
+  const [open, setOpen] = useState(false);
   const wordCount = useMemo(() => reasoning.trim().split(/\s+/).filter(Boolean).length, [reasoning]);
-
-  useEffect(() => {
-    if (!streaming) setOpen(false);
-  }, [streaming]);
+  const seconds = durationMs ? (durationMs / 1000).toFixed(1) : null;
 
   return (
-    <div className="mb-3 rounded-r-xl border-l-2 border-accent-line bg-surface-2/70 px-3 py-2 text-[11px]">
+    <div className="mb-3 rounded-xl border border-line bg-surface-2/80 px-3.5 py-2.5 text-[11px] shadow-xs">
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         className="flex w-full cursor-pointer items-center justify-between gap-2 text-left"
       >
-        <div className="flex min-w-0 items-center gap-1.5">
+        <div className="flex min-w-0 items-center gap-2">
           <Brain className="h-3.5 w-3.5 shrink-0 text-accent" />
-          <span className="text-[11.5px] font-medium text-ink">
-            {streaming ? 'Thinking…' : 'Thought process'}
+          <span className="text-[11.5px] font-semibold text-ink">
+            {streaming ? 'Thinking & Progress…' : `Thought & worked${seconds ? ` for ${seconds}s` : ''} (${wordCount} words)`}
           </span>
-          <span className="font-mono tabular-nums text-[10px] text-ink-4">
-            {wordCount} words
-          </span>
-          {streaming && <Loader2 className="ml-1 h-3 w-3 animate-spin text-accent" />}
+          {streaming && <Loader2 className="h-3 w-3 animate-spin text-accent" />}
         </div>
-        <ChevronRight className={`h-3.5 w-3.5 text-ink-4 transition-transform ${open ? 'rotate-90' : ''}`} />
+        <div className="flex items-center gap-1.5 font-mono text-[10px] text-ink-4">
+          <span>{open ? 'Hide' : 'Show details'}</span>
+          <ChevronRight className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-90' : ''}`} />
+        </div>
       </button>
 
       {open && (
-        <div className="mt-2 max-h-56 overflow-y-auto whitespace-pre-wrap break-words border-t border-line pt-2 font-mono text-[10.5px] leading-relaxed text-ink-2">
+        <div className="mt-2.5 max-h-64 overflow-y-auto whitespace-pre-wrap break-words border-t border-line pt-2.5 font-mono text-[10.5px] leading-relaxed text-ink-2">
           {reasoning}
         </div>
       )}

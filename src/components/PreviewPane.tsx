@@ -394,7 +394,7 @@ export const PreviewPane = memo(function PreviewPane({
   const previewSurface = (
     <div className="@container flex-1 min-h-0 flex flex-col bg-base">
       {/* Top Navigation & Controls Toolbar */}
-      <div className="h-10 shrink-0 flex items-center justify-between px-3 border-b border-line bg-base/50 gap-2">
+      <div className={`h-10 shrink-0 flex items-center justify-between px-3 border-b border-line bg-base/50 gap-2 ${fullscreen ? 'pr-36 lg:pr-40' : ''}`}>
         {/* Left: Stack info and live address bar */}
         <div className="flex items-center gap-2 min-w-0 flex-1 max-w-lg">
           <span className="flex items-center gap-1.5 text-[11px] font-mono text-ink-3 truncate shrink-0">
