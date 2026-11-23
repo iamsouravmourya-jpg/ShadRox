@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allowsEffect, holdReplyApply, normalizePermissionMode, type ApplyHold, type ToolEffect } from './runPolicy';
+import {
+  allowsEffect,
+  holdReplyApply,
+  normalizePermissionMode,
+  shouldGatePlanApproval,
+  type ApplyHold,
+  type ToolEffect
+} from './runPolicy';
 
 const EFFECTS: ToolEffect[] = ['read', 'write', 'execute', 'external', 'control'];
 
@@ -95,3 +102,12 @@ test('only an agent or team turn with auto-apply and no plan gate writes by itse
     'none'
   );
 });
+
+test('shouldGatePlanApproval never gates agent or team turns, even with many steps and files', () => {
+  assert.equal(shouldGatePlanApproval('agent', 12, 8), false);
+  assert.equal(shouldGatePlanApproval('team', 12, 8), false);
+  assert.equal(shouldGatePlanApproval('ask', 3, 1), true);
+  assert.equal(shouldGatePlanApproval('plan', 1, 2), true);
+  assert.equal(shouldGatePlanApproval('ask', 2, 1), false);
+});
+

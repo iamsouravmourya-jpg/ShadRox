@@ -39,6 +39,11 @@ export function holdReplyApply(input: {
   return 'none';
 }
 
+export function shouldGatePlanApproval(permissionMode: PermissionMode, stepCount: number, fileCount: number): boolean {
+  if (allowsEffect(permissionMode, 'write')) return false;
+  return stepCount > 2 || fileCount > 1;
+}
+
 export function normalizePermissionMode(value: unknown): PermissionMode {
   return value === 'plan' || value === 'agent' || value === 'team' ? value : 'ask';
 }

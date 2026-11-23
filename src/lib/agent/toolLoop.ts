@@ -188,6 +188,8 @@ export interface ToolLoopInput {
   initialRequirements?: string[];
   /** When true, intercepts zero-write completion or finish once with MUTATION_REQUIRED_NUDGE. */
   requireFileMutation?: boolean;
+  /** True when the opened workspace already contains an existing project on disk. */
+  existingWorkspace?: boolean;
 }
 
 /* ------------------------------------------------------------------ *
@@ -318,8 +320,13 @@ function createProgressTracker() {
           if (previous !== undefined && previous !== exit) signals.push(`command exit ${previous} -> ${exit}`);
           commandExits.set(command, exit);
         }
-      } else if (classifyToolEffect(call.name) === 'write' && path) {
-        signals.push(`mutation landed: ${path}`);
+      } else if (classifyToolEffect(call.name) === 'write') {
+        const targets = outcome.changedPaths && outcome.changedPaths.length > 0
+          ? outcome.changedPaths.map((entry) => normalizePath(entry) ?? entry)
+          : writePathsOf(call);
+        for (const target of targets) {
+          signals.push(`mutation landed: ${target}`);
+        }
       }
     }
     for (const item of plan) {
@@ -448,7 +455,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   // It pushes NO messages — the transcript the model sees is unchanged.
   const turn = input.workspaceId
     ? beginTurn(input.workspaceId, latestUserAsk, {
-      scaffold: detectScaffoldIntent(latestUserAsk),
+      scaffold: detectScaffoldIntent(latestUserAsk, { existingWorkspace: input.existingWorkspace }),
       addPage: detectAddPageIntent(latestUserAsk)
     })
     : null;

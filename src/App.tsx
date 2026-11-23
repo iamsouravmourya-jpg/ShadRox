@@ -277,13 +277,24 @@ export default function App() {
         /* ignore */
       }
     }
+    let previewStatus = localPreview.localRuntime.status;
+    if (previewStatus !== 'ready' && desktop && nativeWorkspaceId && typeof desktop.getPreviewStatus === 'function') {
+      try {
+        const livePreview = await desktop.getPreviewStatus(nativeWorkspaceId);
+        if (livePreview?.status === 'ready' || livePreview?.status === 'starting') {
+          previewStatus = livePreview.status;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
     const termSummary = terminalStateManager.getSummary();
     const filePaths = workspace.workspace?.diskFileTree?.map((entry) => entry.path) ?? workspace.files.map((file) => file.name);
     return buildWorkspaceToolContext({
       workspaceOpen: Boolean(nativeWorkspaceId && workspace.workspace?.kind === 'folder'),
       filePaths,
       debugStatus: debug.state.status,
-      previewStatus: localPreview.localRuntime.status,
+      previewStatus,
       activeJobCount,
       terminalAwaitingInput: termSummary.awaitingInput,
       hasActiveTerminal: terminalStateManager.getSessionIds().length > 0,

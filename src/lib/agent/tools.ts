@@ -134,7 +134,7 @@ function identicalFailureHint(workspaceId: string, call: ToolCall): string | nul
   const count = peekIdenticalFailureCount(workspaceId, call);
   if (count < MAX_IDENTICAL_FAILURES) return null;
   const path = asString(call.args.path) ?? '';
-  return `The same ${call.name} call has already failed ${count} times this turn on ${path || '(unknown)'}. Stop retrying identical arguments — re-read the exact startLine/endLine range with read_file, adjust your snippet, or use write_file to rewrite the file cleanly.`;
+  return `The same ${call.name} call has already failed ${count} times this turn on ${path || '(unknown)'}. Stop retrying identical arguments — re-read the exact start_line/end_line range with read_file, adjust your snippet, or use write_file to rewrite the file cleanly.`;
 }
 
 function storeFallbackBackup(workspaceId: string, path: string, content: string): string {
@@ -1307,7 +1307,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           const header = `[File: ${normalized} | Total lines: ${totalLines} | Showing lines 1-${cap}]`;
           const bottomStart = Math.max(251, totalLines - 100);
           const guidance = totalLines > 300
-            ? `\nFile has ${totalLines} lines (>300). Showing lines 1-${cap}. Use read_file with startLine/endLine (for example startLine: ${bottomStart}, endLine: ${totalLines}) or search_text before editing.`
+            ? `\nFile has ${totalLines} lines (>300). Showing lines 1-${cap}. Use read_file with start_line/end_line (for example start_line: ${bottomStart}, end_line: ${totalLines}) or search_text before editing.`
             : '';
           return { ok: true, content: clip(`${header}\n${slice}${guidance}`) };
         }
@@ -1320,7 +1320,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         const slice = lines.slice(from - 1, to).map((line, index) => `${from + index}| ${line}`).join('\n');
         const header = `[File: ${normalized} | Total lines: ${totalLines} | Showing lines ${from}-${to}]`;
         const truncationHint = truncated && totalLines > 300
-          ? '\nPartial slice shown. Use read_file with startLine/endLine or search_text to inspect the rest of the file before editing.'
+          ? '\nPartial slice shown. Use read_file with start_line/end_line or search_text to inspect the rest of the file before editing.'
           : '';
         return { ok: true, content: clip(`${header}\n${slice}${truncationHint}`) };
       }
@@ -1827,7 +1827,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         } catch {
           /* root listing unavailable — plan from package.json alone */
         }
-        const plan = planVerification({ packageJson, rootEntries });
+        const plan = planVerification({ packageJson, rootEntries }, { nonInteractive: true });
         const errors: VerifyError[] = [];           // errors in modified files → fail verify
         const preExistingErrors: VerifyError[] = []; // errors in untouched files → warning only
         const failedTests: string[] = [];
@@ -1866,7 +1866,10 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             result = { ...result, exitCode: result.timedOut ? 1 : 0 };
           }
           commandsRun.push(command);
-          const parsed = parseVerifyOutput([result.stdout, result.stderr].filter(Boolean).join('\n'));
+          const parsed = parseVerifyOutput(
+            [result.stdout, result.stderr].filter(Boolean).join('\n'),
+            { modifiedFiles: modifiedFiles ?? undefined }
+          );
           const errorsBefore = errors.length;
           const failedTestsBefore = failedTests.length;
           for (const err of parsed.errors) {
@@ -1895,11 +1898,20 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             const paths = turn && turn.changed.size > 0 ? [...turn.changed] : undefined;
             const diagnostics = await desktop.diagnostics(workspaceId, undefined, paths);
             diagnosticsRan = true;
-            for (const entry of diagnostics.diagnostics.filter((item) => item.severity === 'error').slice(0, 60)) {
+            const errorEntries = diagnostics.diagnostics.filter((item) => item.severity === 'error');
+            const modifiedDiagErrors: VerifyError[] = [];
+            const untouchedDiagErrors: VerifyError[] = [];
+            for (const entry of errorEntries) {
+              const converted = { file: entry.file, line: entry.line + 1, msg: entry.message };
               const inModified = modifiedFiles ? matchesModifiedFile(entry.file, modifiedFiles) : true;
-              if (inModified) errors.push({ file: entry.file, line: entry.line + 1, msg: entry.message });
-              else preExistingErrors.push({ file: entry.file, line: entry.line + 1, msg: entry.message });
+              if (inModified) {
+                if (modifiedDiagErrors.length < 60) modifiedDiagErrors.push(converted);
+              } else if (untouchedDiagErrors.length < 60) {
+                untouchedDiagErrors.push(converted);
+              }
             }
+            errors.push(...modifiedDiagErrors);
+            preExistingErrors.push(...untouchedDiagErrors);
           } catch {
             /* diagnostics unavailable — command results still count */
           }

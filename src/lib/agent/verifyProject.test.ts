@@ -130,3 +130,36 @@ test('formatVerifyReport omits raw internal agent directives when includeAgentDi
   assert.match(failed, /verify: FAILED/);
   assert.doesNotMatch(failed, /run verify again before finishing/);
 });
+
+test('nonInteractive planVerification converts watch-mode vitest/jest to single-run commands while leaving explicit run intact', () => {
+  const vitestWatch = planVerification(
+    { packageJson: pkg({ typecheck: 'tsc --noEmit', test: 'vitest' }), rootEntries: [] },
+    { nonInteractive: true }
+  );
+  assert.deepEqual(vitestWatch.commands, ['npm run typecheck', 'npm run test -- --run']);
+
+  const vitestRun = planVerification(
+    { packageJson: pkg({ test: 'vitest run' }), rootEntries: [] },
+    { nonInteractive: true }
+  );
+  assert.deepEqual(vitestRun.commands, ['npm run test']);
+
+  const pnpmJestWatch = planVerification(
+    { packageJson: pkg({ test: 'jest --watch' }), rootEntries: ['pnpm-lock.yaml'] },
+    { nonInteractive: true }
+  );
+  assert.deepEqual(pnpmJestWatch.commands, ['pnpm run test --watchAll=false']);
+});
+
+test('parseVerifyOutput prioritizes modifiedFiles errors even after 65+ pre-existing untouched errors', () => {
+  const preExisting = Array.from(
+    { length: 65 },
+    (_, idx) => `src/legacy-${idx}.ts(${idx + 1},1): error TS2322: Old error ${idx}.`
+  );
+  const output = [...preExisting, "src/edited.ts(14,2): error TS2304: Cannot find name 'streak'."].join('\n');
+  const parsed = parseVerifyOutput(output, { modifiedFiles: new Set(['src/edited.ts']) });
+  assert.ok(
+    parsed.errors.some((err) => err.file === 'src/edited.ts' && err.line === 14),
+    'modified-file error must never be dropped behind 60 untouched errors'
+  );
+});

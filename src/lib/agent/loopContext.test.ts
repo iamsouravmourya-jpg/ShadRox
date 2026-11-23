@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { ChatTurn } from '../ai';
 import { serializeResults } from './toolProtocol';
 import {
-  compactToolObservations, computeLoopContextBudgetChars, summarizeObservation, isToolObservation, transcriptChars,
+  compactToolObservations, computeLoopContextBudgetChars, summarizeAssistantToolPayload, summarizeObservation, isToolObservation, transcriptChars,
   upsertWorkingMemory, WORKING_MEMORY_HEADER,
   LOOP_CONTEXT_BUDGET_CHARS, MIN_LOOP_CONTEXT_BUDGET_CHARS, COMPACT_TRIGGER_SHARE, KEEP_RECENT_OBSERVATIONS,
   CAP_RECENT_OBSERVATION_CHARS
@@ -103,4 +103,37 @@ test('upsertWorkingMemory pins right after the first user turn and is never comp
   assert.ok(pinned, 'working memory survives compaction');
   assert.match(pinned.content, /api\/ai\/_endpoint\.ts/);
   assert.match(pinned.content, /lines 1-200 of 1200/);
+});
+
+test('summarizeAssistantToolPayload and compactToolObservations shrink older write_file and apply_patch turns while keeping newest four verbatim', () => {
+  const largeCode = 'export const line = "abcdef";\n'.repeat(30);
+  const direct = summarizeAssistantToolPayload(
+    'Applying file.\n```shadrox:tools\n' +
+    JSON.stringify([
+      { name: 'write_file', args: { path: 'src/Quiz.tsx', content: largeCode } },
+      { name: 'apply_patch', args: { patches: [{ path: 'server.ts', old: largeCode, new: largeCode }] } }
+    ]) +
+    '\n```'
+  );
+  assert.match(direct, /^Applying file\./);
+  assert.match(direct, /\[compacted write_file content:/);
+  assert.match(direct, /\[compacted old:/);
+  assert.match(direct, /\[compacted new:/);
+
+  const messages: ChatTurn[] = [{ role: 'user', content: 'implement feature' }];
+  const assistantIndices: number[] = [];
+  for (let i = 0; i < 6; i += 1) {
+    assistantIndices.push(messages.length);
+    messages.push({
+      role: 'assistant',
+      content: '```shadrox:tools\n' + JSON.stringify([{ name: 'write_file', args: { path: `src/f${i}.ts`, content: `${largeCode}// ${i}` } }]) + '\n```'
+    });
+    messages.push(observation(`ok ${i}`));
+  }
+  const result = compactToolObservations(messages, 1_000);
+  assert.match(result.messages[assistantIndices[0]].content, /\[compacted write_file content:/);
+  assert.match(result.messages[assistantIndices[1]].content, /\[compacted write_file content:/);
+  for (const idx of assistantIndices.slice(2)) {
+    assert.equal(result.messages[idx].content, messages[idx].content, 'newest 4 assistant tool turns stay verbatim');
+  }
 });

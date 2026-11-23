@@ -374,3 +374,58 @@ test('paths outside the workspace and unknown workspaces are rejected', async ()
     service.closeWorkspace('ws');
   }
 });
+
+test('creating a missing imported module resolves immediately via invalidateFiles and clears moduleResolutionCache without sleeping 1.5s', async () => {
+  const root = createFixture();
+  fs.mkdirSync(path.join(root, 'src', 'types'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, 'src', 'consumer.ts'),
+    "import type { Quiz } from './types/quiz';\n\nexport const sample: Quiz = { id: 'q1' };\n"
+  );
+  const service = createService(root);
+  try {
+    const first = await service.diagnostics('ws');
+    const missingErr = first.diagnostics.filter((item) => item.file.endsWith('consumer.ts'));
+    assert.ok(missingErr.some((item) => item.code === 'TS2307'), 'initial diagnostics must report missing ./types/quiz');
+
+    // Write the missing module on disk immediately (<1.5s) and invalidate.
+    fs.writeFileSync(
+      path.join(root, 'src', 'types', 'quiz.ts'),
+      'export interface Quiz {\n  id: string;\n}\n'
+    );
+    await service.invalidateFiles('ws', ['src/types/quiz.ts']);
+
+    const second = await service.diagnostics('ws');
+    const afterErrors = second.diagnostics.filter((item) => item.file.endsWith('consumer.ts'));
+    assert.deepEqual(afterErrors, [], 'diagnostics must clear TS2307 immediately after invalidateFiles');
+  } finally {
+    service.closeWorkspace('ws');
+  }
+});
+
+test('options.files registers root server.ts and new unindexed files into extraFiles for typechecking', async () => {
+  const root = createFixture();
+  fs.writeFileSync(
+    path.join(root, 'server.ts'),
+    "import { add } from './src/math';\n\nexport const brokenServer: number = add(1, 2) + 'bad';\n"
+  );
+  const service = createService(root);
+  try {
+    // Warm up with default include: ['src'] (server.ts is outside include).
+    const initial = await service.diagnostics('ws');
+    assert.equal(
+      initial.diagnostics.some((item) => item.file.endsWith('server.ts')),
+      false,
+      'server.ts is outside tsconfig include by default'
+    );
+
+    // Passing options.files registers server.ts into extraFiles and typechecks it immediately.
+    const targeted = await service.diagnostics('ws', undefined, ['server.ts']);
+    const serverErrors = targeted.diagnostics.filter((item) => item.file.endsWith('server.ts'));
+    assert.equal(serverErrors.length, 1);
+    assert.equal(serverErrors[0].code, 'TS2322');
+  } finally {
+    service.closeWorkspace('ws');
+  }
+});
+

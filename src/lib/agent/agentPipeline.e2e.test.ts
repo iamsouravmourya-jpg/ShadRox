@@ -18,7 +18,8 @@ import type {
 import { filterLogsForLatestPreviewRun } from '../../hooks/useLocalPreviewController';
 import type { PreviewInspectResponse } from './webTools';
 import { runToolRounds } from './toolLoop';
-import { resetToolTurnTracking, runTool } from './tools';
+import { buildWorkspaceToolContext, resolveActiveTools } from './toolGatekeeper';
+import { resetToolTurnTracking, runTool, TOOL_DEFINITIONS } from './tools';
 import { resetTurns } from './turnState';
 
 const require = createRequire(import.meta.url);
@@ -69,6 +70,7 @@ interface DiskBridgeOptions {
 function createDiskDesktopBridge(rootDir: string, options: DiskBridgeOptions = {}) {
   const savedLog: Array<{ name: string; content: string }> = [];
   const versions = new Map<string, number>();
+  const stagedBatches = new Map<string, Array<{ name: string; content: string; expectedVersion?: string | null }>>();
 
   const resolveSafe = (rel: string): string => {
     const clean = rel.replace(/\\/g, '/').replace(/^\.\//, '');
@@ -125,6 +127,24 @@ function createDiskDesktopBridge(rootDir: string, options: DiskBridgeOptions = {
         savedLog.push({ name: clean, content: write.content });
       }
       return { saved, errors: [] };
+    },
+    stageFiles: async (_wsId: string, writes: Array<{ name: string; content: string; expectedVersion?: string | null }>) => {
+      const txId = `tx-${stagedBatches.size + 1}`;
+      stagedBatches.set(txId, writes);
+      return {
+        transactionId: txId,
+        files: writes.map((w) => ({ name: w.name, before: null, after: w.content }))
+      };
+    },
+    commitTransaction: async (wsId: string, transactionId: string) => {
+      const writes = stagedBatches.get(transactionId) ?? [];
+      stagedBatches.delete(transactionId);
+      const saveFn = bridge.saveFiles as (
+        id: string,
+        items: Array<{ name: string; content: string; expectedVersion?: string | null }>
+      ) => Promise<{ saved: string[]; errors: Array<{ name: string; message: string }> }>;
+      const res = await saveFn(wsId, writes);
+      return { ...res, rolledBack: false };
     },
     diagnostics: async (_wsId: string, _overrides?: unknown, paths?: string[]): Promise<DiagnosticsResult> => {
       const list = options.onDiagnostics ? await options.onDiagnostics(paths) : [];
@@ -297,7 +317,7 @@ test('E2E 2: Large file (>500 lines) + CRLF (\\r\\n) edit reports line metadata,
       const afterFirstRead = model.seenTranscripts[1].map((m) => m.content).join('\n');
       assert.match(afterFirstRead, /Total lines: 551/);
       assert.match(afterFirstRead, /Showing lines 1-250/);
-      assert.match(afterFirstRead, /startLine\/endLine/);
+      assert.match(afterFirstRead, /start_line\/end_line/);
 
       // Inspect observation after round 2 ranged read
       const afterSecondRead = model.seenTranscripts[2].map((m) => m.content).join('\n');
@@ -499,3 +519,125 @@ test('E2E 4: Preview error capture drops stale previous previewRunId logs and de
     });
   });
 });
+
+test('E2E 5: Modified-file verify errors survive 65+ untouched errors, apply_patch counts as progress, and mid-turn preview start unlocks preview_inspect', async () => {
+  await withTempWorkspace(async (rootDir) => {
+    await fs.mkdir(path.join(rootDir, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(rootDir, 'package.json'),
+      JSON.stringify({ name: 'heavy-repo', scripts: { typecheck: 'tsc --noEmit' } }),
+      'utf8'
+    );
+    await fs.writeFile(path.join(rootDir, 'src/target.ts'), 'export const value: number = 1;\n', 'utf8');
+
+    const untouchedErrors = Array.from(
+      { length: 65 },
+      (_, idx) => `src/legacy-${idx}.ts(${idx + 1},1): error TS2322: Legacy error ${idx}.`
+    ).join('\n');
+
+    let previewReady = false;
+    const { bridge } = createDiskDesktopBridge(rootDir, {
+      onRunCommand: async (command) => {
+        if (command.includes('typecheck')) {
+          return {
+            stdout: `${untouchedErrors}\nsrc/target.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'.\n`,
+            stderr: '',
+            exitCode: 2
+          };
+        }
+        return { stdout: 'ok', stderr: '', exitCode: 0 };
+      },
+      onDiagnostics: async () => [
+        ...Array.from({ length: 65 }, (_, idx): DesktopDiagnostic => ({
+          file: `src/legacy-${idx}.ts`,
+          line: idx,
+          character: 0,
+          endLine: idx,
+          endCharacter: 5,
+          severity: 'error',
+          code: 'TS2322',
+          message: `Legacy diag ${idx}`
+        })),
+        {
+          file: 'src/target.ts',
+          line: 0,
+          character: 13,
+          endLine: 0,
+          endCharacter: 20,
+          severity: 'error',
+          code: 'TS2322',
+          message: 'Type string is not assignable to number'
+        }
+      ],
+      onPreviewStatus: async () => ({
+        running: previewReady,
+        status: previewReady ? 'ready' : 'idle',
+        url: previewReady ? 'http://127.0.0.1:4173/' : null,
+        port: previewReady ? 4173 : null,
+        script: 'dev',
+        hmr: true,
+        lastError: null,
+        recentOutput: ''
+      })
+    });
+
+    bridge.startPreview = async () => {
+      previewReady = true;
+      return { status: 'ready', url: 'http://127.0.0.1:4173/', script: 'dev', hmr: true };
+    };
+
+    // Simulate ref-backed getToolContext recomputing once preview starts mid-turn
+    const getDynamicContext = () =>
+      buildWorkspaceToolContext({
+        workspaceOpen: true,
+        filePaths: ['package.json', 'src/target.ts'],
+        previewStatus: previewReady ? 'ready' : 'idle'
+      });
+
+    const beforeStartTools = new Set(resolveActiveTools(getDynamicContext(), TOOL_DEFINITIONS).map((t) => t.name));
+    assert.equal(beforeStartTools.has('preview_control'), true);
+    assert.equal(beforeStartTools.has('preview_inspect'), false);
+
+    const model = scriptedModel([
+      toolBlock([
+        {
+          name: 'apply_patch',
+          args: {
+            patches: [
+              { path: 'src/target.ts', old: 'export const value: number = 1;', new: 'export const value: number = "broken";' }
+            ]
+          }
+        }
+      ]),
+      toolBlock([{ name: 'verify', args: {} }]),
+      toolBlock([{ name: 'preview_control', args: { action: 'start' } }]),
+      toolBlock([{ name: 'preview_inspect', args: { action: 'console' } }]),
+      'Finished check.'
+    ]);
+
+    await withBridge(bridge, async () => {
+      const result = await runToolRounds({
+        messages: [{ role: 'user', content: 'Patch src/target.ts, verify, and check preview' }],
+        workspaceId: 'ws-e2e5',
+        aborted: () => false,
+        stream: async (messages) => {
+          // Verify mid-turn ref evaluation unlocks preview_inspect right after preview_control start
+          if (previewReady) {
+            const afterStartTools = new Set(resolveActiveTools(getDynamicContext(), TOOL_DEFINITIONS).map((t) => t.name));
+            assert.equal(afterStartTools.has('preview_inspect'), true);
+          }
+          return model.stream(messages);
+        }
+      });
+
+      assert.equal(result.stopReason, 'complete');
+      assert.deepEqual(result.changedPaths, ['src/target.ts']);
+      const verifyObs = model.seenTranscripts[2].at(-1)?.content ?? '';
+      assert.match(verifyObs, /verify: FAILED/);
+      assert.match(verifyObs, /src\/target\.ts:1/);
+      const previewInspectObs = model.seenTranscripts[4].at(-1)?.content ?? '';
+      assert.match(previewInspectObs, /"tool":\s*"preview_inspect"[\s\S]*"ok":\s*true/);
+    });
+  });
+});
+

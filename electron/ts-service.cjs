@@ -468,6 +468,7 @@ function createSession(ts, root) {
   const scriptFileNames = fileNames.slice();
   let versionCounter = 0;
   let lastDiskRefresh = 0;
+  let pendingForceRefresh = false;
 
   function isAllowedFile(fileName) {
     // The default lib files ship inside the bundled TypeScript package, outside
@@ -525,7 +526,16 @@ function createSession(ts, root) {
     try {
       stat = fs.statSync(key);
     } catch {
-      if (stats.delete(key)) snapshots.delete(key);
+      if (stats.delete(key)) {
+        snapshots.delete(key);
+        versionCounter += 1;
+      }
+      textCache.delete(key);
+      existsCache.delete(key);
+      if (extraFiles.delete(key)) {
+        versionCounter += 1;
+        syncScriptFileNames();
+      }
       return;
     }
     const previous = stats.get(key);
@@ -537,28 +547,84 @@ function createSession(ts, root) {
     existsCache.delete(key);
   }
 
-  function refreshDisk() {
+  function refreshDisk(force = false) {
     const now = Date.now();
-    if (now - lastDiskRefresh < DISK_REFRESH_INTERVAL_MS) return;
+    const forced = Boolean(force || pendingForceRefresh);
+    if (!forced && now - lastDiskRefresh < DISK_REFRESH_INTERVAL_MS) return;
     lastDiskRefresh = now;
+    pendingForceRefresh = false;
     existsCache.clear();
     textCache.clear();
     directoryCache.clear();
+    if (typeof moduleResolutionCache.clear === 'function') moduleResolutionCache.clear();
     const files = new Set([...fileNames, ...extraFiles]);
     for (const fileName of files) refreshFile(fileName);
+    if (forced) versionCounter += 1;
   }
 
   function syncScriptFileNames() {
     if (scriptFileNames.length === fileNames.length + extraFiles.size) {
       let index = 0;
+      let matches = true;
       for (const fileName of fileNames) {
-        if (scriptFileNames[index] !== fileName) break;
-        index += 1;
+        if (scriptFileNames[index++] !== fileName) {
+          matches = false;
+          break;
+        }
       }
-      if (index === fileNames.length) return;
+      if (matches) {
+        for (const extra of extraFiles) {
+          if (scriptFileNames[index++] !== extra) {
+            matches = false;
+            break;
+          }
+        }
+      }
+      if (matches) return;
     }
     scriptFileNames.length = 0;
     scriptFileNames.push(...fileNames, ...extraFiles);
+  }
+
+  function registerDiagnosticFiles(files) {
+    if (!Array.isArray(files)) return { requestedFiles: null, addedOrRefreshed: false };
+    const requestedFiles = new Set();
+    let scriptFilesChanged = false;
+    let addedOrRefreshed = false;
+    for (const file of files.slice(0, MAX_PROJECT_FILES)) {
+      if (typeof file !== 'string') continue;
+      let absolute;
+      try {
+        absolute = toKey(toAbsolutePath(root, file));
+      } catch {
+        continue;
+      }
+      requestedFiles.add(absolute.toLowerCase());
+      if (!isInsideRoot(root, absolute) || isSkippablePath(root, absolute)) continue;
+      if (!SCRIPT_EXTENSIONS.has(path.extname(absolute).toLowerCase())) continue;
+      let exists = overrides.has(absolute);
+      if (!exists) {
+        try {
+          exists = fs.statSync(absolute).isFile();
+        } catch {
+          exists = false;
+        }
+      }
+      if (!exists) continue;
+      if (!fileNames.includes(absolute) && !extraFiles.has(absolute)) {
+        extraFiles.add(absolute);
+        scriptFilesChanged = true;
+      }
+      const prevVersion = versionCounter;
+      refreshFile(absolute);
+      if (versionCounter !== prevVersion) addedOrRefreshed = true;
+    }
+    if (scriptFilesChanged) {
+      versionCounter += 1;
+      syncScriptFileNames();
+      addedOrRefreshed = true;
+    }
+    return { requestedFiles, addedOrRefreshed };
   }
 
   function applyOverrides(list) {
@@ -573,9 +639,11 @@ function createSession(ts, root) {
     }
 
     let scriptFilesChanged = false;
+    let overridesChanged = false;
     for (const [fileName, text] of next) {
       const previous = overrides.get(fileName);
       if (previous === text) continue;
+      overridesChanged = true;
       overrides.set(fileName, text);
       versionCounter += 1;
       stats.set(fileName, { mtimeMs: 0, size: text.length, version: versionCounter });
@@ -588,6 +656,7 @@ function createSession(ts, root) {
 
     for (const fileName of [...overrides.keys()]) {
       if (next.has(fileName)) continue;
+      overridesChanged = true;
       overrides.delete(fileName);
       stats.delete(fileName);
       snapshots.delete(fileName);
@@ -598,6 +667,9 @@ function createSession(ts, root) {
     if (scriptFilesChanged) {
       versionCounter += 1;
       syncScriptFileNames();
+    }
+    if (overridesChanged || scriptFilesChanged) {
+      if (typeof moduleResolutionCache.clear === 'function') moduleResolutionCache.clear();
     }
   }
 
@@ -640,9 +712,9 @@ function createSession(ts, root) {
 
   const service = ts.createLanguageService(host, ts.createDocumentRegistry());
 
-  function prepare(overrideList) {
+  function prepare(overrideList, options = {}) {
     applyOverrides(overrideList);
-    refreshDisk();
+    refreshDisk(Boolean(options?.forceRefresh));
   }
 
   function projectSourceFile(fileName) {
@@ -666,28 +738,33 @@ function createSession(ts, root) {
   }
 
   return {
+    invalidate(files) {
+      lastDiskRefresh = 0;
+      pendingForceRefresh = true;
+      existsCache.clear();
+      textCache.clear();
+      directoryCache.clear();
+      if (typeof moduleResolutionCache.clear === 'function') moduleResolutionCache.clear();
+      if (Array.isArray(files) && files.length > 0) registerDiagnosticFiles(files);
+      versionCounter += 1;
+      return true;
+    },
+
     /**
      * `options.files` scopes the request to workspace-relative paths. The editor
      * sends only the file being typed in while the Problems panel asks for the
      * whole project, so a keystroke never pays for a full-project type check.
      */
     diagnostics(overrideList, options = {}) {
-      prepare(overrideList);
+      applyOverrides(overrideList);
+      const { requestedFiles, addedOrRefreshed } = registerDiagnosticFiles(options?.files);
+      const hasExplicitFiles = Array.isArray(options?.files) && options.files.length > 0;
+      const hasOverrides = Array.isArray(overrideList) && overrideList.length > 0;
+      const force = Boolean(options?.forceRefresh || pendingForceRefresh || addedOrRefreshed || hasExplicitFiles || !hasOverrides);
+      refreshDisk(force);
+
       const program = service.getProgram();
       if (!program) return { diagnostics: [], truncated: false, projectFiles: 0, configPath };
-
-      let requestedFiles = null;
-      if (Array.isArray(options?.files)) {
-        requestedFiles = new Set();
-        for (const file of options.files.slice(0, MAX_PROJECT_FILES)) {
-          if (typeof file !== 'string') continue;
-          try {
-            requestedFiles.add(toKey(toAbsolutePath(root, file)).toLowerCase());
-          } catch {
-            /* ignore paths outside the workspace */
-          }
-        }
-      }
 
       const diagnostics = [];
       let truncated = false;
@@ -955,7 +1032,7 @@ function createSession(ts, root) {
 }
 
 const WORKER_METHODS = new Set([
-  'diagnostics', 'definition', 'references', 'exportedContracts', 'rename', 'codeActions', 'semanticTokens', 'outline', 'symbols'
+  'diagnostics', 'definition', 'references', 'exportedContracts', 'rename', 'codeActions', 'semanticTokens', 'outline', 'symbols', 'invalidate'
 ]);
 
 function createWorkerSession(root) {
@@ -1064,7 +1141,8 @@ function createTypeScriptService({ getWorkspace }) {
   }
 
   return {
-    diagnostics: (workspaceId, overrides, files) => call(workspaceId, 'diagnostics', [overrides, { files }]),
+    diagnostics: (workspaceId, overrides, files, options = {}) => call(workspaceId, 'diagnostics', [overrides, { ...options, files }]),
+    invalidateFiles: (workspaceId, files) => (sessions.has(workspaceId) ? call(workspaceId, 'invalidate', [files]) : Promise.resolve(false)),
     definition: (workspaceId, relativePath, line, character, overrides) =>
       call(workspaceId, 'definition', [relativePath, line, character, overrides]),
     references: (workspaceId, relativePath, line, character, overrides) =>

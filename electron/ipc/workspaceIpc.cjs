@@ -308,7 +308,9 @@ function createWorkspaceService({
 
     handleMachineSensitive('workspace:rename-file', async (event, workspaceId, fromPath, toPath) => {
       assertTrustedRenderer(event);
-      return workspaceAccess.renameFile(workspaceId, fromPath, toPath);
+      const result = await workspaceAccess.renameFile(workspaceId, fromPath, toPath);
+      await typeScriptService?.invalidateFiles?.(workspaceId, [fromPath, toPath]);
+      return result;
     });
 
     handleMachineSensitive('workspace:create-directory', async (event, workspaceId, relativePath) => {
@@ -318,7 +320,9 @@ function createWorkspaceService({
 
     handleMachineSensitive('workspace:delete-path', async (event, workspaceId, relativePath) => {
       assertTrustedRenderer(event);
-      return workspaceAccess.deletePath(workspaceId, relativePath);
+      const result = await workspaceAccess.deletePath(workspaceId, relativePath);
+      await typeScriptService?.invalidateFiles?.(workspaceId, [relativePath]);
+      return result;
     });
 
     handleMachineSensitive('workspace:search-files', async (event, workspaceId, query, limit) => {
@@ -333,7 +337,11 @@ function createWorkspaceService({
 
     handleMachineSensitive('workspace:save-files', async (event, workspaceId, files) => {
       assertTrustedRenderer(event);
-      return workspaceAccess.saveFiles(workspaceId, files);
+      const result = await workspaceAccess.saveFiles(workspaceId, files);
+      if (Array.isArray(result?.saved) && result.saved.length > 0) {
+        await typeScriptService?.invalidateFiles?.(workspaceId, result.saved);
+      }
+      return result;
     });
 
     handleMachineSensitive('workspace:backup-file', async (event, workspaceId, relativePath, content) => {
@@ -368,7 +376,11 @@ function createWorkspaceService({
 
     handleMachineSensitive('workspace:commit', async (event, workspaceId, transactionId) => {
       assertTrustedRenderer(event);
-      return workspaceAccess.commitTransaction(workspaceId, transactionId);
+      const result = await workspaceAccess.commitTransaction(workspaceId, transactionId);
+      if (Array.isArray(result?.saved) && result.saved.length > 0) {
+        await typeScriptService?.invalidateFiles?.(workspaceId, result.saved);
+      }
+      return result;
     });
 
     handleMachineSensitive('workspace:discard', async (event, workspaceId, transactionId) => {

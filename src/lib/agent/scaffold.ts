@@ -15,12 +15,16 @@
 const BUILD_VERB = /\b(build|create|make|scaffold|generate|develop|design|code|bana|banao|banado|bna|bnao)\b/i;
 const PROJECT_NOUN = /\b(landing\s?page|website|web\s?site|web\s?page|homepage|home\s?page|portfolio|dashboard|web\s?app|site|app|application|blog|store|shop|page)\b/i;
 const FIX_VERB = /\b(fix|debug|repair|refactor|update|change|modify|edit|remove|delete|rename|tweak|adjust|improve|optimi[sz]e)\b/i;
+const EXISTING_INTEGRATION_CUE = /(?:^|[\s(`'"])(?:src|app|api|pages|components|server|client|routes|lib|hooks|types)\/[A-Za-z0-9_.-]+\.[a-z]{1,4}\b|(?:^|[\s(`'"])(?:server|index|app|main)\.(?:tsx?|jsx?|py|go|css|html)\b|\b(?:integrat(?:e|ing|ion)|wire\s+(?:up|into)|hook\s+(?:up|into)|existing\s+(?:app|site|website|dashboard|project|repo|repository|codebase|backend|frontend)|across\s+the\s+full\s+stack|add\s+(?:a|an|two|\d+|new|more|another)?\s*(?:express\s+|api\s+)?routes?|endpoints?)\b/i;
+const EXPLICIT_GREENFIELD_CUE = /\b(?:from\s+scratch|new\s+(?:project|app|site|website|landing\s?page)|scaffold|brand\s+new)\b/i;
 const ADD_PAGE = /\b(add|create|make|new)\b[^.?!]{0,40}\b(another|new|second|more|extra)?\s*(page|section)\b/i;
 
-/** "build me a landing page" in an empty folder — not "fix my landing page". */
-export function detectScaffoldIntent(ask: string): boolean {
+/** "build me a landing page" in an empty folder — not "fix my landing page" or an integration prompt on an existing repo. */
+export function detectScaffoldIntent(ask: string, options?: { existingWorkspace?: boolean }): boolean {
   if (!ask.trim()) return false;
   if (FIX_VERB.test(ask)) return false;
+  if (EXISTING_INTEGRATION_CUE.test(ask)) return false;
+  if (options?.existingWorkspace === true && !EXPLICIT_GREENFIELD_CUE.test(ask)) return false;
   return BUILD_VERB.test(ask) && PROJECT_NOUN.test(ask);
 }
 

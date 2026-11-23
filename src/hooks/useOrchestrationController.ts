@@ -3,7 +3,7 @@ import type { PastedText, PinnedSymbol } from '../components/ChatPanel';
 import { commandApprovalNotice } from '../lib/agent/commandGuard';
 import { computeLoopContextBudgetChars } from '../lib/agent/loopContext';
 import type { McpToolHandle } from '../lib/agent/mcpTools';
-import type { PermissionMode } from '../lib/agent/runPolicy';
+import { shouldGatePlanApproval, type PermissionMode } from '../lib/agent/runPolicy';
 import { DEFAULT_MAX_TOOL_ROUNDS, runToolRounds, type ToolLoopResumeState } from '../lib/agent/toolLoop';
 import { parseToolBlocks, repairAndParseNativeToolArgs, stripToolBlocks } from '../lib/agent/toolProtocol';
 import type { WorkspaceToolContext } from '../lib/agent/toolGatekeeper';
@@ -231,6 +231,8 @@ export function useOrchestrationController({
   const [resumeSnapshot, setResumeSnapshot] = useState<BackgroundRunSnapshot | null>(null);
   const trackedRunRef = useRef<{ kind: 'autonomy' | 'team'; goal: string } | null>(null);
   const orchestrationRef = useRef<ActiveOrchestration | null>(null);
+  const getToolContextRef = useRef(getToolContext);
+  getToolContextRef.current = getToolContext;
 
   const saveBackgroundSnapshot = useCallback(
     (source: BackgroundRunSource) => {
@@ -431,7 +433,7 @@ export function useOrchestrationController({
     const readerModel = autoReaderModel(text, mode.writesFiles ? 'edit' : 'chatter');
     const pickerReport: PickerReport = { model: readerModel ?? '', ran: false, shortlist: 0, answered: false, picked: 0, durationMs: 0 };
     let fit: ChatRequestFit;
-    const baseToolContext = getToolContext ? await getToolContext() : undefined;
+    const baseToolContext = getToolContextRef.current ? await getToolContextRef.current() : undefined;
     const toolContext =
       baseToolContext && !mode.writesFiles
         ? { ...baseToolContext, isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }
@@ -611,7 +613,7 @@ export function useOrchestrationController({
         // Re-resolve the tool context every round so job_control, preview_inspect,
         // terminal_* etc. appear as soon as their backing state appears mid-turn,
         // instead of being frozen at turn start.
-        const baseToolContext = getToolContext ? await getToolContext() : undefined;
+        const baseToolContext = getToolContextRef.current ? await getToolContextRef.current() : undefined;
         const roundToolContext =
           baseToolContext && !mode.writesFiles
             ? { ...baseToolContext, isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }
@@ -812,6 +814,7 @@ export function useOrchestrationController({
           fit.systemInstruction?.length ?? 0,
           JSON.stringify(nativeTools).length
         ),
+        existingWorkspace: (workspace.workspace?.diskFileTree?.length ?? workspace.files.length) > 0,
         stream: streamOnce,
         applyRoundPatches,
         onRound: (_round, text) => {
@@ -832,8 +835,9 @@ export function useOrchestrationController({
           )));
         },
         onPlan: (taskPlan) => {
+          const effectivePermissionMode = submission?.envelope?.permissionMode ?? permissionMode;
           const allFiles = Array.from(new Set(taskPlan.flatMap((t) => t.files ?? [])));
-          const needsApproval = taskPlan.length > 2 || allFiles.length > 1;
+          const needsApproval = shouldGatePlanApproval(effectivePermissionMode, taskPlan.length, allFiles.length);
           if (needsApproval) planApprovalGateRef.current.add(modelMessage.id);
           setMessages((previous) => previous.map((message) => (
             message.id === modelMessage.id
@@ -1098,7 +1102,7 @@ export function useOrchestrationController({
         activeModel?.contextWindow || resolveContextWindow(byok.activeProvider, byok.selectedModel);
       const milestoneCategory = inferMilestoneCategory(request.milestone);
       const isReadOnlyMilestone = milestoneCategory === 'read_only' || milestoneCategory === 'checkpoint';
-      const baseToolContext = getToolContext ? await getToolContext() : undefined;
+      const baseToolContext = getToolContextRef.current ? await getToolContextRef.current() : undefined;
       const toolContext = baseToolContext
         ? {
             ...baseToolContext,
@@ -1958,7 +1962,7 @@ export function useOrchestrationController({
         const mode = getRefineMode(refineMode);
         const contextWindow =
           activeModel?.contextWindow || resolveContextWindow(byok.activeProvider, byok.selectedModel);
-        const baseToolContext = getToolContext ? await getToolContext() : undefined;
+        const baseToolContext = getToolContextRef.current ? await getToolContextRef.current() : undefined;
         const toolContext =
           baseToolContext && !mode.writesFiles
             ? { ...baseToolContext, isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }

@@ -251,18 +251,23 @@ function registerPreviewRuntimeHandlers({
     } else if (projects.length === 1) {
       project = projects[0];
     } else {
-      const choices = await Promise.all(projects.map(async (candidate) => ({
-        kind: 'node',
-        projectPath: candidate.relativePath,
-        manifestHash: candidate.manifestHash,
-        packageManager: candidate.packageManager,
-        scriptName: candidate.script.name,
-        scriptCommand: candidate.script.command,
-        missingDependencies: await findMissingDependencies(candidate.manifest, candidate.root)
-      })));
-      assertCurrentStart();
-      reportStatus(`Found ${choices.length} runnable web project folders. Choose which one to preview.`);
-      return { status: 'selection-required', projects: choices };
+      const rootProject = projects.find((candidate) => candidate.relativePath === '.');
+      if (rootProject) {
+        project = rootProject;
+      } else {
+        const choices = await Promise.all(projects.map(async (candidate) => ({
+          kind: 'node',
+          projectPath: candidate.relativePath,
+          manifestHash: candidate.manifestHash,
+          packageManager: candidate.packageManager,
+          scriptName: candidate.script.name,
+          scriptCommand: candidate.script.command,
+          missingDependencies: await findMissingDependencies(candidate.manifest, candidate.root)
+        })));
+        assertCurrentStart();
+        reportStatus(`Found ${choices.length} runnable web project folders. Choose which one to preview.`);
+        return { status: 'selection-required', projects: choices };
+      }
     }
     const { manifest } = project;
     const script = getPreviewScript(manifest);

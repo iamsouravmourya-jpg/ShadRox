@@ -1236,4 +1236,83 @@ test('requireFileMutation intercepts zero-write plain-text reply once before all
   });
 });
 
+test('apply_patch counts as mutation progress across 9+ rounds without tripping stuck detector', async () => {
+  const files = new Map<string, string>([['src/a.ts', 'export const v = 0;\n']]);
+  const staged = new Map<string, Array<{ name: string; content: string }>>();
+  await withBridge({
+    readFile: async (_id: string, p: string) => ({ name: p, content: files.get(p) ?? '', version: 'v1' }),
+    verifyChangeSet: async () => ({ ok: true, issues: [] }),
+    saveFiles: async (_id: string, entries: Array<{ name: string; content: string }>) => {
+      for (const entry of entries) files.set(entry.name, entry.content);
+      return { errors: [], saved: entries.map((e) => e.name) };
+    },
+    stageFiles: async (_id: string, entries: Array<{ name: string; content: string }>) => {
+      const tx = `tx-${staged.size + 1}`;
+      staged.set(tx, entries);
+      return { transactionId: tx };
+    },
+    commitTransaction: async (_id: string, tx: string) => {
+      const entries = staged.get(tx) ?? [];
+      staged.delete(tx);
+      for (const entry of entries) files.set(entry.name, entry.content);
+      return { saved: entries.map((e) => e.name), errors: [], rolledBack: false };
+    }
+  }, async () => {
+    const patches: string[] = [];
+    for (let i = 0; i < ZERO_PROGRESS_LIMIT + 2; i += 1) {
+      patches.push(toolBlock([{
+        name: 'apply_patch',
+        args: { patches: [{ path: 'src/a.ts', old: `export const v = ${i};`, new: `export const v = ${i + 1};` }] }
+      }]));
+    }
+    patches.push('All 10 patches applied cleanly.');
+    const model = scripted(patches);
+    const result = await runToolRounds({
+      messages: baseMessages,
+      workspaceId: 'ws',
+      aborted: () => false,
+      stream: model.stream
+    });
+    assert.equal(result.stopReason, 'complete');
+    assert.equal(result.text, 'All 10 patches applied cleanly.');
+    assert.deepEqual(result.changedPaths, ['src/a.ts']);
+    const nudged = model.seen.some((turns) => turns.some((turn) => turn.content.includes('You are looping')));
+    assert.equal(nudged, false, 'apply_patch must emit progress signals so stuck detector stays silent');
+  });
+});
+
+test('existingWorkspace skips scaffoldNudge when finish is called after creating fewer than 3 files', async () => {
+  const files = new Map<string, string>([['src/existing.ts', 'export const ok = true;\n']]);
+  await withBridge({
+    readFile: async (_id: string, p: string) => {
+      if (!files.has(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { name: p, content: files.get(p)!, version: 'v1' };
+    },
+    diagnostics: async () => ({ diagnostics: [], truncated: false }),
+    verifyChangeSet: async () => ({ ok: true, issues: [] }),
+    saveFiles: async (_id: string, entries: Array<{ name: string; content: string }>) => {
+      for (const entry of entries) files.set(entry.name, entry.content);
+      return { errors: [], saved: entries.map((e) => e.name) };
+    }
+  }, async () => {
+    const model = scripted([
+      toolBlock([{ name: 'write_file', args: { path: 'src/quiz.ts', content: 'export const quiz = true;\n' } }]),
+      toolBlock([{ name: 'problems', args: { paths: ['src/quiz.ts'] } }]),
+      finishWith('Added quiz module to existing app.')
+    ]);
+    const result = await runToolRounds({
+      messages: [{ role: 'user', content: 'Build a daily quiz dashboard' }],
+      workspaceId: 'ws',
+      existingWorkspace: true,
+      aborted: () => false,
+      stream: model.stream
+    });
+    assert.equal(result.rounds, 3);
+    assert.match(result.finish?.summary ?? '', /^Added quiz module to existing app\./);
+    const nudgedScaffold = model.seen.some((turns) => turns.some((turn) => turn.content.includes('finish refused: this is a new-project request')));
+    assert.equal(nudgedScaffold, false, 'existingWorkspace must not demand 3-file static scaffold');
+  });
+});
+
+
 

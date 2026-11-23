@@ -50,7 +50,34 @@ export interface ProjectManifests {
   rootEntries: string[];
 }
 
-export function planVerification(manifests: ProjectManifests): VerifyPlan {
+function formatNodeScriptCommand(
+  manager: string,
+  scriptName: string,
+  rawScript: string,
+  nonInteractive: boolean
+): string {
+  const base = `${manager} run ${scriptName}`;
+  if (!nonInteractive) return base;
+  if (
+    /\bvitest\b/i.test(rawScript) &&
+    !/\b(?:run|bench)\b|--run\b|--watch(?:=|\s+)?false\b|--no-watch\b/i.test(rawScript)
+  ) {
+    return manager === 'npm' || manager === 'bun' ? `${base} -- --run` : `${base} --run`;
+  }
+  if (
+    /\bjest\b/i.test(rawScript) &&
+    /--watch(?:All)?\b/i.test(rawScript) &&
+    !/--watchAll=false\b/i.test(rawScript)
+  ) {
+    return manager === 'npm' || manager === 'bun' ? `${base} -- --watchAll=false` : `${base} --watchAll=false`;
+  }
+  return base;
+}
+
+export function planVerification(
+  manifests: ProjectManifests,
+  options?: { nonInteractive?: boolean }
+): VerifyPlan {
   const entries = new Set(manifests.rootEntries);
   if (manifests.packageJson !== null) {
     let scripts: Record<string, unknown> = {};
@@ -61,13 +88,16 @@ export function planVerification(manifests: ProjectManifests): VerifyPlan {
       /* a malformed package.json still means "node project, no scripts" */
     }
     const manager = LOCKFILE_MANAGERS.find(([lockfile]) => entries.has(lockfile))?.[1] ?? 'npm';
+    const nonInteractive = options?.nonInteractive === true;
     const chosen: string[] = [];
     for (const name of SCRIPT_PREFERENCE) {
       if (typeof scripts[name] === 'string' && (scripts[name] as string).trim()) chosen.push(name);
     }
     // typecheck and build are redundant on most projects; keep at most two
     // commands plus test, so a verify call stays inside one tool round.
-    const commands = chosen.slice(0, 3).map((script) => `${manager} run ${script}`);
+    const commands = chosen
+      .slice(0, 3)
+      .map((script) => formatNodeScriptCommand(manager, script, String(scripts[script] ?? ''), nonInteractive));
     return { kind: 'node', packageManager: manager, commands };
   }
   if (entries.has('Cargo.toml')) {
@@ -91,20 +121,34 @@ export function isVerifyCommand(command: string): boolean {
 }
 
 const MAX_PARSED_ERRORS = 60;
+const MAX_COLLECTED_ERRORS = 2_000;
 const MAX_FAILED_TESTS = 30;
+
+function matchesModifiedPath(errorFile: string, modifiedFiles: ReadonlySet<string> | readonly string[]): boolean {
+  const clean = errorFile.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  for (const raw of modifiedFiles) {
+    const mod = raw.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+    if (!mod) continue;
+    if (clean === mod || clean.endsWith(`/${mod}`)) return true;
+  }
+  return false;
+}
 
 /**
  * Structured errors out of raw compiler/runner output. Line numbers are
  * normalized to 1-based, matching what the model sees in read_file.
  */
-export function parseVerifyOutput(text: string): { errors: VerifyError[]; failedTests: string[] } {
-  const errors: VerifyError[] = [];
+export function parseVerifyOutput(
+  text: string,
+  options?: { modifiedFiles?: ReadonlySet<string> | readonly string[] }
+): { errors: VerifyError[]; failedTests: string[] } {
+  const rawErrors: VerifyError[] = [];
   const failedTests: string[] = [];
   const pushError = (file: string, line: number, msg: string): void => {
-    if (errors.length >= MAX_PARSED_ERRORS) return;
+    if (rawErrors.length >= MAX_COLLECTED_ERRORS) return;
     const clean = file.replace(/\\/g, '/').trim();
     if (!clean) return;
-    errors.push({ file: clean, line: Math.max(1, line), msg: msg.trim().slice(0, 300) });
+    rawErrors.push({ file: clean, line: Math.max(1, line), msg: msg.trim().slice(0, 300) });
   };
   const pushTest = (name: string): void => {
     const clean = name.trim();
@@ -176,7 +220,20 @@ export function parseVerifyOutput(text: string): { errors: VerifyError[]; failed
     else pushTest(name.replace(/\s*\(\d+\s*ms\)\s*$/, ''));
   }
 
-  return { errors, failedTests };
+  const modifiedFiles = options?.modifiedFiles;
+  if (!modifiedFiles) {
+    return { errors: rawErrors.slice(0, MAX_PARSED_ERRORS), failedTests };
+  }
+  const modifiedErrors: VerifyError[] = [];
+  const untouchedErrors: VerifyError[] = [];
+  for (const entry of rawErrors) {
+    if (matchesModifiedPath(entry.file, modifiedFiles)) {
+      if (modifiedErrors.length < MAX_PARSED_ERRORS) modifiedErrors.push(entry);
+    } else if (untouchedErrors.length < MAX_PARSED_ERRORS) {
+      untouchedErrors.push(entry);
+    }
+  }
+  return { errors: [...modifiedErrors, ...untouchedErrors], failedTests };
 }
 
 /** The structured text a verify outcome carries; the model and the UI both read it. */

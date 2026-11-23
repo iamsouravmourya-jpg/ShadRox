@@ -420,7 +420,7 @@ export function useContextBuilder({
           core.push(
             'FILE EDIT PROTOCOL:',
             '- Choose real files from the workspace; never invent paths or leave placeholders (`// ...`, `TODO`).',
-            '- Use `read_file` (with `startLine`/`endLine` on >300-line files), `edit_file` / `apply_patch` / `write_file`, `verify`, and `preview_control` before calling `finish`.'
+            '- Use `read_file` (with `start_line`/`end_line` on >300-line files), `edit_file` / `apply_patch` / `write_file`, `verify`, and `preview_control` before calling `finish`.'
           );
         } else {
           core.push(

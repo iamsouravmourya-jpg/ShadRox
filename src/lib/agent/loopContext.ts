@@ -45,7 +45,10 @@ export function computeLoopContextBudgetChars(
 }
 
 const OBSERVATION_FENCE = /```shadrox:results\r?\n([\s\S]*?)\r?\n```/;
+const ASSISTANT_TOOLS_FENCE = /```shadrox:tools\r?\n([\s\S]*?)\r?\n```/g;
 const DATA_MARKERS = /\[\[SHADROX_UNTRUSTED_DATA_(?:BEGIN|END)\]\]/g;
+const ASSISTANT_WRITE_COMPACT_THRESHOLD = 240;
+const ASSISTANT_EDIT_COMPACT_THRESHOLD = 400;
 
 export function transcriptChars(messages: ChatTurn[]): number {
   return messages.reduce((total, turn) => total + turn.content.length, 0);
@@ -55,9 +58,81 @@ export function isToolObservation(turn: ChatTurn): boolean {
   return turn.role === 'user' && turn.content.includes('```shadrox:results');
 }
 
+export function isAssistantToolTurn(turn: ChatTurn): boolean {
+  return turn.role === 'assistant' && turn.content.includes('```shadrox:tools');
+}
+
 function flatHead(text: string, limit: number): string {
   const flat = text.replace(DATA_MARKERS, '').replace(/\\\[\[/g, '[[').replace(/\s+/g, ' ').trim();
   return flat.length <= limit ? flat : `${flat.slice(0, limit)}…`;
+}
+
+interface AssistantToolCallShape {
+  name?: unknown;
+  args?: Record<string, unknown>;
+}
+
+/** Shrinks bulky file contents inside older assistant `write_file`/`apply_patch`/`edit_file` tool fences. */
+export function summarizeAssistantToolPayload(content: string): string {
+  let mutated = false;
+  const compacted = content.replace(ASSISTANT_TOOLS_FENCE, (fullMatch, body: string) => {
+    try {
+      const parsed = JSON.parse(body) as AssistantToolCallShape | AssistantToolCallShape[];
+      const calls = Array.isArray(parsed) ? parsed : [parsed];
+      let blockChanged = false;
+      const nextCalls = calls.map((entry) => {
+        if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string' || !entry.args || typeof entry.args !== 'object') {
+          return entry;
+        }
+        const args = { ...entry.args };
+        if (entry.name === 'write_file' && typeof args.content === 'string' && args.content.length > ASSISTANT_WRITE_COMPACT_THRESHOLD) {
+          const target = typeof args.path === 'string' && args.path.trim() ? args.path.trim() : 'file';
+          args.content = `[compacted write_file content: ${args.content.length} chars written to ${target}]`;
+          blockChanged = true;
+        } else if (entry.name === 'apply_patch') {
+          for (const field of ['patches', 'hunks'] as const) {
+            const rawList = args[field];
+            if (!Array.isArray(rawList)) continue;
+            let listChanged = false;
+            const nextList = rawList.map((hunk) => {
+              if (!hunk || typeof hunk !== 'object') return hunk;
+              const record = { ...(hunk as Record<string, unknown>) };
+              let hunkChanged = false;
+              for (const key of ['old', 'new', 'content'] as const) {
+                if (typeof record[key] === 'string' && (record[key] as string).length > ASSISTANT_WRITE_COMPACT_THRESHOLD) {
+                  record[key] = `[compacted ${key}: ${(record[key] as string).length} chars]`;
+                  hunkChanged = true;
+                }
+              }
+              if (hunkChanged) listChanged = true;
+              return hunkChanged ? record : hunk;
+            });
+            if (listChanged) {
+              args[field] = nextList;
+              blockChanged = true;
+            }
+          }
+        } else if (entry.name === 'edit_file') {
+          for (const key of ['original', 'updated'] as const) {
+            if (typeof args[key] === 'string' && (args[key] as string).length > ASSISTANT_EDIT_COMPACT_THRESHOLD) {
+              args[key] = `[compacted ${key}: ${(args[key] as string).length} chars]`;
+              blockChanged = true;
+            }
+          }
+        }
+        return blockChanged ? { ...entry, args } : entry;
+      });
+      if (!blockChanged) return fullMatch;
+      const serialized = JSON.stringify(Array.isArray(parsed) ? nextCalls : nextCalls[0]);
+      const replacement = `\`\`\`shadrox:tools\n${serialized}\n\`\`\``;
+      if (replacement.length >= fullMatch.length) return fullMatch;
+      mutated = true;
+      return replacement;
+    } catch {
+      return fullMatch;
+    }
+  });
+  return mutated ? compacted : content;
 }
 
 /** One observation → "[compacted] tool → ok/err: head of what it said". */
@@ -193,24 +268,36 @@ export function compactToolObservations(messages: ChatTurn[], budget = LOOP_CONT
   const total = transcriptChars(messages);
   if (total <= budget * COMPACT_TRIGGER_SHARE) return { messages, compacted: 0 };
   const observationIndices: number[] = [];
+  const assistantToolIndices: number[] = [];
   messages.forEach((turn, index) => {
     if (isToolObservation(turn) && !isWorkingMemoryMessage(turn)) observationIndices.push(index);
+    else if (isAssistantToolTurn(turn)) assistantToolIndices.push(index);
   });
-  const compactable = observationIndices.slice(0, Math.max(0, observationIndices.length - KEEP_RECENT_OBSERVATIONS));
-  const recent = observationIndices.slice(Math.max(0, observationIndices.length - KEEP_RECENT_OBSERVATIONS));
+  const recentObsStart = Math.max(0, observationIndices.length - KEEP_RECENT_OBSERVATIONS);
+  const compactableObs = new Set(observationIndices.slice(0, recentObsStart));
+  const recentObs = new Set(observationIndices.slice(recentObsStart));
+  const recentAssistantStart = Math.max(0, assistantToolIndices.length - KEEP_RECENT_OBSERVATIONS);
+  const compactableAssistant = new Set(assistantToolIndices.slice(0, recentAssistantStart));
   let compacted = 0;
   const next = messages.map((turn, index) => {
-    if (!compactable.includes(index) && !recent.includes(index)) return turn;
     if (turn.content.length < MIN_COMPACT_CHARS) return turn;
-    if (compactable.includes(index)) {
+    if (compactableObs.has(index)) {
       // Old observations → summarized to what was found/decided.
       compacted += 1;
       return { ...turn, content: summarizeObservation(turn.content) };
     }
-    // Newest observations stay but are individually capped.
-    const capped = capObservation(turn.content);
-    if (capped !== turn.content) compacted += 1;
-    return { ...turn, content: capped };
+    if (recentObs.has(index)) {
+      // Newest observations stay but are individually capped.
+      const capped = capObservation(turn.content);
+      if (capped !== turn.content) compacted += 1;
+      return { ...turn, content: capped };
+    }
+    if (compactableAssistant.has(index)) {
+      const shortened = summarizeAssistantToolPayload(turn.content);
+      if (shortened !== turn.content) compacted += 1;
+      return { ...turn, content: shortened };
+    }
+    return turn;
   });
   return compacted > 0 ? { messages: next, compacted } : { messages, compacted: 0 };
 }

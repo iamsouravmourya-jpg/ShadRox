@@ -56,3 +56,14 @@ test('the preview nudge carries the verdict detail and the next step', () => {
   assert.match(nudge, /2 console errors/);
   assert.match(nudge, /preview_control/);
 });
+
+test('existing-repo full-stack and integration prompts never trigger scaffold intent', () => {
+  const fullStackPrompt =
+    'Build a complete, end-to-end Student Study Streak & Daily Quiz Challenge system across the full stack:\n'
+    + '1. Backend (server.ts): Add two new Express routes (GET /api/quiz/daily and POST /api/quiz/submit).\n'
+    + '2. Dashboard Integration (src/components/DashboardLayout.tsx & src/pages/Index.tsx).';
+  assert.equal(detectScaffoldIntent(fullStackPrompt), false);
+  assert.equal(detectScaffoldIntent('Build a streak dashboard in our existing app'), false);
+  assert.equal(detectScaffoldIntent('Build a quiz app', { existingWorkspace: true }), false);
+  assert.equal(detectScaffoldIntent('Create a brand new landing page from scratch', { existingWorkspace: true }), true);
+});
