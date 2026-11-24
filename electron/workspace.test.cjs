@@ -205,7 +205,7 @@ test('createDirectory and deletePath refuse anything reaching a directory symlin
   assert.equal(await fs.readFile(path.join(outside, 'kept.txt'), 'utf8'), 'outside');
 });
 
-test('deletePath removes files and empty folders but refuses every riskier shape', async (context) => {
+test('deletePath removes files, empty folders, and non-empty folders recursively while refusing riskier shapes', async (context) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shadrox-delete-'));
   context.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, 'gone.txt'), 'bye');
@@ -223,9 +223,8 @@ test('deletePath removes files and empty folders but refuses every riskier shape
   assert.deepEqual(await access.deletePath(opened.workspaceId, 'empty-dir'), { path: 'empty-dir', kind: 'directory' });
   assert.equal(await fs.access(path.join(root, 'empty-dir')).then(() => true, () => false), false);
 
-  await assert.rejects(access.deletePath(opened.workspaceId, 'full-dir'), /Only an empty folder can be deleted/);
-  assert.equal((await fs.stat(path.join(root, 'full-dir'))).isDirectory(), true);
-  assert.equal(await fs.readFile(path.join(root, 'full-dir', 'inside.txt'), 'utf8'), 'kept');
+  assert.deepEqual(await access.deletePath(opened.workspaceId, 'full-dir'), { path: 'full-dir', kind: 'directory' });
+  assert.equal(await fs.access(path.join(root, 'full-dir')).then(() => true, () => false), false);
   await assert.rejects(access.deletePath(opened.workspaceId, '.hidden.txt'), /Hidden and generated project directories cannot be deleted/);
   await assert.rejects(access.deletePath(opened.workspaceId, 'node_modules/leftover.js'), /Hidden and generated project directories cannot be deleted/);
   await assert.rejects(access.deletePath(opened.workspaceId, 'never-existed.txt'), /no longer in the workspace/);

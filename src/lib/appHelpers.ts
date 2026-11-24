@@ -11,7 +11,7 @@ import type { QueuedChatItem } from './chatQueue';
 import type { IntroducedDiagnostics, VerificationCard } from './calibratedAuto/evidence';
 import type { PluginLoadEntry } from './plugins';
 import type { RequestEnvelope } from './requestEnvelope';
-import type { ChatMessage, PersistedWriteOutcome, RefineMode, RefinedPromptMeta, ReviewPatch } from './types';
+import type { ChatMessage, ExternalFileAttachment, PersistedWriteOutcome, RefineMode, RefinedPromptMeta, ReviewPatch } from './types';
 
 /**
  * How much of a folder workspace the prompt may see when no tabs are open.
@@ -73,6 +73,8 @@ export interface QueuedChatDraft extends QueuedChatItem {
   attachedImage: string | null;
   /** Long clipboard pastes kept out of the message body, sent as text context. */
   pastedTexts: PastedText[];
+  /** External files selected from OS disk via the paperclip picker. */
+  externalAttachments?: ExternalFileAttachment[];
   pinnedSymbols: PinnedSymbol[];
   pendingRefine: RefinedPromptMeta | null;
   refineMode: RefineMode;

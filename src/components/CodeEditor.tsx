@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import CodeMirror, { type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { EditorView, keymap } from '@codemirror/view';
 import type { Extension, Text } from '@codemirror/state';
@@ -13,14 +13,11 @@ import {
   setSearchQuery
 } from '@codemirror/search';
 import {
-  Archive,
   Check,
   ChevronLeft,
   ChevronRight,
   Columns2,
-  Copy,
   Code2,
-  Download,
   Eye,
   FileCode2,
   FileDiff,
@@ -32,37 +29,24 @@ import {
   Lightbulb,
   Loader2,
   ListTree,
-  MoreHorizontal,
-  Navigation,
   Pencil,
   Pin,
   PinOff,
   Save,
   Search,
-  SearchCode,
   Sparkles,
   Trash2,
-  Undo2,
-  X,
-  Zap
+  X
 } from 'lucide-react';
-import { copyToClipboard, downloadFile, downloadWorkspaceZip, estimateTokens, formatCode } from '../lib/toolUtils';
+import { estimateTokens, formatCode } from '../lib/toolUtils';
 import { confirmAction } from '../lib/confirm';
 import { resolveActiveFileIndex } from '../lib/activeFile';
 import { detectLanguage, getCachedLanguageExtension, loadLanguageExtension, resolveLanguageLoaderKey } from '../lib/languages';
 import { ghostText } from '../lib/ghostText';
-import {
-  FIM_FAILURE_HINT_THRESHOLD,
-  clearFimHealth,
-  getFimHealth,
-  subscribeFimHealth
-} from '../lib/fimClient';
 import { runQuickEdit, sliceQuickEditContext } from '../lib/quickEdit';
 import { computeHunks, hunkStats } from '../lib/editor/hunks';
 import { reanchorEditRange } from '../lib/editor/edits';
 import { semanticHighlighting, setSemanticTokens } from '../lib/editor/semanticLayer';
-import { breakpointGutterExtension, setBreakpointLines } from '../lib/editor/breakpoints';
-import { debugHoverExtension } from '../lib/editor/hoverValues';
 import type { ProviderId } from '../lib/providers';
 import type { WorkspaceFile } from '../lib/types';
 import type {
@@ -141,8 +125,8 @@ interface CodeEditorProps {
   onCreateDirectory?: (path: string) => Promise<boolean>;
   onDeleteEntry?: (path: string) => Promise<boolean>;
   onSaveAll: () => void;
-  onRenameFile: (from: string, to: string) => void;
-  onRevertFile: () => void;
+  onRenameFile?: (from: string, to: string) => void;
+  onRevertFile?: () => void;
   revealTarget?: {
     name: string;
     line: number;
@@ -205,29 +189,6 @@ interface CodeEditorProps {
    * Search view docks into the same slot instead of covering the screen.
    */
   sidebarPanel?: ReactNode;
-  /**
-   * Debugger breakpoints for the active file. `enabled` is false when no
-   * shadrox.debug.json configuration exists, which turns the gutter into a
-   * plain spacer instead of accepting clicks that would go nowhere.
-   */
-  breakpoints?: {
-    enabled: boolean;
-    /** Breakpoint lines for the active file; absent means none. */
-    lines?: number[];
-    onToggle: (line: number) => void;
-  };
-  /** Where the debugger is paused, shown as a compact header chip. */
-  pausedAt?: { file: string; line: number; column?: number | null } | null;
-  /** Reveals the paused location through the app's navigation path. */
-  onOpenPaused?: (file: string, line: number, column?: number | null) => void;
-  /**
-   * Hover values while paused. The editor asks for one identifier at a time;
-   * the caller owns the frame id and the adapter call.
-   */
-  debugHover?: {
-    enabled: boolean;
-    evaluate: (expression: string) => Promise<string | null>;
-  };
 }
 
 /** What the editor needs to offer language-service quick fixes. */
@@ -581,8 +542,6 @@ export function CodeEditor({
   onCreateDirectory,
   onDeleteEntry,
   onSaveAll,
-  onRenameFile,
-  onRevertFile,
   revealTarget,
   workspaceName,
   workspaceKind = 'folder',
@@ -603,11 +562,7 @@ export function CodeEditor({
   onSelectOutlineSymbol,
   symbols,
   quickFixes,
-  sidebarPanel,
-  breakpoints,
-  pausedAt,
-  onOpenPaused,
-  debugHover
+  sidebarPanel
 }: CodeEditorProps) {
   const activeFile = activeFilePath === undefined
     ? files[resolveActiveFileIndex(activeFileIndex, files.length)] ?? null
@@ -620,7 +575,6 @@ export function CodeEditor({
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isOutlineOpen, setIsOutlineOpen] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set(['']));
-  const [hasCopied, setHasCopied] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [quickEdit, setQuickEdit] = useState<QuickEditTarget | null>(null);
   const [quickEditPrompt, setQuickEditPrompt] = useState('');
@@ -632,22 +586,11 @@ export function CodeEditor({
   const [renameValue, setRenameValue] = useState('');
   const [renameError, setRenameError] = useState<string | null>(null);
   const [isRenaming, setIsRenaming] = useState(false);
-  const [isSymbolMenuOpen, setIsSymbolMenuOpen] = useState(false);
-  /**
-   * The toolbar row is a horizontal scroll container, so `absolute` would put
-   * the code-action menu inside the scrollport and clip it. Anchoring it to the
-   * viewport keeps the popup whole at every editor width.
-   */
-  const [symbolMenuAnchor, setSymbolMenuAnchor] = useState<{ top: number; right: number } | null>(null);
-  const symbolMenuRef = useRef<HTMLDivElement>(null);
   const [quickFixMenu, setQuickFixMenu] = useState<QuickFixMenu | null>(null);
   const quickFixMenuRef = useRef<HTMLDivElement>(null);
   const quickFixRequestId = useRef(0);
-  /** One-line, dismissible notice about why Tab may be doing nothing. */
-  const [dismissedCompletionHint, setDismissedCompletionHint] = useState<string | null>(null);
-  /** Rename / New Folder input; replaces the blocking window.prompt. */
+  /** New Folder input; replaces the blocking window.prompt. */
   const [pathPrompt, setPathPrompt] = useState<PathPromptRequest | null>(null);
-  const fimHealth = useSyncExternalStore(subscribeFimHealth, getFimHealth);
 
   const dirty = useMemo(() => new Set(dirtyFiles), [dirtyFiles]);
   const filePathSignature = useMemo(() => files.map((file) => file.name).join('\n'), [files]);
@@ -666,32 +609,6 @@ export function CodeEditor({
   const lintExtensions = useMemo(
     () => [linter(lintSource, { delay: 0 }), lintGutter()],
     [lintSource]
-  );
-
-  /**
-   * The breakpoint gutter reads its click handler through a ref so the
-   * extension instance never changes: toggling a dot must not reconfigure
-   * CodeMirror and discard scroll or selection state.
-   */
-  const breakpointToggleRef = useRef<(line: number) => void>(() => {});
-  breakpointToggleRef.current = breakpoints?.onToggle ?? (() => {});
-  const breakpointExtension = useMemo(
-    () => breakpointGutterExtension({ onToggle: (line) => breakpointToggleRef.current(line) }),
-    []
-  );
-
-  // Same ref pattern for hover evaluate: the extension stays one instance while
-  // the paused frame and adapter call change underneath it.
-  const debugHoverEnabledRef = useRef(false);
-  debugHoverEnabledRef.current = debugHover?.enabled === true;
-  const debugHoverEvaluateRef = useRef<(expression: string) => Promise<string | null>>(async () => null);
-  debugHoverEvaluateRef.current = debugHover?.evaluate ?? (async () => null);
-  const debugHoverExtensionInstance = useMemo(
-    () => debugHoverExtension({
-      enabled: () => debugHoverEnabledRef.current,
-      evaluate: (expression) => debugHoverEvaluateRef.current(expression)
-    }),
-    []
   );
 
   // Go-to-definition is installed even when inline AI is not configured.
@@ -946,18 +863,6 @@ export function CodeEditor({
     view.dispatch({ effects: setSemanticTokens.of(activeFile ? semanticTokens ?? [] : []) });
   }, [semanticTokens, activeFile?.name]);
 
-  // Breakpoint dots for the active file; cleared when the debug config is gone.
-  useEffect(() => {
-    const view = editorRef.current?.view;
-    if (!view) return;
-    view.dispatch({
-      effects: setBreakpointLines.of({
-        enabled: breakpoints?.enabled === true,
-        lines: breakpoints?.lines ?? []
-      })
-    });
-  }, [breakpoints?.enabled, breakpoints?.lines, activeFile?.name]);
-
   useEffect(() => {
     const firstLevel = new Set(['', ...files
       .map((file) => file.name.split('/').filter(Boolean).slice(0, 1)[0])
@@ -997,8 +902,6 @@ export function CodeEditor({
       ...definitionExtensions,
       ...symbolExtensions,
       ...quickFixExtensions,
-      breakpointExtension,
-      debugHoverExtensionInstance,
       SEMANTIC_EXTENSION,
       MULTI_CURSOR_EXTENSION
     ];
@@ -1042,7 +945,7 @@ export function CodeEditor({
       );
     }
     return list;
-  }, [activeFile?.name, activeFile?.language, activeLanguageExtension, editorAi, lintExtensions, definitionExtensions, symbolExtensions, quickFixExtensions, breakpointExtension, debugHoverExtensionInstance]);
+  }, [activeFile?.name, activeFile?.language, activeLanguageExtension, editorAi, lintExtensions, definitionExtensions, symbolExtensions, quickFixExtensions]);
 
   // Ctrl+K edits, the F2 prompt and the Ctrl+. menu are all scoped to the open
   // buffer, so a tab switch drops them along with the abort controller behind a
@@ -1057,7 +960,6 @@ export function CodeEditor({
     setRenameTarget(null);
     setRenameError(null);
     setIsRenaming(false);
-    setIsSymbolMenuOpen(false);
     quickFixRequestId.current += 1;
     setQuickFixMenu(null);
   }, [activeFile?.name]);
@@ -1209,87 +1111,6 @@ export function CodeEditor({
     window.setTimeout(() => setToastMsg(null), 3000);
   }, [closeRename, isRenaming, renameTarget, renameValue]);
 
-  // The symbol menu closes on any click outside it, the way a native menu does.
-  useEffect(() => {
-    if (!isSymbolMenuOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (symbolMenuRef.current?.contains(event.target as Node)) return;
-      setIsSymbolMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    return () => document.removeEventListener('mousedown', onPointerDown);
-  }, [isSymbolMenuOpen]);
-
-  const toggleSymbolMenu = useCallback(
-    (event: ReactMouseEvent<HTMLButtonElement>) => {
-      if (isSymbolMenuOpen) {
-        setIsSymbolMenuOpen(false);
-        return;
-      }
-      const rect = event.currentTarget.getBoundingClientRect();
-      setSymbolMenuAnchor({
-        top: Math.round(rect.bottom + 4),
-        right: Math.max(8, Math.round(window.innerWidth - rect.right))
-      });
-      setIsSymbolMenuOpen(true);
-    },
-    [isSymbolMenuOpen]
-  );
-
-  const runDefinitionFromMenu = useCallback(() => {
-    const view = editorRef.current?.view;
-    setIsSymbolMenuOpen(false);
-    if (view) requestDefinition(view, view.state.selection.main.head);
-  }, [requestDefinition]);
-
-  const runFindReferencesFromMenu = useCallback(() => {
-    const view = editorRef.current?.view;
-    setIsSymbolMenuOpen(false);
-    if (view) findReferencesAt(view);
-  }, [findReferencesAt]);
-
-  const runRenameFromMenu = useCallback(() => {
-    const view = editorRef.current?.view;
-    setIsSymbolMenuOpen(false);
-    if (view) openRename(view);
-  }, [openRename]);
-
-  const runQuickFixFromMenu = useCallback(() => {
-    const view = editorRef.current?.view;
-    setIsSymbolMenuOpen(false);
-    if (view) openQuickFixes(view);
-  }, [openQuickFixes]);
-
-  /**
-   * Tab completion failures used to be invisible: the client cached an empty
-   * completion after one HTTP failure, so the ghost text never came back and
-   * the user had no idea why. The client now counts failures instead of caching
-   * them, and this is the line that tells the user.
-   */
-  const completionHint = useMemo<{ id: string; text: string } | null>(() => {
-    if (!editorAi?.completionEnabled) return null;
-    if (editorAi.hasCredential === false) {
-      return {
-        id: `no-key-${editorAi.provider}`,
-        text: 'Tab completion is on but no API key is saved — add one in Settings → Models & Keys.'
-      };
-    }
-    if (fimHealth.consecutiveFailures >= FIM_FAILURE_HINT_THRESHOLD) {
-      return {
-        id: `failing-${editorAi.model}-${fimHealth.consecutiveFailures}`,
-        text: `Tab completion has failed ${fimHealth.consecutiveFailures} times in a row — check the key and model in Settings → Models & Keys. ShadRox is pausing those requests and will retry on its own.`
-      };
-    }
-    return null;
-  }, [editorAi, fimHealth.consecutiveFailures]);
-
-  const dismissCompletionHint = useCallback(() => {
-    if (!completionHint) return;
-    setDismissedCompletionHint(completionHint.id);
-    // Reset the counter so a fresh run of failures can raise the notice again.
-    if (completionHint.id.startsWith('failing-')) clearFimHealth();
-  }, [completionHint]);
-
   const runSearch = (term: string) => {
     const view = editorRef.current?.view;
     if (!view) return;
@@ -1308,15 +1129,6 @@ export function CodeEditor({
     runSearch(value);
   };
 
-  const handleCopy = async () => {
-    if (!activeFile) return;
-    const ok = await copyToClipboard(activeFile.content);
-    if (ok) {
-      setHasCopied(true);
-      setTimeout(() => setHasCopied(false), 2000);
-    }
-  };
-
   const handleFormat = () => {
     if (!activeFile) return;
     const res = formatCode(activeFile.content, activeFile.language);
@@ -1328,16 +1140,6 @@ export function CodeEditor({
       setToastMsg('Already formatted');
       setTimeout(() => setToastMsg(null), 1500);
     }
-  };
-
-  const handleDownloadFile = () => {
-    if (!activeFile) return;
-    downloadFile(activeFile.name, activeFile.content);
-  };
-
-  const handleDownloadZip = () => {
-    if (files.length === 0) return;
-    downloadWorkspaceZip(workspaceName || 'shadrox-project', files);
   };
 
   const handleDeleteFile = async (index: number) => {
@@ -1353,23 +1155,6 @@ export function CodeEditor({
       if (!confirmed) return;
     }
     onDeleteFile(index);
-  };
-
-  const handleRename = () => {
-    if (!activeFile) return;
-    const current = activeFile.name;
-    setPathPrompt({
-      title: 'Rename file',
-      description: 'Workspace-relative path. The file is moved on disk and its tab follows.',
-      initialValue: current,
-      placeholder: 'src/utils/helper.ts',
-      confirmLabel: 'Rename',
-      onSubmit: (next) => {
-        setPathPrompt(null);
-        if (next === current) return;
-        onRenameFile(current, next);
-      }
-    });
   };
 
   const parentFolderForNew = () => {
@@ -1405,18 +1190,6 @@ export function CodeEditor({
     });
     if (!confirmed) return;
     await onDeleteEntry(path);
-  };
-
-  const handleRevert = async () => {
-    if (!activeFile || !dirty.has(activeFile.name)) return;
-    const confirmed = await confirmAction({
-      title: `Reload "${activeFile.name}" from disk?`,
-      body: 'Local edits to this file are lost. The version on disk is kept.',
-      confirmLabel: 'Discard changes',
-      tone: 'danger'
-    });
-    if (!confirmed) return;
-    onRevertFile();
   };
 
   useEffect(() => {
@@ -1535,15 +1308,6 @@ export function CodeEditor({
                 <FolderPlus className="w-3.5 h-3.5" />
               </button>
             )}
-            <button
-              type="button"
-              onClick={handleDownloadZip}
-              title="Export workspace as ZIP"
-              aria-label="Export workspace as ZIP"
-              className="p-1 text-ink-3 hover:text-ink transition-colors cursor-pointer"
-            >
-              <Archive className="w-3.5 h-3.5" />
-            </button>
           </div>
         </div>
 
@@ -1647,17 +1411,6 @@ export function CodeEditor({
                 <span className="hidden md:inline text-[10px] text-ink-4 uppercase font-mono">
                   {activeFile.language}
                 </span>
-                {pausedAt && (
-                  <button
-                    type="button"
-                    onClick={() => onOpenPaused?.(pausedAt.file, pausedAt.line, pausedAt.column)}
-                    title={`Debugger paused at ${pausedAt.file}:${pausedAt.line}`}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-danger/30 bg-danger/10 px-1.5 py-0.5 font-mono text-[10px] text-danger transition-colors hover:bg-danger/20 cursor-pointer"
-                  >
-                    <span className="h-1.5 w-1.5 rounded-full bg-danger" />
-                    paused at {pausedAt.file.split('/').pop()}:{pausedAt.line}
-                  </button>
-                )}
                 {isMarkdownFile(activeFile.name, activeFile.language) && (
                   <button
                     type="button"
@@ -1684,7 +1437,7 @@ export function CodeEditor({
           {activeFile && (
             <div className="flex shrink-0 items-center gap-1.5">
               {/* Search in active file */}
-              <div className="relative hidden xl:block">
+              <div className="relative">
                 <Search className="w-3 h-3 text-ink-5 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   value={findQuery}
@@ -1702,90 +1455,6 @@ export function CodeEditor({
                 />
               </div>
 
-              {/*
-                One entry point for the language-service actions: definition,
-                references, rename and quick fixes. The keybindings exist too,
-                but a menu keeps them findable without reading a shortcut list.
-              */}
-              {(symbols?.available || quickFixes?.available) && (
-                <div className="relative" ref={symbolMenuRef}>
-                  <button
-                    type="button"
-                    onClick={toggleSymbolMenu}
-                    aria-haspopup="menu"
-                    aria-expanded={isSymbolMenuOpen}
-                    title="Code actions — definition, references, rename, quick fix"
-                    className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] transition-colors cursor-pointer ${
-                      isSymbolMenuOpen
-                        ? 'border-accent-line bg-accent-soft text-accent'
-                        : 'border-line text-ink-3 hover:border-line-2 hover:text-ink'
-                    }`}
-                  >
-                    <MoreHorizontal className="w-3.5 h-3.5" />
-                    <span className="hidden lg:inline">Code</span>
-                  </button>
-                  {isSymbolMenuOpen && (
-                    <div
-                      role="menu"
-                      className="fixed z-40 w-52 overflow-hidden rounded-lg border border-line-2 bg-base-2/95 py-1 shadow-2xl backdrop-blur"
-                      style={{
-                        top: symbolMenuAnchor?.top ?? 44,
-                        right: symbolMenuAnchor?.right ?? 12
-                      }}
-                    >
-                      {quickFixes?.available && (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          onClick={runQuickFixFromMenu}
-                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
-                        >
-                          <Lightbulb className="w-3.5 h-3.5 text-warn" />
-                          Quick Fix
-                          <span className="ml-auto font-mono text-[9px] text-ink-5">⌃.</span>
-                        </button>
-                      )}
-                      {symbols?.available && (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          onClick={runDefinitionFromMenu}
-                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
-                        >
-                          <Navigation className="w-3.5 h-3.5 text-accent" />
-                          Go to Definition
-                          <span className="ml-auto font-mono text-[9px] text-ink-5">F12</span>
-                        </button>
-                      )}
-                      {symbols?.available && (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          onClick={runFindReferencesFromMenu}
-                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
-                        >
-                          <SearchCode className="w-3.5 h-3.5 text-accent" />
-                          Find All References
-                          <span className="ml-auto font-mono text-[9px] text-ink-5">⇧F12</span>
-                        </button>
-                      )}
-                      {symbols?.available && (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          onClick={runRenameFromMenu}
-                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-ink-3 transition-colors hover:bg-overlay-2 hover:text-ink cursor-pointer"
-                        >
-                          <Pencil className="w-3.5 h-3.5 text-accent" />
-                          Rename Symbol
-                          <span className="ml-auto font-mono text-[9px] text-ink-5">F2</span>
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
               {/* Format code */}
               <button
                 type="button"
@@ -1796,77 +1465,6 @@ export function CodeEditor({
                 <Sparkles className="w-3.5 h-3.5 text-accent" />
                 <span className="hidden lg:inline">Format</span>
               </button>
-
-              {editorAi && (
-                <button
-                  type="button"
-                  onClick={editorAi.onToggleCompletion}
-                  title={
-                    editorAi.completionEnabled
-                      ? 'Inline tab completion is ON — press Tab to accept a ghost suggestion'
-                      : 'Turn on inline tab completion'
-                  }
-                  className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] transition-colors cursor-pointer ${
-                    editorAi.completionEnabled
-                      ? 'border-accent-line bg-accent-soft text-accent hover:bg-accent-soft'
-                      : 'border-line text-ink-4 hover:border-line-2 hover:text-ink'
-                  }`}
-                >
-                  <Zap className={`w-3.5 h-3.5 ${editorAi.completionEnabled ? 'text-accent' : 'text-ink-5'}`} />
-                  <span className="hidden lg:inline">Tab complete</span>
-                </button>
-              )}
-
-              {/* Copy file content */}
-              <button
-                type="button"
-                onClick={handleCopy}
-                title="Copy Code"
-                aria-label={hasCopied ? 'Copied to clipboard' : 'Copy file contents'}
-                className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-[11px] text-ink-3 transition-colors hover:border-line-2 hover:text-ink cursor-pointer"
-              >
-                {hasCopied ? (
-                  <Check className="w-3.5 h-3.5 text-accent" />
-                ) : (
-                  <Copy className="w-3.5 h-3.5 text-ink-3" />
-                )}
-                <span className="hidden xl:inline">{hasCopied ? 'Copied' : 'Copy'}</span>
-              </button>
-
-              {/* Download single file */}
-              <button
-                type="button"
-                onClick={handleDownloadFile}
-                title="Download this file"
-                aria-label="Download this file"
-                className="rounded-lg border border-line p-1 text-ink-3 transition-colors hover:border-line-2 hover:text-ink cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-              </button>
-
-              {canWriteToDisk && (
-                <>
-                  <button
-                    type="button"
-                    onClick={handleRename}
-                    title="Rename file on disk"
-                    aria-label="Rename file on disk"
-                    className="rounded-lg border border-line p-1 text-ink-3 transition-colors hover:border-line-2 hover:text-ink cursor-pointer"
-                  >
-                    <Pencil className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleRevert}
-                    disabled={!isDirty}
-                    title="Discard local edits and reload from disk"
-                    aria-label="Discard local edits and reload from disk"
-                    className="rounded-lg border border-line p-1 text-ink-3 transition-colors hover:border-warn/40 hover:text-warn disabled:opacity-30 cursor-pointer"
-                  >
-                    <Undo2 className="w-3.5 h-3.5" />
-                  </button>
-                </>
-              )}
 
               {/* Save file */}
               {canWriteToDisk && (
@@ -1993,27 +1591,6 @@ export function CodeEditor({
                 {diagnostics.length} diagnostic{diagnostics.length === 1 ? '' : 's'}
               </span>
             )}
-          </div>
-        )}
-
-        {/* One-line, dismissible inline-AI notice. Non-blocking by design. */}
-        {completionHint && dismissedCompletionHint !== completionHint.id && (
-          <div
-            role="status"
-            className="flex shrink-0 items-center gap-2 border-b border-warn/15 bg-warn/[0.07] px-3 py-1 text-[10.5px] text-warn/90"
-          >
-            <Zap className="w-3 h-3 shrink-0" />
-            <span className="min-w-0 flex-1 truncate" title={completionHint.text}>
-              {completionHint.text}
-            </span>
-            <button
-              type="button"
-              onClick={dismissCompletionHint}
-              aria-label="Dismiss completion hint"
-              className="rounded p-0.5 text-warn/60 transition-colors hover:text-ink cursor-pointer"
-            >
-              <X className="h-3 w-3" />
-            </button>
           </div>
         )}
 

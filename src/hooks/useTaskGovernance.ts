@@ -10,29 +10,20 @@ import { routeProfiles } from '../lib/calibratedAuto/ledger';
 import { listPreferences, setPreferredModel, type ModelPreferences } from '../lib/calibratedAuto/preferences';
 import { rankModels } from '../lib/calibratedAuto/router';
 import type { CalibratedTaskType, OutcomeRecord } from '../lib/calibratedAuto/types';
-import { getCapsule } from '../lib/capsules/store';
-import type { CapsuleSpend } from '../lib/capsules/types';
 import type { CheckpointDiff } from '../lib/checkpointDiff';
 import { collectCommitContext, generateCommitMessage } from '../lib/commitMessage';
 import { hasConflictMarkers, parseConflicts, resolveConflictFile, type ConflictChoice } from '../lib/conflicts';
 import type { ShadRoxDesktopAPI } from '../lib/desktop';
-import { loadCheckpointFiles } from '../lib/history';
-import type { DecisionInput } from '../lib/intent/types';
 import { restoreDraft } from '../lib/promptTemplates';
 import type { ModelInfo, ProviderId } from '../lib/providers';
 import type { ChatMessage, RefineMode, RefinedPromptMeta } from '../lib/types';
 import type { useAcceptance } from './useAcceptance';
-import type { useCapsules } from './useCapsules';
-import type { useIntentGraph } from './useIntentGraph';
 import type { SaveOutcome, useWorkspace } from './useWorkspace';
 
 export interface UseTaskGovernanceOptions {
   desktop: ShadRoxDesktopAPI | null;
   nativeWorkspaceId: string | null;
-  workspaceRootPath: string | null;
   workspace: ReturnType<typeof useWorkspace>;
-  capsules: ReturnType<typeof useCapsules>;
-  intent: ReturnType<typeof useIntentGraph>;
   acceptance: ReturnType<typeof useAcceptance>;
   byok: {
     activeProvider: ProviderId;
@@ -57,20 +48,6 @@ export interface UseTaskGovernanceOptions {
   behaviorContract: AcceptanceContract | null;
   setBehaviorContract: Dispatch<SetStateAction<AcceptanceContract | null>>;
   calibratedOutcomes: OutcomeRecord[];
-  pendingCapsule: {
-    taskId: string;
-    checkpointId: string;
-    promptIntent: string;
-    spend: CapsuleSpend | null;
-    machineDeltaRef: string | null;
-  } | null;
-  setPendingCapsule: Dispatch<SetStateAction<{
-    taskId: string;
-    checkpointId: string;
-    promptIntent: string;
-    spend: CapsuleSpend | null;
-    machineDeltaRef: string | null;
-  } | null>>;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setToast: (message: string | null) => void;
   announce: (message: string, ms?: number) => void;
@@ -79,10 +56,7 @@ export interface UseTaskGovernanceOptions {
 export function useTaskGovernance({
   desktop,
   nativeWorkspaceId,
-  workspaceRootPath,
   workspace,
-  capsules,
-  intent,
   acceptance,
   byok,
   saveFilesAtomicWithHooks,
@@ -100,9 +74,6 @@ export function useTaskGovernance({
   behaviorContract,
   setBehaviorContract,
   calibratedOutcomes,
-  pendingCapsule,
-  setPendingCapsule,
-  setMessages,
   setToast,
   announce
 }: UseTaskGovernanceOptions) {
@@ -168,164 +139,6 @@ export function useTaskGovernance({
     const result = await acceptance.run(phase);
     announce(result.message, 7000);
   }, [acceptance, announce]);
-
-  const applyCapsulePlan = useCallback(async (id: string, mode: 'replay' | 'revert') => {
-    const folder = workspace.workspace;
-    if (!folder || folder.kind !== 'folder') {
-      announce('Open a folder workspace to replay or revert a capsule.', 5000);
-      return;
-    }
-    if (isGenerating) {
-      announce('Finish the current turn before replaying or reverting a capsule.', 5000);
-      return;
-    }
-    const currentFiles = workspace.files.map((file) => ({ path: file.name, content: file.content }));
-    const plan = mode === 'replay'
-      ? await capsules.planReplay(id, currentFiles)
-      : await capsules.planRevert(id, currentFiles);
-    if (!plan.ok) {
-      announce(
-        `Capsule ${mode} refused — ${plan.conflicts.slice(0, 3).map((conflict) => `${conflict.path}: ${conflict.reason}`).join(' · ')}. No files changed.`,
-        7000
-      );
-      return;
-    }
-    if (plan.jobs.length === 0) {
-      announce('This capsule has no changes to apply.', 4000);
-      return;
-    }
-    const capsule = await getCapsule(id);
-    const normalize = (value: string) => value.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
-    const kindByPath = new Map((capsule?.diffs ?? []).map((diff) => [normalize(diff.path), diff.kind]));
-    const writeJobs: AtomicPlanJob[] = [];
-    const deletePaths: string[] = [];
-    for (const job of plan.jobs) {
-      const kind = kindByPath.get(normalize(job.path));
-      const isDelete = (mode === 'replay' && kind === 'deleted') || (mode === 'revert' && kind === 'created');
-      if (isDelete) deletePaths.push(job.path);
-      else writeJobs.push(job);
-    }
-    const checkpointId = await workspace.markCheckpoint(makeId('capsule'), `Capsule ${mode}`, true, true);
-    try {
-      const editPaths = writeJobs.filter((job) => !job.created).map((job) => job.path);
-      if (editPaths.length > 0) await workspace.loadFilesForPatching(editPaths);
-      const applied = applyAtomicJobs(writeJobs, (updates) => workspace.applyFilePatches(updates));
-      for (const path of deletePaths) await workspace.deleteWorkspaceEntry(path);
-      const createdPaths = writeJobs.filter((job) => job.created).map((job) => job.path);
-      if (createdPaths.length > 0) await workspace.noteCheckpointCreated(createdPaths);
-      let diskNote = 'Applied in the editor only — save to write to disk.';
-      if (applied.length > 0 && workspace.canWriteToDisk) {
-        const outcome = await saveFilesAtomicWithHooks(applied);
-        if (outcome.failed && outcome.written === 0) {
-          workspace.applyFilePatches(revertAtomicJobs(writeJobs));
-          announce(outcome.message ?? 'The capsule change was not saved and was rolled back.', 7000);
-          return;
-        }
-        diskNote = outcome.written > 0
-          ? `${outcome.written} file${outcome.written === 1 ? '' : 's'} written to disk.`
-          : outcome.message ?? diskNote;
-      }
-      announce(
-        `Capsule ${mode}: ${applied.length} file${applied.length === 1 ? '' : 's'} updated${deletePaths.length > 0 ? `, ${deletePaths.length} deleted` : ''}. ${diskNote}`,
-        5000
-      );
-    } finally {
-      await workspace.finishMachineCheckpoint(checkpointId);
-    }
-  }, [workspace, capsules, announce, saveFilesAtomicWithHooks, isGenerating]);
-
-  const handleCapsuleExport = useCallback(async () => {
-    const exported = await capsules.exportJson();
-    if (exported.capsules.length === 0) {
-      announce('No capsules to export yet.', 4000);
-      return;
-    }
-    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `shadrox-capsules-${Date.now()}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    announce(`Exported ${exported.capsules.length} capsule${exported.capsules.length === 1 ? '' : 's'}.`, 4000);
-  }, [capsules, announce]);
-
-  const handleCapsuleImport = useCallback(async (data: unknown) => {
-    const result = await capsules.importJson(data);
-    if (result.imported === 0 && result.errors.length > 0) {
-      announce(`Capsule import failed — ${result.errors[0]}`, 6000);
-      return;
-    }
-    announce(
-      `Imported ${result.imported} capsule${result.imported === 1 ? '' : 's'}${result.skipped > 0 ? `, ${result.skipped} skipped` : ''}.`,
-      5000
-    );
-  }, [capsules, announce]);
-
-  const handleAddDecision = useCallback(async (inputDecision: DecisionInput) => {
-    const decision = await intent.addDecision(inputDecision);
-    if (!decision) {
-      announce('The decision was not saved — this workspace cannot write local storage.', 5000);
-      return;
-    }
-    const governed = Object.keys(inputDecision.baseHashes).length;
-    announce(
-      governed === 0
-        ? 'Saved. None of its files are indexed yet, so it will read as unverified until one is open.'
-        : `Saved. It now tracks ${governed} file${governed === 1 ? '' : 's'} for change.`,
-      4500
-    );
-  }, [intent, announce]);
-
-  const handleIntentExport = useCallback(() => {
-    const exported = intent.exportJson();
-    if (exported.decisions.length === 0) {
-      announce('No intent decisions to export yet.', 4000);
-      return;
-    }
-    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `shadrox-intent-${Date.now()}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    announce(`Exported ${exported.decisions.length} intent decision${exported.decisions.length === 1 ? '' : 's'}.`, 4000);
-  }, [intent, announce]);
-
-  const handleIntentImport = useCallback((data: unknown) => {
-    const result = intent.importJson(data);
-    announce(
-      result.imported > 0
-        ? `Imported ${result.imported} intent decision${result.imported === 1 ? '' : 's'}.`
-        : `Intent import failed — ${result.errors[0] ?? 'nothing new to import'}`,
-      5000
-    );
-  }, [intent, announce]);
-
-  useEffect(() => {
-    if (!pendingCapsule || !workspaceRootPath) return;
-    const request = pendingCapsule;
-    setPendingCapsule(null);
-    const postFiles = workspace.files.map((file) => ({ path: file.name, content: file.content }));
-    void (async () => {
-      try {
-        const baseFiles = await loadCheckpointFiles(request.checkpointId);
-        await capsules.capture({
-          taskId: request.taskId,
-          workspaceRoot: workspaceRootPath,
-          promptIntent: request.promptIntent,
-          baseFiles: (baseFiles ?? []).map((file) => ({ path: file.name, content: file.content })),
-          postFiles,
-          spend: request.spend,
-          machineDeltaRef: request.machineDeltaRef,
-          status: 'applied'
-        });
-      } catch {
-        // Capsule capture is best-effort and must never surface as a turn error.
-      }
-    })();
-  }, [pendingCapsule, workspaceRootPath, workspace.files, capsules.capture]);
 
   const conflictHunks = useMemo(() => {
     const file = workspace.activeFile;
@@ -509,12 +322,6 @@ export function useTaskGovernance({
     handleBehaviorEvent,
     handleGenerateContract,
     handleClearBehavior,
-    handleRunCheck,
-    applyCapsulePlan,
-    handleCapsuleExport,
-    handleCapsuleImport,
-    handleAddDecision,
-    handleIntentExport,
-    handleIntentImport
+    handleRunCheck
   };
 }

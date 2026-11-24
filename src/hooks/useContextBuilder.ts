@@ -50,7 +50,6 @@ import type { ModelInfo, ProviderId } from '../lib/providers';
 import type { SecretItem, SemanticStatus, WorkspaceFile } from '../lib/types';
 import { markUntrustedData } from '../lib/untrustedData';
 import type { useWorkspace } from './useWorkspace';
-import type { useIntentGraph } from './useIntentGraph';
 import type { useRepoMapFiles } from './useRepoMap';
 
 export interface UseContextBuilderOptions {
@@ -71,7 +70,6 @@ export interface UseContextBuilderOptions {
   previewDiagnostics: string;
   calibratedOutcomes: OutcomeRecord[];
   repoMapFiles: ReturnType<typeof useRepoMapFiles>;
-  intentGetContext: ReturnType<typeof useIntentGraph>['getContext'];
   ruleDocsRef: MutableRefObject<RuleSource[]>;
   skillDocsRef: MutableRefObject<Skill[]>;
   getToolContext?: () => Promise<WorkspaceToolContext> | WorkspaceToolContext;
@@ -91,7 +89,6 @@ export function useContextBuilder({
   previewDiagnostics,
   calibratedOutcomes,
   repoMapFiles,
-  intentGetContext,
   ruleDocsRef,
   skillDocsRef,
   getToolContext,
@@ -496,19 +493,6 @@ export function useContextBuilder({
         }
       }
 
-      const intentContext = intentGetContext({
-        seeds: [
-          ...(workspace.activeFile?.name ? [workspace.activeFile.name] : []),
-          ...selectedFiles
-        ],
-        query,
-        tokenBudget: 900,
-        maxDecisions: 8
-      });
-      if (intentContext.text) {
-        core.push('LIVING INTENT (user-approved provenance; STALE items may no longer hold and UNVERIFIED items were never checked against code — re-read the file before relying on either):', intentContext.text);
-      }
-
       if (mode.writesFiles && pathOnly > 0) {
         core.push(nativeWorkspaceId
           ? `- ${pathOnly} file(s) are listed by path only, without contents. Run the read_file tool on one before writing ORIGINAL text into it — never guess its lines.`
@@ -791,7 +775,6 @@ export function useContextBuilder({
       desktop,
       repoMapFiles.files,
       repoMapFiles.signatures,
-      intentGetContext,
       ruleDocsRef,
       skillDocsRef,
       getToolContext,

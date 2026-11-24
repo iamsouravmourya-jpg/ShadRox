@@ -65,15 +65,22 @@ import { dedupePaths } from '../lib/paths';
 import { decideOrchestration } from '../lib/orchestrate';
 import { DEFAULT_MAX_OUTPUT, modelSupportsVision, resolveBudgetCapabilities, resolveContextWindow } from '../lib/modelCapabilities';
 import { extractUnifiedPatches } from '../lib/patchEngine';
-import { selectHooks, type LoadedPlugin, type PluginActionRun } from '../lib/plugins';
-import { globalRepairSession } from '../lib/repairSession';
+import {
+  computeRestorePlan,
+  hasCheckpointDelta,
+  normalizeCheckpointPath,
+  recordPreMutationState,
+  upsertPromptCheckpoint,
+  type PromptCheckpointSnapshot
+} from '../lib/chatCheckpoints';
+import { confirmAction } from '../lib/confirm';
 import { createRequestEnvelope, describeEnvelopeDrift, envelopeDrift } from '../lib/requestEnvelope';
 import { renderSkill, skillInvocation, type Skill } from '../lib/skills';
 import { getSessionStore, syncInterruptedSnapshot, takeRestorableSnapshot, type RestoredConversation } from '../lib/streamSnapshot';
 import type { AttemptRecord } from '../lib/taskUsage';
 import { buildTypeFixPrompt } from '../lib/typeErrorRefine';
 import type { ModelInfo, ProviderId } from '../lib/providers';
-import type { ChatMessage, PatchSet, RefineMode, RefinedPromptMeta, ReviewPatch, SettingsTab } from '../lib/types';
+import type { ChatMessage, ExternalFileAttachment, PatchSet, RefineMode, RefinedPromptMeta, ReviewPatch, SettingsTab } from '../lib/types';
 import { useAutonomyRun } from './useAutonomyRun';
 import { useTeamRun } from './useTeamRun';
 import type { useWorkspace } from './useWorkspace';
@@ -149,20 +156,9 @@ export interface UseOrchestrationControllerOptions {
   routingNoteRef: MutableRefObject<string>;
   rulesNoteRef: MutableRefObject<string>;
   mcpToolHandleRef: MutableRefObject<McpToolHandle | null>;
-  pluginsRef: MutableRefObject<LoadedPlugin[]>;
   skillDocsRef: MutableRefObject<Skill[]>;
-  pendingPromptQueueRef: MutableRefObject<string[]>;
-  chatHookGuardRef: MutableRefObject<boolean>;
-  dispatchPluginActionRuns: (runs: PluginActionRun[]) => void;
   busyRef: MutableRefObject<boolean>;
   setCalibratedOutcomes: Dispatch<SetStateAction<OutcomeRecord[]>>;
-  setPendingCapsule: Dispatch<SetStateAction<{
-    taskId: string;
-    checkpointId: string;
-    promptIntent: string;
-    spend: null;
-    machineDeltaRef: string | null;
-  } | null>>;
   setToast: (message: string | null) => void;
   announce: (message: string, ms?: number) => void;
   openSettings: (tab?: SettingsTab) => void;
@@ -210,14 +206,9 @@ export function useOrchestrationController({
   routingNoteRef,
   rulesNoteRef,
   mcpToolHandleRef,
-  pluginsRef,
   skillDocsRef,
-  pendingPromptQueueRef,
-  chatHookGuardRef,
-  dispatchPluginActionRuns,
   busyRef,
   setCalibratedOutcomes,
-  setPendingCapsule,
   setToast,
   announce,
   openSettings,
@@ -235,6 +226,9 @@ export function useOrchestrationController({
   const [resumePrefixes, setResumePrefixes] = useState<Record<string, string>>({});
   /** Tool loop resume states keyed by model message id, so a Continue button can re-run runToolRounds from where provider_error/step_cap stopped. */
   const toolLoopResumeRef = useRef<Record<string, ToolLoopResumeState>>({});
+  const [promptCheckpoints, setPromptCheckpoints] = useState<PromptCheckpointSnapshot[]>([]);
+  const promptCheckpointsRef = useRef<PromptCheckpointSnapshot[]>([]);
+  const activeUserTurnRef = useRef<{ userMessageId: string; promptText: string } | null>(null);
 
   const snapshotStore = useMemo(() => createBackgroundStore(), []);
   const [resumeSnapshot, setResumeSnapshot] = useState<BackgroundRunSnapshot | null>(null);
@@ -276,6 +270,67 @@ export function useOrchestrationController({
   }, [workspaceRootPath, snapshotStore]);
 
   const restoreWorkspaceId = workspace.workspace?.id ?? null;
+  const restoreWorkspaceKey = restoreWorkspaceId ?? workspaceRootPath ?? 'default';
+  useEffect(() => {
+    promptCheckpointsRef.current = [];
+    setPromptCheckpoints([]);
+  }, [restoreWorkspaceId]);
+
+  const readPreTurnContent = useCallback(async (filePath: string): Promise<string | null> => {
+    const clean = normalizeCheckpointPath(filePath);
+    if (!clean) return null;
+    const lower = clean.toLowerCase();
+    const buffered = workspace.files.find((file) => normalizeSlashes(file.name).toLowerCase() === lower);
+    const isDirty = workspace.dirtyFiles.some((name) => normalizeSlashes(name).toLowerCase() === lower);
+    if (buffered && (isDirty || !desktop || !nativeWorkspaceId)) {
+      return buffered.content;
+    }
+    if (desktop && nativeWorkspaceId) {
+      try {
+        return (await desktop.readFile(nativeWorkspaceId, clean)).content;
+      } catch {
+        return buffered ? buffered.content : null;
+      }
+    }
+    return buffered ? buffered.content : null;
+  }, [desktop, nativeWorkspaceId, workspace.files, workspace.dirtyFiles]);
+
+  const capturePreMutationPaths = useCallback(async (userMessageId: string, promptText: string, rawPaths: string[]) => {
+    const cleaned = [...new Set(rawPaths.map((entry) => normalizeCheckpointPath(entry)).filter((entry): entry is string => Boolean(entry)))];
+    if (cleaned.length === 0) return;
+
+    const currentSnapshot = promptCheckpointsRef.current.find((cp) => cp.userMessageId === userMessageId) ?? {
+      userMessageId,
+      promptText,
+      workspaceKey: restoreWorkspaceKey,
+      createdAt: Date.now(),
+      priorFiles: {},
+      createdPaths: []
+    };
+
+    const untracked = cleaned.filter((path) =>
+      !Object.prototype.hasOwnProperty.call(currentSnapshot.priorFiles, path) &&
+      !currentSnapshot.createdPaths.includes(path)
+    );
+    if (untracked.length === 0) return;
+
+    const entries = await Promise.all(
+      untracked.map(async (path) => ({
+        path,
+        content: await readPreTurnContent(path)
+      }))
+    );
+
+    const latestSnapshot = promptCheckpointsRef.current.find((cp) => cp.userMessageId === userMessageId) ?? currentSnapshot;
+    const updated = recordPreMutationState(latestSnapshot, entries);
+    if (updated === latestSnapshot && promptCheckpointsRef.current.some((cp) => cp.userMessageId === userMessageId)) {
+      return;
+    }
+    const nextCheckpoints = upsertPromptCheckpoint(promptCheckpointsRef.current, updated);
+    promptCheckpointsRef.current = nextCheckpoints;
+    setPromptCheckpoints(nextCheckpoints);
+  }, [readPreTurnContent, restoreWorkspaceKey]);
+
   const historyStore = useRef(getHistoryStore()).current;
   const snapshotConsumedFor = useRef(new Set<string>());
   const lastWorkspaceIdRef = useRef<string | null>(null);
@@ -334,6 +389,7 @@ export function useOrchestrationController({
     const requestPendingRefine = submission ? submission.pendingRefine : pendingRefine;
     const requestImage = submission?.attachedImage ?? attachedImage;
     const requestPastes = submission?.pastedTexts ?? [];
+    const requestExternal = submission?.externalAttachments ?? [];
     if (requestImage && !modelSupportsVision(byok.activeProvider, byok.selectedModel)) {
       setToast('This model does not advertise photo support. Choose a vision-capable model or remove the photo.');
       window.setTimeout(() => setToast(null), 5000);
@@ -366,6 +422,7 @@ export function useOrchestrationController({
     const mode = getRefineMode(requestRefineMode);
     const timestamp = formatTime();
     const userMessageId = makeId('user');
+    const visiblePromptText = submission?.text ?? typed;
     const requestEnvelope = submission?.envelope ?? createRequestEnvelope({
       id: userMessageId,
       workspaceId: nativeWorkspaceId,
@@ -382,16 +439,17 @@ export function useOrchestrationController({
     const userMessage: ChatMessage = {
       id: userMessageId,
       role: 'user',
-      content: typed,
+      content: visiblePromptText,
       timestamp,
       refinedMeta: requestPendingRefine ? { ...requestPendingRefine, mode: requestRefineMode } : undefined,
       attachedImage: requestImage ?? undefined,
       envelope: requestEnvelope,
       attachments:
-        requestFiles.length > 0 || requestPastes.length > 0 || requestSymbols.length > 0
+        requestFiles.length > 0 || requestPastes.length > 0 || requestExternal.length > 0 || requestSymbols.length > 0
           ? [
               ...requestFiles,
               ...requestPastes.map((paste) => `${paste.name} · pasted text`),
+              ...requestExternal.map((file) => `${file.name} · external file`),
               ...requestSymbols.map((symbol) => `${symbol.name} (${symbol.file})`)
             ]
           : undefined
@@ -448,7 +506,6 @@ export function useOrchestrationController({
       isSkill: Boolean(invocation),
       workspaceOpen: Boolean(workspace.workspace),
       previewActive: baseToolContext?.previewActive,
-      debuggerPaused: baseToolContext?.debuggerState.isPaused,
       activeJobCount: baseToolContext?.activeJobCount,
       terminalAwaitingInput: baseToolContext?.terminalAwaitingInput,
       hasActiveTerminal: baseToolContext?.hasActiveTerminal,
@@ -624,6 +681,10 @@ export function useOrchestrationController({
       applied = true;
       const remaining = reply.slice(appliedReplyChars);
       if (appliedReplyChars > 0 && !remaining.trim()) return;
+      const parsedPaths = extractUnifiedPatches(remaining, workspace.files).map((patch) => patch.path);
+      if (parsedPaths.length > 0) {
+        await capturePreMutationPaths(userMessageId, visiblePromptText, parsedPaths);
+      }
       mergeApply(await applyPatchesFromReply(modelMessage.id, remaining, effectiveMode, {
         ...(appliedReplyChars > 0 ? { merge: stagedRoundPatches } : {}),
         onFailures: runRepair,
@@ -666,9 +727,6 @@ export function useOrchestrationController({
       effectiveTurnIntent.kind === 'conversational'
         ? null
         : await workspace.markCheckpoint(modelMessage.id, text);
-    if (machineCheckpoint) {
-      globalRepairSession.beginTurn(machineCheckpoint);
-    }
 
     const turnUsage = {
       tokens: 0,
@@ -940,6 +998,7 @@ export function useOrchestrationController({
             JSON.stringify(nativeTools).length
           ),
           existingWorkspace: (workspace.workspace?.diskFileTree?.length ?? workspace.files.length) > 0,
+          onBeforeMutatePaths: (paths) => capturePreMutationPaths(userMessageId, visiblePromptText, paths),
           stream: streamOnce,
           applyRoundPatches,
           onRound: (_round, text) => {
@@ -1038,9 +1097,7 @@ export function useOrchestrationController({
                   toolRounds: loop.rounds,
                   taskPlan: closedPlan.length > 0 ? closedPlan : undefined,
                   finishedWith: loop.finish ?? undefined,
-                  selfHealingProof: loop.failureProof
-                    ? globalRepairSession.attachCheckpoint(loop.failureProof.id, machineCheckpoint) ?? loop.failureProof
-                    : message.selfHealingProof,
+                  selfHealingProof: loop.failureProof ?? message.selfHealingProof,
                   metrics: {
                     tokens: turnUsage.tokens,
                     inputTokens: turnUsage.inputTokens,
@@ -1069,16 +1126,6 @@ export function useOrchestrationController({
       finally {
         if (machineCheckpoint) {
           await workspace.finishMachineCheckpoint(machineCheckpoint);
-          globalRepairSession.endTurn();
-        }
-        if (streamCompleted && machineCheckpoint && workspaceRootPath) {
-          setPendingCapsule({
-            taskId: modelMessage.id,
-            checkpointId: machineCheckpoint,
-            promptIntent: text,
-            spend: null,
-            machineDeltaRef: machineCheckpoint
-          });
         }
         const turnEnded = (streamCompleted || turnSignals.streamError !== null) && !controller.signal.aborted;
         if (turnEnded) {
@@ -1164,10 +1211,10 @@ export function useOrchestrationController({
     setPinnedSymbols,
     setMessages,
     setCalibratedOutcomes,
-    setPendingCapsule,
     setToast,
     setIsSettingsOpen,
-    setSettingsTab
+    setSettingsTab,
+    capturePreMutationPaths
   ]);
 
   const runStore = useMemo(() => browserRunStore(), []);
@@ -1235,7 +1282,6 @@ export function useOrchestrationController({
         prompt: instruction,
         workspaceOpen: Boolean(workspace.workspace),
         previewActive: baseToolContext?.previewActive,
-        debuggerPaused: baseToolContext?.debuggerState.isPaused,
         activeJobCount: baseToolContext?.activeJobCount,
         terminalAwaitingInput: baseToolContext?.terminalAwaitingInput,
         hasActiveTerminal: baseToolContext?.hasActiveTerminal,
@@ -1305,6 +1351,9 @@ export function useOrchestrationController({
             runToolRounds: (loopInput) =>
               runToolRounds({
                 ...loopInput,
+                onBeforeMutatePaths: activeUserTurnRef.current
+                  ? (paths) => capturePreMutationPaths(activeUserTurnRef.current!.userMessageId, activeUserTurnRef.current!.promptText, paths)
+                  : undefined,
                 onUnlockTools: (unlocked) => {
                   for (const bundle of unlocked) unlockedBundles.add(bundle);
                 }
@@ -1325,6 +1374,13 @@ export function useOrchestrationController({
               return buffered ? buffered.content : null;
             },
             writePatches: async (patches) => {
+              if (activeUserTurnRef.current && patches.length > 0) {
+                await capturePreMutationPaths(
+                  activeUserTurnRef.current.userMessageId,
+                  activeUserTurnRef.current.promptText,
+                  patches.map((patch) => patch.path)
+                );
+              }
               const review: ReviewPatch[] = patches.map((patch) => ({
                 path: patch.path,
                 kind: patch.kind,
@@ -1673,6 +1729,7 @@ export function useOrchestrationController({
       )
     );
     orchestrationRef.current = null;
+    activeUserTurnRef.current = null;
     setIsGenerating(false);
     chatDispatchLockRef.current = false;
   }, [
@@ -1684,16 +1741,28 @@ export function useOrchestrationController({
     setMessages
   ]);
 
-  const handleChatSend = useCallback((queuedSubmission?: QueuedChatDraft, pastedTextsOverride?: PastedText[]) => {
+  const handleChatSend = useCallback((
+    queuedSubmission?: QueuedChatDraft,
+    pastedTextsOverride?: PastedText[],
+    externalAttachmentsOverride?: ExternalFileAttachment[]
+  ) => {
     const draftPastes = queuedSubmission?.pastedTexts ?? pastedTextsOverride ?? [];
+    const draftExternal = queuedSubmission?.externalAttachments ?? externalAttachmentsOverride ?? [];
     const draftText = (queuedSubmission?.text ?? input).trim()
-      || (draftPastes.length > 0 ? 'Use the pasted text.' : '');
+      || (draftPastes.length > 0 ? 'Use the pasted text.' : '')
+      || (draftExternal.length > 0 ? 'Use the attached file(s).' : '');
     if (!draftText) return;
-    const modelText = draftPastes.length === 0
-      ? draftText
-      : `${draftText}\n\n${draftPastes
+    const pasteBlock = draftPastes.length > 0
+      ? `\n\n${draftPastes
         .map((paste) => `<pasted-text name="${paste.name}">\n${paste.content}\n</pasted-text>`)
-        .join('\n\n')}`;
+        .join('\n\n')}`
+      : '';
+    const externalBlock = draftExternal.length > 0
+      ? `\n\n${draftExternal
+        .map((file) => `<attached-external-file name="${file.name}">\n${file.content}\n</attached-external-file>`)
+        .join('\n\n')}`
+      : '';
+    const modelText = `${draftText}${pasteBlock}${externalBlock}`;
     const draftFiles = [...(queuedSubmission?.attachedFiles ?? attachedFiles)];
     const draftImage = queuedSubmission?.attachedImage ?? attachedImage;
     const draftSymbols = [...(queuedSubmission?.pinnedSymbols ?? pinnedSymbols)];
@@ -1708,6 +1777,7 @@ export function useOrchestrationController({
       attachedFiles: draftFiles,
       attachedImage: draftImage,
       pastedTexts: draftPastes,
+      externalAttachments: draftExternal,
       pinnedSymbols: draftSymbols,
       pendingRefine: draftPendingRefine,
       refineMode: draftRefineMode,
@@ -1760,9 +1830,6 @@ export function useOrchestrationController({
     });
 
     chatDispatchLockRef.current = true;
-    if (!chatHookGuardRef.current && desktop && nativeWorkspaceId && (byok.activeKey)) {
-      dispatchPluginActionRuns(selectHooks(pluginsRef.current, 'onChatSend'));
-    }
 
     if (decision.kind === 'chat') {
       void handleSend(modelText, undefined, frozen).finally(() => {
@@ -1789,10 +1856,12 @@ export function useOrchestrationController({
       attachments:
         submission.attachedFiles.length > 0
         || submission.pastedTexts.length > 0
+        || (submission.externalAttachments?.length ?? 0) > 0
         || submission.pinnedSymbols.length > 0
           ? [
               ...submission.attachedFiles,
               ...submission.pastedTexts.map((paste) => `${paste.name} · pasted text`),
+              ...(submission.externalAttachments ?? []).map((file) => `${file.name} · external file`),
               ...submission.pinnedSymbols.map((symbol) => `${symbol.name} (${symbol.file})`)
             ]
           : undefined
@@ -1840,6 +1909,7 @@ export function useOrchestrationController({
       seenRunning: false
     };
     trackedRunRef.current = { kind, goal: modelText };
+    activeUserTurnRef.current = { userMessageId: userMessage.id, promptText: text };
 
     if (kind === 'team') team.start(modelText);
     else autonomy.start(modelText);
@@ -1863,9 +1933,6 @@ export function useOrchestrationController({
     attachedFiles,
     attachedImage,
     pinnedSymbols,
-    dispatchPluginActionRuns,
-    pluginsRef,
-    chatHookGuardRef,
     setMessages,
     setInput,
     setPendingRefine,
@@ -1983,21 +2050,6 @@ export function useOrchestrationController({
     setResumeSnapshot(null);
   }, [resumeSnapshot, snapshotStore]);
 
-  useEffect(() => {
-    if (isGenerating || autonomy.isRunning || team.isRunning) return;
-    if (pendingPromptQueueRef.current.length === 0) return;
-    if (!byok.activeKey) {
-      pendingPromptQueueRef.current = [];
-      return;
-    }
-    const next = pendingPromptQueueRef.current.shift();
-    if (!next) return;
-    chatHookGuardRef.current = true;
-    void handleSend(next).finally(() => {
-      chatHookGuardRef.current = false;
-    });
-  }, [isGenerating, autonomy.isRunning, team.isRunning, byok.activeKey, handleSend, pendingPromptQueueRef, chatHookGuardRef]);
-
   const fixTypeErrors = useCallback(
     (messageId: string) => {
       const diagnostics = typeFixOffers[messageId];
@@ -2017,6 +2069,50 @@ export function useOrchestrationController({
     [typeFixOffers, workspace.files, handleSend, setTypeFixOffers]
   );
 
+  const restorableMessageIds = useMemo(
+    () => new Set(promptCheckpoints.filter(hasCheckpointDelta).map((cp) => cp.userMessageId)),
+    [promptCheckpoints]
+  );
+
+  const handleRestorePromptCheckpoint = useCallback(async (userMessageId: string) => {
+    if (isGenerating || chatDispatchLockRef.current || autonomy.isRunning || team.isRunning) return;
+    const plan = computeRestorePlan(promptCheckpointsRef.current, userMessageId);
+    if (!plan) return;
+    const restoreCount = plan.restoreFiles.length;
+    const deleteCount = plan.deletePaths.length;
+    const confirmed = await confirmAction({
+      title: 'Restore workspace to before this prompt?',
+      body: `This will restore ${restoreCount} modified file${restoreCount === 1 ? '' : 's'}, delete ${deleteCount} newly created path${deleteCount === 1 ? '' : 's'}, and rewind the conversation to this prompt.`,
+      confirmLabel: 'Restore',
+      tone: 'danger'
+    });
+    if (!confirmed) return;
+
+    const outcome = await workspace.applyCheckpointRestore({
+      restoreFiles: plan.restoreFiles,
+      deletePaths: plan.deletePaths
+    });
+    promptCheckpointsRef.current = plan.remainingCheckpoints;
+    setPromptCheckpoints(plan.remainingCheckpoints);
+
+    const targetIndex = messages.findIndex((message) => message.id === userMessageId);
+    if (targetIndex >= 0) {
+      const keptIds = new Set(messages.slice(0, targetIndex).map((message) => message.id));
+      setMessages((previous) => {
+        const idx = previous.findIndex((message) => message.id === userMessageId);
+        return idx >= 0 ? previous.slice(0, idx) : previous;
+      });
+      setPatchSets((previous) => previous.filter((set) => keptIds.has(set.messageId)));
+    }
+    setInput(plan.promptText);
+    setToast(
+      outcome.ok
+        ? 'Restored workspace and rewound prompt to composer.'
+        : `Restored with warnings: ${outcome.errors[0] ?? 'some files could not be restored'}`
+    );
+    window.setTimeout(() => setToast(null), 4000);
+  }, [autonomy.isRunning, team.isRunning, isGenerating, messages, setInput, setMessages, setPatchSets, setToast, workspace]);
+
   const handleClearChat = useCallback(() => {
     const active = orchestrationRef.current;
     if (active) {
@@ -2025,11 +2121,14 @@ export function useOrchestrationController({
       orchestrationRef.current = null;
       chatDispatchLockRef.current = false;
     }
+    activeUserTurnRef.current = null;
     abortRef.current?.abort();
     abortRef.current = null;
     if (isGenerating) setIsGenerating(false);
     queuedChatItemsRef.current = [];
     setQueuedChatItems([]);
+    promptCheckpointsRef.current = [];
+    setPromptCheckpoints([]);
     setMessages([]);
     setPatchSets([]);
     setResumePrefixes({});
@@ -2132,13 +2231,13 @@ export function useOrchestrationController({
         const mode = getRefineMode(refineMode);
         const contextWindow =
           activeModel?.contextWindow || resolveContextWindow(byok.activeProvider, byok.selectedModel);
-        const originPrompt = messages.slice(0, index).reverse().find((message) => message.role === 'user')?.content ?? prefix;
+        const originUser = messages.slice(0, index).reverse().find((message) => message.role === 'user');
+        const originPrompt = originUser?.content ?? prefix;
         const baseToolContext = getToolContextRef.current ? await getToolContextRef.current() : undefined;
         const resumeIntent = classifyTurnIntent({
           prompt: originPrompt,
           workspaceOpen: Boolean(workspace.workspace),
           previewActive: baseToolContext?.previewActive,
-          debuggerPaused: baseToolContext?.debuggerState.isPaused,
           activeJobCount: baseToolContext?.activeJobCount,
           terminalAwaitingInput: baseToolContext?.terminalAwaitingInput,
           hasActiveTerminal: baseToolContext?.hasActiveTerminal,
@@ -2185,6 +2284,9 @@ export function useOrchestrationController({
             aborted: () => controller.signal.aborted,
             policy: { mode: effectiveResumeKind === 'execution' ? 'agent' : 'ask' },
             signal: controller.signal,
+            onBeforeMutatePaths: originUser
+              ? (paths) => capturePreMutationPaths(originUser.id, originUser.content, paths)
+              : undefined,
             onUnlockTools: (unlocked) => {
               for (const bundle of unlocked) unlockedBundles.add(bundle);
             },
@@ -2476,7 +2578,15 @@ export function useOrchestrationController({
       } finally {
         setIsGenerating(false);
         abortRef.current = null;
-        if (streamCompleted) applyPatchesFromReply(messageId, fullReply, mode);
+        if (streamCompleted) {
+          if (origin) {
+            const parsedPaths = extractUnifiedPatches(fullReply, workspace.files).map((patch) => patch.path);
+            if (parsedPaths.length > 0) {
+              await capturePreMutationPaths(origin.id, origin.content, parsedPaths);
+            }
+          }
+          applyPatchesFromReply(messageId, fullReply, mode);
+        }
       }
     },
     [
@@ -2622,6 +2732,8 @@ export function useOrchestrationController({
     handleResumeOrchestration,
     handleResumeBackgroundRun,
     handleDismissBackgroundResume,
-    fixTypeErrors
+    fixTypeErrors,
+    restorableMessageIds,
+    handleRestorePromptCheckpoint
   };
 }

@@ -6,9 +6,7 @@ import {
   type EditorQuickFixActions,
   type EditorSymbolActions
 } from '../CodeEditor';
-import { DebugPanel } from '../DebugPanel';
 import { TerminalPanel } from '../TerminalPanel';
-import type { useDebug } from '../../hooks/useDebug';
 import type { RevealTarget } from '../../hooks/useLanguageActions';
 import type { useOutline } from '../../hooks/useOutline';
 import type { useWorkspace } from '../../hooks/useWorkspace';
@@ -49,14 +47,7 @@ export interface EditorWorkspacePaneProps {
   onSelectOutlineSymbol: (symbol: OutlineSymbol) => void;
   editorSymbols: EditorSymbolActions | undefined;
   editorQuickFixes: EditorQuickFixActions | undefined;
-  debug: ReturnType<typeof useDebug>;
-  debugBreakpointsEnabled: boolean;
-  debugPausedAt: { file: string; line: number; column?: number } | null;
-  onNavigateToPath: (path: string, line?: number, column?: number) => void;
   sidebarPanel: ReactNode;
-  isDebugPanelOpen: boolean;
-  onCloseDebugPanel: () => void;
-  onAskAiToDebug: (summary: string) => void;
   isTerminalOpen: boolean;
   terminalAvailable: boolean;
   onCloseTerminal: () => void;
@@ -85,14 +76,7 @@ export function EditorWorkspacePane({
   onSelectOutlineSymbol,
   editorSymbols,
   editorQuickFixes,
-  debug,
-  debugBreakpointsEnabled,
-  debugPausedAt,
-  onNavigateToPath,
   sidebarPanel,
-  isDebugPanelOpen,
-  onCloseDebugPanel,
-  onAskAiToDebug,
   isTerminalOpen,
   terminalAvailable,
   onCloseTerminal
@@ -203,23 +187,6 @@ export function EditorWorkspacePane({
                       onSelectOutlineSymbol={onSelectOutlineSymbol}
                       symbols={editorSymbols}
                       quickFixes={editorQuickFixes}
-                      breakpoints={{
-                        enabled: debugBreakpointsEnabled,
-                        lines: group.activePath ? debug.breakpoints[group.activePath] : undefined,
-                        onToggle: (line) => {
-                          if (group.activePath) void debug.toggleBreakpoint(group.activePath, line);
-                        }
-                      }}
-                      pausedAt={groupIndex === 0 ? debugPausedAt : null}
-                      onOpenPaused={(file, line, column) => onNavigateToPath(file, line, column ?? undefined)}
-                      debugHover={groupIndex === 0 && debug.state.status === 'stopped' && debug.selectedFrame
-                        ? {
-                            enabled: true,
-                            evaluate: (expression) => debug.selectedFrame
-                              ? debug.evaluate(debug.selectedFrame.id, expression)
-                              : Promise.resolve(null)
-                          }
-                        : undefined}
                       sidebarPanel={groupIndex === 0 ? sidebarPanel : undefined}
                     />
                   );
@@ -227,18 +194,6 @@ export function EditorWorkspacePane({
               </div>
             </>
           )}
-        </div>
-      )}
-      {isDebugPanelOpen && desktop && nativeWorkspaceId && (
-        <div className="h-64 shrink-0 border-t border-line">
-          <DebugPanel
-            desktop={desktop}
-            workspaceId={nativeWorkspaceId}
-            controller={debug}
-            onOpenFrame={(file, line, column) => onNavigateToPath(file, line, column)}
-            onAskAiToDebug={onAskAiToDebug}
-            onClose={onCloseDebugPanel}
-          />
         </div>
       )}
       {isTerminalOpen && terminalAvailable && desktop && nativeWorkspaceId && (

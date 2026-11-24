@@ -3,7 +3,6 @@
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
-const { createAutomationWebhook } = require('../automation-webhook.cjs');
 
 const SECURE_KEY_PATTERN = /^shadrox\.[a-z0-9._-]{1,80}$/i;
 const AUTH_CALLBACK_PATH = '/auth/callback';
@@ -200,28 +199,8 @@ function registerAppAndAutomationHandlers({
   getMainWindow,
   setRendererDirty,
   getUpdater,
-  workspaceAccess,
   TITLE_BAR_HEIGHT
 }) {
-  let automationWebhook = null;
-  let automationWebhookWorkspaceId = null;
-
-  function getAutomationWebhook() {
-    if (!automationWebhook) {
-      automationWebhook = createAutomationWebhook({
-        getRoot: () => {
-          const workspace = automationWebhookWorkspaceId
-            ? workspaceAccess.getWorkspace(automationWebhookWorkspaceId)
-            : null;
-          return workspace?.root ?? null;
-        },
-        onTrigger: (trigger) => {
-          getMainWindow()?.webContents.send('automation:trigger', trigger);
-        }
-      });
-    }
-    return automationWebhook;
-  }
 
   ipcMain.handle('app:set-dirty', (event, dirty) => {
     assertTrustedRenderer(event);
@@ -251,39 +230,7 @@ function registerAppAndAutomationHandlers({
     return { available: true };
   });
 
-  ipcMain.handle('automation:webhook-status', (event, workspaceId) => {
-    assertTrustedRenderer(event);
-    if (typeof workspaceId !== 'string' || !workspaceId) {
-      throw new Error('A workspace id is required to read the automation webhook status.');
-    }
-    return getAutomationWebhook().status();
-  });
-
-  ipcMain.handle('automation:webhook-start', async (event, workspaceId) => {
-    assertTrustedRenderer(event);
-    const workspace = workspaceAccess.getWorkspace(workspaceId);
-    if (!workspace?.root) {
-      throw new Error('The automation webhook requires an opened workspace.');
-    }
-    automationWebhookWorkspaceId = workspaceId;
-    return getAutomationWebhook().start();
-  });
-
-  ipcMain.handle('automation:webhook-stop', async (event) => {
-    assertTrustedRenderer(event);
-    automationWebhookWorkspaceId = null;
-    if (automationWebhook) await automationWebhook.stop();
-  });
-
-  return {
-    stopAutomationWebhook() {
-      if (automationWebhook) {
-        void automationWebhook.stop();
-        automationWebhook = null;
-      }
-      automationWebhookWorkspaceId = null;
-    }
-  };
+  return {};
 }
 
 module.exports = {

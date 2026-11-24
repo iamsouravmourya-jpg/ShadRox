@@ -846,6 +846,7 @@ function createPreviewRuntime({
       cwd: root,
       env: { ...safeEnv, BROWSER: 'none', ...loopbackHost, ...env },
       shell: false,
+      detached: process.platform !== 'win32',
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -1024,6 +1025,9 @@ function createPreviewRuntime({
         });
       });
     } else {
+      if (record.usesProcessGroup && Number.isInteger(record.child.pid)) {
+        try { process.kill(-record.child.pid, 'SIGKILL'); } catch { /* already exited */ }
+      }
       record.child.kill();
     }
     emit(workspaceId, 'stopped', 'Local preview stopped.');
@@ -1110,7 +1114,7 @@ function createPreviewRuntime({
     // as the project. The normal probe budget is cheap here: these run in
     // parallel and only slow the start by the one port that actually answers.
     const baselinePorts = new Set((await Promise.all(COMMON_DEV_PORTS.map(async (port) =>
-      await isPortBusy(port) ? port : null
+      (await isPortBusy(port) || await probeHttp(`http://127.0.0.1:${port}/`, 250)) ? port : null
     ))).filter(Number.isInteger));
 
     // The intended port is the one the script pins for itself, or the
@@ -1155,7 +1159,14 @@ function createPreviewRuntime({
       portOverride ? { PORT: String(portOverride) } : undefined,
       { skipLoopbackHost: isNextCommand }
     );
-    const record = { child, url: null, rejectReady: null, script: script.name, hmr: hasHmrSupport(script.command) };
+    const record = {
+      child,
+      url: null,
+      rejectReady: null,
+      script: script.name,
+      hmr: hasHmrSupport(script.command),
+      usesProcessGroup: process.platform !== 'win32' && spawnProcess === spawn
+    };
     processes.set(workspaceId, record);
     recordOrphanChild(orphansFile, child.pid, root);
     emit(workspaceId, 'status', `Running "${manager} run ${script.name}"...`, { url: null, port: null, script: script.name, hmr: record.hmr });
@@ -1338,7 +1349,7 @@ function createPreviewRuntime({
 
     const commonPorts = [...new Set([normalized.port, ...COMMON_DEV_PORTS])];
     const baselinePorts = new Set((await Promise.all(commonPorts.map(async (port) =>
-      await isPortBusy(port) ? port : null
+      (await isPortBusy(port) || await probeHttp(`http://127.0.0.1:${port}/`, 250)) ? port : null
     ))).filter(Number.isInteger));
     if (baselinePorts.has(normalized.port)) {
       throw new Error(`Port ${normalized.port} is already serving another local process. Stop it or choose a different backend port.`);
@@ -1355,7 +1366,13 @@ function createPreviewRuntime({
     const child = spawnCommand(executable, normalized.args, normalized.cwd, undefined, {
       cmdShim: windowsShim
     });
-    const record = { child, url: null, rejectReady: null, kind: 'backend' };
+    const record = {
+      child,
+      url: null,
+      rejectReady: null,
+      kind: 'backend',
+      usesProcessGroup: process.platform !== 'win32' && spawnProcess === spawn
+    };
     backendProcesses.set(workspaceId, record);
     emitBackend(workspaceId, 'status', `Running "${normalized.command} ${normalized.args.join(' ')}" in ${normalized.cwd}...`);
 
@@ -1488,6 +1505,9 @@ function createPreviewRuntime({
           finish();
         });
       });
+    }
+    if (record.usesProcessGroup && Number.isInteger(record.child.pid)) {
+      try { process.kill(-record.child.pid, 'SIGKILL'); } catch { /* already exited */ }
     }
     record.child.kill();
     emitBackend(workspaceId, 'stopped', 'Backend preview stopped.');

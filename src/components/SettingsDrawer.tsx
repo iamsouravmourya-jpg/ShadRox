@@ -21,8 +21,6 @@ import { PROVIDERS, ENDPOINT_PRESETS, findEndpointPreset, getProviderMeta, norma
 import { usesEncryptedSecrets } from '../lib/secureStore';
 import { confirmAction } from '../lib/confirm';
 import { McpToolsSection } from './settings/McpToolsSection';
-import { PluginsSection } from './settings/PluginsSection';
-import { AutomationsSection } from './settings/AutomationsSection';
 import type {
   GitHubRepo,
   GitHubUser,
@@ -59,26 +57,24 @@ interface SettingsDrawerProps {
   onGenerateCommitMessage: () => Promise<string>;
   isWritingCommitMessage: boolean;
 
-  /** Native workspace id for the Plugins and Automations sections. */
+  /** Native workspace id for MCP tools. */
   workspaceId?: string | null;
-  workspaceRoot?: string | null;
 }
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: 'CHAT', label: 'Models & Keys' },
   { id: 'GITHUB', label: 'GitHub Sync' },
   { id: 'SECRETS', label: 'Secrets Vault' },
-  { id: 'TOOLS', label: 'MCP Tools' },
-  { id: 'AUTOMATIONS', label: 'Plugins & Automations' }
+  { id: 'TOOLS', label: 'MCP Tools' }
 ];
 
-async function postJson(url: string, body: unknown): Promise<any> {
+async function postJson<TResponse>(url: string, body: unknown): Promise<TResponse> {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-  const data = await response.json().catch(() => ({}));
+  const data = (await response.json().catch(() => ({}))) as { error?: string } & TResponse;
   if (!response.ok) throw new Error(data?.error || `Request failed (HTTP ${response.status})`);
   return data;
 }
@@ -105,8 +101,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     workspaceFiles,
     onGenerateCommitMessage,
     isWritingCommitMessage,
-    workspaceId,
-    workspaceRoot
+    workspaceId
   } = props;
 
   const [githubToken, setGithubToken] = useState('');
@@ -155,7 +150,7 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     setIsCheckingGithub(true);
     setGithubMessage(null);
     try {
-      const data = await postJson('/api/github/validate', { token: githubToken });
+      const data = await postJson<{ user: GitHubUser; repos?: GitHubRepo[] }>('/api/github/validate', { token: githubToken });
       setGithubUser(data.user);
       setGithubRepos(data.repos || []);
       setGithubMessage({ type: 'ok', text: `Connected as @${data.user.login}` });
@@ -184,15 +179,14 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     setIsPushing(true);
     setGithubMessage(null);
     try {
-      const data = await postJson('/api/github/push', {
+      const data = await postJson<{ results?: Array<{ file: string; status?: string; error?: string | null }> }>('/api/github/push', {
         token: githubToken,
         owner,
         repo: repoName,
         commitMessage: commitMessage || 'Update from ShadRox IDE',
         files: workspaceFiles.map((file) => ({ name: file.name, content: file.content }))
       });
-      const failed: Array<{ file: string; error?: string | null }> = (data.results ?? [])
-        .filter((result: { status?: string }) => result.status !== 'success');
+      const failed = (data.results ?? []).filter((result) => result.status !== 'success');
       if (failed.length > 0) {
         setGithubMessage({
           type: 'error',
@@ -724,13 +718,6 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
           )}
 
           {activeTab === 'TOOLS' && <McpToolsSection workspaceId={workspaceId} />}
-
-          {activeTab === 'AUTOMATIONS' && (
-            <>
-              <PluginsSection workspaceId={workspaceId} workspaceRoot={workspaceRoot} />
-              <AutomationsSection workspaceId={workspaceId} workspaceRoot={workspaceRoot} />
-            </>
-          )}
         </div>
       </aside>
     </div>

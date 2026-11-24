@@ -21,6 +21,8 @@ import {
   Play,
   History,
   Image,
+  RotateCcw,
+  Search,
   Send,
   Sparkles,
   Square,
@@ -31,11 +33,10 @@ import {
 } from 'lucide-react';
 import { maskFileWrites, renderMarkdownContent, type PatchWriteOutcome } from '../lib/markdown';
 import { type ModelInfo, type ModelTier } from '../lib/providers';
-import { estimateTokens } from '../lib/toolUtils';
 import { computeHunks, groupedHunkId, hunkStats } from '../lib/editor/hunks';
 import type { Skill } from '../lib/skills';
 import { contextManifestTotals, shouldSubmitOnEnter, type ContextManifest } from '../lib/contextManifest';
-import type { ChatMessage, PatchSet, RefineMode, SemanticStatus, SettingsTab, WorkspaceFile } from '../lib/types';
+import type { ChatMessage, ExternalFileAttachment, PatchSet, RefineMode, SemanticStatus, SettingsTab, WorkspaceFile } from '../lib/types';
 import type { CheckpointMeta } from '../lib/history';
 import type { CheckpointDiff } from '../lib/checkpointDiff';
 import { TimelineSlider } from './TimelineSlider';
@@ -89,7 +90,9 @@ interface ChatPanelProps {
   messages: ChatMessage[];
   input: string;
   onInputChange: (value: string) => void;
-  onSend: (pastedTexts?: PastedText[]) => void;
+  onSend: (pastedTexts?: PastedText[], externalAttachments?: ExternalFileAttachment[]) => void;
+  restorableMessageIds?: ReadonlySet<string>;
+  onRestorePromptCheckpoint?: (userMessageId: string) => void;
   queuedMessages?: Array<{ id: string; text: string }>;
   onCancelQueuedMessage?: (id: string) => void;
   onStop: () => void;
@@ -185,24 +188,12 @@ interface ChatPanelProps {
   onAnswerAskUser?: (id: string, answer: string | null) => void;
 }
 
-const TIER_STYLES: Record<ModelTier, string> = {
-  free: 'text-accent border-accent-line bg-accent-soft',
-  own: 'text-cool border-cool/30 bg-cool-soft',
-  pro: 'text-warn border-warn/30 bg-warn/10'
-};
-
 // The tier describes what the *provider* charges the user's own key, never a
 // ShadRox plan — ShadRox bills nothing.
 const TIER_GROUP_LABEL: Record<ModelTier, string> = {
   free: 'Free on your key',
   own: 'Your endpoint',
   pro: 'Paid on your key'
-};
-
-const TIER_BADGE_LABEL: Record<ModelTier, string> = {
-  free: 'free on key',
-  own: 'your key',
-  pro: 'paid on key'
 };
 
 /** A long paste is captured as a .txt attachment instead of flooding the composer. */
@@ -406,6 +397,8 @@ export function ChatPanel({
   input,
   onInputChange,
   onSend,
+  restorableMessageIds,
+  onRestorePromptCheckpoint,
   queuedMessages = [],
   onCancelQueuedMessage,
   onStop,
@@ -477,11 +470,12 @@ export function ChatPanel({
   const composerBoxRef = useRef<HTMLDivElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
-  const attachMenuRef = useRef<HTMLDivElement>(null);
+  const modelSearchInputRef = useRef<HTMLInputElement>(null);
+  const externalFileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
-  const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
+  const [modelSearchQuery, setModelSearchQuery] = useState('');
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
@@ -490,6 +484,18 @@ export function ChatPanel({
   const [isContextOpen, setIsContextOpen] = useState(false);
   const [expandedPatchFailures, setExpandedPatchFailures] = useState<Record<string, boolean>>({});
   const [pastedTexts, setPastedTexts] = useState<PastedText[]>([]);
+  const [externalAttachments, setExternalAttachments] = useState<ExternalFileAttachment[]>([]);
+  const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isModelMenuOpen) {
+      setModelSearchQuery('');
+      return;
+    }
+    setModelSearchQuery('');
+    const frame = requestAnimationFrame(() => modelSearchInputRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [isModelMenuOpen]);
 
   /** `/name` in the composer completes workspace skills when `.shadrox/skills/*.md` exist. */
   const typedSlashName = /^\/([\w.-]*)$/.exec(input)?.[1]?.toLowerCase() ?? null;
@@ -508,18 +514,16 @@ export function ChatPanel({
 
   /** One dismissal path for every chat popover: outside click and Escape. */
   useEffect(() => {
-    if (!isModelMenuOpen && !isAttachMenuOpen && !isContextOpen) return;
+    if (!isModelMenuOpen && !isContextOpen) return;
     const inside = (ref: { current: HTMLElement | null }, target: EventTarget | null) =>
       Boolean(ref.current && target instanceof Node && ref.current.contains(target));
     const closeOthers = (event: PointerEvent) => {
       if (!inside(modelMenuRef, event.target) && !inside(modelTriggerRef, event.target)) setIsModelMenuOpen(false);
-      if (!inside(attachMenuRef, event.target)) setIsAttachMenuOpen(false);
       if (!inside(contextMenuRef, event.target)) setIsContextOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       setIsModelMenuOpen(false);
-      setIsAttachMenuOpen(false);
       setIsContextOpen(false);
     };
     document.addEventListener('pointerdown', closeOthers);
@@ -528,7 +532,7 @@ export function ChatPanel({
       document.removeEventListener('pointerdown', closeOthers);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [isModelMenuOpen, isAttachMenuOpen, isContextOpen]);
+  }, [isModelMenuOpen, isContextOpen]);
 
   useEffect(() => {
     // Streaming rewrites `messages` on every delta; without this the pane
@@ -547,7 +551,7 @@ export function ChatPanel({
   }, [input]);
 
   const activeModel = models.find((model) => model.id === selectedModel) || null;
-  const hasDraft = input.trim().length > 0 || pastedTexts.length > 0;
+  const hasDraft = input.trim().length > 0 || pastedTexts.length > 0 || externalAttachments.length > 0;
   const canSend = hasDraft && !isGenerating;
   const canQueue = hasDraft && isGenerating;
   const manifestTotals = contextManifest ? contextManifestTotals(contextManifest) : null;
@@ -590,9 +594,6 @@ export function ChatPanel({
   const activeMention = mentionMatches.length > 0
     ? mentionMatches[Math.min(mentionIndex, mentionMatches.length - 1)]
     : null;
-  // The folder tree, not the open tabs: the user attaches a file they have not opened yet.
-  const attachableFiles = (workspaceAllFiles.length > 0 ? workspaceAllFiles : workspaceFiles)
-    .filter((file) => !attachedFiles.includes(file.name));
 
   const closeMention = () => {
     setMentionQuery(null);
@@ -660,6 +661,28 @@ export function ChatPanel({
   };
 
   const handlePaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(event.clipboardData.items ?? []);
+    const imageItem = items.find((item) => item.kind === 'file' && item.type.startsWith('image/'));
+    if (imageItem) {
+      const file = imageItem.getAsFile();
+      if (file) {
+        event.preventDefault();
+        if (file.size > 10 * 1024 * 1024) {
+          onAttachedImageChange(null);
+          setAttachmentNotice('Pasted image exceeds the 10 MB limit.');
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === 'string') {
+            setAttachmentNotice(null);
+            onAttachedImageChange(reader.result);
+          }
+        };
+        reader.readAsDataURL(file);
+        return;
+      }
+    }
     const text = event.clipboardData.getData('text/plain');
     if (!text) return;
     const isLong = text.length >= PASTE_AS_FILE_CHARS || text.split('\n').length >= PASTE_AS_FILE_LINES;
@@ -668,11 +691,17 @@ export function ChatPanel({
     addPastedText(text);
   };
 
-  /** One send path so long pastes always travel with the message they belong to. */
+  /** One send path so long pastes and external files travel with the message they belong to. */
   const submitDraft = () => {
     const outgoing = pastedTexts;
+    const outgoingExternal = externalAttachments;
     setPastedTexts([]);
-    onSend(outgoing.length > 0 ? outgoing : undefined);
+    setExternalAttachments([]);
+    setAttachmentNotice(null);
+    onSend(
+      outgoing.length > 0 ? outgoing : undefined,
+      outgoingExternal.length > 0 ? outgoingExternal : undefined
+    );
   };
 
   const copyMessage = async (message: ChatMessage) => {
@@ -685,10 +714,20 @@ export function ChatPanel({
     }
   };
 
+  const normalizedModelSearch = modelSearchQuery.trim().toLowerCase();
+  const filteredModels = normalizedModelSearch
+    ? models.filter(
+        (model) =>
+          model.label.toLowerCase().includes(normalizedModelSearch)
+          || model.id.toLowerCase().includes(normalizedModelSearch)
+          || model.provider.toLowerCase().includes(normalizedModelSearch)
+      )
+    : models;
+
   const groupedModels: Record<ModelTier, ModelInfo[]> = {
-    free: models.filter((model) => model.tier === 'free'),
-    own: models.filter((model) => model.tier === 'own'),
-    pro: models.filter((model) => model.tier === 'pro')
+    free: filteredModels.filter((model) => model.tier === 'free'),
+    own: filteredModels.filter((model) => model.tier === 'own'),
+    pro: filteredModels.filter((model) => model.tier === 'pro')
   };
 
 
@@ -711,11 +750,6 @@ export function ChatPanel({
           <span className="truncate font-medium">
             {activeModel ? activeModel.label : 'Select Model'}
           </span>
-          {activeModel && (
-            <span className={`hidden sm:inline-block shrink-0 rounded-md px-1.5 py-0.5 border font-mono text-[9.5px] uppercase tracking-wide ${TIER_STYLES[activeModel.tier]}`}>
-              {TIER_BADGE_LABEL[activeModel.tier]}
-            </span>
-          )}
           <ChevronDown className={`ml-auto w-3.5 h-3.5 shrink-0 text-ink-3 transition-transform ${isModelMenuOpen ? 'rotate-180' : ''}`} />
         </button>
 
@@ -883,39 +917,69 @@ export function ChatPanel({
             </div>
           ) : (
             <>
-              {(['free', 'own', 'pro'] as ModelTier[]).map((tier) =>
-                groupedModels[tier].length === 0 ? null : (
-                  <div key={tier} className="py-1">
-                    <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-4">
-                      {TIER_GROUP_LABEL[tier]}
+              <div className="sticky top-0 z-10 border-b border-line bg-surface p-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-4" />
+                  <input
+                    ref={modelSearchInputRef}
+                    value={modelSearchQuery}
+                    onChange={(event) => setModelSearchQuery(event.target.value)}
+                    placeholder="Search models..."
+                    spellCheck={false}
+                    aria-label="Search models"
+                    className="w-full rounded-lg border border-line bg-base py-1.5 pl-8 pr-7 text-xs text-ink outline-none placeholder:text-ink-4 focus:border-accent-line"
+                  />
+                  {modelSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setModelSearchQuery('')}
+                      aria-label="Clear model search"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-4 hover:text-ink cursor-pointer"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+              </div>
+              {filteredModels.length === 0 ? (
+                <p className="px-3 py-4 text-center text-xs text-ink-4">
+                  No models match “{modelSearchQuery.trim()}”.
+                </p>
+              ) : (
+                (['free', 'own', 'pro'] as ModelTier[]).map((tier) =>
+                  groupedModels[tier].length === 0 ? null : (
+                    <div key={tier} className="py-1">
+                      <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-4">
+                        {TIER_GROUP_LABEL[tier]}
+                      </div>
+                      {groupedModels[tier].map((model) => {
+                        const active = model.id === selectedModel;
+                        return (
+                          <button
+                            key={model.id}
+                            type="button"
+                            onClick={() => {
+                              onSelectModel(model.id);
+                              setIsModelMenuOpen(false);
+                            }}
+                            className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-2 cursor-pointer ${
+                              active ? 'bg-accent-soft/60 text-ink font-medium' : 'text-ink-2'
+                            }`}
+                          >
+                            <span className="min-w-0 truncate">{model.label}</span>
+                            <span className="flex shrink-0 items-center gap-2">
+                              {model.contextWindow && (
+                                <span className="font-mono text-[10px] tabular-nums text-ink-4">
+                                  {Math.round(model.contextWindow / 1000)}k
+                                </span>
+                              )}
+                              {active && <Check className="h-3.5 w-3.5 text-accent" />}
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
-                    {groupedModels[tier].map((model) => {
-                      const active = model.id === selectedModel;
-                      return (
-                        <button
-                          key={model.id}
-                          type="button"
-                          onClick={() => {
-                            onSelectModel(model.id);
-                            setIsModelMenuOpen(false);
-                          }}
-                          className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-2 cursor-pointer ${
-                            active ? 'bg-accent-soft/60 text-ink font-medium' : 'text-ink-2'
-                          }`}
-                        >
-                          <span className="min-w-0 truncate">{model.label}</span>
-                          <span className="flex shrink-0 items-center gap-2">
-                            {model.contextWindow && (
-                              <span className="font-mono text-[10px] tabular-nums text-ink-4">
-                                {Math.round(model.contextWindow / 1000)}k
-                              </span>
-                            )}
-                            {active && <Check className="h-3.5 w-3.5 text-accent" />}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                  )
                 )
               )}
               <div className="border-t border-line px-3 py-2">
@@ -1007,6 +1071,18 @@ export function ChatPanel({
                 <span className="uppercase font-semibold tracking-wider">You</span>
                 <span>·</span>
                 <span className="font-mono tabular-nums">{message.timestamp}</span>
+                {restorableMessageIds?.has(message.id) && onRestorePromptCheckpoint && (
+                  <button
+                    type="button"
+                    disabled={isGenerating}
+                    onClick={() => onRestorePromptCheckpoint(message.id)}
+                    title="Restore workspace files to before this prompt"
+                    className="ml-1 inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3 transition-colors hover:border-accent-line hover:text-accent disabled:opacity-40 cursor-pointer"
+                  >
+                    <RotateCcw className="h-2.5 w-2.5" />
+                    Restore
+                  </button>
+                )}
               </div>
             )}
 
@@ -1532,6 +1608,46 @@ export function ChatPanel({
           </div>
         )}
 
+        {attachmentNotice && (
+          <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-warn/30 bg-warn/10 px-2.5 py-1.5 text-[11px] text-warn">
+            <span className="min-w-0 truncate">{attachmentNotice}</span>
+            <button
+              type="button"
+              onClick={() => setAttachmentNotice(null)}
+              aria-label="Dismiss attachment notice"
+              className="shrink-0 text-warn/70 hover:text-ink cursor-pointer"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        )}
+
+        {externalAttachments.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {externalAttachments.map((entry) => (
+              <span
+                key={entry.id}
+                title={entry.name}
+                className="flex max-w-full items-center gap-1 rounded-lg border border-accent-line bg-accent-soft px-2 py-1 text-[11px] text-ink-2"
+              >
+                <FileText className="h-3 w-3 shrink-0 text-accent" />
+                <span className="truncate font-mono">{entry.name}</span>
+                <span className="shrink-0 font-mono tabular-nums text-[10px] text-ink-4">
+                  ~{Math.max(1, Math.round(entry.size / 1024))} KB
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${entry.name}`}
+                  onClick={() => setExternalAttachments((current) => current.filter((item) => item.id !== entry.id))}
+                  className="ml-0.5 text-ink-4 hover:text-ink cursor-pointer"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
         {pastedTexts.length > 0 && (
           <div className="mb-2 flex flex-col gap-1">
             <div className="flex flex-wrap gap-1.5">
@@ -1785,39 +1901,58 @@ export function ChatPanel({
                 <AtSign className="h-3.5 w-3.5" />
               </button>
 
-              {/* Attach File */}
-              <div ref={attachMenuRef} className="relative flex items-center gap-1">
+              {/* Attach External File(s) from OS */}
+              <div className="relative flex items-center gap-1">
+                <input
+                  ref={externalFileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={async (event) => {
+                    const selected = Array.from(event.target.files ?? []);
+                    event.target.value = '';
+                    if (selected.length === 0) return;
+                    const maxBytes = 512 * 1024;
+                    const accepted: ExternalFileAttachment[] = [];
+                    const skipped: string[] = [];
+                    for (const file of selected) {
+                      if (file.size > maxBytes) {
+                        skipped.push(`${file.name} (>512 KB)`);
+                        continue;
+                      }
+                      try {
+                        const content = await file.text();
+                        if (content.includes('\u0000')) {
+                          skipped.push(`${file.name} (binary)`);
+                          continue;
+                        }
+                        accepted.push({
+                          id: crypto.randomUUID?.() ?? `ext-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                          name: file.name,
+                          content,
+                          size: file.size
+                        });
+                      } catch {
+                        skipped.push(file.name);
+                      }
+                    }
+                    if (accepted.length > 0) {
+                      setExternalAttachments((current) => [...current, ...accepted]);
+                    }
+                    setAttachmentNotice(
+                      skipped.length > 0 ? `Skipped external file(s): ${skipped.join(', ')}` : null
+                    );
+                  }}
+                />
                 <button
                   type="button"
-                  onClick={() => setIsAttachMenuOpen((open) => !open)}
-                  disabled={attachableFiles.length === 0}
-                  aria-label="Attach file context"
-                  title={attachableFiles.length === 0
-                    ? (workspaceAllFiles.length === 0 && workspaceFiles.length === 0
-                        ? 'Open a folder to attach files'
-                        : 'Every workspace file is already attached')
-                    : 'Attach file context'}
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-4 hover:bg-overlay hover:text-ink disabled:opacity-35 disabled:hover:bg-transparent transition-colors cursor-pointer"
+                  onClick={() => externalFileInputRef.current?.click()}
+                  aria-label="Attach external file"
+                  title="Attach external file(s) from your computer"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-4 hover:bg-overlay hover:text-ink transition-colors cursor-pointer"
                 >
                   <Paperclip className="w-3.5 h-3.5" />
                 </button>
-                {isAttachMenuOpen && (
-                  <div className="absolute bottom-8 left-0 z-20 max-h-64 w-64 overflow-y-auto rounded-xl border border-line bg-surface py-1 shadow-[var(--shadow-sheet)]">
-                    {attachableFiles.map((file) => (
-                      <button
-                        key={file.name}
-                        type="button"
-                        onClick={() => {
-                          onAttachedFilesChange([...new Set([...attachedFiles, file.name])]);
-                          setIsAttachMenuOpen(false);
-                        }}
-                        className="block w-full truncate px-3 py-2 text-left font-mono text-[11px] text-ink-2 hover:bg-surface-2 hover:text-ink cursor-pointer"
-                      >
-                        {file.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
                 <input
                   ref={imageInputRef}
                   type="file"
@@ -1830,11 +1965,15 @@ export function ChatPanel({
                     if (!file.type.startsWith('image/')) return;
                     if (file.size > 10 * 1024 * 1024) {
                       onAttachedImageChange(null);
+                      setAttachmentNotice('Selected image exceeds the 10 MB limit.');
                       return;
                     }
                     const reader = new FileReader();
                     reader.onload = () => {
-                      if (typeof reader.result === 'string') onAttachedImageChange(reader.result);
+                      if (typeof reader.result === 'string') {
+                        setAttachmentNotice(null);
+                        onAttachedImageChange(reader.result);
+                      }
                     };
                     reader.readAsDataURL(file);
                   }}
@@ -1915,18 +2054,6 @@ export function ChatPanel({
             </div>
           </div>
         </div>
-        <p className="mt-1.5 flex items-center justify-between gap-2 px-1 text-[10px] text-ink-4">
-          <span className="truncate">Enter to send · Shift+Enter for new line</span>
-          {input.length > 0 ? (
-            <span className="shrink-0 font-mono tabular-nums">
-              {input.length}c · ~{estimateTokens(input)} tok
-            </span>
-          ) : workspaceFiles.length > 0 ? (
-            <span className="shrink-0 font-mono tabular-nums">
-              {workspaceFiles.length} file{workspaceFiles.length === 1 ? '' : 's'} ready
-            </span>
-          ) : null}
-        </p>
       </div>
     </div>
   );

@@ -5,7 +5,8 @@ import { isProtectedAgentWritePath } from '../agents/applyPolicy';
 import { publishTerminalDockEvent } from '../terminal/echoChannel';
 import { terminalStateManager } from '../terminal/state';
 import { formatInjectionOutcome, injectStdinWithApproval, wasInjected } from '../terminal/injectStdin';
-import type { FailureReceipt } from '../repairProof';
+import { buildRepairBrief, failureSourceForCommand, type FailureReceipt } from '../repairProof';
+import { globalRepairSession } from '../repairSession';
 import { commandApprovalNotice } from './commandGuard';
 import { describeFinish } from './finishTool';
 import { MCP_TOOL_PREFIX } from './mcpTools';
@@ -2047,6 +2048,8 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           return { ok: true, content: clip(detail) };
         }
         const effectiveExitCode = result.exitCode === null ? (result.timedOut ? 1 : 0) : result.exitCode;
+        const mergedOutput = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join('\n');
+        const observed = globalRepairSession.observeCommand(command, effectiveExitCode, mergedOutput);
         const body = [
           `$ ${command}`,
           capCommandSection(result.stdout.trim()) || '(no stdout)',
@@ -2056,7 +2059,26 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           'The command ran on disk; this output is the real result.'
         ].join('\n');
         if (effectiveExitCode !== 0) {
-          return { ok: false, content: clip(body), error: clip(body) };
+          const proof: FailureReceipt | undefined =
+            observed.at(-1) ??
+            (globalRepairSession.capture({
+              source: failureSourceForCommand(command),
+              target: command,
+              errorMessage: mergedOutput || `Command exited with code ${effectiveExitCode}`,
+              exitCode: effectiveExitCode
+            }) ?? undefined);
+          const contentWithBrief = proof ? `${body}\n\n${buildRepairBrief(proof)}` : body;
+          return {
+            ok: false,
+            content: clip(contentWithBrief),
+            error: clip(body),
+            ...(proof ? { proof } : {})
+          };
+        }
+        const healed = observed.find((entry) => entry.status === 'verified_healed');
+        if (healed) {
+          const healedBody = `${body}\n\nHealing verified (${healed.id}): ${healed.verificationEvidence ?? 'command passed cleanly.'}`;
+          return { ok: true, content: clip(healedBody), proof: healed };
         }
         return { ok: true, content: clip(body) };
       }

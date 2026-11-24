@@ -16,7 +16,6 @@ function createWorkspaceService({
   workspaceAccess,
   workspaceConsent,
   previewRuntime,
-  debugHost,
   typeScriptService,
   machineDelta,
   machineReceipt,
@@ -34,7 +33,6 @@ function createWorkspaceService({
   const workspaceWatchers = new Map();
 
   function stopWorkspaceServices(workspaceId) {
-    debugHost.stopWorkspace(workspaceId);
     typeScriptService.closeWorkspace(workspaceId);
     const watcher = workspaceWatchers.get(workspaceId);
     if (watcher) {

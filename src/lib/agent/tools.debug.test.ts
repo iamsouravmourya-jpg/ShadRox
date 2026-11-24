@@ -8,18 +8,15 @@ import {
   summarizeCall
 } from './tools';
 
-test('debugger_state is a known built-in tool', () => {
-  assert.equal(isKnownTool('debugger_state'), true);
+test('debugger_state has been removed from the active built-in tools', () => {
+  assert.equal(isKnownTool('debugger_state'), false);
   const definition = TOOL_DEFINITIONS.find((tool) => tool.name === 'debugger_state');
-  assert.ok(definition);
-  assert.match(definition.description, /paused/i);
-  assert.match(definition.description, /read-only/i);
-  assert.equal(definition.parameters, 'none');
+  assert.equal(definition, undefined);
 });
 
-test('the tool registry holds forty-one tools including the write tools, job_control, preview_control, unlock_tools and the upgrade tools', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 41);
-  assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'debugger_state').length, 1);
+test('the tool registry holds thirty-five active tools including write, preview, and upgrade tools', () => {
+  assert.equal(TOOL_DEFINITIONS.length, 35);
+  assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'debugger_state').length, 0);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'write_file').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'edit_file').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'job_control').length, 1);
@@ -43,19 +40,13 @@ test('preview_control is exposed to native providers with an action enum', () =>
   assert.deepEqual(schema.required, ['action']);
 });
 
-test('debugger_state has an empty native schema and is exposed to providers', () => {
-  const native = nativeToolDefinitions();
-  const entry = native.find((tool) => tool.name === 'debugger_state');
-  assert.ok(entry);
-  assert.deepEqual(entry.parameters, { type: 'object', properties: {}, additionalProperties: false });
-});
-
-test('the prompt teaches the debugger rule and lists the tool', () => {
+test('preview_inspect is listed in prompt descriptions and exposed to native providers', () => {
   const prompt = describeTools(3).join('\n');
-  assert.match(prompt, /DEBUGGER: debugger_state reads a session paused/);
-  assert.match(prompt, /- debugger_state\(none\)/);
+  assert.match(prompt, /preview_inspect/);
+  assert.doesNotMatch(prompt, /debugger_state/);
+  assert.ok(nativeToolDefinitions().some((tool) => tool.name === 'preview_inspect'));
 });
 
-test('summarizeCall labels a debugger_state call without inventing arguments', () => {
-  assert.equal(summarizeCall({ name: 'debugger_state', args: {} }), 'debugger_state');
+test('summarizeCall labels a verify call without inventing arguments', () => {
+  assert.equal(summarizeCall({ name: 'verify', args: {} }), 'verify');
 });

@@ -1,40 +1,30 @@
-import { Bug, FolderTree, GitBranch, History, LogOut, MonitorPlay, Search, UserRound } from 'lucide-react';
+import { FolderTree, GitBranch, LogOut, MonitorPlay, Search, UserRound } from 'lucide-react';
 
 export interface ActivityRailProps {
-  hasDesktop: boolean;
   isPreviewOpen: boolean;
   isSearchPanelOpen: boolean;
   isScmPanelOpen: boolean;
-  isDebugPanelOpen: boolean;
-  showTaskInspector: boolean;
   isAccountMenuOpen: boolean;
   user: { email: string | null; avatarUrl?: string | null } | null;
   onSelectWorkspaceView: () => void;
   onSelectPreviewView: () => void;
   onToggleSearchPanel: () => void;
   onToggleScmPanel: () => void;
-  onToggleDebugPanel: () => void;
-  onToggleTaskInspector: () => void;
   onToggleAccountMenu: () => void;
   onCloseAccountMenu: () => void;
   onSignOut: () => void;
 }
 
 export function ActivityRail({
-  hasDesktop,
   isPreviewOpen,
   isSearchPanelOpen,
   isScmPanelOpen,
-  isDebugPanelOpen,
-  showTaskInspector,
   isAccountMenuOpen,
   user,
   onSelectWorkspaceView,
   onSelectPreviewView,
   onToggleSearchPanel,
   onToggleScmPanel,
-  onToggleDebugPanel,
-  onToggleTaskInspector,
   onToggleAccountMenu,
   onCloseAccountMenu,
   onSignOut
@@ -92,33 +82,6 @@ export function ActivityRail({
         }`}
       >
         <GitBranch className="h-[18px] w-[18px]" />
-      </button>
-      <button
-        type="button"
-        onClick={onToggleDebugPanel}
-        aria-pressed={isDebugPanelOpen}
-        disabled={!hasDesktop}
-        title={!hasDesktop ? 'Debugger (Desktop app)' : isDebugPanelOpen ? 'Close debugger' : 'Debugger'}
-        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 ${
-          isDebugPanelOpen
-            ? 'border-accent-line bg-accent-soft text-accent'
-            : 'border-transparent text-ink-4 hover:bg-overlay-2 hover:text-ink'
-        }`}
-      >
-        <Bug className="h-[18px] w-[18px]" />
-      </button>
-      <button
-        type="button"
-        onClick={onToggleTaskInspector}
-        aria-pressed={showTaskInspector}
-        title={showTaskInspector ? 'Close change capsules' : 'Change capsules'}
-        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-colors cursor-pointer ${
-          showTaskInspector
-            ? 'border-accent-line bg-accent-soft text-accent'
-            : 'border-transparent text-ink-4 hover:bg-overlay-2 hover:text-ink'
-        }`}
-      >
-        <History className="h-[18px] w-[18px]" />
       </button>
 
       <div className="relative ml-auto md:ml-0 md:mt-auto">

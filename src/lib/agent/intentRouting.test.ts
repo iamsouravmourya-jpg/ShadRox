@@ -44,7 +44,7 @@ test('conversational fast-path classifies greetings and conceptual Q&A with 0 to
   );
   assert.ok(conversationalTokens < 800, `Expected < 800 tokens, got ${conversationalTokens}`);
 
-  // Baseline comparison: full 41 schemas + static rules vs new conversational & execution paths
+  // Baseline comparison: full 35 schemas + static rules vs new conversational & execution paths
   const allToolSchemas = nativeToolDefinitions(true);
   const legacyBaselineChars =
     JSON.stringify(allToolSchemas).length +
@@ -65,7 +65,7 @@ test('conversational fast-path classifies greetings and conceptual Q&A with 0 to
   const executionSchemaReduction = 1 - JSON.stringify(coreTools).length / JSON.stringify(allToolSchemas).length;
 
   assert.ok(conversationalReduction >= 0.9, `Expected >=90% reduction on conversational turns, got ${(conversationalReduction * 100).toFixed(1)}%`);
-  assert.ok(executionSchemaReduction >= 0.6, `Expected >=60% tool schema reduction on core execution turns vs compacted 41-tool baseline, got ${(executionSchemaReduction * 100).toFixed(1)}%`);
+  assert.ok(executionSchemaReduction >= 0.55, `Expected >=55% tool schema reduction on core execution turns vs compacted 35-tool baseline, got ${(executionSchemaReduction * 100).toFixed(1)}%`);
   assert.ok(executionPromptTokens < legacyBaselineTokens);
 });
 
@@ -127,7 +127,6 @@ test('Tier-1 core tools exclude specialized bundles until triggered by intent or
   assert.equal(baseIntent.kind, 'execution');
   assert.ok(!baseIntent.enabledBundles.has('git'));
   assert.ok(!baseIntent.enabledBundles.has('web'));
-  assert.ok(!baseIntent.enabledBundles.has('debug'));
 
   const coreOnlyNames = new Set(
     nativeToolDefinitions(true, {
@@ -141,7 +140,6 @@ test('Tier-1 core tools exclude specialized bundles until triggered by intent or
   assert.ok(coreOnlyNames.has('unlock_tools'));
   assert.ok(!coreOnlyNames.has('git_state'));
   assert.ok(!coreOnlyNames.has('web_search'));
-  assert.ok(!coreOnlyNames.has('debug_set_breakpoint'));
 
   const previewIntent = classifyTurnIntent({ prompt: 'fix preview white screen on /dashboard', workspaceOpen: true });
   assert.ok(previewIntent.enabledBundles.has('preview'));

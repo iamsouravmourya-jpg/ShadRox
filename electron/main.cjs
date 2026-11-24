@@ -19,11 +19,10 @@ const { createConsoleErrorSink } = require('./preview-assert.cjs');
 const { createMachineDelta, LIMITS: MACHINE_LIMITS } = require('./machine-delta.cjs');
 const { createMachineGit } = require('./machine-git.cjs');
 const { createMachineReceipt } = require('./machine-receipt.cjs');
-const { createDebugHost } = require('./debug-host.cjs');
 const { initDefaultBetaLogger, getDefaultBetaLogger } = require('./beta-logger.cjs');
 
 const { PREVIEW_SCHEME, APP_SCHEME, APP_ORIGIN, createPreviewProtocolService } = require('./ipc/previewProtocol.cjs');
-const { createCommandProofRecorder, registerProofHandlers, registerDebugHandlers } = require('./ipc/debugProofIpc.cjs');
+const { createCommandProofRecorder, registerProofHandlers } = require('./ipc/debugProofIpc.cjs');
 const { createGitService } = require('./ipc/gitIpc.cjs');
 const { registerSecureStoreHandlers, registerAuthHandlers, registerAppAndAutomationHandlers } = require('./ipc/authAppIpc.cjs');
 const { registerMcpHandlers } = require('./ipc/mcpIpc.cjs');
@@ -137,24 +136,6 @@ const proofKeyring = createProofKeyring({
 });
 const proofService = createProofService({ store: proofStore, keyring: proofKeyring });
 const recordCommandProof = createCommandProofRecorder({ proofService });
-
-const bundledDebugRoots = [
-  path.join(__dirname, 'vendor', 'js-debug'),
-  path.join(app.getAppPath(), 'electron', 'vendor', 'js-debug'),
-  ...(typeof process.resourcesPath === 'string' && process.resourcesPath
-    ? [path.join(process.resourcesPath, 'js-debug'), process.resourcesPath]
-    : [])
-];
-
-const debugHost = createDebugHost({
-  getWorkspace: (id) => workspaceAccess.getWorkspace(id),
-  bundledRoots: bundledDebugRoots,
-  broadcast: (event) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('debug:event', event);
-    }
-  }
-});
 const previewConsoleErrors = createConsoleErrorSink();
 const machineReceipt = createMachineReceipt({
   access: workspaceAccess,
@@ -183,7 +164,6 @@ const workspaceService = createWorkspaceService({
   workspaceAccess,
   workspaceConsent,
   previewRuntime,
-  debugHost,
   typeScriptService,
   machineDelta,
   machineReceipt,
@@ -200,7 +180,6 @@ const workspaceService = createWorkspaceService({
 });
 
 let mcpController = null;
-let appAutomationController = null;
 
 function runtimeConfigPath() {
   return path.join(app.getPath('userData'), 'runtime.json');
@@ -400,7 +379,6 @@ async function createWindow() {
     });
   });
   mainWindow.on('closed', () => {
-    debugHost.disposeAll();
     mainWindow = null;
   });
 
@@ -459,15 +437,6 @@ app.whenReady().then(async () => {
     getActiveWorkspaceId: () => activeWorkspaceId,
     PROOF_APP_SCOPE
   });
-  registerDebugHandlers({
-    ipcMain,
-    assertTrustedRenderer,
-    debugHost,
-    dialog,
-    app,
-    bundledDebugRoots,
-    getMainWindow: () => mainWindow
-  });
   registerAuthHandlers({
     app,
     ipcMain,
@@ -475,14 +444,13 @@ app.whenReady().then(async () => {
     assertTrustedRenderer,
     getMainWindow: () => mainWindow
   });
-  appAutomationController = registerAppAndAutomationHandlers({
+  registerAppAndAutomationHandlers({
     ipcMain,
     nativeTheme,
     assertTrustedRenderer,
     getMainWindow: () => mainWindow,
     setRendererDirty: (dirty) => { rendererDirty = dirty; },
     getUpdater: () => updater,
-    workspaceAccess,
     TITLE_BAR_HEIGHT
   });
   mcpController = registerMcpHandlers({
@@ -548,9 +516,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
-  debugHost.disposeAll();
   void previewRuntime.stopAll();
-  appAutomationController?.stopAutomationWebhook();
   mcpController?.closeAll();
   workspaceService.stopAllWatchers();
   if (backend) {

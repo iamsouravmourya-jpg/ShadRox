@@ -267,6 +267,104 @@ function createGitService({ workspaceAccess }) {
       ));
       return truncateText(stdout, 80_000);
     });
+
+    handleMachineSensitive('git:push', async (event, workspaceId) => {
+      assertTrustedRenderer(event);
+      const { workspace, context } = await requireGitWorkspace(workspaceId);
+      const safeDirectories = [workspace.root];
+      const args = buildGitArgv(['push'], {
+        filterDrivers: context.filterDrivers,
+        safeDirectories
+      });
+      await runGitOrThrow(workspace.root, args);
+      return true;
+    });
+
+    handleMachineSensitive('git:pull', async (event, workspaceId) => {
+      assertTrustedRenderer(event);
+      const { workspace, context } = await requireGitWorkspace(workspaceId);
+      if (!context.complete) {
+        throw new Error('Git filter configuration could not be verified; pulling is disabled.');
+      }
+      const safeDirectories = [workspace.root];
+      const args = buildGitArgv(['pull', '--ff-only'], {
+        filterDrivers: context.filterDrivers,
+        safeDirectories
+      });
+      await runGitOrThrow(workspace.root, args);
+      return true;
+    });
+
+    handleMachineSensitive('git:sync', async (event, workspaceId) => {
+      assertTrustedRenderer(event);
+      const { workspace, context } = await requireGitWorkspace(workspaceId);
+      if (!context.complete) {
+        throw new Error('Git filter configuration could not be verified; sync is disabled.');
+      }
+      const safeDirectories = [workspace.root];
+      await runGitOrThrow(workspace.root, buildGitArgv(['pull', '--ff-only'], {
+        filterDrivers: context.filterDrivers,
+        safeDirectories
+      }));
+      await runGitOrThrow(workspace.root, buildGitArgv(['push'], {
+        filterDrivers: context.filterDrivers,
+        safeDirectories
+      }));
+      return true;
+    });
+
+    handleMachineSensitive('git:discard', async (event, workspaceId, rawPaths) => {
+      assertTrustedRenderer(event);
+      const { workspace, context } = await requireGitWorkspace(workspaceId);
+      if (!context.complete) {
+        throw new Error('Git filter configuration could not be verified; discarding changes is disabled.');
+      }
+      const paths = validateGitPaths(rawPaths);
+      const safeDirectories = [workspace.root];
+      const statusOut = await runGitOrThrow(workspace.root, buildGitArgv(
+        ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...paths],
+        { filterDrivers: context.filterDrivers, safeDirectories }
+      ));
+      const parsed = parseGitStatus(statusOut);
+      const untrackedSet = new Set(parsed.changes.filter((entry) => entry.untracked).map((entry) => entry.path));
+      const trackedPaths = paths.filter((entry) => !untrackedSet.has(entry));
+      const untrackedPaths = paths.filter((entry) => untrackedSet.has(entry));
+
+      if (trackedPaths.length > 0) {
+        const restoreResult = await runGit(workspace.root, buildGitArgv(
+          ['restore', '--worktree', '--', ...trackedPaths],
+          { filterDrivers: context.filterDrivers, safeDirectories }
+        ));
+        if (!restoreResult.ok) {
+          await runGitOrThrow(workspace.root, buildGitArgv(
+            ['checkout', '--', ...trackedPaths],
+            { filterDrivers: context.filterDrivers, safeDirectories }
+          ));
+        }
+      }
+
+      if (untrackedPaths.length > 0) {
+        const realRoot = await fs.promises.realpath(workspace.root);
+        for (const relPath of untrackedPaths) {
+          const target = path.resolve(realRoot, relPath);
+          if (!isPathInsideDirectory(realRoot, target)) {
+            throw new Error(`Refusing to remove "${relPath}" outside the workspace.`);
+          }
+          const stat = await fs.promises.lstat(target).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+          if (!stat) continue;
+          if (stat.isSymbolicLink()) {
+            throw new Error(`Symbolic links are not discarded (${relPath}).`);
+          }
+          if (stat.isDirectory()) {
+            await fs.promises.rm(target, { recursive: true, force: false });
+          } else {
+            await fs.promises.unlink(target);
+          }
+        }
+      }
+
+      return true;
+    });
   }
 
   return {

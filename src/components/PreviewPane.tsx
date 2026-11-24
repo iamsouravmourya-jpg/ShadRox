@@ -18,8 +18,7 @@ import {
 import type { ViewportSize } from '../lib/types';
 import type { PreviewDocument } from '../lib/preview';
 import { parseRevealMessage, type RevealSourceTarget } from '../lib/previewSource';
-import { getDesktopBridge, type DesktopPreviewOutput, type DesktopPreviewState, type PreviewProjectCandidate } from '../lib/desktop';
-import { globalRepairSession } from '../lib/repairSession';
+import type { DesktopPreviewOutput, DesktopPreviewState, PreviewProjectCandidate } from '../lib/desktop';
 import { BackendPreview } from './BackendPreview';
 import type { BehaviorEvent, PreviewRect } from '../lib/behavior/types';
 import { createBehaviorEvent } from '../lib/behavior/recorder';
@@ -222,7 +221,6 @@ export const PreviewPane = memo(function PreviewPane({
   const effectiveReloadKey = `${reloadKey}:${manualReloadKey}`;
   const [isConsoleOpen, setIsConsoleOpen] = useState(false);
   const [logs, setLogs] = useState<ConsoleEntry[]>([]);
-  const [previewAssert, setPreviewAssert] = useState<'ok' | 'warn' | 'fatal' | 'observed' | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const previewStageRef = useRef<HTMLDivElement>(null);
   const previewFrameRef = useRef<HTMLIFrameElement>(null);
@@ -242,13 +240,6 @@ export const PreviewPane = memo(function PreviewPane({
       }))
     : logs;
   const previewStartMessage = [...localPreviewLogs].reverse().find((entry) => entry.type === 'status')?.message;
-  // The assertion effect below must read the latest errors without re-running
-  // on every console line, so the diagnostics live in a ref.
-  const previewErrorLogRef = useRef<string[]>([]);
-  previewErrorLogRef.current = displayedLogs
-    .filter((entry) => entry.type === 'error')
-    .slice(-10)
-    .map((entry) => `[${entry.timestamp}] ${entry.message}`);
 
   // Drives the split layout. BackendPreview owns runtime detection and reports
   // whether a backend plan exists; the frontend preview stays full-width until
@@ -268,43 +259,6 @@ export const PreviewPane = memo(function PreviewPane({
   useEffect(() => {
     if (localPreviewState.status === 'error') setIsConsoleOpen(true);
   }, [localPreviewState.status]);
-
-  useEffect(() => {
-    if (localPreviewState.status !== 'ready' || !workspaceId) {
-      setPreviewAssert(null);
-      return;
-    }
-    const desktop = getDesktopBridge();
-    if (!desktop?.assertPreview) return;
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      void desktop.assertPreview(workspaceId).then((verdict) => {
-        if (cancelled) return;
-        setPreviewAssert(verdict.status);
-        // The verdict contract is `ok` only when the load is proven; `fatal`
-        // and `warn` are both failed verdicts. `observed` is neutral — the
-        // assertion could not evaluate — so it is never a failure receipt.
-        if (verdict.status !== 'fatal' && verdict.status !== 'warn') return;
-        const consoleErrors = previewErrorLogRef.current;
-        globalRepairSession.capture({
-          source: 'preview',
-          target: localPreviewState.url ?? `workspace:${workspaceId}`,
-          errorMessage: verdict.detail
-            || (verdict.errorCount > 0 ? consoleErrors[0] : undefined)
-            || (verdict.status === 'fatal'
-              ? 'Preview check failed: a source-derived selector did not match.'
-              : 'Preview check warned: not every source-derived selector matched.'),
-          consoleErrors
-        });
-      }).catch(() => {
-        if (!cancelled) setPreviewAssert(null);
-      });
-    }, 600);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [localPreviewState.status, localPreviewState.url, workspaceId, reloadKey]);
 
   // Listen to iframe error and console bridge
   useEffect(() => {
@@ -399,25 +353,6 @@ export const PreviewPane = memo(function PreviewPane({
         <div className="flex items-center gap-2 min-w-0 flex-1 max-w-lg">
           <span className="flex items-center gap-1.5 text-[11px] font-mono text-ink-3 truncate shrink-0">
             {isBundling && <Loader2 className="w-3 h-3 animate-spin text-accent shrink-0" />}
-            {document?.stackType && (
-              <span className="hidden sm:inline rounded border border-accent-line bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase text-accent">
-                {document.stackType}
-              </span>
-            )}
-            {previewAssert && (
-              <span
-                title="Structured preview check after load"
-                className={`rounded-full border px-2 py-0.5 text-[10px] font-mono shrink-0 ${
-                  previewAssert === 'ok'
-                    ? 'border-ok/30 bg-ok/[.08] text-ok'
-                    : previewAssert === 'fatal'
-                      ? 'border-danger/30 bg-danger/[.08] text-danger'
-                      : 'border-warn/30 bg-warn/[.08] text-warn'
-                }`}
-              >
-                check {previewAssert}
-              </span>
-            )}
             {localPreviewState.status === 'ready' && (
               localPreviewState.mode === 'dev' && localPreviewState.hmr !== false ? (
                 <span

@@ -601,10 +601,35 @@ function createWorkspaceAccess() {
   }
 
   /**
-   * Unlinks one regular file, or removes an empty directory. Non-empty folders
-   * are refused rather than recursed: a mistyped path must never take a subtree
-   * with it, and the explorer has no undo.
+   * Unlinks one regular file, or safely removes a directory recursively after
+   * verifying the subtree stays strictly inside the workspace and contains no
+   * symbolic links or hidden/generated entries.
    */
+  async function assertSafeSubtreeForDelete(root, directoryPath) {
+    const stack = [directoryPath];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      const entries = await fs.readdir(current, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name.startsWith('.') || IGNORED_DIRECTORIES.has(entry.name)) {
+          throw new Error('Hidden and generated project directories cannot be deleted.');
+        }
+        const entryPath = path.join(current, entry.name);
+        const entryStat = await fs.lstat(entryPath);
+        if (entryStat.isSymbolicLink()) {
+          throw new Error('Symbolic links are not deleted from the workspace.');
+        }
+        const realEntry = await fs.realpath(entryPath);
+        if (!isWithinRoot(root, realEntry)) {
+          throw new Error('The target folder contains an entry outside the opened workspace.');
+        }
+        if (entryStat.isDirectory()) {
+          stack.push(entryPath);
+        }
+      }
+    }
+  }
+
   async function deletePath(workspaceId, relativePath) {
     const workspace = workspaces.get(workspaceId);
     if (!workspace) throw new Error('This desktop workspace is no longer open. Reopen its folder before deleting.');
@@ -620,11 +645,21 @@ function createWorkspaceAccess() {
     if (stat.isSymbolicLink()) throw new Error('Symbolic links are not deleted from the workspace.');
 
     if (stat.isDirectory()) {
-      if ((await fs.readdir(target)).length > 0) throw new Error('Only an empty folder can be deleted.');
-      await withNtfsRetry(() => fs.rmdir(target), { readOnlyTarget: target });
+      const realDir = await fs.realpath(target);
+      if (!isWithinRoot(workspace.root, realDir)) {
+        throw new Error('The target folder resolves outside the opened workspace.');
+      }
+      await assertSafeSubtreeForDelete(workspace.root, target);
+      await withNtfsRetry(() => fs.rm(target, { recursive: true, force: false }), { readOnlyTarget: target });
+      const prefix = `${clean}/`;
+      for (const key of [...workspace.fileMap.keys()]) {
+        if (key === clean || key.startsWith(prefix)) {
+          workspace.fileMap.delete(key);
+        }
+      }
       return { path: clean, kind: 'directory' };
     }
-    if (!stat.isFile()) throw new Error('Only files and empty folders can be deleted.');
+    if (!stat.isFile()) throw new Error('Only files and folders can be deleted.');
     await withNtfsRetry(() => fs.unlink(target), { readOnlyTarget: target });
     workspace.fileMap.delete(clean);
     return { path: clean, kind: 'file' };

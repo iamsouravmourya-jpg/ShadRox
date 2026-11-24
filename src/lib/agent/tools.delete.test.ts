@@ -53,6 +53,8 @@ test('delete_file still requires confirm: true', async () => {
   });
 });
 
+const existingFile = () => ({ name: 'gone.txt', content: 'bye', version: 'v1' });
+
 test('a delete the user has not approved removes nothing, whatever the model attested', async () => {
   const requests: ConfirmRequest[] = [];
   let deleted = false;
@@ -63,9 +65,7 @@ test('a delete the user has not approved removes nothing, whatever the model att
           deleted = true;
           return { path: 'gone.txt', kind: 'file' };
         },
-        readFile: async () => {
-          throw notFound();
-        }
+        readFile: async () => (deleted ? Promise.reject(notFound()) : existingFile())
       },
       async () => {
         const outcome = await runTool('ws', deleteCall);
@@ -88,9 +88,7 @@ test('an unapproved delete is asked about once, not per attempt', async () => {
     await withBridge(
       {
         deletePath: async () => ({ path: 'gone.txt', kind: 'file' }),
-        readFile: async () => {
-          throw notFound();
-        }
+        readFile: async () => existingFile()
       },
       async () => {
         await runTool('ws', deleteCall);
@@ -102,12 +100,17 @@ test('an unapproved delete is asked about once, not per attempt', async () => {
 });
 
 test('a typed not-found read verifies the delete', async () => {
+  let deleted = false;
   await approvedDelete(async () => {
     await withBridge(
       {
-        deletePath: async () => ({ path: 'gone.txt', kind: 'file' }),
+        deletePath: async () => {
+          deleted = true;
+          return { path: 'gone.txt', kind: 'file' };
+        },
         readFile: async () => {
-          throw notFound();
+          if (deleted) throw notFound();
+          return existingFile();
         }
       },
       async () => {
@@ -121,11 +124,16 @@ test('a typed not-found read verifies the delete', async () => {
 });
 
 test('a not-found message without a code still verifies the delete', async () => {
+  let deleted = false;
   await approvedDelete(async () => {
     await withBridge({
-      deletePath: async () => ({ path: 'gone.txt', kind: 'file' }),
+      deletePath: async () => {
+        deleted = true;
+        return { path: 'gone.txt', kind: 'file' };
+      },
       readFile: async () => {
-        throw new Error('That path is no longer in the workspace.');
+        if (deleted) throw new Error('That path is no longer in the workspace.');
+        return existingFile();
       }
     }, async () => {
       const outcome = await runTool('ws', deleteCall);
@@ -136,11 +144,16 @@ test('a not-found message without a code still verifies the delete', async () =>
 });
 
 test('a permission error after delete never proves absence', async () => {
+  let deleted = false;
   await approvedDelete(async () => {
     await withBridge({
-      deletePath: async () => ({ path: 'gone.txt', kind: 'file' }),
+      deletePath: async () => {
+        deleted = true;
+        return { path: 'gone.txt', kind: 'file' };
+      },
       readFile: async () => {
-        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        if (deleted) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        return existingFile();
       }
     }, async () => {
       const outcome = await runTool('ws', deleteCall);
@@ -154,11 +167,16 @@ test('a permission error after delete never proves absence', async () => {
 });
 
 test('an unrelated read failure reports unverified, not gone', async () => {
+  let deleted = false;
   await approvedDelete(async () => {
     await withBridge({
-      deletePath: async () => ({ path: 'gone.txt', kind: 'file' }),
+      deletePath: async () => {
+        deleted = true;
+        return { path: 'gone.txt', kind: 'file' };
+      },
       readFile: async () => {
-        throw new Error('This desktop workspace is no longer open.');
+        if (deleted) throw new Error('This desktop workspace is no longer open.');
+        return existingFile();
       }
     }, async () => {
       const outcome = await runTool('ws', deleteCall);
@@ -189,7 +207,7 @@ test('a delete the bridge refuses is a failure, not a verified removal', async (
         throw new Error('Only an empty folder can be deleted.');
       },
       readFile: async () => {
-        throw notFound();
+        throw Object.assign(new Error('EISDIR: illegal operation on a directory'), { code: 'EISDIR' });
       }
     }, async () => {
       const outcome = await runTool('ws', { name: 'delete_file', args: { path: 'full-dir', confirm: true } });
@@ -207,7 +225,9 @@ test('native tools classify into read/write/execute/control and unknown fails cl
   assert.equal(classifyToolEffect('problems'), 'read');
   assert.equal(classifyToolEffect('git_state'), 'read');
   assert.equal(classifyToolEffect('terminal_state'), 'read');
-  assert.equal(classifyToolEffect('debugger_state'), 'read');
+  assert.equal(classifyToolEffect('preview_inspect'), 'read');
+  assert.equal(classifyToolEffect('memory_read'), 'read');
+  assert.equal(classifyToolEffect('debugger_state'), 'external');
   assert.equal(classifyToolEffect('outline'), 'read');
   assert.equal(classifyToolEffect('delete_file'), 'write');
   assert.equal(classifyToolEffect('run_command'), 'execute');

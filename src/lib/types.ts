@@ -254,3 +254,10 @@ export interface RecentEntry {
   /** Standalone single-file opens vs full folder mounts */
   kind: 'folder' | 'file';
 }
+
+export interface ExternalFileAttachment {
+  id: string;
+  name: string;
+  content: string;
+  size: number;
+}

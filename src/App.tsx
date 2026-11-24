@@ -11,16 +11,12 @@ import { SettingsDrawer } from './components/SettingsDrawer';
 import { Stage2Hub } from './components/Stage2Hub';
 import { ActivityRail } from './components/workspace/ActivityRail';
 import { EditorWorkspacePane } from './components/workspace/EditorWorkspacePane';
-import { TaskInspectorDrawer } from './components/workspace/TaskInspectorDrawer';
 import { WorkspaceHeader } from './components/workspace/WorkspaceHeader';
 import { useAcceptance } from './hooks/useAcceptance';
 import { useAuth } from './hooks/useAuth';
 import { useByok } from './hooks/useByok';
-import { useCapsules } from './hooks/useCapsules';
 import { useContextBuilder } from './hooks/useContextBuilder';
-import { useDebug } from './hooks/useDebug';
 import { useDiagnostics } from './hooks/useDiagnostics';
-import { useIntentGraph } from './hooks/useIntentGraph';
 import { useLanguageActions } from './hooks/useLanguageActions';
 import { useLocalPreviewController } from './hooks/useLocalPreviewController';
 import { useOrchestrationController } from './hooks/useOrchestrationController';
@@ -42,7 +38,6 @@ import { betaLogger } from './lib/betaLogger';
 import type { AcceptanceContract, BehaviorEvent } from './lib/behavior/types';
 import { listOutcomes } from './lib/calibratedAuto/ledger';
 import type { OutcomeRecord } from './lib/calibratedAuto/types';
-import type { CapsuleSpend } from './lib/capsules/types';
 import type { Command } from './lib/commands';
 import { confirmAction } from './lib/confirm';
 import { getDesktopBridge, type ShadRoxDesktopAPI, type UpdaterStatus } from './lib/desktop';
@@ -75,18 +70,9 @@ export default function App() {
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [diskToast, setDiskToast] = useState<string | null>(null);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
-  const [isDebugPanelOpen, setIsDebugPanelOpen] = useState(false);
-  const [showTaskInspector, setShowTaskInspector] = useState(false);
   const [behaviorEvents, setBehaviorEvents] = useState<BehaviorEvent[]>([]);
   const [behaviorContract, setBehaviorContract] = useState<AcceptanceContract | null>(null);
   const [calibratedOutcomes, setCalibratedOutcomes] = useState<OutcomeRecord[]>(() => listOutcomes());
-  const [pendingCapsule, setPendingCapsule] = useState<{
-    taskId: string;
-    checkpointId: string;
-    promptIntent: string;
-    spend: CapsuleSpend | null;
-    machineDeltaRef: string | null;
-  } | null>(null);
   const [viewport, setViewport] = useState<ViewportSize>('desktop');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
@@ -124,12 +110,10 @@ export default function App() {
       setUpdaterStatus(status);
       if (status.state === 'available') setToast(`Update ${status.version} is available.`);
       if (status.state === 'ready') setToast(`Update ${status.version} is ready. Restart ShadRox when convenient.`);
-      if (status.state === 'error') setToast('Update check failed. You can continue using this build.');
     });
     return unsubscribe;
   }, [desktopBridge]);
 
-  const debug = useDebug(desktop, nativeWorkspaceId);
   const folderTree = workspace.workspace?.kind === 'folder' ? workspace.workspace.diskFileTree ?? [] : [];
   const repoMapFiles = useRepoMapFiles(nativeWorkspaceId, folderTree);
   const terminalAvailable = Boolean(desktop && nativeWorkspaceId);
@@ -137,20 +121,6 @@ export default function App() {
   const headerFileLabel = workspace.workspace?.kind === 'folder'
     ? `${workspace.workspace.diskFileCount ?? workspace.files.length}${workspace.workspace.diskFileCountTruncated ? '+' : ''} files`
     : `${workspace.files.length} file${workspace.files.length === 1 ? '' : 's'}`;
-
-  const capsules = useCapsules(workspaceRootPath);
-  const intentFiles = useMemo(
-    () => workspace.files.map((file) => ({ path: file.name, content: file.content })),
-    [workspace.files]
-  );
-  const intent = useIntentGraph(workspaceRootPath, intentFiles);
-
-  const debugBreakpointsEnabled = debug.config.configurations.length > 0;
-  const debugPausedAt = useMemo(() => {
-    const frame = debug.selectedFrame;
-    if (debug.state.status !== 'stopped' || !frame?.file) return null;
-    return { file: frame.file, line: frame.line ?? 1, column: frame.column };
-  }, [debug.state.status, debug.selectedFrame]);
 
   const diagnosticsEnabled = Boolean(desktop && nativeWorkspaceId && workspace.workspace?.kind === 'folder');
   const diagnosticsOverrides = useMemo(
@@ -199,11 +169,7 @@ export default function App() {
 
   const pluginAutomations = usePluginAutomations({
     desktop,
-    desktopBridge,
-    nativeWorkspaceId,
-    workspaceRootPath,
-    activeKey: byok.activeKey,
-    busyRef
+    nativeWorkspaceId
   });
 
   const saveFilesAtomicWithHooks = useCallback(
@@ -278,7 +244,6 @@ export default function App() {
     return buildWorkspaceToolContext({
       workspaceOpen: Boolean(nativeWorkspaceId && workspace.workspace?.kind === 'folder'),
       filePaths,
-      debugStatus: debug.state.status,
       previewStatus,
       activeJobCount,
       terminalAwaitingInput: termSummary.awaitingInput,
@@ -294,7 +259,6 @@ export default function App() {
     workspace.workspace,
     workspace.files,
     workspace.checkpoints.length,
-    debug.state.status,
     localPreview.localRuntime.status
   ]);
 
@@ -310,7 +274,6 @@ export default function App() {
     previewDiagnostics: localPreview.previewDiagnostics,
     calibratedOutcomes,
     repoMapFiles,
-    intentGetContext: intent.getContext,
     ruleDocsRef: pluginAutomations.ruleDocsRef,
     skillDocsRef: pluginAutomations.skillDocsRef,
     getToolContext,
@@ -383,14 +346,9 @@ export default function App() {
     routingNoteRef: contextBuilder.routingNoteRef,
     rulesNoteRef: contextBuilder.rulesNoteRef,
     mcpToolHandleRef: contextBuilder.mcpToolHandleRef,
-    pluginsRef: pluginAutomations.pluginsRef,
     skillDocsRef: pluginAutomations.skillDocsRef,
-    pendingPromptQueueRef: pluginAutomations.pendingPromptQueueRef,
-    chatHookGuardRef: pluginAutomations.chatHookGuardRef,
-    dispatchPluginActionRuns: pluginAutomations.dispatchPluginActionRuns,
     busyRef,
     setCalibratedOutcomes,
-    setPendingCapsule,
     setToast,
     announce,
     openSettings,
@@ -402,10 +360,7 @@ export default function App() {
   const governance = useTaskGovernance({
     desktop,
     nativeWorkspaceId,
-    workspaceRootPath,
     workspace,
-    capsules,
-    intent,
     acceptance,
     byok,
     saveFilesAtomicWithHooks,
@@ -423,8 +378,6 @@ export default function App() {
     behaviorContract,
     setBehaviorContract,
     calibratedOutcomes,
-    pendingCapsule,
-    setPendingCapsule,
     setMessages,
     setToast,
     announce
@@ -631,13 +584,6 @@ export default function App() {
         keywords: 'shell console',
         run: () => setIsTerminalOpen((open) => !open)
       },
-      {
-        id: 'view.debug',
-        title: 'Toggle debugger',
-        category: 'View',
-        keywords: 'debug breakpoints pause step dap',
-        run: () => setIsDebugPanelOpen((open) => !open)
-      },
       { id: 'chat.new', title: 'New chat', category: 'Chat', keywords: 'clear reset', run: orchestration.handleClearChat },
       {
         id: 'chat.regenerate',
@@ -729,7 +675,6 @@ export default function App() {
       onTabChange={setSettingsTab}
       onClose={() => setIsSettingsOpen(false)}
       workspaceId={nativeWorkspaceId ?? undefined}
-      workspaceRoot={workspaceRootPath ?? undefined}
       activeProvider={byok.activeProvider}
       onProviderChange={byok.changeProvider}
       baseUrl={byok.baseUrl}
@@ -881,46 +826,14 @@ export default function App() {
         </div>
       )}
 
-      {showTaskInspector && (
-        <TaskInspectorDrawer
-          workspaceRootPath={workspaceRootPath}
-          capsules={capsules}
-          intent={intent}
-          acceptance={acceptance}
-          previewReady={localPreview.localRuntime.status === 'ready'}
-          behaviorEvents={behaviorEvents}
-          behaviorContract={behaviorContract}
-          calibratedOutcomes={calibratedOutcomes}
-          calibratedProfiles={governance.calibratedProfiles}
-          calibratedTaskType={governance.calibratedTaskType}
-          calibratedRanking={governance.calibratedRanking}
-          onClose={() => setShowTaskInspector(false)}
-          onReplayCapsule={(id) => void governance.applyCapsulePlan(id, 'replay')}
-          onRevertCapsule={(id) => void governance.applyCapsulePlan(id, 'revert')}
-          onExportCapsules={() => void governance.handleCapsuleExport()}
-          onImportCapsules={(data) => void governance.handleCapsuleImport(data)}
-          onAddDecision={(decision) => void governance.handleAddDecision(decision)}
-          onExportIntent={governance.handleIntentExport}
-          onImportIntent={governance.handleIntentImport}
-          onClearBehavior={governance.handleClearBehavior}
-          onGenerateContract={governance.handleGenerateContract}
-          onRunCheck={(phase) => void governance.handleRunCheck(phase)}
-          onCalibratedTaskType={governance.setCalibratedTaskType}
-          onPinModel={governance.pinCalibratedModel}
-        />
-      )}
-
       <div
         className="flex-1 min-h-0 flex flex-col md:grid"
         style={{ gridTemplateColumns: '48px minmax(0, 1fr) clamp(320px, 26vw, 376px)' }}
       >
         <ActivityRail
-          hasDesktop={Boolean(desktop)}
           isPreviewOpen={isPreviewOpen}
           isSearchPanelOpen={isSearchPanelOpen}
           isScmPanelOpen={isScmPanelOpen}
-          isDebugPanelOpen={isDebugPanelOpen}
-          showTaskInspector={showTaskInspector}
           isAccountMenuOpen={isAccountMenuOpen}
           user={auth.user ?? null}
           onSelectWorkspaceView={() => {
@@ -947,8 +860,6 @@ export default function App() {
             setIsSearchPanelOpen(false);
             setIsScmPanelOpen((open) => !open);
           }}
-          onToggleDebugPanel={() => setIsDebugPanelOpen((open) => !open)}
-          onToggleTaskInspector={() => setShowTaskInspector((open) => !open)}
           onToggleAccountMenu={() => setIsAccountMenuOpen((open) => !open)}
           onCloseAccountMenu={() => setIsAccountMenuOpen(false)}
           onSignOut={() => void auth.signOut()}
@@ -959,7 +870,11 @@ export default function App() {
             messages={messages}
             input={input}
             onInputChange={setInput}
-            onSend={(pastedTexts) => orchestration.handleChatSend(undefined, pastedTexts)}
+            onSend={(pastedTexts, externalAttachments) =>
+              orchestration.handleChatSend(undefined, pastedTexts, externalAttachments)
+            }
+            restorableMessageIds={orchestration.restorableMessageIds}
+            onRestorePromptCheckpoint={(id) => void orchestration.handleRestorePromptCheckpoint(id)}
             queuedMessages={orchestration.queuedChatItems}
             onCancelQueuedMessage={orchestration.handleCancelQueuedChat}
             onStop={orchestration.handleStopAll}
@@ -1076,14 +991,7 @@ export default function App() {
           onSelectOutlineSymbol={languageActions.handleSelectOutlineSymbol}
           editorSymbols={languageActions.editorSymbols}
           editorQuickFixes={languageActions.editorQuickFixes}
-          debug={debug}
-          debugBreakpointsEnabled={debugBreakpointsEnabled}
-          debugPausedAt={debugPausedAt}
-          onNavigateToPath={(path, line, column) => void languageActions.navigateToPath(path, line, column)}
           sidebarPanel={isScmPanelOpen ? scmPanel : isSearchPanelOpen ? searchPanel : undefined}
-          isDebugPanelOpen={isDebugPanelOpen}
-          onCloseDebugPanel={() => setIsDebugPanelOpen(false)}
-          onAskAiToDebug={(summary) => setInput(summary)}
           isTerminalOpen={isTerminalOpen}
           terminalAvailable={terminalAvailable}
           onCloseTerminal={() => setIsTerminalOpen(false)}

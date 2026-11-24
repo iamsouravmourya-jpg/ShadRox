@@ -315,9 +315,30 @@ function capObservation(content: string): string {
 
 export function hardCapChatHistory(messages: ChatTurn[], maxMessages = 90): ChatTurn[] {
   if (messages.length <= maxMessages) return messages;
-  const systemTurns = messages.filter((m) => m.role === 'system' || m.content.includes('WORKSPACE TOOLS'));
-  const nonSystem = messages.filter((m) => !systemTurns.includes(m));
-  const keepCount = Math.max(10, maxMessages - systemTurns.length);
-  const trimmedNonSystem = nonSystem.slice(-keepCount);
-  return [...systemTurns, ...trimmedNonSystem];
+  const pinnedIndices = new Set<number>();
+  let foundFirstUser = false;
+  for (let i = 0; i < messages.length; i += 1) {
+    const m = messages[i];
+    if (m.role === 'system' || m.content.includes('WORKSPACE TOOLS')) {
+      pinnedIndices.add(i);
+      continue;
+    }
+    if (!foundFirstUser && m.role === 'user' && !isWorkingMemoryMessage(m)) {
+      pinnedIndices.add(i);
+      foundFirstUser = true;
+      continue;
+    }
+    if (isWorkingMemoryMessage(m)) {
+      pinnedIndices.add(i);
+    }
+  }
+  const tailSlots = Math.max(10, maxMessages - pinnedIndices.size);
+  const tailStart = Math.max(0, messages.length - tailSlots);
+  const kept: ChatTurn[] = [];
+  for (let i = 0; i < messages.length; i += 1) {
+    if (pinnedIndices.has(i) || i >= tailStart) {
+      kept.push(messages[i]);
+    }
+  }
+  return kept;
 }
