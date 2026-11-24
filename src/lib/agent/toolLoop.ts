@@ -51,6 +51,8 @@ export const ZERO_PROGRESS_LIMIT = 8;
 const MAX_CONSECUTIVE_PARSE_FAILURES = 3;
 /** The soft wrap-up note lands at this share of the budget, once. */
 const BUDGET_NOTE_SHARE = 0.8;
+/** Max concurrent run_command executions in a single round. */
+export const MAX_PARALLEL_TERMINALS = 2;
 /** The per-round cap lives in tools.ts so the prompt prose shares it; re-exported for callers. */
 export { MAX_CALLS_PER_ROUND };
 const FINAL_ASK =
@@ -193,6 +195,8 @@ export interface ToolLoopInput {
   existingWorkspace?: boolean;
   /** Called immediately when unlock_tools activates specialized bundles for subsequent rounds. */
   onUnlockTools?: (unlocked: ReadonlySet<ToolBundleCategory>) => void;
+  /** Called before any write/delete tool or path= edit fence modifies the given workspace paths. */
+  onBeforeMutatePaths?: (paths: string[]) => Promise<void> | void;
 }
 
 /* ------------------------------------------------------------------ *
@@ -775,7 +779,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     // The turn's safety net, taken BEFORE any write lands (reply-edit fences
     // included): pre-images of exactly the paths about to change, merged into
     // one checkpoint. Fail-open — a bridge without loadFiles skips it entirely.
-    if (turn) {
+    {
       const writePaths = new Set<string>();
       for (const block of blocks) {
         for (const call of block.calls) {
@@ -789,8 +793,14 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         if (path) writePaths.add(path);
       }
       if (writePaths.size > 0) {
-        const desktop = getDesktopBridge();
-        if (desktop) await ensureTurnCheckpoint(turn, desktop, [...writePaths]);
+        const pathList = [...writePaths];
+        if (input.onBeforeMutatePaths) {
+          await input.onBeforeMutatePaths(pathList);
+        }
+        if (turn) {
+          const desktop = getDesktopBridge();
+          if (desktop) await ensureTurnCheckpoint(turn, desktop, pathList);
+        }
       }
     }
 
@@ -1021,14 +1031,62 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
       );
       let batchOutcomes: ToolOutcome[];
       if (hasSequentialStep) {
-        batchOutcomes = [];
-        for (let position = 0; position < batch.length; position += 1) {
+        batchOutcomes = new Array<ToolOutcome>(batch.length);
+        const totalRunCommands = batch.filter(
+          (call, pos) => !isExternal[pos] && call.name === 'run_command'
+        ).length;
+        const labelWithSlot = (outcome: ToolOutcome, slot: number): ToolOutcome => {
+          if (totalRunCommands < 2) return outcome;
+          const prefix = `[Terminal Slot ${slot}]\n`;
+          return {
+            ...outcome,
+            content: outcome.content ? `${prefix}${outcome.content}` : `[Terminal Slot ${slot}]`,
+            ...(outcome.error ? { error: `${prefix}${outcome.error}` } : {})
+          };
+        };
+
+        let position = 0;
+        while (position < batch.length) {
+          const isParallelTerminal = !isExternal[position] && batch[position].name === 'run_command';
+          if (isParallelTerminal) {
+            let groupEnd = position + 1;
+            while (
+              groupEnd < batch.length &&
+              !isExternal[groupEnd] &&
+              batch[groupEnd].name === 'run_command'
+            ) {
+              groupEnd += 1;
+            }
+            const indices: number[] = [];
+            for (let idx = position; idx < groupEnd; idx += 1) indices.push(idx);
+            const activeSlots = [false, false];
+            let cursor = 0;
+            const workers = Array.from(
+              { length: Math.min(MAX_PARALLEL_TERMINALS, indices.length) },
+              async () => {
+                while (cursor < indices.length) {
+                  const batchIndex = indices[cursor++];
+                  const slotIdx = activeSlots[0] ? 1 : 0;
+                  activeSlots[slotIdx] = true;
+                  try {
+                    const outcome = await runTool(input.workspaceId as string, batch[batchIndex]);
+                    batchOutcomes[batchIndex] = labelWithSlot(outcome, slotIdx + 1);
+                  } finally {
+                    activeSlots[slotIdx] = false;
+                  }
+                }
+              }
+            );
+            await Promise.all(workers);
+            position = groupEnd;
+            continue;
+          }
+
           const call = batch[position];
-          batchOutcomes.push(
-            isExternal[position] && external
-              ? await external.call(call)
-              : await runTool(input.workspaceId as string, call)
-          );
+          batchOutcomes[position] = isExternal[position] && external
+            ? await external.call(call)
+            : await runTool(input.workspaceId as string, call);
+          position += 1;
         }
       } else {
         batchOutcomes = await Promise.all(

@@ -4,7 +4,7 @@ import type { RequestEnvelope } from './requestEnvelope';
 
 export type TabType = 'CODE' | 'PREVIEW' | 'PLAN' | 'PLUGINS' | 'AGENTS' | 'AUTOMATIONS';
 
-export type SettingsTab = 'CHAT' | 'GITHUB' | 'SECRETS' | 'TOOLS' | 'AUTOMATIONS';
+export type SettingsTab = 'CHAT' | 'GITHUB' | 'SECRETS' | 'TOOLS';
 
 /**
  * Local-embedding retrieval state shown in the chat toolbar. `unavailable`

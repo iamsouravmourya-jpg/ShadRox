@@ -8,15 +8,9 @@ import type { ToolBundleCategory, TurnIntentKind } from './runPolicy';
  * bundles, runtime state, and on-demand `unlock_tools` discovery.
  */
 
-export interface DebuggerToolContext {
-  isRunning: boolean;
-  isPaused: boolean;
-}
-
 export interface WorkspaceToolContext {
   workspaceOpen: boolean;
   filePaths: readonly string[];
-  debuggerState: DebuggerToolContext;
   previewActive: boolean;
   activeJobCount: number;
   terminalAwaitingInput: boolean;
@@ -89,20 +83,10 @@ export const ADVISORY_READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'unlock_tools'
 ]);
 
-/** Debugger inspection/stepping tools that require a paused debug session. */
-export const PAUSED_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
-  'debugger_state',
-  'debug_get_call_stack',
-  'debug_inspect_variables',
-  'debug_evaluate_expression',
-  'debug_step_execution'
-]);
-
 export const TOOL_CATEGORY_MAP: Record<ToolBundleCategory, readonly string[]> = {
   core: [...TIER1_CORE_TOOL_NAMES, 'verify'],
   apply_patch: ['apply_patch'],
   preview: ['preview_control', 'preview_inspect'],
-  debug: ['debug_set_breakpoint', ...PAUSED_DEBUG_TOOL_NAMES],
   git: ['git_state'],
   checkpoints: ['checkpoint', 'list_checkpoints', 'restore'],
   delete: ['delete_file'],
@@ -129,8 +113,6 @@ const MUTATING_OR_EXECUTE_TOOLS: ReadonlySet<string> = new Set([
   'memory_note',
   'spawn_subagent',
   'rename_symbol',
-  'debug_set_breakpoint',
-  'debug_step_execution',
   'update_tasks'
 ]);
 
@@ -138,10 +120,9 @@ export function listToolBundleCatalog(): Array<{ category: ToolBundleCategory; t
   return [
     { category: 'apply_patch', tools: TOOL_CATEGORY_MAP.apply_patch, summary: 'Atomic multi-file patch transactions' },
     { category: 'preview', tools: TOOL_CATEGORY_MAP.preview, summary: 'Start/restart/inspect embedded browser preview (DOM, console, screenshot)' },
-    { category: 'debug', tools: TOOL_CATEGORY_MAP.debug, summary: 'Set breakpoints, inspect call stack/locals, step paused debugger' },
     { category: 'git', tools: TOOL_CATEGORY_MAP.git, summary: 'Git working-tree status and diff' },
     { category: 'checkpoints', tools: TOOL_CATEGORY_MAP.checkpoints, summary: 'Create, list, and restore workspace checkpoints' },
-    { category: 'delete', tools: TOOL_CATEGORY_MAP.delete, summary: 'Approval-gated file or empty directory deletion' },
+    { category: 'delete', tools: TOOL_CATEGORY_MAP.delete, summary: 'Approval-gated file or recursive folder deletion' },
     { category: 'web', tools: TOOL_CATEGORY_MAP.web, summary: 'Public web search and allowlisted documentation fetch' },
     { category: 'memory', tools: TOOL_CATEGORY_MAP.memory, summary: 'Read/append durable workspace project memory' },
     { category: 'code_intel', tools: TOOL_CATEGORY_MAP.code_intel, summary: 'Semantic search, TS/JS references, definitions, symbol rename' },
@@ -153,12 +134,7 @@ export function listToolBundleCatalog(): Array<{ category: ToolBundleCategory; t
   ];
 }
 
-const DEBUGGABLE_EXT_RE = /\.(?:[cm]?[jt]sx?|py)$/i;
 const PREVIEWABLE_FILE_RE = /(?:^|\/)(?:package\.json|index\.html|vite\.config\.[^/]+|next\.config\.[^/]+|src\/[^/]+\.(?:tsx|jsx|ts|js|html))$/i;
-
-export function hasDebuggableScriptFiles(filePaths: readonly string[]): boolean {
-  return filePaths.some((file) => DEBUGGABLE_EXT_RE.test(file));
-}
 
 export function hasPreviewableFiles(filePaths: readonly string[]): boolean {
   return filePaths.some((file) => PREVIEWABLE_FILE_RE.test(file.replace(/\\/g, '/')));
@@ -194,8 +170,6 @@ function isLegacyToolEnabled(toolName: string, state: WorkspaceToolContext): boo
   if (toolName === 'apply_patch') return state.hasMultiFileEdit === true;
   if (toolName === 'git_state') return state.hasGitRepo === true;
   if (toolName === 'web_search' || toolName === 'fetch_url') return state.webAvailable === true;
-  if (toolName === 'debug_set_breakpoint') return hasDebuggableScriptFiles(state.filePaths);
-  if (PAUSED_DEBUG_TOOL_NAMES.has(toolName)) return state.debuggerState.isPaused === true;
   if (toolName === 'preview_inspect') return state.previewActive === true;
   if (toolName === 'preview_control') return state.previewActive || hasPreviewableFiles(state.filePaths);
   if (toolName === 'job_control') return state.activeJobCount > 0;
@@ -248,9 +222,6 @@ export function isToolEnabledInContext(toolName: string, state: WorkspaceToolCon
     if (toolName === 'diff_review') return activeBundles.has('review');
     if (toolName === 'job_control') return state.activeJobCount > 0 || activeBundles.has('jobs');
     if (toolName === 'terminal_state') return state.hasActiveTerminal === true || state.terminalAwaitingInput || activeBundles.has('terminal');
-    if (toolName === 'debugger_state' || toolName === 'debug_get_call_stack' || toolName === 'debug_inspect_variables') {
-      return state.debuggerState.isPaused === true;
-    }
     if (toolName === 'ask_user') return activeBundles.has('interaction');
     return false;
   }
@@ -273,12 +244,6 @@ export function isToolEnabledInContext(toolName: string, state: WorkspaceToolCon
   }
   if (toolName === 'terminal_state' || toolName === 'terminal_answer') {
     return state.terminalAwaitingInput || activeBundles.has('terminal');
-  }
-  if (toolName === 'debug_set_breakpoint') {
-    return activeBundles.has('debug') && hasDebuggableScriptFiles(state.filePaths);
-  }
-  if (PAUSED_DEBUG_TOOL_NAMES.has(toolName)) {
-    return state.debuggerState.isPaused === true || activeBundles.has('debug');
   }
   if (toolName === 'git_state') {
     return activeBundles.has('git');
@@ -326,7 +291,6 @@ export function resolveActiveTools<T extends { name: string }>(
 export function buildWorkspaceToolContext(options: {
   workspaceOpen: boolean;
   filePaths?: readonly string[];
-  debugStatus?: string;
   previewStatus?: string;
   activeJobCount?: number;
   terminalAwaitingInput?: boolean;
@@ -342,15 +306,10 @@ export function buildWorkspaceToolContext(options: {
   hasGitRepo?: boolean;
   webAvailable?: boolean;
 }): WorkspaceToolContext {
-  const status = options.debugStatus ?? 'idle';
   const preview = options.previewStatus ?? 'idle';
   return {
     workspaceOpen: options.workspaceOpen,
     filePaths: options.filePaths ?? [],
-    debuggerState: {
-      isRunning: status === 'running' || status === 'stopped' || status === 'starting',
-      isPaused: status === 'stopped'
-    },
     previewActive: preview === 'ready' || preview === 'starting',
     activeJobCount: Math.max(0, options.activeJobCount ?? 0),
     terminalAwaitingInput: Boolean(options.terminalAwaitingInput),

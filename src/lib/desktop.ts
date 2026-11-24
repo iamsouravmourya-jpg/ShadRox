@@ -243,6 +243,10 @@ export interface GitScmResult {
   branch: string;
   changes: GitChange[];
   branches: GitBranch[];
+  detached?: boolean;
+  upstream?: string | null;
+  ahead?: number;
+  behind?: number;
 }
 
 /** One open editor buffer, sent with every language-service request. `path` is workspace-relative. */
@@ -524,18 +528,6 @@ export interface RuntimePreviewPlan {
   entry: string;
 }
 
-export interface AutomationWebhookStatus {
-  running: boolean;
-  port: number | null;
-  error: string | null;
-}
-
-export interface AutomationTriggerEvent {
-  automationId: string;
-  receivedAt: number;
-  payload: unknown;
-}
-
 export type UpdaterStatus =
   | { state: 'checking' }
   | { state: 'available'; version: string }
@@ -603,125 +595,6 @@ export interface DesktopAuthResult {
   error?: string;
 }
 
-/** One entry of `shadrox.debug.json` at the workspace root, after validation. */
-export interface DebugLaunchConfig {
-  name: string;
-  type: 'node' | 'python';
-  request: 'launch';
-  program: string;
-  runtimeExecutable?: string;
-  args?: string[];
-  cwd?: string;
-  adapterCommand: string;
-  adapterArgs?: string[];
-}
-
-export interface DebugConfigResult {
-  /**
-   * False only when the workspace has no `shadrox.debug.json` AND nothing
-   * could be inferred from the files present. Inferred configurations count
-   * as found: they launch through the same validated path.
-   */
-  found: boolean;
-  /** Absolute path the result was read from (the would-be config path when inferred). */
-  path: string;
-  configurations: DebugLaunchConfig[];
-  /** Validation problem, e.g. a program that escapes the workspace. */
-  error: string | null;
-  /** True when the configurations were inferred, not read from shadrox.debug.json. */
-  inferred?: boolean;
-  /** Optional non-blocking environment hint (e.g. missing debugpy for Python workspaces). */
-  hint?: string | null;
-}
-
-export interface DebugBreakpoint {
-  /** Workspace-relative path. */
-  file: string;
-  line: number;
-  verified: boolean;
-  id: number | null;
-}
-
-export interface DebugThread {
-  id: number;
-  name: string;
-}
-
-export interface DebugStackFrame {
-  id: number;
-  name: string;
-  /** Workspace-relative path, or null for a frame outside the workspace. */
-  file: string | null;
-  line: number | null;
-  column: number | null;
-  sourceName: string | null;
-}
-
-export interface DebugScope {
-  name: string;
-  variablesReference: number;
-  expensive: boolean;
-  presentationHint: string | null;
-}
-
-export interface DebugVariable {
-  name: string;
-  value: string;
-  type: string | null;
-  variablesReference: number;
-}
-
-export interface DebugEvaluation {
-  result: string;
-  type: string | null;
-  variablesReference: number;
-}
-
-export type DebugStatus = 'idle' | 'starting' | 'running' | 'stopped' | 'terminated' | 'error';
-
-export interface DebugState {
-  status: DebugStatus;
-  workspaceId: string | null;
-  configName: string | null;
-  threadId: number | null;
-  frameId: number | null;
-  stopReason: string | null;
-  exception: boolean;
-  message: string | null;
-  /** Recent debuggee output, clipped in the main process. */
-  output: string;
-}
-
-export type DebugEvent =
-  | { type: 'state'; workspaceId: string; state: DebugState }
-  | { type: 'stopped'; workspaceId: string; threadId: number | null; reason: string; exception: boolean; allThreadsStopped: boolean }
-  | { type: 'continued'; workspaceId: string; threadId: number | null }
-  | { type: 'terminated'; workspaceId: string; message?: string }
-  | { type: 'output'; workspaceId: string; category: string; text: string }
-  | { type: 'breakpoint'; workspaceId: string; reason: string; breakpoint: { id: number | null; verified: boolean; line: number | null; file: string | null } }
-  | { type: 'error'; workspaceId: string; message: string };
-
-/** The main-process DAP host, absent in a browser build. */
-export interface DebugDesktopAPI {
-  config: (workspaceId: string) => Promise<DebugConfigResult>;
-  start: (workspaceId: string, configName?: string) => Promise<DebugState>;
-  stop: (workspaceId: string) => Promise<void>;
-  setBreakpoints: (workspaceId: string, path: string, lines: number[]) => Promise<DebugBreakpoint[]>;
-  threads: (workspaceId: string) => Promise<DebugThread[]>;
-  stack: (workspaceId: string) => Promise<DebugStackFrame[]>;
-  scopes: (workspaceId: string, frameId: number) => Promise<DebugScope[]>;
-  variables: (workspaceId: string, variablesReference: number) => Promise<DebugVariable[]>;
-  /** Evaluate one identifier for a hover tooltip; paused sessions only. */
-  evaluate: (workspaceId: string, frameId: number, expression: string) => Promise<DebugEvaluation>;
-  continue: (workspaceId: string, threadId?: number) => Promise<DebugState>;
-  next: (workspaceId: string, threadId?: number) => Promise<DebugState>;
-  stepIn: (workspaceId: string, threadId?: number) => Promise<DebugState>;
-  stepOut: (workspaceId: string, threadId?: number) => Promise<DebugState>;
-  pause: (workspaceId: string, threadId?: number) => Promise<DebugState>;
-  state: (workspaceId: string) => Promise<DebugState>;
-  onEvent: (listener: (event: DebugEvent) => void) => () => void;
-}
-
 export interface ShadRoxDesktopAPI {
   platform: string;
   openFolder: () => Promise<DesktopWorkspace | null>;
@@ -745,7 +618,7 @@ export interface ShadRoxDesktopAPI {
   renameFile: (workspaceId: string, fromPath: string, toPath: string) => Promise<{ name: string; content: string | null; version: string | null }>;
   /** Explorer "New Folder"; refuses dot-names and generated directories. */
   createDirectory: (workspaceId: string, path: string) => Promise<{ path: string }>;
-  /** Unlinks one file, or removes an empty folder. Non-empty folders are refused. */
+  /** Unlinks one file, or recursively removes a folder inside the workspace. */
   deletePath: (workspaceId: string, path: string) => Promise<{ path: string; kind: 'file' | 'directory' }>;
   searchFiles: (workspaceId: string, query: string, limit?: number) => Promise<WorkspaceSearchHit[]>;
   searchContent: (workspaceId: string, options: ContentSearchOptions) => Promise<ContentSearchResult>;
@@ -799,6 +672,10 @@ export interface ShadRoxDesktopAPI {
   gitBranches: (workspaceId: string) => Promise<GitBranch[]>;
   gitCheckout: (workspaceId: string, branch: string) => Promise<boolean>;
   gitFileDiff: (workspaceId: string, path: string, staged: boolean) => Promise<string>;
+  gitPush?: (workspaceId: string) => Promise<boolean>;
+  gitPull?: (workspaceId: string) => Promise<boolean>;
+  gitSync?: (workspaceId: string) => Promise<boolean>;
+  gitDiscard?: (workspaceId: string, paths: string[]) => Promise<boolean>;
   /**
    * TypeScript project diagnostics. Pass `files` (workspace-relative) to check
    * only the files being edited; omit it to scan the whole project.
@@ -900,10 +777,6 @@ export interface ShadRoxDesktopAPI {
   startBackendPreview: (workspaceId: string, port?: number) => Promise<DesktopPreviewStartResult>;
   stopBackendPreview: (workspaceId: string) => Promise<boolean>;
   onBackendPreviewOutput: (listener: (output: DesktopPreviewOutput) => void) => () => void;
-  automationWebhookStatus: (workspaceId: string) => Promise<AutomationWebhookStatus>;
-  startAutomationWebhook: (workspaceId: string) => Promise<AutomationWebhookStatus>;
-  stopAutomationWebhook: () => Promise<void>;
-  onAutomationTrigger: (listener: (event: AutomationTriggerEvent) => void) => () => void;
   /** Runs an update check; `{ available: false }` in dev and on unsupported platforms. */
   checkForUpdates: () => Promise<{ available: boolean }>;
   onUpdaterStatus: (listener: (status: UpdaterStatus) => void) => () => void;
@@ -912,11 +785,6 @@ export interface ShadRoxDesktopAPI {
     set: (key: string, value: string) => Promise<boolean>;
     delete: (key: string) => Promise<boolean>;
   };
-  /**
-   * The DAP debugger (main process). Optional so a browser build without the
-   * Electron bridge still type-checks; every caller gates on its presence.
-   */
-  debug?: DebugDesktopAPI;
   /**
    * The durable, signed proof chain (main process). Absent in a browser, where
    * receipts stay in memory for the session only.

@@ -53,7 +53,6 @@ export type TurnIntentKind = 'conversational' | 'advisory' | 'execution';
 export type ToolBundleCategory =
   | 'core'
   | 'preview'
-  | 'debug'
   | 'git'
   | 'checkpoints'
   | 'delete'
@@ -75,7 +74,6 @@ export interface TurnIntentInput {
   isSkill?: boolean;
   workspaceOpen?: boolean;
   previewActive?: boolean;
-  debuggerPaused?: boolean;
   activeJobCount?: number;
   terminalAwaitingInput?: boolean;
   hasActiveTerminal?: boolean;
@@ -126,7 +124,6 @@ const GENERAL_CONCEPTUAL_QA_RE =
 
 const BUNDLE_RULES: Array<[ToolBundleCategory, RegExp]> = [
   ['preview', /\b(?:preview|ui|ux|css|tailwind|style|layout|blank|white\s*screen|screenshot|render|console|dom|viewport|responsive|navbar|sidebar|modal|button|logo|svg|icon|page|route|component|visual|animation|dark\s*mode|theme|frontend)\b/i],
-  ['debug', /\b(?:debug|debugger|breakpoint|breakpoints|call\s*stack|stack\s*frame|locals|step\s*over|step\s*into|step\s*out|evaluate\s+expression|pause\s+execution)\b/i],
   ['git', /\b(?:git|commit|commits|branch|branches|diff|staged|unstaged|merge|rebase|stash|blame)\b/i],
   ['checkpoints', /\b(?:checkpoint|checkpoints|restore|rollback|undo\s+run|snapshot|snapshots|revert\s+to)\b/i],
   ['delete', /\b(?:delete|remove|rm|unlink|drop\s+file)\b/i],
@@ -146,7 +143,6 @@ export function detectIntentToolBundles(input: TurnIntentInput): Set<ToolBundleC
   const prompt = input.prompt.trim();
 
   if (input.previewActive) bundles.add('preview');
-  if (input.debuggerPaused) bundles.add('debug');
   if ((input.activeJobCount ?? 0) > 0) bundles.add('jobs');
   if (input.terminalAwaitingInput) bundles.add('terminal');
   if (input.multiFileSignal) bundles.add('apply_patch');

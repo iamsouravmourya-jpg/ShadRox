@@ -420,7 +420,6 @@ const READ_ONLY_TOOLS = new Set([
   'verify',
   'git_state',
   'terminal_state',
-  'debugger_state',
   'outline',
   'find_references',
   'go_to_definition',

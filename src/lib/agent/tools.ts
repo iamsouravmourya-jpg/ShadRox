@@ -5,9 +5,8 @@ import { isProtectedAgentWritePath } from '../agents/applyPolicy';
 import { publishTerminalDockEvent } from '../terminal/echoChannel';
 import { terminalStateManager } from '../terminal/state';
 import { formatInjectionOutcome, injectStdinWithApproval, wasInjected } from '../terminal/injectStdin';
-import { buildRepairBrief, failureSourceForCommand, type FailureReceipt } from '../repairProof';
+import type { FailureReceipt } from '../repairProof';
 import { commandApprovalNotice } from './commandGuard';
-import { globalRepairSession } from '../repairSession';
 import { describeFinish } from './finishTool';
 import { MCP_TOOL_PREFIX } from './mcpTools';
 import type { ExternalToolDefinition } from './mcpTools';
@@ -267,7 +266,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'delete_file',
-    description: 'Delete a file or empty folder (requires user approval).',
+    description: 'Delete a file or folder recursively (requires user approval).',
     parameters: 'path: string (required), confirm: true (required)'
   },
   {
@@ -306,36 +305,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     parameters: 'text: string (required, max 200 chars), session?: string'
   },
   {
-    name: 'debugger_state',
-    description: 'Read paused debugger stopped frame, scopes, and locals (read-only).',
-    parameters: 'none'
-  },
-  {
-    name: 'debug_set_breakpoint',
-    description: 'Set breakpoints at 1-based lines in a file.',
-    parameters: 'path: string (required), lines: number[] (required)'
-  },
-  {
-    name: 'debug_get_call_stack',
-    description: 'Get call stack frames when debugger is paused.',
-    parameters: 'none'
-  },
-  {
-    name: 'debug_inspect_variables',
-    description: 'Inspect scope variables for a paused stack frame.',
-    parameters: 'frameId?: number'
-  },
-  {
-    name: 'debug_evaluate_expression',
-    description: 'Evaluate an expression in the paused debugger frame.',
-    parameters: 'expression: string (required), frameId?: number'
-  },
-  {
-    name: 'debug_step_execution',
-    description: 'Control debugger stepping (continue, stepOver, stepInto, stepOut, pause).',
-    parameters: 'action: "continue"|"stepOver"|"stepInto"|"stepOut"|"pause" (required)'
-  },
-  {
     name: 'outline',
     description: 'List symbols and line numbers in a file.',
     parameters: 'path: string (required)'
@@ -352,7 +321,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'unlock_tools',
-    description: 'Unlock specialized tool bundles on demand for subsequent rounds (categories: preview, debug, git, checkpoints, delete, web, memory, code_intel, review, jobs, terminal, interaction, apply_patch, mcp).',
+    description: 'Unlock specialized tool bundles on demand for subsequent rounds (categories: preview, git, checkpoints, delete, web, memory, code_intel, review, jobs, terminal, interaction, apply_patch, mcp).',
     parameters: 'categories: string[] (required)'
   },
   ...PROJECT_MEMORY_TOOLS,
@@ -455,41 +424,6 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
       session: { type: 'string', description: 'Optional session id.' }
     },
     required: ['text'],
-    additionalProperties: false
-  },
-  debugger_state: { type: 'object', properties: {}, additionalProperties: false },
-  debug_set_breakpoint: {
-    type: 'object',
-    properties: {
-      path: { type: 'string', description: 'Workspace-relative path.' },
-      lines: { type: 'array', items: { type: 'integer' }, description: '1-based line numbers.' }
-    },
-    required: ['path', 'lines'],
-    additionalProperties: false
-  },
-  debug_get_call_stack: { type: 'object', properties: {}, additionalProperties: false },
-  debug_inspect_variables: {
-    type: 'object',
-    properties: {
-      frameId: { type: 'integer', description: 'Stack frame ID.' }
-    },
-    additionalProperties: false
-  },
-  debug_evaluate_expression: {
-    type: 'object',
-    properties: {
-      expression: { type: 'string', description: 'Expression to evaluate.' },
-      frameId: { type: 'integer', description: 'Stack frame ID.' }
-    },
-    required: ['expression'],
-    additionalProperties: false
-  },
-  debug_step_execution: {
-    type: 'object',
-    properties: {
-      action: { type: 'string', enum: ['continue', 'stepOver', 'stepInto', 'stepOut', 'pause'], description: 'Step action.' }
-    },
-    required: ['action'],
     additionalProperties: false
   },
   write_file: {
@@ -605,7 +539,6 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
           type: 'string',
           enum: [
             'preview',
-            'debug',
             'git',
             'checkpoints',
             'delete',
@@ -674,7 +607,6 @@ const NATIVE_TOOL_EFFECTS: Record<string, ToolEffect> = {
   restore: 'write',
   git_state: 'read',
   terminal_state: 'read',
-  debugger_state: 'read',
   outline: 'read',
   delete_file: 'write',
   run_command: 'execute',
@@ -757,9 +689,6 @@ export function describeTools(
       : []),
     ...(hasAny('terminal_state', 'terminal_answer')
       ? ['TERMINAL: terminal_state reads the interactive shell (cwd, running command, last exit, silence, whether it waits for input). It never types. terminal_answer is the only way to type, and the user approves the exact bytes in a dialog first — say so, and never claim an answer was sent when the tool refused.']
-      : []),
-    ...(hasAny('debugger_state', 'debug_set_breakpoint')
-      ? ['DEBUGGER: debugger_state reads a session paused in the debugger — the stopped frame and bounded locals. It refuses when nothing is paused, and it never resumes, steps or edits; those stay the user\'s controls. Never claim a variable value you did not see in its result.']
       : []),
     ...(hasAny('unlock_tools')
       ? ['SPECIALIZED TOOLS: call unlock_tools {"categories":[...]} if you need hidden capabilities mid-turn: ' + listToolBundleCatalog().map((b) => `${b.category}`).join(', ') + '.']
@@ -1646,49 +1575,76 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         const path = asString(call.args.path);
         if (!path) return refusal('delete_file needs a path.');
         if (asBoolean(call.args.confirm) !== true) {
-          return refusal('delete_file needs confirm: true. Only delete when the user asked for this exact file.');
+          return refusal('delete_file needs confirm: true. Only delete when the user asked for this exact file or folder.');
         }
         const normalized = path.replace(/\\/g, '/').replace(/^\.\//, '');
-        // READ-BEFORE-WRITE for deletes too: the model must have seen what it is
-        // removing. A small unread file is auto-read; a large one is refused.
+        let isTargetDirectory = false;
+        // READ-BEFORE-WRITE for deletes too: the model must have seen a file before
+        // removing it; if the path is a directory, verify it exists via listDirectory.
         const turn = getTurn(workspaceId);
-        if (turn && !hasTurnRead(turn, normalized)) {
-          try {
-            const file = await desktop.readFile(workspaceId, path);
+        try {
+          const file = await desktop.readFile(workspaceId, path);
+          if (turn && !hasTurnRead(turn, normalized)) {
             if (file.content.length > AUTO_READ_LIMIT) {
               return refusal(`${path} is ${file.content.length} characters and was not read this turn, so it is too large to auto-read. read_file it first (a line range is enough), then retry delete_file.`);
             }
             noteRead(turn, normalized);
-          } catch (error) {
-            if (isNotFoundError(error)) {
-              return { ok: false, content: '', error: `${path} does not exist on disk, so there is nothing to delete.` };
+          }
+        } catch (error) {
+          if (isNotFoundError(error)) {
+            return { ok: false, content: '', error: `${path} does not exist on disk, so there is nothing to delete.` };
+          }
+          const msg = error instanceof Error ? error.message : String(error);
+          if (/not a regular file|EISDIR|directory/i.test(msg)) {
+            isTargetDirectory = true;
+            if (typeof desktop.listDirectory === 'function') {
+              try {
+                await desktop.listDirectory(workspaceId, path, 0);
+              } catch (listErr) {
+                if (isNotFoundError(listErr)) {
+                  return { ok: false, content: '', error: `${path} does not exist on disk, so there is nothing to delete.` };
+                }
+                return { ok: false, content: '', error: `Could not inspect folder ${path} before deleting: ${listErr instanceof Error ? listErr.message : String(listErr)}` };
+              }
             }
-            return { ok: false, content: '', error: `Could not read ${path} before deleting: ${error instanceof Error ? error.message : String(error)}` };
+          } else {
+            return { ok: false, content: '', error: `Could not read ${path} before deleting: ${msg}` };
           }
         }
         // `confirm: true` is the model saying it is sure, which is not approval.
-        // A delete is the one tool with no undo inside the chat, so a person has
-        // to click, and the path they click on is the path that is removed.
+        // A delete requires explicit user approval before removing a file or folder.
         const approved = await confirmAction({
           title: `Delete ${path}?`,
-          body: `The assistant asked ShadRox to remove this from the opened folder:\n\n${path}\n\nNothing in the chat can undo a delete — it would have to come back from a checkpoint or your version control. Cancel removes nothing.`,
+          body: isTargetDirectory
+            ? `The assistant asked ShadRox to recursively delete this folder and everything inside it:\n\n${path}\n\nCancel removes nothing.`
+            : `The assistant asked ShadRox to remove this from the opened folder:\n\n${path}\n\nNothing in the chat can undo a delete — it would have to come back from a checkpoint or your version control. Cancel removes nothing.`,
           confirmLabel: 'Delete',
           tone: 'danger'
         });
         if (!approved) {
-          return refusal(`The user did not approve deleting ${path}, so nothing was removed. Do not retry this call or delete a different file instead.`);
+          return refusal(`The user did not approve deleting ${path}, so nothing was removed. Do not retry this call or delete a different path instead.`);
         }
         const deleted = await desktop.deletePath(workspaceId, path);
-        // A delete that did not happen must never be reported as done, and a read
-        // that failed for any reason other than not-found must never prove absence.
+        // Verify absence after deletion. For directories, check listDirectory (when available)
+        // or readFile not-found so an existing folder is never mistaken for absent.
         let absence: 'present' | 'absent' | 'unverified' = 'unverified';
         let verifyError = '';
-        try {
-          await desktop.readFile(workspaceId, path);
-          absence = 'present';
-        } catch (error) {
-          if (isNotFoundError(error)) absence = 'absent';
-          else verifyError = error instanceof Error ? error.message : String(error);
+        if (deleted.kind === 'directory' && typeof desktop.listDirectory === 'function') {
+          try {
+            await desktop.listDirectory(workspaceId, path, 0);
+            absence = 'present';
+          } catch (error) {
+            if (isNotFoundError(error)) absence = 'absent';
+            else verifyError = error instanceof Error ? error.message : String(error);
+          }
+        } else {
+          try {
+            await desktop.readFile(workspaceId, path);
+            absence = 'present';
+          } catch (error) {
+            if (isNotFoundError(error)) absence = 'absent';
+            else verifyError = error instanceof Error ? error.message : String(error);
+          }
         }
         if (absence === 'present') {
           return { ok: false, content: '', error: `${deleted.path} is still on disk after the delete call. Nothing was removed.` };
@@ -2100,34 +2056,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
           'The command ran on disk; this output is the real result.'
         ].join('\n');
         if (effectiveExitCode !== 0) {
-          // A repair that was proposed for this exact command is refuted, not
-          // replaced: the same receipt moves to healing_failed with the new exit.
-          const observed = globalRepairSession.observeCommand(
-            command,
-            effectiveExitCode,
-            [result.stdout, result.stderr].filter(Boolean).join('\n')
-          );
-          const receipt = observed[0] ?? globalRepairSession.capture({
-            source: failureSourceForCommand(command),
-            target: command,
-            errorMessage: result.stderr.trim() || result.stdout.trim() || `exit ${effectiveExitCode}`,
-            exitCode: effectiveExitCode,
-            stackTrace: [result.stdout, result.stderr].filter(Boolean).join('\n').slice(0, 4000),
-            checkpointId: globalRepairSession.currentCheckpointId()
-          });
-          if (!receipt) return { ok: false, content: clip(body), error: clip(body) };
-          const detail = clip(`${body}\n\n${buildRepairBrief(receipt)}`);
-          return { ok: false, content: detail, error: detail, proof: receipt };
-        }
-        const healed = globalRepairSession.observeCommand(command, 0, result.stdout);
-        if (healed.length > 0) {
-          // Only a re-run after a proposed repair reaches this branch; the card
-          // shows the verified heal instead of the earlier failure.
-          return {
-            ok: true,
-            content: clip(`${body}\n\nHealing verified: ${healed[0].verificationEvidence}`),
-            proof: healed[0]
-          };
+          return { ok: false, content: clip(body), error: clip(body) };
         }
         return { ok: true, content: clip(body) };
       }
@@ -2286,98 +2215,6 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         return wasInjected(outcome)
           ? { ok: true, content: detail }
           : { ok: false, content: detail, error: detail };
-      }
-      case 'debugger_state': {
-        const debug = desktop.debug;
-        if (!debug) return refusal('The debugger is unavailable in this build.');
-        const session = await debug.state(workspaceId);
-        if (session.status !== 'stopped') return refusal('No debug session is paused.');
-        const frames = await debug.stack(workspaceId);
-        const top = frames[0];
-        if (!top) return refusal('The debugger is paused but reported no stack frames.');
-        const lines = [
-          `paused: ${session.stopReason ?? 'stopped'}${session.exception ? ' (exception)' : ''}`,
-          `top frame: ${clipRuntimeValue(top.name)} at ${
-            top.file ? `${top.file}:${top.line ?? 1}:${top.column ?? 1}` : '(source outside the workspace)'
-          }`,
-          ...frames
-            .slice(0, RUNTIME_FRAME_LIMIT)
-            .map(
-              (frame, index) =>
-                `  #${index} ${clipRuntimeValue(frame.name)}${frame.file ? ` (${frame.file}:${frame.line ?? 1})` : ''}`
-            )
-        ];
-        const scopes = await debug.scopes(workspaceId, top.id);
-        if (scopes.length === 0) lines.push('scopes: (none reported)');
-        for (const scope of scopes.slice(0, RUNTIME_SCOPE_LIMIT)) {
-          lines.push(`scope ${clipRuntimeValue(scope.name)}`);
-          const variables = await debug.variables(workspaceId, scope.variablesReference);
-          if (variables.length === 0) lines.push('  (no variables)');
-          for (const variable of variables.slice(0, RUNTIME_VARIABLE_LIMIT)) {
-            const type = variable.type ? ` [${clipRuntimeValue(variable.type)}]` : '';
-            lines.push(`  ${clipRuntimeValue(variable.name)} = ${clipRuntimeValue(variable.value)}${type}`);
-          }
-        }
-        return { ok: true, content: clip(lines.join('\n')) };
-      }
-      case 'debug_set_breakpoint': {
-        const debug = desktop.debug;
-        if (!debug) return refusal('The debugger is unavailable in this build.');
-        const filePath = asString(call.args.path);
-        const lines = Array.isArray(call.args.lines) ? call.args.lines.map(Number) : [];
-        if (!filePath) return refusal('debug_set_breakpoint needs path.');
-        const result = await debug.setBreakpoints(workspaceId, filePath, lines);
-        return { ok: true, content: clip(JSON.stringify(result, null, 2)) };
-      }
-      case 'debug_get_call_stack': {
-        const debug = desktop.debug;
-        if (!debug) return refusal('The debugger is unavailable in this build.');
-        const state = await debug.state(workspaceId);
-        if (state.status !== 'stopped') return refusal('The debugger is not paused.');
-        const frames = await debug.stack(workspaceId);
-        return { ok: true, content: clip(JSON.stringify(frames, null, 2)) };
-      }
-      case 'debug_inspect_variables': {
-        const debug = desktop.debug;
-        if (!debug) return refusal('The debugger is unavailable in this build.');
-        const state = await debug.state(workspaceId);
-        if (state.status !== 'stopped') return refusal('The debugger is not paused.');
-        const frames = await debug.stack(workspaceId);
-        const frameId = typeof call.args.frameId === 'number' ? call.args.frameId : frames[0]?.id;
-        if (!frameId) return refusal('No stack frame available.');
-        const scopes = await debug.scopes(workspaceId, frameId);
-        const varsByScope = [];
-        for (const scope of scopes) {
-          const variables = await debug.variables(workspaceId, scope.variablesReference);
-          varsByScope.push({ scope: scope.name, variables });
-        }
-        return { ok: true, content: clip(JSON.stringify(varsByScope, null, 2)) };
-      }
-      case 'debug_evaluate_expression': {
-        const debug = desktop.debug;
-        if (!debug) return refusal('The debugger is unavailable in this build.');
-        const expr = asString(call.args.expression);
-        if (!expr) return refusal('debug_evaluate_expression needs expression.');
-        const state = await debug.state(workspaceId);
-        if (state.status !== 'stopped') return refusal('The debugger is not paused.');
-        const frames = await debug.stack(workspaceId);
-        const frameId = typeof call.args.frameId === 'number' ? call.args.frameId : frames[0]?.id;
-        if (!frameId) return refusal('No stack frame available.');
-        const res = await debug.evaluate(workspaceId, frameId, expr);
-        return { ok: true, content: clip(JSON.stringify(res, null, 2)) };
-      }
-      case 'debug_step_execution': {
-        const debug = desktop.debug;
-        if (!debug) return refusal('The debugger is unavailable in this build.');
-        const action = asString(call.args.action);
-        let nextState;
-        if (action === 'continue') nextState = await debug.continue(workspaceId);
-        else if (action === 'stepOver') nextState = await debug.next(workspaceId);
-        else if (action === 'stepInto') nextState = await debug.stepIn(workspaceId);
-        else if (action === 'stepOut') nextState = await debug.stepOut(workspaceId);
-        else if (action === 'pause') nextState = await debug.pause(workspaceId);
-        else return refusal(`Unknown step action: ${action}`);
-        return { ok: true, content: clip(JSON.stringify(nextState, null, 2)) };
       }
       case 'outline': {
         const path = asString(call.args.path);

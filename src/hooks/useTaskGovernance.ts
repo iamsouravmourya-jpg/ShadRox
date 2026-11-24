@@ -20,7 +20,6 @@ import { loadCheckpointFiles } from '../lib/history';
 import type { DecisionInput } from '../lib/intent/types';
 import { restoreDraft } from '../lib/promptTemplates';
 import type { ModelInfo, ProviderId } from '../lib/providers';
-import { globalRepairSession } from '../lib/repairSession';
 import type { ChatMessage, RefineMode, RefinedPromptMeta } from '../lib/types';
 import type { useAcceptance } from './useAcceptance';
 import type { useCapsules } from './useCapsules';
@@ -444,18 +443,6 @@ export function useTaskGovernance({
             window.setTimeout(() => setToast(null), 3000);
             return;
           }
-          const rejected = globalRepairSession.rejectForCheckpoint(
-            checkpointId,
-            `Restored checkpoint ${checkpointId}; the failing state was rewound.`
-          );
-          if (rejected.length > 0) {
-            setMessages((previous) => previous.map((message) => {
-              const proof = message.selfHealingProof;
-              if (!proof) return message;
-              const updated = rejected.find((receipt) => receipt.id === proof.id);
-              return updated ? { ...message, selfHealingProof: updated } : message;
-            }));
-          }
           setCheckpointNonce((previous) => previous + 1);
           const isMachine = Boolean(workspace.checkpoints.find((entry) => entry.id === checkpointId)?.machine);
           setToast(isMachine
@@ -467,7 +454,7 @@ export function useTaskGovernance({
         }
       } finally { setRestoringCheckpointId(null); }
     },
-    [workspace, chatDispatchLockRef, setMessages, setToast]
+    [workspace, chatDispatchLockRef, setToast]
   );
 
   useEffect(() => {

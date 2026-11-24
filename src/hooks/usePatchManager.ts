@@ -14,7 +14,6 @@ import { normalizeSlashes, warnBridgeError } from '../lib/diagnostics';
 import { acceptedContent, acceptedReplacementBlocks, computeHunks } from '../lib/editor/hunks';
 import { extractFilePatches } from '../lib/markdown';
 import { extractUnifiedPatches } from '../lib/patchEngine';
-import { globalRepairSession } from '../lib/repairSession';
 import type { ChatMessage, PatchSet, ReviewPatch } from '../lib/types';
 import { filterIntroducedDiagnostics, selectFixableDiagnostics } from '../lib/typeErrorRefine';
 import type { useAcceptance } from './useAcceptance';
@@ -279,19 +278,6 @@ export function usePatchManager({
         commit(withLanded.map((patch) =>
           patch.landed ? { ...patch, disk, diskMessage: outcome.message ?? undefined } : patch
         ));
-        if (applied.length > 0) {
-          const proposed = globalRepairSession.onEditApplied(
-            `Applied ${applied.length} file(s) through the patch engine: ${applied.slice(0, 8).join(', ')}`
-          );
-          if (proposed.length > 0) {
-            setMessages((previous) => previous.map((message) => {
-              const proof = message.selfHealingProof;
-              if (!proof) return message;
-              const updated = proposed.find((receipt) => receipt.id === proof.id);
-              return updated ? { ...message, selfHealingProof: updated } : message;
-            }));
-          }
-        }
         announce(
           outcome.written > 0
             ? `${outcome.written} file${outcome.written === 1 ? '' : 's'} applied as one change set.`

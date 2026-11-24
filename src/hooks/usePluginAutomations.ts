@@ -63,7 +63,6 @@ export function usePluginAutomations({
   const [projectSkills, setProjectSkills] = useState<Skill[]>([]);
   const automationStatesRef = useRef<Record<string, AutomationState>>({});
   const automationRootRef = useRef<string | null>(null);
-  const automationWebhookStartedRef = useRef(false);
   const automationDispatchRef = useRef<((request: AutomationRunRequest) => void) | null>(null);
 
   // Manifests are data. Loading only fills a ref; every action is later replayed
@@ -106,17 +105,8 @@ export function usePluginAutomations({
     if (root) writeAutomationStates(root, automationStatesRef.current);
   }, []);
 
-  const stopAutomationWebhookIfRunning = useCallback(() => {
-    if (!automationWebhookStartedRef.current) return;
-    automationWebhookStartedRef.current = false;
-    const stop = desktopBridge?.stopAutomationWebhook;
-    if (!stop) return;
-    void Promise.resolve(stop()).catch((error) => warnBridgeError('automation-webhook', error));
-  }, [desktopBridge]);
-
   const loadAutomations = useCallback(async () => {
     if (!desktop || !nativeWorkspaceId || !workspaceRootPath) {
-      stopAutomationWebhookIfRunning();
       automationsRef.current = [];
       automationStatesRef.current = {};
       automationRootRef.current = null;
@@ -126,7 +116,6 @@ export function usePluginAutomations({
     const stored = readAutomationStates(workspaceRootPath);
     if (!hasAutomationConsent(workspaceRootPath)) {
       // The file is visible in Settings, but nothing runs until it is enabled.
-      stopAutomationWebhookIfRunning();
       automationsRef.current = [];
       automationStatesRef.current = stored;
       return;
@@ -148,23 +137,7 @@ export function usePluginAutomations({
     }
     automationStatesRef.current = next;
     writeAutomationStates(workspaceRootPath, next);
-
-    const status = desktopBridge?.automationWebhookStatus;
-    const start = desktopBridge?.startAutomationWebhook;
-    if (parsed.definitions.some((definition) => definition.trigger.type === 'webhook')) {
-      if (status && start) {
-        try {
-          const current = await status(nativeWorkspaceId);
-          if (!current.running) await start(nativeWorkspaceId);
-          automationWebhookStartedRef.current = true;
-        } catch (error) {
-          warnBridgeError('automation-webhook', error);
-        }
-      }
-    } else {
-      stopAutomationWebhookIfRunning();
-    }
-  }, [desktop, desktopBridge, nativeWorkspaceId, workspaceRootPath, stopAutomationWebhookIfRunning]);
+  }, [desktop, nativeWorkspaceId, workspaceRootPath]);
 
   useEffect(() => {
     void loadAutomations();
@@ -227,16 +200,6 @@ export function usePluginAutomations({
     window.addEventListener(WORKSPACE_CONFIG_EVENT, reload);
     return () => window.removeEventListener(WORKSPACE_CONFIG_EVENT, reload);
   }, [loadWorkspacePlugins, loadAutomations, loadProjectDocs]);
-
-  useEffect(() => {
-    const stop = desktopBridge?.stopAutomationWebhook;
-    if (!stop) return;
-    return () => {
-      if (!automationWebhookStartedRef.current) return;
-      automationWebhookStartedRef.current = false;
-      void Promise.resolve(stop()).catch((error) => warnBridgeError('automation-webhook', error));
-    };
-  }, [desktopBridge, nativeWorkspaceId]);
 
   const dispatchPluginActionRuns = useCallback(
     (runs: PluginActionRun[]) => {
@@ -349,25 +312,6 @@ export function usePluginAutomations({
       window.clearTimeout(first);
     };
   }, [desktop, nativeWorkspaceId, workspaceRootPath, runAutomationRequest]);
-
-  useEffect(() => {
-    const subscribe = desktopBridge?.onAutomationTrigger;
-    if (!subscribe || !nativeWorkspaceId) return;
-    return subscribe((event) => {
-      if (!event || typeof event.automationId !== 'string') return;
-      const definition = automationsRef.current.find((entry) => entry.id === event.automationId);
-      if (!definition) return;
-      runAutomationRequest({
-        automationId: definition.id,
-        name: definition.name,
-        trigger: 'webhook',
-        action: definition.action,
-        credits: definition.creditsPerRun,
-        reason: 'webhook',
-        requestedAt: event.receivedAt
-      });
-    });
-  }, [desktopBridge, nativeWorkspaceId, runAutomationRequest]);
 
   return {
     pluginsRef,

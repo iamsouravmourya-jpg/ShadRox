@@ -259,20 +259,10 @@ export const MAX_PLUGIN_PROMPTS_PER_BATCH = 3;
 export const MAX_PLUGIN_COMMANDS_PER_BATCH = 3;
 export const MAX_PLUGIN_PROMPT_QUEUE = 6;
 
-export interface AutomationTriggerEvent {
-  automationId: string;
-  receivedAt: number;
-  payload: unknown;
-}
-
 /** The desktop methods introduced in v0.0.3; optional so an older shell still boots. */
 export interface AutomationDesktopApi {
   scanPlugins?: (workspaceId: string) => Promise<{ files: PluginLoadEntry[]; errors: string[] }>;
-  automationWebhookStatus?: (workspaceId: string) => Promise<{ running: boolean; port: number; error: string | null }>;
-  startAutomationWebhook?: (workspaceId: string) => Promise<unknown>;
-  stopAutomationWebhook?: () => Promise<unknown>;
   stopBackendPreview?: (workspaceId: string) => Promise<unknown>;
-  onAutomationTrigger?: (listener: (event: AutomationTriggerEvent) => void) => () => void;
 }
 
 export function workspaceRelative(path: string): string {

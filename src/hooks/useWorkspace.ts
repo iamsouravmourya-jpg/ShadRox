@@ -205,6 +205,11 @@ interface UseWorkspaceResult {
    * stays buffer-only so the user can inspect before saving.
    */
   rollbackToCheckpoint: (id: string) => Promise<boolean>;
+  /** Applies a 1-click chat prompt checkpoint delta to disk and editor buffers. */
+  applyCheckpointRestore: (plan: {
+    restoreFiles: Array<{ path: string; content: string }>;
+    deletePaths: string[];
+  }) => Promise<{ ok: boolean; errors: string[] }>;
 }
 
 const EMPTY_FILES: WorkspaceFile[] = [];
@@ -1650,32 +1655,42 @@ export function useWorkspace(): UseWorkspaceResult {
       setDiskMessage('Deleting files is available in the desktop app.');
       return false;
     }
-    const buffer = filesRef.current.find((file) => pathsEqual(file.name, clean));
-    if (buffer && buffer.content !== baselineValueFor(baselineRef.current, buffer.name)) {
-      setDiskMessage(`${buffer.name} has unsaved edits — save or revert it before deleting.`);
+    const cleanKey = canonicalPathKey(clean);
+    const matchesDeletedEntry = (candidate: string) =>
+      pathsEqual(candidate, clean) || canonicalPathKey(candidate).startsWith(`${cleanKey}/`);
+    const dirtyMatch = filesRef.current.find(
+      (file) => matchesDeletedEntry(file.name) && file.content !== baselineValueFor(baselineRef.current, file.name)
+    );
+    if (dirtyMatch) {
+      setDiskMessage(`${dirtyMatch.name} has unsaved edits — save or revert it before deleting.`);
       return false;
     }
     try {
       const removed = await desktop.deletePath(id, clean);
       if (desktopWorkspaceIdRef.current !== id) return false;
-      const index = filesRef.current.findIndex((file) => pathsEqual(file.name, clean));
-      if (index >= 0) {
-        const next = filesRef.current.filter((file) => !pathsEqual(file.name, clean));
+      const hadMatches = filesRef.current.some((file) => matchesDeletedEntry(file.name));
+      if (hadMatches) {
+        for (const file of filesRef.current) {
+          if (matchesDeletedEntry(file.name)) deleteBaselineKey(baselineRef.current, file.name);
+        }
+        const next = filesRef.current.filter((file) => !matchesDeletedEntry(file.name));
         filesRef.current = next;
-        deleteBaselineKey(baselineRef.current, clean);
         setDiskBaseline({ ...baselineRef.current });
         setWorkspace((previous) => (previous ? { ...previous, files: next } : previous));
         setEditorGroups((previous) => previous.map((group) => ({
           ...group,
-          tabs: group.tabs.filter((path) => !pathsEqual(path, clean)),
-          pinnedTabs: group.pinnedTabs.filter((path) => !pathsEqual(path, clean)),
-          activePath: group.activePath && pathsEqual(group.activePath, clean) ? null : group.activePath
+          tabs: group.tabs.filter((path) => !matchesDeletedEntry(path)),
+          pinnedTabs: group.pinnedTabs.filter((path) => !matchesDeletedEntry(path)),
+          activePath: group.activePath && matchesDeletedEntry(group.activePath) ? null : group.activePath
         })));
-        setSelectedFileIndex((current) => (current === -1 ? -1 : current > index ? current - 1 : current === index ? Math.min(index, next.length - 1) : current));
+        setSelectedFileIndex((current) => {
+          if (current === -1) return -1;
+          return next.length === 0 ? -1 : Math.min(current, next.length - 1);
+        });
       }
-      setConflicts((previous) => previous.filter((name) => !pathsEqual(name, clean)));
+      setConflicts((previous) => previous.filter((name) => !matchesDeletedEntry(name)));
       for (const deletedEntry of deletedPaths.current) {
-        if (pathsEqual(deletedEntry, clean)) deletedPaths.current.delete(deletedEntry);
+        if (matchesDeletedEntry(deletedEntry)) deletedPaths.current.delete(deletedEntry);
       }
       // Refresh the explorer immediately instead of waiting for the watcher.
       applyDiskTreeChanges([{ path: clean, kind: removed.kind === 'directory' ? 'unlinkDir' : 'unlink' }]);
@@ -1687,6 +1702,136 @@ export function useWorkspace(): UseWorkspaceResult {
       return false;
     }
   }, [loadDirectory, applyDiskTreeChanges]);
+
+  const applyCheckpointRestore = useCallback(async ({
+    restoreFiles,
+    deletePaths
+  }: {
+    restoreFiles: Array<{ path: string; content: string }>;
+    deletePaths: string[];
+  }): Promise<{ ok: boolean; errors: string[] }> => {
+    const errors: string[] = [];
+    const desktop = getDesktopBridge();
+    const id = desktopWorkspaceIdRef.current;
+
+    if (desktop && id) {
+      if (restoreFiles.length > 0) {
+        try {
+          const writes = restoreFiles.map((file) => ({
+            name: file.path,
+            content: file.content
+          }));
+          const saved = await desktop.saveFiles(id, writes);
+          for (const err of saved.errors) {
+            errors.push(`${err.name || 'File'}: ${err.message}`);
+          }
+          if (saved.saved.length > 0) {
+            applyDiskTreeChanges(saved.saved.map((path) => ({ path, kind: 'add' as const })));
+          }
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      for (const rawTarget of deletePaths) {
+        const clean = normalizeWorkspacePath(rawTarget);
+        if (!clean) continue;
+        try {
+          const removed = await desktop.deletePath(id, clean);
+          applyDiskTreeChanges([{ path: clean, kind: removed.kind === 'directory' ? 'unlinkDir' : 'unlink' }]);
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          if (!/ENOENT|not exist|no longer exists/i.test(msg)) {
+            errors.push(`${clean}: ${msg}`);
+          } else {
+            applyDiskTreeChanges([{ path: clean, kind: 'unlink' }]);
+          }
+        }
+      }
+      void loadDirectory('');
+    }
+
+    const deleteKeys = deletePaths
+      .map((entry) => normalizeWorkspacePath(entry))
+      .filter(Boolean)
+      .map((entry) => canonicalPathKey(entry));
+    const shouldDrop = (candidate: string) => {
+      const key = canonicalPathKey(candidate);
+      return deleteKeys.some((target) => key === target || key.startsWith(`${target}/`));
+    };
+
+    const nextFiles = filesRef.current.filter((file) => !shouldDrop(file.name));
+    for (const file of filesRef.current) {
+      if (shouldDrop(file.name)) deleteBaselineKey(baselineRef.current, file.name);
+    }
+
+    for (const restored of restoreFiles) {
+      const target = normalizeWorkspacePath(restored.path);
+      if (!target) continue;
+      const version = await contentVersion(restored.content).catch(() => undefined);
+      const existingIndex = nextFiles.findIndex((file) => pathsEqual(file.name, target));
+      if (existingIndex >= 0) {
+        nextFiles[existingIndex] = {
+          ...nextFiles[existingIndex],
+          content: restored.content,
+          ...(version ? { version } : {})
+        };
+      } else {
+        nextFiles.push({
+          name: target,
+          content: restored.content,
+          language: detectLanguage(target),
+          ...(version ? { version } : {})
+        });
+      }
+      baselineRef.current[baselineKeyFor(baselineRef.current, target)] = restored.content;
+    }
+
+    filesRef.current = nextFiles;
+    setDiskBaseline({ ...baselineRef.current });
+    setWorkspace((previous) => {
+      if (!previous) return previous;
+      let nextTree = previous.diskFileTree;
+      if (!desktop && nextTree) {
+        const treeMap = new Map(nextTree.map((entry) => [canonicalPathKey(entry.path), entry]));
+        for (const key of treeMap.keys()) {
+          if (deleteKeys.some((target) => key === target || key.startsWith(`${target}/`))) {
+            treeMap.delete(key);
+          }
+        }
+        for (const restored of restoreFiles) {
+          const target = normalizeWorkspacePath(restored.path);
+          if (target) treeMap.set(canonicalPathKey(target), { path: target, size: restored.content.length });
+        }
+        nextTree = [...treeMap.values()].sort((a, b) => a.path.localeCompare(b.path));
+      }
+      return {
+        ...previous,
+        files: nextFiles,
+        ...(nextTree ? { diskFileTree: nextTree, diskFileCount: nextTree.length } : {})
+      };
+    });
+    setEditorGroups((previous) => previous.map((group) => ({
+      ...group,
+      tabs: group.tabs.filter((path) => !shouldDrop(path)),
+      pinnedTabs: group.pinnedTabs.filter((path) => !shouldDrop(path)),
+      activePath: group.activePath && shouldDrop(group.activePath) ? null : group.activePath
+    })));
+    setConflicts((previous) => previous.filter((name) => !shouldDrop(name)));
+    for (const entry of deletedPaths.current) {
+      if (shouldDrop(entry)) deletedPaths.current.delete(entry);
+    }
+    setSelectedFileIndex((current) => {
+      if (current === -1) return -1;
+      return nextFiles.length === 0 ? -1 : Math.min(current, nextFiles.length - 1);
+    });
+
+    if (errors.length === 0) {
+      setDiskMessage('Restored workspace to before the selected prompt.');
+    } else {
+      setDiskMessage(`Restored with ${errors.length} issue(s): ${errors[0]}`);
+    }
+    return { ok: errors.length === 0, errors };
+  }, [applyDiskTreeChanges, loadDirectory]);
 
   const revertActiveFile = useCallback(async () => {
     const file = filesRef.current[activeFileIndex];
@@ -2124,7 +2269,8 @@ export function useWorkspace(): UseWorkspaceResult {
       exportDeltaReceipt,
       restoreCheckpoint,
       previewCheckpointDiff,
-      rollbackToCheckpoint
+      rollbackToCheckpoint,
+      applyCheckpointRestore
     }),
     [
       directoryPages,
@@ -2190,7 +2336,8 @@ export function useWorkspace(): UseWorkspaceResult {
       exportDeltaReceipt,
       restoreCheckpoint,
       previewCheckpointDiff,
-      rollbackToCheckpoint
+      rollbackToCheckpoint,
+      applyCheckpointRestore
     ]
   );
 }
