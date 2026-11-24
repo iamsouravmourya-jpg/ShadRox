@@ -4,7 +4,8 @@ import { analyzeProjectStack, formatArchitectureSummary } from '../lib/agent/pro
 import { buildProjectMemoryContext } from '../lib/agent/projectMemory';
 import { createMcpToolHandle, discoveryNotes, type McpToolHandle } from '../lib/agent/mcpTools';
 import { buildRepoMap as buildRankedRepoMap } from '../lib/agent/repoMap';
-import { CHAT_PROMPT_CORE, CONVERSATIONAL_PROMPT_CORE, TOOL_DISCIPLINE_RULES } from '../lib/agent/promptDiscipline';
+import { CHAT_PROMPT_CORE, TOOL_DISCIPLINE_RULES } from '../lib/agent/promptDiscipline';
+import { buildConversationalSystemContext, isConversationalTurn } from '../lib/agent/conversationalContext';
 import type { TurnIntentResult } from '../lib/agent/runPolicy';
 import { DEFAULT_MAX_TOOL_ROUNDS } from '../lib/agent/toolLoop';
 import { describeExternalTools, describeTools } from '../lib/agent/tools';
@@ -376,11 +377,13 @@ export function useContextBuilder({
 
       // Fast-path for purely conversational / general conceptual Q&A turns:
       // 0 tool schemas, no repo tree/contracts/diagnostics/log dumps (< 800 tokens).
-      if (turnIntent?.kind === 'conversational') {
+      // Single source of truth: buildConversationalSystemContext (shared with the
+      // integration test so the live path can never silently re-inject context).
+      if (isConversationalTurn(turnIntent)) {
         mcpToolHandleRef.current = null;
         rulesNoteRef.current = '';
         setSentRepoMap('');
-        const convCore = [...CONVERSATIONAL_PROMPT_CORE];
+        let stackBits: string | null = null;
         if (folder) {
           const pkgBuffered = workspace.files.find(
             (file) => normalizeContextPath(file.name) === 'package.json'
@@ -388,19 +391,10 @@ export function useContextBuilder({
           if (pkgBuffered) {
             const inventory = mergeInventory(tree, workspace.files);
             const arch = analyzeProjectStack(inventory.map((entry) => entry.path), pkgBuffered);
-            const stackBits = [arch.language, arch.framework, arch.styling].filter(Boolean).join(', ');
-            convCore.push(`Active IDE project: ${folder.name}${stackBits ? ` (${stackBits})` : ''}.`);
-          } else {
-            convCore.push(`Active IDE project: ${folder.name}.`);
+            stackBits = [arch.language, arch.framework, arch.styling].filter(Boolean).join(', ') || null;
           }
         }
-        return {
-          core: convCore,
-          chunkHeader: '',
-          chunks: [],
-          files: [],
-          manifest: buildContextManifest({ sources: [], targets: [], resolvedPaths: [] })
-        };
+        return buildConversationalSystemContext({ projectName: folder?.name ?? null, stackBits });
       }
 
       const diskFiles = await readDiskContextFiles(query, picker);
