@@ -2,6 +2,7 @@ import type { ExternalToolDefinition } from './agent/mcpTools';
 import { hasPreviewableFiles, type WorkspaceToolContext } from './agent/toolGatekeeper';
 import type { ContextSource } from './contextManifest';
 import { normalizeSlashes } from './diagnostics';
+import type { MapInputFile } from './repoMap';
 import type { WorkspaceFile } from './types';
 
 export function normalizeContextPath(filePath: string): string {
@@ -107,6 +108,23 @@ export function dedupeContextPaths(paths: readonly (string | null | undefined)[]
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(raw);
+  }
+  return out;
+}
+
+/**
+ * Deduplicates repo-map input files by normalized relative path, preserving the
+ * first seen copy. Mirrors `dedupeWorkspaceFiles` for the `MapInputFile` shape
+ * the ranked repo map and dependent-file selector consume.
+ */
+export function dedupeMapInputFiles(files: readonly MapInputFile[]): MapInputFile[] {
+  const seen = new Set<string>();
+  const out: MapInputFile[] = [];
+  for (const file of files) {
+    const key = normalizeContextPath(file.name);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(file);
   }
   return out;
 }

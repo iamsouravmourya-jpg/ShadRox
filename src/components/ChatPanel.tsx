@@ -1604,7 +1604,6 @@ export function ChatPanel({
                 <X className="h-3 w-3" />
               </button>
             </div>
-            <span className="text-[11px] text-ink-3">Photo ready to send</span>
           </div>
         )}
 

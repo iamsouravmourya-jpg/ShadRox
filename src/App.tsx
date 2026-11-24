@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AuthScreen } from './components/AuthScreen';
 import { BetaDebugLogModal } from './components/BetaDebugLogModal';
-import { ChatPanel, type PinnedSymbol } from './components/ChatPanel';
+import { ChatPanel, type MentionSymbol, type PinnedSymbol } from './components/ChatPanel';
 import { PathPromptDialog, type PathPromptRequest } from './components/CodeEditor';
 import { FeedbackPanel } from './components/FeedbackPanel';
 import { PreviewPane } from './components/PreviewPane';
@@ -168,6 +168,16 @@ export default function App() {
   const activeModel = useMemo(
     () => byok.models.find((model) => model.id === byok.selectedModel) ?? null,
     [byok.models, byok.selectedModel]
+  );
+
+  const chatSymbols = useMemo<MentionSymbol[]>(
+    () => outline.symbols.map((symbol) => ({
+      name: symbol.name,
+      kind: symbol.kind,
+      file: activeFilePath ?? workspace.activeFile?.name ?? '',
+      line: symbol.line
+    })),
+    [outline.symbols, activeFilePath, workspace.activeFile?.name]
   );
 
   const pluginAutomations = usePluginAutomations({
@@ -908,12 +918,7 @@ export default function App() {
             onAttachedFilesChange={setAttachedFiles}
             attachedImage={attachedImage}
             onAttachedImageChange={setAttachedImage}
-            symbols={outline.symbols.map((symbol) => ({
-              name: symbol.name,
-              kind: symbol.kind,
-              file: activeFilePath ?? workspace.activeFile?.name ?? '',
-              line: symbol.line
-            }))}
+            symbols={chatSymbols}
             pinnedSymbols={pinnedSymbols}
             onPinnedSymbolsChange={setPinnedSymbols}
             workspaceFiles={workspace.files}

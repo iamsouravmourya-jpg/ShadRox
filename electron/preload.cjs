@@ -106,7 +106,7 @@ const shadroxDesktop = Object.freeze({
     verify: (workspaceId) => ipcRenderer.invoke('proof:verify', workspaceId)
   }),
   secureStore: Object.freeze({
-    getAll: () => ipcRenderer.invoke('secure:get-all'),
+    get: (key) => ipcRenderer.invoke('secure:get', key),
     set: (key, value) => ipcRenderer.invoke('secure:set', key, value),
     delete: (key) => ipcRenderer.invoke('secure:delete', key)
   }),

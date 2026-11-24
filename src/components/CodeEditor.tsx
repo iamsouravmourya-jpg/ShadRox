@@ -1408,25 +1408,6 @@ export function CodeEditor({
                 {isDirty && (
                   <span className="w-1.5 h-1.5 rounded-full bg-warn shrink-0" title="Unsaved changes" />
                 )}
-                <span className="hidden md:inline text-[10px] text-ink-4 uppercase font-mono">
-                  {activeFile.language}
-                </span>
-                {isMarkdownFile(activeFile.name, activeFile.language) && (
-                  <button
-                    type="button"
-                    onClick={() => setMarkdownPreviewPath(isMarkdownPreview ? null : activeFile.name)}
-                    aria-pressed={isMarkdownPreview}
-                    title={isMarkdownPreview ? 'Show Markdown source' : 'Preview Markdown'}
-                    className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] transition-colors cursor-pointer ${
-                      isMarkdownPreview
-                        ? 'border-accent-line bg-accent-soft text-accent'
-                        : 'border-line text-ink-3 hover:border-line-2 hover:text-ink'
-                    }`}
-                  >
-                    {isMarkdownPreview ? <Code2 className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                    {isMarkdownPreview ? 'Source' : 'Preview'}
-                  </button>
-                )}
               </>
             ) : (
               <span className="text-xs text-ink-4">No file selected</span>

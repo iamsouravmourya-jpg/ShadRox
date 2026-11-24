@@ -15,6 +15,7 @@ import {
   dedupeAndCapDiagnostics,
   dedupeContextPaths,
   dedupeManifestData,
+  dedupeMapInputFiles,
   dedupeWorkspaceFiles,
   filterFilesForRetrieval,
   normalizeContextPath,
@@ -566,7 +567,7 @@ export function useContextBuilder({
           const toolText = toolLines.filter((line) => line.trim().length > 0).join('\n\n');
           if (toolText) coreChars += (coreChars > 0 ? 2 : 0) + toolText.length;
         }
-        const uniqueRepoFiles = dedupeContextPaths(repoMapFiles.files);
+        const uniqueRepoFiles = dedupeMapInputFiles(repoMapFiles.files);
         const signatureMap = uniqueRepoFiles.length > 0 ? await buildRankedRepoMap(folder.path, {
           tokenBudget: repoMapBudgetFor(contextWindow),
           query,

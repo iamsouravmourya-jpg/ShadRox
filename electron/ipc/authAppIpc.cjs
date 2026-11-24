@@ -46,20 +46,19 @@ function registerSecureStoreHandlers({ app, ipcMain, safeStorage, assertTrustedR
     fs.writeFileSync(file, JSON.stringify(store), { encoding: 'utf8', mode: 0o600 });
   };
 
-  ipcMain.handle('secure:get-all', (event) => {
+  ipcMain.handle('secure:get', (event, key) => {
     assertTrustedRenderer(event);
-    if (!safeStorage.isEncryptionAvailable()) return {};
+    if (typeof key !== 'string' || !SECURE_KEY_PATTERN.test(key)) return null;
+    if (!safeStorage.isEncryptionAvailable()) return null;
     const store = readSecureStore();
-    const result = {};
-    for (const [key, value] of Object.entries(store)) {
-      if (typeof value !== 'string') continue;
-      try {
-        result[key] = safeStorage.decryptString(Buffer.from(value, 'base64'));
-      } catch {
-        // Values encrypted under a different OS profile are simply dropped.
-      }
+    const value = store[key];
+    if (typeof value !== 'string') return null;
+    try {
+      return safeStorage.decryptString(Buffer.from(value, 'base64'));
+    } catch {
+      // Values encrypted under a different OS profile are simply dropped.
+      return null;
     }
-    return result;
   });
 
   ipcMain.handle('secure:set', (event, key, value) => {
