@@ -283,28 +283,28 @@ export async function handleSpawnSubagent(workspaceId: string, args: Record<stri
 export const INTERACTION_TOOLS: ToolDefinition[] = [
   {
     name: 'ask_user',
-    description: 'Ask the user ONE structured multiple-choice question and wait for the pick. The turn pauses until they answer, dismiss, or the timeout fires (never hangs). Use it for a real fork in the road — 2 to 4 distinct options — not for things you can decide or verify yourself. One question at a time.',
-    parameters: 'question: string (required, max 500 chars), options: string[2-4] (required, distinct, max 120 chars each), timeoutMs?: number'
+    description: 'Pause and ask the user ONE multiple-choice decision (2-4 options).',
+    parameters: 'question: string, options: string[2-4], timeoutMs?: number'
   },
   {
     name: 'spawn_subagent',
-    description: 'Run a bounded helper agent in a SEPARATE context for a self-contained sub-task (investigation, a survey, a scoped fix). Only its SUMMARY and files-touched list return here — its transcript stays out of the main context. Read-only by default; allowWrites:true lets it edit through the verified tool path. Caps: 12 rounds, 4 minutes.',
-    parameters: 'task: string (required, self-contained instruction), files?: string[] (focus hints), allowWrites?: boolean (default false), maxRounds?: number (default 8, max 12)'
+    description: 'Run a bounded helper agent in an isolated context for a self-contained sub-task (read-only unless allowWrites:true).',
+    parameters: 'task: string, files?: string[], allowWrites?: boolean, maxRounds?: number'
   }
 ];
 
 export const ASK_USER_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
-    question: { type: 'string', description: 'The decision the user must make; one clear question.' },
+    question: { type: 'string', description: 'Clear question for the user.' },
     options: {
       type: 'array',
       items: { type: 'string' },
       minItems: 2,
       maxItems: 4,
-      description: '2-4 distinct, short option labels.'
+      description: '2-4 distinct short options.'
     },
-    timeoutMs: { type: 'integer', description: 'Optional wait ceiling (default 180000, max 600000).' }
+    timeoutMs: { type: 'integer', description: 'Optional timeout ms (default 180000).' }
   },
   required: ['question', 'options'],
   additionalProperties: false
@@ -313,10 +313,10 @@ export const ASK_USER_SCHEMA: Record<string, unknown> = {
 export const SPAWN_SUBAGENT_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
-    task: { type: 'string', description: 'One bounded, self-contained instruction for the helper.' },
-    files: { type: 'array', items: { type: 'string' }, description: 'Optional workspace-relative focus files.' },
-    allowWrites: { type: 'boolean', description: 'Default false (read-only helper). True lets it write through the verified tool path.' },
-    maxRounds: { type: 'integer', description: 'Helper tool-round cap (default 8, max 12).' }
+    task: { type: 'string', description: 'Self-contained instruction for helper.' },
+    files: { type: 'array', items: { type: 'string' }, description: 'Focus file paths.' },
+    allowWrites: { type: 'boolean', description: 'Allow verified disk writes (default false).' },
+    maxRounds: { type: 'integer', description: 'Round cap (default 8, max 12).' }
   },
   required: ['task'],
   additionalProperties: false

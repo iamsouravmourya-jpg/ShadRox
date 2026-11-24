@@ -194,7 +194,7 @@ export function repairAndParseNativeToolArgs(raw: string): Record<string, unknow
   return parsed.value as Record<string, unknown>;
 }
 
-function normalizeCallEntry(value: unknown): ToolCall | null {
+function normalizeCallEntry(value: unknown, requireExplicitArgs = false): ToolCall | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
 
@@ -212,7 +212,7 @@ function normalizeCallEntry(value: unknown): ToolCall | null {
       : source.parameters;
 
   if (rawArgs === undefined) {
-    return { name: source.name.trim(), args: {} };
+    return requireExplicitArgs ? null : { name: source.name.trim(), args: {} };
   }
   if (typeof rawArgs === 'string') {
     const parsedArgs = repairJsonValue(rawArgs);
@@ -227,13 +227,6 @@ function normalizeCallEntry(value: unknown): ToolCall | null {
   return null;
 }
 
-function isStrictToolCall(value: unknown): value is ToolCall {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Record<string, unknown>;
-  return typeof candidate.name === 'string' && candidate.name.trim().length > 0
-    && (candidate.args === undefined || (typeof candidate.args === 'object' && candidate.args !== null && !Array.isArray(candidate.args)));
-}
-
 function parseBareToolCalls(text: string): ParsedToolBlock | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
@@ -243,7 +236,7 @@ function parseBareToolCalls(text: string): ParsedToolBlock | null {
 
   const list = Array.isArray(repaired.value) ? repaired.value : [repaired.value];
   const calls = list
-    .map(normalizeCallEntry)
+    .map((entry) => normalizeCallEntry(entry, true))
     .filter((call): call is ToolCall => call !== null)
     .slice(0, MAX_PARSED_CALLS);
   if (calls.length === 0) return null;
@@ -277,7 +270,7 @@ function parseCallPayload(raw: string): ParsedToolBlock {
   }
   const list = Array.isArray(parsedResult.value) ? parsedResult.value : [parsedResult.value];
   const calls = list
-    .map(normalizeCallEntry)
+    .map((entry) => normalizeCallEntry(entry))
     .filter((call): call is ToolCall => call !== null)
     .slice(0, MAX_PARSED_CALLS);
   if (calls.length === 0) {

@@ -47,3 +47,193 @@ export function shouldGatePlanApproval(permissionMode: PermissionMode, stepCount
 export function normalizePermissionMode(value: unknown): PermissionMode {
   return value === 'plan' || value === 'agent' || value === 'team' ? value : 'ask';
 }
+
+export type TurnIntentKind = 'conversational' | 'advisory' | 'execution';
+
+export type ToolBundleCategory =
+  | 'core'
+  | 'preview'
+  | 'debug'
+  | 'git'
+  | 'checkpoints'
+  | 'delete'
+  | 'web'
+  | 'memory'
+  | 'code_intel'
+  | 'review'
+  | 'jobs'
+  | 'terminal'
+  | 'interaction'
+  | 'apply_patch'
+  | 'mcp';
+
+export interface TurnIntentInput {
+  prompt: string;
+  attachedFiles?: readonly string[];
+  pinnedSymbols?: readonly unknown[];
+  hasImage?: boolean;
+  isSkill?: boolean;
+  workspaceOpen?: boolean;
+  previewActive?: boolean;
+  debuggerPaused?: boolean;
+  activeJobCount?: number;
+  terminalAwaitingInput?: boolean;
+  hasActiveTerminal?: boolean;
+  checkpointCount?: number;
+  hasGitRepo?: boolean;
+  webAvailable?: boolean;
+  multiFileSignal?: boolean;
+}
+
+export interface TurnIntentResult {
+  kind: TurnIntentKind;
+  enabledBundles: Set<ToolBundleCategory>;
+  writesFiles: boolean;
+  skipVerify: boolean;
+  effectivePermissionMode: PermissionMode;
+  reason: string;
+}
+
+const PURE_CONVERSATIONAL_RE =
+  /^(?:hi+|hello+|hey+|hii+|yo+|sup|good\s+(?:morning|afternoon|evening|night)|namaste|hola|thanks?(?:\s+you)?|thank\s+you(?:\s+(?:so|very)\s+much)?|thx|ty|ok(?:ay)?|cool|nice|great|awesome|got\s+it|sounds\s+good|sure|bye|goodbye|see\s+ya|how\s+are\s+you|who\s+are\s+you|what\s+can\s+you\s+do|help|kya\s+haal(?:\s+hai)?|kaise\s+ho|shukriya|dhanyavaad|theek\s+hai|badhiya|mast)[.!?\s]*$/i;
+
+const FILE_PATH_OR_EXT_RE =
+  /(?:^|[\s`'"(\[,])(?:(?:\.\.?\/)?(?:[a-zA-Z0-9._-]+\/)+[a-zA-Z0-9._-]+|[a-zA-Z0-9._-]+\.(?:[cm]?[jt]sx?|py|json|css|scss|sass|html|htm|md|yml|yaml|sql|sh|rs|go|toml|env|svg))(?=$|[\s`'")\],:;?!])/;
+
+const STACK_OR_ERROR_RE =
+  /\b(?:TypeError|ReferenceError|SyntaxError|RangeError|ENOENT|EADDRINUSE|TS\d{3,5}|UnhandledPromiseRejection)\b|(?:^|\n)\s*at\s+\S+\s+\([^)]+:\d+:\d+\)/m;
+
+const CODEBASE_NOUN_RE =
+  /\b(?:file|files|folder|directory|repo|repository|project|codebase|workspace|component|components|page|pages|route|routes|router|endpoint|endpoints|api|apis|server|backend|frontend|hook|hooks|function|class|module|package\.json|tsconfig|vite|next\.config|tailwind|css|html|svg|logo|icon|navbar|sidebar|footer|header|modal|preview|browser|console|dom|terminal|shell|command|debugger|breakpoint|call\s*stack|checkpoint|git|diff|branch|build|lint|typecheck|error|errors|bug|bugs|warning|warnings|crash|blank\s*(?:page|screen)?|white\s*screen|this\s+app|this\s+page|this\s+file|this\s+code|this\s+project|this\s+repo|is\s+app|yahan)\b/i;
+
+const EXECUTION_IMPERATIVE_RE =
+  /\b(?:implement|build|create|add|edit|modify|update|change|fix|repair|debug|refactor|rewrite|delete|remove|rename|move|wire|connect|integrate|scaffold|setup|install|run|test|verify|start|stop|restart|design|style|make|generate|draw|render|optimize|clean|split|decompose|migrate|upgrade|deploy|commit|restore|revert|apply|banao|bana\s*de|kar\s*de|fix\s*kar|theek\s*kar|likh|badal|hata)\b/i;
+
+const EXPLORATION_VERB_RE =
+  /\b(?:scan|explore|inspect|check|find|search|list|read|open|trace|audit|review|explain|describe|summarize|walkthrough|overview|check\s*kar|dekho|samjhao)\b/i;
+
+const NO_EDIT_GUARD_RE =
+  /\b(?:just\s+(?:answer|explain|tell|review|plan|list|show)|don'?t\s+(?:edit|change|modify|touch|write)|do\s+not\s+(?:edit|change|modify|touch|write)|without\s+(?:editing|changing|modifying)|no\s+(?:edits?|changes?|code\s+changes?|writes?)|read[-\s]?only|plan\s+only)\b/i;
+
+const PLAN_ASK_RE =
+  /^(?:make|create|give|write|propose|draft|outline)\s+(?:a|an|me\s+a)?\s*(?:plan|architecture|roadmap|proposal|approach|design\s+doc)\b|\b(?:how\s+should\s+(?:we|i)|what\s+is\s+the\s+best\s+way\s+to|suggest\s+(?:an?\s+)?(?:approach|plan|architecture)|architectural\s+plan)\b/i;
+
+const QUESTION_LEAD_RE =
+  /^(?:what|why|how|where|when|who|which|explain|describe|summarize|review|audit|compare|walkthrough|overview|scan|explore|list|show|tell|can\s+you\s+(?:explain|show|tell|describe|summarize|review|list|trace|help\s+me\s+understand)|is|are|does|do)\b/i;
+
+const GENERAL_CONCEPTUAL_QA_RE =
+  /^(?:what\s+(?:is|are)|why\s+(?:does|do|is|are)|how\s+(?:does|do|can\s+i)|explain|describe|compare|difference\s+between)\b/i;
+
+const BUNDLE_RULES: Array<[ToolBundleCategory, RegExp]> = [
+  ['preview', /\b(?:preview|ui|ux|css|tailwind|style|layout|blank|white\s*screen|screenshot|render|console|dom|viewport|responsive|navbar|sidebar|modal|button|logo|svg|icon|page|route|component|visual|animation|dark\s*mode|theme|frontend)\b/i],
+  ['debug', /\b(?:debug|debugger|breakpoint|breakpoints|call\s*stack|stack\s*frame|locals|step\s*over|step\s*into|step\s*out|evaluate\s+expression|pause\s+execution)\b/i],
+  ['git', /\b(?:git|commit|commits|branch|branches|diff|staged|unstaged|merge|rebase|stash|blame)\b/i],
+  ['checkpoints', /\b(?:checkpoint|checkpoints|restore|rollback|undo\s+run|snapshot|snapshots|revert\s+to)\b/i],
+  ['delete', /\b(?:delete|remove|rm|unlink|drop\s+file)\b/i],
+  ['web', /\b(?:web|search\s+(?:online|web|google|docs)|internet|url|https?:\/\/|fetch|documentation|mdn|npm\s+package|latest\s+version)\b/i],
+  ['memory', /\b(?:memory|remember|project\.md|note\s+for\s+future|conventions?)\b/i],
+  ['code_intel', /\b(?:references?|usages?|definition|go\s+to\s+def|rename\s+symbol|semantic\s+search|callers|where\s+is\s+\S+\s+used|refactor)\b/i],
+  ['review', /\b(?:diff\s*review|code\s*review|review\s+(?:my|the|this)\s+(?:diff|changes)|audit\s+diff)\b/i],
+  ['jobs', /\b(?:background\s+job|jobs|job_control|running\s+server|dev\s+server|port\s+already\s+in\s+use|eaddrinuse|kill\s+server)\b/i],
+  ['terminal', /\b(?:terminal|pty|stdin|waiting\s+for\s+input|interactive\s+prompt|answer\s+prompt)\b/i],
+  ['interaction', /\b(?:ask\s+me|subagent|spawn\s+agent|delegate)\b/i],
+  ['apply_patch', /\b(?:multi[-\s]?file|across\s+files|refactor|migrate|patch|apply_patch|full[-\s]?stack|end[-\s]?to[-\s]?end)\b/i],
+  ['mcp', /\b(?:mcp|external\s+tool|connector|plugin)\b/i]
+];
+
+export function detectIntentToolBundles(input: TurnIntentInput): Set<ToolBundleCategory> {
+  const bundles = new Set<ToolBundleCategory>(['core']);
+  const prompt = input.prompt.trim();
+
+  if (input.previewActive) bundles.add('preview');
+  if (input.debuggerPaused) bundles.add('debug');
+  if ((input.activeJobCount ?? 0) > 0) bundles.add('jobs');
+  if (input.terminalAwaitingInput) bundles.add('terminal');
+  if (input.multiFileSignal) bundles.add('apply_patch');
+
+  for (const [bundle, pattern] of BUNDLE_RULES) {
+    if (!pattern.test(prompt)) continue;
+    if (bundle === 'web' && input.webAvailable === false) continue;
+    if (bundle === 'git' && input.hasGitRepo === false) continue;
+    bundles.add(bundle);
+  }
+  return bundles;
+}
+
+export function classifyTurnIntent(input: TurnIntentInput): TurnIntentResult {
+  const prompt = input.prompt.trim();
+  const hasAttachments =
+    (input.attachedFiles?.length ?? 0) > 0 ||
+    (input.pinnedSymbols?.length ?? 0) > 0 ||
+    input.hasImage === true ||
+    input.isSkill === true;
+  const hasFileOrCodeCue =
+    hasAttachments ||
+    FILE_PATH_OR_EXT_RE.test(prompt) ||
+    STACK_OR_ERROR_RE.test(prompt) ||
+    prompt.includes('`') ||
+    CODEBASE_NOUN_RE.test(prompt);
+
+  if (!hasFileOrCodeCue) {
+    if (!prompt || PURE_CONVERSATIONAL_RE.test(prompt)) {
+      return {
+        kind: 'conversational',
+        enabledBundles: new Set<ToolBundleCategory>(),
+        writesFiles: false,
+        skipVerify: true,
+        effectivePermissionMode: 'ask',
+        reason: 'pure conversational greeting or acknowledgement'
+      };
+    }
+    if (
+      GENERAL_CONCEPTUAL_QA_RE.test(prompt) &&
+      !EXECUTION_IMPERATIVE_RE.test(prompt) &&
+      !EXPLORATION_VERB_RE.test(prompt)
+    ) {
+      return {
+        kind: 'conversational',
+        enabledBundles: new Set<ToolBundleCategory>(),
+        writesFiles: false,
+        skipVerify: true,
+        effectivePermissionMode: 'ask',
+        reason: 'general conceptual Q&A without workspace cues'
+      };
+    }
+  }
+
+  const enabledBundles = detectIntentToolBundles(input);
+
+  if (NO_EDIT_GUARD_RE.test(prompt) || PLAN_ASK_RE.test(prompt)) {
+    return {
+      kind: 'advisory',
+      enabledBundles,
+      writesFiles: false,
+      skipVerify: true,
+      effectivePermissionMode: 'ask',
+      reason: 'read-only advisory or planning request'
+    };
+  }
+
+  if (
+    (QUESTION_LEAD_RE.test(prompt) || EXPLORATION_VERB_RE.test(prompt)) &&
+    !EXECUTION_IMPERATIVE_RE.test(prompt)
+  ) {
+    return {
+      kind: 'advisory',
+      enabledBundles,
+      writesFiles: false,
+      skipVerify: true,
+      effectivePermissionMode: 'ask',
+      reason: 'workspace exploration or explanation without mutation intent'
+    };
+  }
+
+  return {
+    kind: 'execution',
+    enabledBundles,
+    writesFiles: true,
+    skipVerify: false,
+    effectivePermissionMode: 'agent',
+    reason: 'execution, build, debug, or modification intent'
+  };
+}

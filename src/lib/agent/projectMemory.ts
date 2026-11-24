@@ -266,13 +266,13 @@ function requireBridge(): ShadRoxDesktopAPI | null {
 export const PROJECT_MEMORY_TOOLS: ToolDefinition[] = [
   {
     name: 'memory_read',
-    description: 'Read this workspace\'s project memory (.shadrox/PROJECT.md): stack, commands, conventions, do-not list and verified notes from earlier turns. A bounded excerpt is already in your context; call this only when you need the full document.',
+    description: 'Read full project memory (.shadrox/PROJECT.md) beyond the context excerpt.',
     parameters: 'none'
   },
   {
     name: 'memory_note',
-    description: 'Append one short verified fact to the project memory for future turns (a command that works, a convention you confirmed, a gotcha). Never store secrets, keys or tokens — they are redaction-refused. One fact per note, max 1200 characters.',
-    parameters: 'text: string (required, one factual note)'
+    description: 'Append one short verified fact to project memory (max 1200 chars; secrets refused).',
+    parameters: 'text: string (required, factual note)'
   }
 ];
 
@@ -285,7 +285,7 @@ export const MEMORY_READ_SCHEMA: Record<string, unknown> = {
 export const MEMORY_NOTE_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
-    text: { type: 'string', description: 'One short verified fact. Secrets are redacted; key-like strings are refused.' }
+    text: { type: 'string', description: 'Short verified fact (secrets refused).' }
   },
   required: ['text'],
   additionalProperties: false

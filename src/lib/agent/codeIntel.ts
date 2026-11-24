@@ -340,27 +340,27 @@ export async function handleRenameSymbol(workspaceId: string, args: Record<strin
 export const CODE_INTEL_TOOLS: ToolDefinition[] = [
   {
     name: 'find_references',
-    description: 'Every reference to a symbol, from the real TypeScript language service (compiler API). Pass symbol alone to search the project, or file plus 1-based line for a position. TypeScript/JavaScript only; other files are refused honestly.',
-    parameters: 'symbol?: string, file?: string (workspace-relative), line?: number (1-based)'
+    description: 'Find all TypeScript/JavaScript references to a symbol via the compiler language service.',
+    parameters: 'symbol?: string, file?: string, line?: number (1-based)'
   },
   {
     name: 'go_to_definition',
-    description: 'Where the identifier at a file:line is defined, with the declaration snippet. TypeScript/JavaScript only.',
-    parameters: 'file: string (required), line: number (required, 1-based), symbol?: string (pick a specific identifier on the line)'
+    description: 'Resolve symbol declaration file:line and snippet (TS/JS only).',
+    parameters: 'file: string (required), line: number (1-based), symbol?: string'
   },
   {
     name: 'rename_symbol',
-    description: 'Rename a symbol and every reference the language service can reach, across files. Returns a version-pinned multi-file EDIT SET (full new contents + positioned hunks) inside a shadrox:edit-set fence — it writes NOTHING itself; the host applies the set atomically. TypeScript/JavaScript only.',
-    parameters: 'file: string (required, where the symbol is declared), symbol: string (required), newName: string (required, valid identifier)'
+    description: 'Compute an atomic multi-file EDIT SET to rename a TS/JS symbol across references.',
+    parameters: 'file: string, symbol: string, newName: string'
   }
 ];
 
 export const FIND_REFERENCES_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
-    symbol: { type: 'string', description: 'Symbol name; used alone it is resolved project-wide.' },
-    file: { type: 'string', description: 'Workspace-relative TypeScript/JavaScript file.' },
-    line: { type: 'integer', description: '1-based line holding the symbol.' }
+    symbol: { type: 'string', description: 'Symbol name for project-wide lookup.' },
+    file: { type: 'string', description: 'Workspace-relative TS/JS file.' },
+    line: { type: 'integer', description: '1-based line number.' }
   },
   additionalProperties: false
 };
@@ -368,9 +368,9 @@ export const FIND_REFERENCES_SCHEMA: Record<string, unknown> = {
 export const GO_TO_DEFINITION_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
-    file: { type: 'string', description: 'Workspace-relative TypeScript/JavaScript file.' },
-    line: { type: 'integer', description: '1-based line holding the identifier.' },
-    symbol: { type: 'string', description: 'Optional: which identifier on the line.' }
+    file: { type: 'string', description: 'Workspace-relative TS/JS file.' },
+    line: { type: 'integer', description: '1-based line number.' },
+    symbol: { type: 'string', description: 'Identifier on that line.' }
   },
   required: ['file', 'line'],
   additionalProperties: false
@@ -379,9 +379,9 @@ export const GO_TO_DEFINITION_SCHEMA: Record<string, unknown> = {
 export const RENAME_SYMBOL_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
-    file: { type: 'string', description: 'Workspace-relative file where the symbol is declared.' },
+    file: { type: 'string', description: 'File where symbol is declared.' },
     symbol: { type: 'string', description: 'Current symbol name.' },
-    newName: { type: 'string', description: 'New identifier; must be a valid, non-reserved name.' }
+    newName: { type: 'string', description: 'Valid new identifier.' }
   },
   required: ['file', 'symbol', 'newName'],
   additionalProperties: false

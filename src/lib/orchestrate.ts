@@ -1,4 +1,4 @@
-import type { PermissionMode } from './agent/runPolicy';
+import { classifyTurnIntent, type PermissionMode } from './agent/runPolicy';
 
 /**
  * Decides whether a typed request runs in the direct single-agent tool loop
@@ -86,6 +86,7 @@ export function decideOrchestration(input: OrchestrationInput): OrchestrationDec
   if (prompt.length < 40) return chat();
   if (NO_EDIT.test(prompt)) return chat();
   if (QUESTION_START.test(prompt) && !ACTION.test(prompt)) return chat();
+  if (input.permissionMode !== 'team' && classifyTurnIntent({ prompt }).kind !== 'execution') return chat();
 
   // Specialist Team runs ONLY when the user explicitly selected Team mode.
   if (input.permissionMode === 'team') {

@@ -4,7 +4,8 @@ import type { McpToolHandle } from './mcpTools';
 import { parseToolBlocks, serializeCallKey, serializeResults, stripToolBlocks } from './toolProtocol';
 import { applyTaskUpdates, completionGuard, renderTaskPlan, type TaskPlan } from './taskPlan';
 import { FINISH_TOOL_NAME, parseFinishDetails, renderFinishSummary } from './finishTool';
-import { allowsEffect, type RunPolicy, type ToolEffect } from './runPolicy';
+import { allowsEffect, type RunPolicy, type ToolBundleCategory, type ToolEffect } from './runPolicy';
+import { TOOL_CATEGORY_MAP } from './toolGatekeeper';
 import type { AttemptRecord, AttemptState } from '../taskUsage';
 import type { FailureReceipt } from '../repairProof';
 import { flightRecorder } from '../observability/flightRecorder';
@@ -15,7 +16,7 @@ import {
   noteVerification, needsVerification, satisfyingVerification, verificationDemand, type AgentTurnState
 } from './turnState';
 import { detectScaffoldIntent, detectAddPageIntent, scaffoldNudge, addPageNudge, previewNudge } from './scaffold';
-import { compactToolObservations, upsertWorkingMemory, type WorkingMemoryState } from './loopContext';
+import { compactToolObservations, hardCapChatHistory, upsertWorkingMemory, type WorkingMemoryState } from './loopContext';
 import { createFailureRepeatTracker, failureNudge, failureBlockMessage } from './stuck';
 import { ensureTurnCheckpoint } from './checkpoints';
 import { isVerifyCommand } from './verifyProject';
@@ -190,6 +191,8 @@ export interface ToolLoopInput {
   requireFileMutation?: boolean;
   /** True when the opened workspace already contains an existing project on disk. */
   existingWorkspace?: boolean;
+  /** Called immediately when unlock_tools activates specialized bundles for subsequent rounds. */
+  onUnlockTools?: (unlocked: ReadonlySet<ToolBundleCategory>) => void;
 }
 
 /* ------------------------------------------------------------------ *
@@ -515,6 +518,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   let changedFilesTotal = 0;
   const changedPathsSet = new Set<string>();
   const createdPathsSet = new Set<string>();
+  const unlockedBundles = new Set<ToolBundleCategory>();
   const workingMemory: WorkingMemoryState = {
     inspectedRanges: [],
     completedEdits: [],
@@ -721,6 +725,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
       wrapNudgeUsed = true;
       messages.push({ role: 'system', content: `Round ${round} of ${maxRounds}: start landing the final changes and verify them; do not open new explorations.` });
     }
+    messages = hardCapChatHistory(messages, 90);
     const streamed = await streamWithAttempt(messages, round);
     if (isAborted()) return stamp({ text: streamed.text, rounds: round, activity, capped: false, error: null, plan, stopReason: 'aborted' });
     round += 1;
@@ -981,7 +986,8 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     if (runnable.length > 0) {
       const batch = runnable.map((index) => usable[index]);
       const isExternal = batch.map((call) => offeredExternal(call.name));
-      if (isExternal.some((externalCall) => !externalCall) && !input.workspaceId) {
+      const needsWorkspace = batch.some((call, position) => !isExternal[position] && call.name !== 'unlock_tools');
+      if (needsWorkspace && !input.workspaceId) {
         return stamp({
           text: stripToolBlocks(streamed.text),
           rounds: round,
@@ -1036,6 +1042,22 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
     }
 
     usable.forEach((call, index) => activity.push(toActivity(call, outcomes[index], batchDurationMs)));
+    let unlockedChanged = false;
+    usable.forEach((call, index) => {
+      if (call.name !== 'unlock_tools' || !outcomes[index]?.ok) return;
+      const requested = Array.isArray(call.args.categories) ? call.args.categories : [];
+      for (const raw of requested) {
+        if (typeof raw !== 'string') continue;
+        const normalized = raw.trim().toLowerCase() as ToolBundleCategory;
+        if (Object.prototype.hasOwnProperty.call(TOOL_CATEGORY_MAP, normalized) && !unlockedBundles.has(normalized)) {
+          unlockedBundles.add(normalized);
+          unlockedChanged = true;
+        }
+      }
+    });
+    if (unlockedChanged) {
+      input.onUnlockTools?.(new Set(unlockedBundles));
+    }
     for (const outcome of outcomes) {
       if (outcome?.proof) failureProof = outcome.proof;
     }

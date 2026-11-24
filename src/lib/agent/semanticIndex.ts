@@ -455,17 +455,17 @@ export async function handleSemanticSearch(workspaceId: string, args: Record<str
 export const SEMANTIC_SEARCH_TOOLS: ToolDefinition[] = [
   {
     name: 'semantic_search',
-    description: 'Search the workspace by meaning-ish evidence: an incremental local index of code chunks ranked with BM25 plus symbol/path boosts, re-ranked with Gemini embeddings when the user has a key configured (never required). Returns top chunks with file:line ranges. Use it to locate the right region before read_file; use search_text for exact strings.',
-    parameters: 'query: string (required), limit?: number (default 8, max 20), refresh?: boolean (force re-scan)'
+    description: 'Search indexed workspace code chunks by concept/symbol (BM25 + optional embeddings), returning file:line ranges.',
+    parameters: 'query: string (required), limit?: number (default 8), refresh?: boolean'
   }
 ];
 
 export const SEMANTIC_SEARCH_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
-    query: { type: 'string', description: 'What to look for: identifiers, concepts, or a paraphrase of the behavior.' },
-    limit: { type: 'integer', description: 'Maximum chunks to return (default 8, max 20).' },
-    refresh: { type: 'boolean', description: 'Force an incremental re-scan even if the last one is recent.' }
+    query: { type: 'string', description: 'Concept, identifier, or behavior to locate.' },
+    limit: { type: 'integer', description: 'Max chunks (default 8, max 20).' },
+    refresh: { type: 'boolean', description: 'Force incremental index refresh.' }
   },
   required: ['query'],
   additionalProperties: false

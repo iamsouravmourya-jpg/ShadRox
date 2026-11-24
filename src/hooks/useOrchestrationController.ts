@@ -3,10 +3,17 @@ import type { PastedText, PinnedSymbol } from '../components/ChatPanel';
 import { commandApprovalNotice } from '../lib/agent/commandGuard';
 import { computeLoopContextBudgetChars } from '../lib/agent/loopContext';
 import type { McpToolHandle } from '../lib/agent/mcpTools';
-import { shouldGatePlanApproval, type PermissionMode } from '../lib/agent/runPolicy';
+import {
+  classifyTurnIntent,
+  detectIntentToolBundles,
+  shouldGatePlanApproval,
+  type PermissionMode,
+  type ToolBundleCategory,
+  type TurnIntentResult
+} from '../lib/agent/runPolicy';
 import { DEFAULT_MAX_TOOL_ROUNDS, runToolRounds, type ToolLoopResumeState } from '../lib/agent/toolLoop';
 import { parseToolBlocks, repairAndParseNativeToolArgs, stripToolBlocks } from '../lib/agent/toolProtocol';
-import type { WorkspaceToolContext } from '../lib/agent/toolGatekeeper';
+import { buildWorkspaceToolContext, type WorkspaceToolContext } from '../lib/agent/toolGatekeeper';
 import { nativeToolDefinitions, summarizeCall } from '../lib/agent/tools';
 import { inferMilestoneCategory } from '../lib/autonomy/milestoneVerifier';
 import { isRetryableCoordinatorError, withCoordinatorBackoff } from '../lib/agents/coordinatorResilience';
@@ -134,6 +141,8 @@ export interface UseOrchestrationControllerOptions {
       attachedFiles?: string[];
       pinnedSymbols?: PinnedSymbol[];
       toolContext?: WorkspaceToolContext;
+      turnIntent?: TurnIntentResult;
+      unlockedBundles?: ReadonlySet<string>;
     }
   ) => Promise<SystemContext>;
   setContextManifest: (manifest: ContextManifest | null) => void;
@@ -430,21 +439,89 @@ export function useOrchestrationController({
       ...(requestImage ? { imageData: requestImage } : {})
     });
     routingNoteRef.current = '';
-    const readerModel = autoReaderModel(text, mode.writesFiles ? 'edit' : 'chatter');
+    const baseToolContext = getToolContextRef.current ? await getToolContextRef.current() : undefined;
+    const rawTurnIntent = classifyTurnIntent({
+      prompt: text,
+      attachedFiles: requestFiles,
+      pinnedSymbols: requestSymbols,
+      hasImage: Boolean(requestImage),
+      isSkill: Boolean(invocation),
+      workspaceOpen: Boolean(workspace.workspace),
+      previewActive: baseToolContext?.previewActive,
+      debuggerPaused: baseToolContext?.debuggerState.isPaused,
+      activeJobCount: baseToolContext?.activeJobCount,
+      terminalAwaitingInput: baseToolContext?.terminalAwaitingInput,
+      hasActiveTerminal: baseToolContext?.hasActiveTerminal,
+      checkpointCount: baseToolContext?.checkpointCount,
+      hasGitRepo: baseToolContext?.hasGitRepo,
+      webAvailable: baseToolContext?.webAvailable,
+      multiFileSignal: (baseToolContext?.touchedFiles?.length ?? 0) > 1 || requestFiles.length > 1
+    });
+    const callerPermission = submission?.envelope?.permissionMode ?? permissionMode;
+    const effectiveWritesFiles =
+      mode.writesFiles &&
+      rawTurnIntent.kind === 'execution' &&
+      callerPermission !== 'ask' &&
+      callerPermission !== 'plan';
+    const effectiveMode = effectiveWritesFiles ? mode : { ...mode, writesFiles: false };
+    const effectiveTurnIntent =
+      !effectiveWritesFiles && rawTurnIntent.kind === 'execution'
+        ? {
+            ...rawTurnIntent,
+            kind: 'advisory' as const,
+            writesFiles: false,
+            skipVerify: true,
+            effectivePermissionMode: 'ask' as const
+          }
+        : rawTurnIntent;
+    const effectivePermissionMode: PermissionMode = effectiveTurnIntent.effectivePermissionMode;
+    const unlockedBundles = new Set<ToolBundleCategory>();
+    const defaultToolContext = (): WorkspaceToolContext =>
+      buildWorkspaceToolContext({
+        filePaths: workspace.files.map((file) => file.name),
+        workspaceOpen: Boolean(workspace.workspace)
+      });
+    const buildRoundToolContext = (ctx: WorkspaceToolContext | undefined): WorkspaceToolContext => {
+      const resolved = ctx ?? defaultToolContext();
+      if (effectiveTurnIntent.kind === 'conversational') {
+        return {
+          ...resolved,
+          turnIntent: 'conversational',
+          enabledBundles: new Set<ToolBundleCategory>(),
+          unlockedBundles
+        };
+      }
+      return {
+        ...resolved,
+        turnIntent: effectiveTurnIntent.kind,
+        enabledBundles: effectiveTurnIntent.enabledBundles,
+        unlockedBundles,
+        ...(!effectiveMode.writesFiles
+          ? { isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }
+          : {})
+      };
+    };
+
+    const readerModel =
+      effectiveTurnIntent.kind === 'conversational'
+        ? null
+        : autoReaderModel(text, effectiveMode.writesFiles ? 'edit' : 'chatter');
     const pickerReport: PickerReport = { model: readerModel ?? '', ran: false, shortlist: 0, answered: false, picked: 0, durationMs: 0 };
     let fit: ChatRequestFit;
-    const baseToolContext = getToolContextRef.current ? await getToolContextRef.current() : undefined;
-    const toolContext =
-      baseToolContext && !mode.writesFiles
-        ? { ...baseToolContext, isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }
-        : baseToolContext;
+    const toolContext = buildRoundToolContext(baseToolContext);
     const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), toolContext);
     try {
       const systemContext = await buildSystemContext(
         text,
-        mode,
+        effectiveMode,
         readerModel ? runContextPicker(readerModel, pickerReport) : undefined,
-        { attachedFiles: requestFiles, pinnedSymbols: requestSymbols, toolContext }
+        {
+          attachedFiles: requestFiles,
+          pinnedSymbols: requestSymbols,
+          toolContext,
+          turnIntent: effectiveTurnIntent,
+          unlockedBundles
+        }
       );
       if (systemContext.manifest) setContextManifest(systemContext.manifest);
       fit = fitChatRequest({
@@ -452,7 +529,10 @@ export function useOrchestrationController({
         messages: history,
         system: systemContext,
         maxOutput: resolveBudgetCapabilities(byok.activeProvider, byok.selectedModel).maxOutput ?? DEFAULT_MAX_OUTPUT,
-        extraInputChars: JSON.stringify(nativeTools).length + 2048 + history.length * 64
+        extraInputChars:
+          nativeTools.length > 0
+            ? JSON.stringify(nativeTools).length + 2048 + history.length * 64
+            : history.length * 64
       });
     } catch (error) {
       if (abortRef.current === controller) abortRef.current = null;
@@ -544,7 +624,7 @@ export function useOrchestrationController({
       applied = true;
       const remaining = reply.slice(appliedReplyChars);
       if (appliedReplyChars > 0 && !remaining.trim()) return;
-      mergeApply(await applyPatchesFromReply(modelMessage.id, remaining, mode, {
+      mergeApply(await applyPatchesFromReply(modelMessage.id, remaining, effectiveMode, {
         ...(appliedReplyChars > 0 ? { merge: stagedRoundPatches } : {}),
         onFailures: runRepair,
         onUnmapped: runUnmappedRepair
@@ -582,8 +662,13 @@ export function useOrchestrationController({
       setResumePrefixes((previous) => ({ ...previous, [modelMessage.id]: reply }));
     };
 
-    const machineCheckpoint = await workspace.markCheckpoint(modelMessage.id, text);
-    globalRepairSession.beginTurn(machineCheckpoint);
+    const machineCheckpoint =
+      effectiveTurnIntent.kind === 'conversational'
+        ? null
+        : await workspace.markCheckpoint(modelMessage.id, text);
+    if (machineCheckpoint) {
+      globalRepairSession.beginTurn(machineCheckpoint);
+    }
 
     const turnUsage = {
       tokens: 0,
@@ -611,13 +696,9 @@ export function useOrchestrationController({
       };
       try {
         // Re-resolve the tool context every round so job_control, preview_inspect,
-        // terminal_* etc. appear as soon as their backing state appears mid-turn,
-        // instead of being frozen at turn start.
-        const baseToolContext = getToolContextRef.current ? await getToolContextRef.current() : undefined;
-        const roundToolContext =
-          baseToolContext && !mode.writesFiles
-            ? { ...baseToolContext, isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }
-            : baseToolContext;
+        // terminal_*, and unlock_tools expansions appear on the very next round.
+        const roundBaseToolContext = getToolContextRef.current ? await getToolContextRef.current() : undefined;
+        const roundToolContext = buildRoundToolContext(roundBaseToolContext);
         const roundNativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), roundToolContext);
 
         await streamChat(
@@ -629,9 +710,9 @@ export function useOrchestrationController({
             messages: loopMessages,
             systemInstruction: fit.systemInstruction,
             temperature: byok.temperature,
-            thinking: mode.thinking,
+            thinking: effectiveTurnIntent.kind === 'conversational' ? 'low' : effectiveMode.thinking,
             signal: controller.signal,
-            toolDefinitions: roundNativeTools
+            toolDefinitions: roundNativeTools.length > 0 ? roundNativeTools : undefined
           },
           {
             onDelta: (chunk) => {
@@ -741,7 +822,7 @@ export function useOrchestrationController({
         ], repairRoundSeq++);
         const corrected = stripToolBlocks(repair.text);
         if (!controller.signal.aborted && corrected.trim()) {
-          mergeApply(await applyPatchesFromReply(modelMessage.id, corrected, mode,
+          mergeApply(await applyPatchesFromReply(modelMessage.id, corrected, effectiveMode,
             stagedRoundPatches.staged.length > 0 ? { merge: stagedRoundPatches } : { replace: true }));
         }
       } finally {
@@ -772,7 +853,7 @@ export function useOrchestrationController({
         ], repairRoundSeq++);
         const corrected = stripToolBlocks(correction.text);
         if (!controller.signal.aborted && corrected.trim()) {
-          mergeApply(await applyPatchesFromReply(modelMessage.id, corrected, mode,
+          mergeApply(await applyPatchesFromReply(modelMessage.id, corrected, effectiveMode,
             stagedRoundPatches.staged.length > 0 ? { merge: stagedRoundPatches } : { replace: true }));
         }
       } finally {
@@ -785,7 +866,7 @@ export function useOrchestrationController({
       try {
         const visible = stripToolBlocks(roundText);
         if (visible.trim()) {
-          mergeApply(await applyPatchesFromReply(modelMessage.id, visible, mode, {
+          mergeApply(await applyPatchesFromReply(modelMessage.id, visible, effectiveMode, {
             merge: stagedRoundPatches,
             onFailures: runRepair,
             onUnmapped: runUnmappedRepair
@@ -799,140 +880,184 @@ export function useOrchestrationController({
     };
 
     try {
-      const loop = await runToolRounds({
-        messages: fit.messages,
-        workspaceId: nativeWorkspaceId,
-        maxRounds: DEFAULT_MAX_TOOL_ROUNDS,
-        external: mcpToolHandleRef.current ?? undefined,
-        aborted: () => controller.signal.aborted,
-        policy: { mode: submission?.envelope?.permissionMode ?? permissionMode },
-        signal: controller.signal,
-        onAttempt: recordAttempt,
-        loopContextBudgetChars: computeLoopContextBudgetChars(
-          contextWindow,
-          resolveBudgetCapabilities(byok.activeProvider, byok.selectedModel).maxOutput ?? DEFAULT_MAX_OUTPUT,
-          fit.systemInstruction?.length ?? 0,
-          JSON.stringify(nativeTools).length
-        ),
-        existingWorkspace: (workspace.workspace?.diskFileTree?.length ?? workspace.files.length) > 0,
-        stream: streamOnce,
-        applyRoundPatches,
-        onRound: (_round, text) => {
-          const asked = parseToolBlocks(text).flatMap((block) => block.calls);
-          if (asked.length === 0) return;
-          setMessages((previous) => previous.map((message) => (
-            message.id === modelMessage.id
-              ? {
-                  ...message,
-                  toolActivity: asked.map((call) => ({
-                    name: call.name,
-                    label: summarizeCall(call),
-                    ok: true,
-                    stage: call.name.includes('read') || call.name.includes('list') ? 'reading' : 'planning'
-                  }))
-                }
-              : message
-          )));
-        },
-        onPlan: (taskPlan) => {
-          const effectivePermissionMode = submission?.envelope?.permissionMode ?? permissionMode;
-          const allFiles = Array.from(new Set(taskPlan.flatMap((t) => t.files ?? [])));
-          const needsApproval = shouldGatePlanApproval(effectivePermissionMode, taskPlan.length, allFiles.length);
-          if (needsApproval) planApprovalGateRef.current.add(modelMessage.id);
-          setMessages((previous) => previous.map((message) => (
-            message.id === modelMessage.id
-              ? {
-                  ...message,
-                  taskPlan,
-                  planApproval: needsApproval && !message.planApproval
-                    ? {
-                        status: 'pending',
-                        planSummary: `Multi-step plan proposed: ${taskPlan.length} steps touching ${allFiles.length > 0 ? allFiles.join(', ') : 'workspace'}`,
-                        targetFiles: allFiles
-                      }
-                    : message.planApproval
-                }
-              : message
-          )));
-        },
-        onStatus: (status) => {
-          setActiveStatusMessage(status);
-          setMessages((previous) => previous.map((message) => (
-            message.id === modelMessage.id ? { ...message, activeStatus: status } : message
-          )));
-        }
-      });
-      if (loop.error && !controller.signal.aborted) {
-        turnSignals.streamError = loop.error;
-        // provider_error / step_cap / stuck carry a resumable snapshot: store it so
-        // a Continue button can re-run runToolRounds from where the loop stopped.
-        if (loop.resume) {
-          toolLoopResumeRef.current[modelMessage.id] = loop.resume;
-          const prefix = (reply || loop.text || '').trim();
-          setMessages((previous) =>
-            previous.map((message) =>
-              message.id === modelMessage.id
-                ? { ...message, streaming: false, resumable: true }
-                : message
-            )
-          );
-          setResumePrefixes((previous) => ({ ...previous, [modelMessage.id]: prefix }));
-          markInterrupted(loop.error);
+      if (effectiveTurnIntent.kind === 'conversational') {
+        const streamed = await streamOnce(fit.messages, 0);
+        if (streamed.error && !controller.signal.aborted) {
+          turnSignals.streamError = streamed.error;
+          markInterrupted(streamed.error);
         } else {
-          markInterrupted(loop.error);
+          const answer = reply || stripToolBlocks(streamed.text) || streamed.text;
+          turnSignals.answerEmpty = !answer.trim();
+          const answerAttempts = turnAttempts.filter((attempt) => attempt.role === 'answer');
+          const lastAnswerAttempt = answerAttempts[answerAttempts.length - 1];
+          const usageState: 'measured' | 'estimated' | 'pending' = turnAttempts.length === 0
+            ? 'pending'
+            : turnAttempts.some((attempt) => attempt.usageSource === 'unknown' || attempt.inputTokens === null || attempt.outputTokens === null)
+              ? 'pending'
+              : turnAttempts.some((attempt) => attempt.usageSource === 'estimated')
+                ? 'estimated'
+                : 'measured';
+          setMessages((previous) => previous.map((message) => (
+            message.id === modelMessage.id
+              ? {
+                  ...message,
+                  streaming: false,
+                  content: answer,
+                  metrics: {
+                    tokens: turnUsage.tokens,
+                    inputTokens: turnUsage.inputTokens,
+                    outputTokens: turnUsage.outputTokens,
+                    cachedTokens: turnUsage.cachedTokens || undefined,
+                    model: answerModel,
+                    servedModel: lastAnswerAttempt?.servedModel ?? null,
+                    usageState,
+                    attempts: turnAttempts.length,
+                    firstTokenMs: turnUsage.firstTokenMs,
+                    durationMs: turnUsage.durationMs
+                  }
+                }
+              : message
+          )));
+          streamCompleted = !controller.signal.aborted && !streamed.error;
         }
       } else {
-        const answer = reply || loop.text;
-        turnSignals.activity = loop.activity;
-        turnSignals.blocked = loop.finish?.blocked ?? null;
-        turnSignals.answerEmpty = !answer.trim();
-        const closedPlan = loop.plan.length > 0 && !loop.finish?.blocked
-          ? loop.plan.map((task) => (
-              task.status === 'pending' || task.status === 'doing'
-                ? { ...task, status: 'done' as const }
-                : task
-            ))
-          : loop.plan;
-        const answerAttempts = turnAttempts.filter((attempt) => attempt.role === 'answer');
-        const lastAnswerAttempt = answerAttempts[answerAttempts.length - 1];
-        const usageState: 'measured' | 'estimated' | 'pending' = turnAttempts.length === 0
-          ? 'pending'
-          : turnAttempts.some((attempt) => attempt.usageSource === 'unknown' || attempt.inputTokens === null || attempt.outputTokens === null)
+        const loop = await runToolRounds({
+          messages: fit.messages,
+          workspaceId: nativeWorkspaceId,
+          maxRounds: DEFAULT_MAX_TOOL_ROUNDS,
+          external: mcpToolHandleRef.current ?? undefined,
+          aborted: () => controller.signal.aborted,
+          policy: { mode: effectivePermissionMode },
+          signal: controller.signal,
+          onAttempt: recordAttempt,
+          onUnlockTools: (unlocked) => {
+            for (const bundle of unlocked) unlockedBundles.add(bundle);
+          },
+          loopContextBudgetChars: computeLoopContextBudgetChars(
+            contextWindow,
+            resolveBudgetCapabilities(byok.activeProvider, byok.selectedModel).maxOutput ?? DEFAULT_MAX_OUTPUT,
+            fit.systemInstruction?.length ?? 0,
+            JSON.stringify(nativeTools).length
+          ),
+          existingWorkspace: (workspace.workspace?.diskFileTree?.length ?? workspace.files.length) > 0,
+          stream: streamOnce,
+          applyRoundPatches,
+          onRound: (_round, text) => {
+            const asked = parseToolBlocks(text).flatMap((block) => block.calls);
+            if (asked.length === 0) return;
+            setMessages((previous) => previous.map((message) => (
+              message.id === modelMessage.id
+                ? {
+                    ...message,
+                    toolActivity: asked.map((call) => ({
+                      name: call.name,
+                      label: summarizeCall(call),
+                      ok: true,
+                      stage: call.name.includes('read') || call.name.includes('list') ? 'reading' : 'planning'
+                    }))
+                  }
+                : message
+            )));
+          },
+          onPlan: (taskPlan) => {
+            const allFiles = Array.from(new Set(taskPlan.flatMap((t) => t.files ?? [])));
+            const needsApproval = shouldGatePlanApproval(effectivePermissionMode, taskPlan.length, allFiles.length);
+            if (needsApproval) planApprovalGateRef.current.add(modelMessage.id);
+            setMessages((previous) => previous.map((message) => (
+              message.id === modelMessage.id
+                ? {
+                    ...message,
+                    taskPlan,
+                    planApproval: needsApproval && !message.planApproval
+                      ? {
+                          status: 'pending',
+                          planSummary: `Multi-step plan proposed: ${taskPlan.length} steps touching ${allFiles.length > 0 ? allFiles.join(', ') : 'workspace'}`,
+                          targetFiles: allFiles
+                        }
+                      : message.planApproval
+                  }
+                : message
+            )));
+          },
+          onStatus: (status) => {
+            setActiveStatusMessage(status);
+            setMessages((previous) => previous.map((message) => (
+              message.id === modelMessage.id ? { ...message, activeStatus: status } : message
+            )));
+          }
+        });
+        if (loop.error && !controller.signal.aborted) {
+          turnSignals.streamError = loop.error;
+          // provider_error / step_cap / stuck carry a resumable snapshot: store it so
+          // a Continue button can re-run runToolRounds from where the loop stopped.
+          if (loop.resume) {
+            toolLoopResumeRef.current[modelMessage.id] = loop.resume;
+            const prefix = (reply || loop.text || '').trim();
+            setMessages((previous) =>
+              previous.map((message) =>
+                message.id === modelMessage.id
+                  ? { ...message, streaming: false, resumable: true }
+                  : message
+              )
+            );
+            setResumePrefixes((previous) => ({ ...previous, [modelMessage.id]: prefix }));
+            markInterrupted(loop.error);
+          } else {
+            markInterrupted(loop.error);
+          }
+        } else {
+          const answer = reply || loop.text;
+          turnSignals.activity = loop.activity;
+          turnSignals.blocked = loop.finish?.blocked ?? null;
+          turnSignals.answerEmpty = !answer.trim();
+          const closedPlan = loop.plan.length > 0 && !loop.finish?.blocked
+            ? loop.plan.map((task) => (
+                task.status === 'pending' || task.status === 'doing'
+                  ? { ...task, status: 'done' as const }
+                  : task
+              ))
+            : loop.plan;
+          const answerAttempts = turnAttempts.filter((attempt) => attempt.role === 'answer');
+          const lastAnswerAttempt = answerAttempts[answerAttempts.length - 1];
+          const usageState: 'measured' | 'estimated' | 'pending' = turnAttempts.length === 0
             ? 'pending'
-            : turnAttempts.some((attempt) => attempt.usageSource === 'estimated')
-              ? 'estimated'
-              : 'measured';
-        setMessages((previous) => previous.map((message) => (
-          message.id === modelMessage.id
-            ? {
-                ...message,
-                streaming: false,
-                content: loop.finish?.blocked
-                  ? `${answer}\n\n> Stopped early: ${loop.finish.blocked}`
-                  : answer,
-                toolActivity: loop.activity.length > 0 ? loop.activity : undefined,
-                toolRounds: loop.rounds,
-                taskPlan: closedPlan.length > 0 ? closedPlan : undefined,
-                finishedWith: loop.finish ?? undefined,
-                selfHealingProof: loop.failureProof
-                  ? globalRepairSession.attachCheckpoint(loop.failureProof.id, machineCheckpoint) ?? loop.failureProof
-                  : message.selfHealingProof,
-                metrics: {
-                  tokens: turnUsage.tokens,
-                  inputTokens: turnUsage.inputTokens,
-                  outputTokens: turnUsage.outputTokens,
-                  cachedTokens: turnUsage.cachedTokens || undefined,
-                  model: answerModel,
-                  servedModel: lastAnswerAttempt?.servedModel ?? null,
-                  usageState,
-                  attempts: turnAttempts.length,
-                  firstTokenMs: turnUsage.firstTokenMs,
-                  durationMs: turnUsage.durationMs
+            : turnAttempts.some((attempt) => attempt.usageSource === 'unknown' || attempt.inputTokens === null || attempt.outputTokens === null)
+              ? 'pending'
+              : turnAttempts.some((attempt) => attempt.usageSource === 'estimated')
+                ? 'estimated'
+                : 'measured';
+          setMessages((previous) => previous.map((message) => (
+            message.id === modelMessage.id
+              ? {
+                  ...message,
+                  streaming: false,
+                  content: loop.finish?.blocked
+                    ? `${answer}\n\n> Stopped early: ${loop.finish.blocked}`
+                    : answer,
+                  toolActivity: loop.activity.length > 0 ? loop.activity : undefined,
+                  toolRounds: loop.rounds,
+                  taskPlan: closedPlan.length > 0 ? closedPlan : undefined,
+                  finishedWith: loop.finish ?? undefined,
+                  selfHealingProof: loop.failureProof
+                    ? globalRepairSession.attachCheckpoint(loop.failureProof.id, machineCheckpoint) ?? loop.failureProof
+                    : message.selfHealingProof,
+                  metrics: {
+                    tokens: turnUsage.tokens,
+                    inputTokens: turnUsage.inputTokens,
+                    outputTokens: turnUsage.outputTokens,
+                    cachedTokens: turnUsage.cachedTokens || undefined,
+                    model: answerModel,
+                    servedModel: lastAnswerAttempt?.servedModel ?? null,
+                    usageState,
+                    attempts: turnAttempts.length,
+                    firstTokenMs: turnUsage.firstTokenMs,
+                    durationMs: turnUsage.durationMs
+                  }
                 }
-              }
-            : message
-        )));
-        streamCompleted = !controller.signal.aborted && !loop.error;
+              : message
+          )));
+          streamCompleted = !controller.signal.aborted && !loop.error;
+        }
       }
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -940,10 +1065,12 @@ export function useOrchestrationController({
       turnSignals.streamError = message;
       markInterrupted(message);
     } finally {
-      try { if (streamCompleted) await applyReplyPatches(); }
+      try { if (streamCompleted && effectiveTurnIntent.kind !== 'conversational') await applyReplyPatches(); }
       finally {
-        await workspace.finishMachineCheckpoint(machineCheckpoint);
-        globalRepairSession.endTurn();
+        if (machineCheckpoint) {
+          await workspace.finishMachineCheckpoint(machineCheckpoint);
+          globalRepairSession.endTurn();
+        }
         if (streamCompleted && machineCheckpoint && workspaceRootPath) {
           setPendingCapsule({
             taskId: modelMessage.id,
@@ -959,7 +1086,7 @@ export function useOrchestrationController({
           const outcome = recordOutcome({
             ...outcomeOfTurn({
               prompt: text,
-              writesFiles: mode.writesFiles,
+              writesFiles: effectiveMode.writesFiles,
               editAttempted: applyReport.editAttempted,
               filesWritten: applyReport.filesWritten,
               patchFailures: applyReport.patchFailures,
@@ -1103,20 +1230,52 @@ export function useOrchestrationController({
       const milestoneCategory = inferMilestoneCategory(request.milestone);
       const isReadOnlyMilestone = milestoneCategory === 'read_only' || milestoneCategory === 'checkpoint';
       const baseToolContext = getToolContextRef.current ? await getToolContextRef.current() : undefined;
-      const toolContext = baseToolContext
-        ? {
-            ...baseToolContext,
-            ...(isReadOnlyMilestone ? { isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] } : {})
-          }
-        : undefined;
+      const unlockedBundles = new Set<ToolBundleCategory>();
+      const enabledBundles = detectIntentToolBundles({
+        prompt: instruction,
+        workspaceOpen: Boolean(workspace.workspace),
+        previewActive: baseToolContext?.previewActive,
+        debuggerPaused: baseToolContext?.debuggerState.isPaused,
+        activeJobCount: baseToolContext?.activeJobCount,
+        terminalAwaitingInput: baseToolContext?.terminalAwaitingInput,
+        hasActiveTerminal: baseToolContext?.hasActiveTerminal,
+        checkpointCount: baseToolContext?.checkpointCount,
+        hasGitRepo: baseToolContext?.hasGitRepo,
+        webAvailable: baseToolContext?.webAvailable,
+        multiFileSignal: request.milestone.expectedFiles.length > 1
+      });
+      const turnIntentKind = isReadOnlyMilestone ? ('advisory' as const) : ('execution' as const);
+      const buildAutonomyToolContext = (ctx: WorkspaceToolContext | undefined): WorkspaceToolContext => ({
+        ...(ctx ??
+          buildWorkspaceToolContext({
+            filePaths: workspace.files.map((file) => file.name),
+            workspaceOpen: Boolean(workspace.workspace)
+          })),
+        turnIntent: turnIntentKind,
+        enabledBundles,
+        unlockedBundles,
+        ...(isReadOnlyMilestone ? { isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] } : {})
+      });
+      const toolContext = buildAutonomyToolContext(baseToolContext);
       const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), toolContext);
-      const system = await buildSystemContext(instruction, mode, undefined, { toolContext });
+      const system = await buildSystemContext(instruction, mode, undefined, {
+        toolContext,
+        turnIntent: {
+          kind: turnIntentKind,
+          enabledBundles,
+          writesFiles: !isReadOnlyMilestone,
+          skipVerify: isReadOnlyMilestone,
+          effectivePermissionMode: isReadOnlyMilestone ? 'ask' : 'agent',
+          reason: isReadOnlyMilestone ? 'read-only milestone' : 'autonomous execution milestone'
+        },
+        unlockedBundles
+      });
       const fit = fitChatRequest({
         contextWindow,
         messages: [{ role: 'user', content: instruction }],
         system,
         maxOutput: resolveBudgetCapabilities(byok.activeProvider, byok.selectedModel).maxOutput ?? DEFAULT_MAX_OUTPUT,
-        extraInputChars: JSON.stringify(nativeTools).length + 2048
+        extraInputChars: nativeTools.length > 0 ? JSON.stringify(nativeTools).length + 2048 : 0
       });
       const runPolicy = { mode: permissionMode };
       const runId = makeId('run');
@@ -1143,7 +1302,13 @@ export function useOrchestrationController({
             workspaceId: nativeWorkspaceId,
             external: mcpToolHandleRef.current ?? undefined,
             buildMessages: () => fit.messages,
-            runToolRounds,
+            runToolRounds: (loopInput) =>
+              runToolRounds({
+                ...loopInput,
+                onUnlockTools: (unlocked) => {
+                  for (const bundle of unlocked) unlockedBundles.add(bundle);
+                }
+              }),
             extractPatches: (text) => extractUnifiedPatches(text, workspace.files),
             readFile: async (path) => {
               const canonical = normalizeSlashes(path).toLowerCase();
@@ -1177,6 +1342,11 @@ export function useOrchestrationController({
                   async () => {
                     let roundText = '';
                     let streamErr: string | null = null;
+                    const roundBaseCtx = getToolContextRef.current ? await getToolContextRef.current() : undefined;
+                    const roundNativeTools = nativeToolDefinitions(
+                      Boolean(nativeWorkspaceId),
+                      buildAutonomyToolContext(roundBaseCtx)
+                    );
                     await streamChat({
                       provider: byok.activeProvider,
                       baseUrl: byok.baseUrl,
@@ -1187,7 +1357,7 @@ export function useOrchestrationController({
                       temperature: byok.temperature,
                       thinking: mode.thinking,
                       signal: request.signal,
-                      toolDefinitions: nativeTools
+                      toolDefinitions: roundNativeTools.length > 0 ? roundNativeTools : undefined
                     }, {
                       onDelta: (chunk) => { roundText += chunk; },
                       onToolCalls: (calls) => {
@@ -1962,12 +2132,37 @@ export function useOrchestrationController({
         const mode = getRefineMode(refineMode);
         const contextWindow =
           activeModel?.contextWindow || resolveContextWindow(byok.activeProvider, byok.selectedModel);
+        const originPrompt = messages.slice(0, index).reverse().find((message) => message.role === 'user')?.content ?? prefix;
         const baseToolContext = getToolContextRef.current ? await getToolContextRef.current() : undefined;
-        const toolContext =
-          baseToolContext && !mode.writesFiles
-            ? { ...baseToolContext, isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }
-            : baseToolContext;
-        const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), toolContext);
+        const resumeIntent = classifyTurnIntent({
+          prompt: originPrompt,
+          workspaceOpen: Boolean(workspace.workspace),
+          previewActive: baseToolContext?.previewActive,
+          debuggerPaused: baseToolContext?.debuggerState.isPaused,
+          activeJobCount: baseToolContext?.activeJobCount,
+          terminalAwaitingInput: baseToolContext?.terminalAwaitingInput,
+          hasActiveTerminal: baseToolContext?.hasActiveTerminal,
+          checkpointCount: baseToolContext?.checkpointCount,
+          hasGitRepo: baseToolContext?.hasGitRepo,
+          webAvailable: baseToolContext?.webAvailable
+        });
+        const unlockedBundles = new Set<ToolBundleCategory>();
+        const effectiveResumeKind =
+          !mode.writesFiles && resumeIntent.kind === 'execution' ? 'advisory' : resumeIntent.kind;
+        const buildResumeToolContext = (ctx: WorkspaceToolContext | undefined): WorkspaceToolContext => ({
+          ...(ctx ??
+            buildWorkspaceToolContext({
+              filePaths: workspace.files.map((file) => file.name),
+              workspaceOpen: Boolean(workspace.workspace)
+            })),
+          turnIntent: effectiveResumeKind,
+          enabledBundles: resumeIntent.enabledBundles,
+          unlockedBundles,
+          ...(effectiveResumeKind !== 'execution'
+            ? { isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }
+            : {})
+        });
+        const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), buildResumeToolContext(baseToolContext));
 
         setMessages((previous) =>
           previous.map((message) =>
@@ -1988,8 +2183,11 @@ export function useOrchestrationController({
             maxRounds: toolLoopResume.maxRounds,
             external: mcpToolHandleRef.current ?? undefined,
             aborted: () => controller.signal.aborted,
-            policy: { mode: permissionMode },
+            policy: { mode: effectiveResumeKind === 'execution' ? 'agent' : 'ask' },
             signal: controller.signal,
+            onUnlockTools: (unlocked) => {
+              for (const bundle of unlocked) unlockedBundles.add(bundle);
+            },
             loopContextBudgetChars: computeLoopContextBudgetChars(
               contextWindow,
               resolveBudgetCapabilities(byok.activeProvider, byok.selectedModel).maxOutput ?? DEFAULT_MAX_OUTPUT,
@@ -2001,6 +2199,11 @@ export function useOrchestrationController({
               let roundError: string | null = null;
               let streamedVisible = '';
               try {
+                const roundBaseCtx = getToolContextRef.current ? await getToolContextRef.current() : undefined;
+                const roundNativeTools = nativeToolDefinitions(
+                  Boolean(nativeWorkspaceId),
+                  buildResumeToolContext(roundBaseCtx)
+                );
                 await streamChat({
                   provider: byok.activeProvider,
                   baseUrl: byok.baseUrl,
@@ -2011,7 +2214,7 @@ export function useOrchestrationController({
                   temperature: byok.temperature,
                   thinking: mode.thinking,
                   signal: controller.signal,
-                  toolDefinitions: nativeTools
+                  toolDefinitions: roundNativeTools.length > 0 ? roundNativeTools : undefined
                 }, {
                   onDelta: (chunk) => {
                     if (!chunk) return;

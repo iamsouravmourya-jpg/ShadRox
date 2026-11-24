@@ -289,16 +289,16 @@ export async function handleDiffReview(workspaceId: string, args: Record<string,
 export const DIFF_REVIEW_TOOLS: ToolDefinition[] = [
   {
     name: 'diff_review',
-    description: 'Review the turn\'s real working-tree git diff before finishing: secret-like strings (error), debug prints and TODOs (warning), out-of-scope/unrelated changes, missed expected files and oversized edits (info). Returns structured findings you must act on before finish. Read-only.',
-    parameters: 'intent?: string (what the turn was asked to do), expectedFiles?: string[] (files the turn declared it would touch)'
+    description: 'Audit working-tree git diff for secrets, debug prints, TODOs, missed files, and out-of-scope edits (read-only).',
+    parameters: 'intent?: string, expectedFiles?: string[]'
   }
 ];
 
 export const DIFF_REVIEW_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
-    intent: { type: 'string', description: 'The user request this turn serves; drives the unrelated-change heuristic.' },
-    expectedFiles: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative files the turn planned to touch.' }
+    intent: { type: 'string', description: 'User request to check change relevance.' },
+    expectedFiles: { type: 'array', items: { type: 'string' }, description: 'Planned file paths.' }
   },
   additionalProperties: false
 };

@@ -17,15 +17,16 @@ test('debugger_state is a known built-in tool', () => {
   assert.equal(definition.parameters, 'none');
 });
 
-test('the tool registry holds forty tools including the write tools, job_control, preview_control and the upgrade tools', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 40);
+test('the tool registry holds forty-one tools including the write tools, job_control, preview_control, unlock_tools and the upgrade tools', () => {
+  assert.equal(TOOL_DEFINITIONS.length, 41);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'debugger_state').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'write_file').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'edit_file').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'job_control').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'preview_control').length, 1);
+  assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'unlock_tools').length, 1);
   for (const name of [
-    'apply_patch', 'verify', 'checkpoint', 'list_checkpoints', 'restore',
+    'apply_patch', 'verify', 'checkpoint', 'list_checkpoints', 'restore', 'unlock_tools',
     'memory_read', 'memory_note', 'find_references', 'go_to_definition', 'rename_symbol',
     'semantic_search', 'web_search', 'fetch_url', 'preview_inspect', 'ask_user', 'spawn_subagent', 'diff_review'
   ]) {

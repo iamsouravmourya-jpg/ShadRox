@@ -25,13 +25,11 @@ import {
   Sparkles,
   Square,
   Undo2,
-  Users,
   Wand2,
   X,
   Zap
 } from 'lucide-react';
 import { maskFileWrites, renderMarkdownContent, type PatchWriteOutcome } from '../lib/markdown';
-import type { PermissionMode } from '../lib/agent/runPolicy';
 import { type ModelInfo, type ModelTier } from '../lib/providers';
 import { estimateTokens } from '../lib/toolUtils';
 import { computeHunks, groupedHunkId, hunkStats } from '../lib/editor/hunks';
@@ -109,9 +107,6 @@ interface ChatPanelProps {
   canUndoRefine?: boolean;
   refineMode: RefineMode;
   onRefineModeChange: (mode: RefineMode) => void;
-  /** Ask / Plan / Agent — the execution capability boundary for the next turn. */
-  permissionMode: PermissionMode;
-  onPermissionModeChange: (mode: PermissionMode) => void;
   models: ModelInfo[];
   selectedModel: string;
   onSelectModel: (modelId: string) => void;
@@ -213,44 +208,6 @@ const TIER_BADGE_LABEL: Record<ModelTier, string> = {
 /** A long paste is captured as a .txt attachment instead of flooding the composer. */
 const PASTE_AS_FILE_CHARS = 4000;
 const PASTE_AS_FILE_LINES = 60;
-
-/**
- * The permission modes shown in the composer. This is the capability boundary,
- * not a reasoning level: Ask and Plan never mutate the workspace, Agent may.
- */
-const PERMISSION_MODES: Array<{ id: PermissionMode; label: string; hint: string; icon: typeof Code2 }> = [
-  {
-    id: 'ask',
-    label: 'Ask',
-    hint: 'Read-only answers. The assistant may read files but never edit or run anything.',
-    icon: MessageSquarePlus
-  },
-  {
-    id: 'plan',
-    label: 'Plan',
-    hint: 'Read-only planning and architecture. No edits, no commands.',
-    icon: FileText
-  },
-  {
-    id: 'agent',
-    label: 'Agent',
-    hint: 'Direct single-agent loop: reads, edits, and verifies cleanly in one flow.',
-    icon: Zap
-  },
-  {
-    id: 'team',
-    label: 'Team',
-    hint: 'Specialist team: explicit multi-agent coordinator and specialists.',
-    icon: Users
-  }
-];
-
-const PERMISSION_BUTTON_STYLE: Record<PermissionMode, string> = {
-  ask: 'border-line bg-surface-2 text-cool hover:border-cool/40',
-  plan: 'border-line bg-surface-2 text-warn hover:border-warn/40',
-  agent: 'border-line bg-surface-2 text-ink hover:border-accent-line',
-  team: 'border-line bg-surface-2 text-accent hover:border-accent-line'
-};
 
 /**
  * The honest one-line provenance for an answer (S10): the route the request
@@ -461,8 +418,6 @@ export function ChatPanel({
   onRefinePrompt,
   onUndoRefine,
   canUndoRefine = false,
-  permissionMode,
-  onPermissionModeChange,
   models,
   selectedModel,
   onSelectModel,
@@ -524,7 +479,6 @@ export function ChatPanel({
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const runMenuRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
@@ -532,13 +486,10 @@ export function ChatPanel({
   const [mentionIndex, setMentionIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [isScrolledUp, setIsScrolledUp] = useState(false);
-  const [isRunMenuOpen, setIsRunMenuOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [isContextOpen, setIsContextOpen] = useState(false);
   const [expandedPatchFailures, setExpandedPatchFailures] = useState<Record<string, boolean>>({});
   const [pastedTexts, setPastedTexts] = useState<PastedText[]>([]);
-  const activePermission = PERMISSION_MODES.find((mode) => mode.id === permissionMode) || PERMISSION_MODES[2];
-  const ActivePermissionIcon = activePermission.icon;
 
   /** `/name` in the composer completes workspace skills when `.shadrox/skills/*.md` exist. */
   const typedSlashName = /^\/([\w.-]*)$/.exec(input)?.[1]?.toLowerCase() ?? null;
@@ -557,20 +508,18 @@ export function ChatPanel({
 
   /** One dismissal path for every chat popover: outside click and Escape. */
   useEffect(() => {
-    if (!isModelMenuOpen && !isAttachMenuOpen && !isRunMenuOpen && !isContextOpen) return;
+    if (!isModelMenuOpen && !isAttachMenuOpen && !isContextOpen) return;
     const inside = (ref: { current: HTMLElement | null }, target: EventTarget | null) =>
       Boolean(ref.current && target instanceof Node && ref.current.contains(target));
     const closeOthers = (event: PointerEvent) => {
       if (!inside(modelMenuRef, event.target) && !inside(modelTriggerRef, event.target)) setIsModelMenuOpen(false);
       if (!inside(attachMenuRef, event.target)) setIsAttachMenuOpen(false);
-      if (!inside(runMenuRef, event.target)) setIsRunMenuOpen(false);
       if (!inside(contextMenuRef, event.target)) setIsContextOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       setIsModelMenuOpen(false);
       setIsAttachMenuOpen(false);
-      setIsRunMenuOpen(false);
       setIsContextOpen(false);
     };
     document.addEventListener('pointerdown', closeOthers);
@@ -579,7 +528,7 @@ export function ChatPanel({
       document.removeEventListener('pointerdown', closeOthers);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [isModelMenuOpen, isAttachMenuOpen, isRunMenuOpen, isContextOpen]);
+  }, [isModelMenuOpen, isAttachMenuOpen, isContextOpen]);
 
   useEffect(() => {
     // Streaming rewrites `messages` on every delta; without this the pane
@@ -1820,53 +1769,6 @@ export function ChatPanel({
 
           <div className="flex items-center justify-between gap-2 border-t border-line/70 px-2.5 py-2">
             <div className="flex min-w-0 items-center gap-0.5 sm:gap-1">
-              {/* Access boundary for the next turn: Ask, Plan or Agent. */}
-              <div ref={runMenuRef} className="relative">
-                <button
-                  type="button"
-                  onClick={() => setIsRunMenuOpen((open) => !open)}
-                  title={`${activePermission.label} access`}
-                  className={`flex h-7 min-w-0 whitespace-nowrap items-center gap-1.5 rounded-lg border px-2.5 text-[11px] transition-colors cursor-pointer ${PERMISSION_BUTTON_STYLE[permissionMode]}`}
-                >
-                  <ActivePermissionIcon className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate font-medium">{activePermission.label}</span>
-                  <ChevronDown className="w-3 h-3 shrink-0 text-ink-4" />
-                </button>
-
-                {isRunMenuOpen && (
-                  <div className="absolute bottom-9 left-0 z-20 w-64 overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-[var(--shadow-sheet)]">
-                    <div className="border-b border-line px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-ink-4">
-                      Access
-                    </div>
-                    {PERMISSION_MODES.map((mode) => {
-                      const Icon = mode.icon;
-                      const isSelected = mode.id === permissionMode;
-                      return (
-                        <button
-                          key={mode.id}
-                          type="button"
-                          onClick={() => {
-                            onPermissionModeChange(mode.id);
-                            setIsRunMenuOpen(false);
-                          }}
-                          className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-surface-2 cursor-pointer ${
-                            isSelected ? 'bg-accent-soft text-accent' : 'text-ink-2'
-                          }`}
-                        >
-                          <Icon className={`h-3.5 w-3.5 shrink-0 ${isSelected ? 'text-accent' : 'text-ink-4'}`} />
-                          <span className="min-w-0 flex-1">
-                            <span className={`block text-xs font-medium ${isSelected ? 'text-accent' : 'text-ink'}`}>
-                              {mode.label}
-                            </span>
-                            <span className="mt-0.5 block text-[10px] leading-tight text-ink-4">{mode.hint}</span>
-                          </span>
-                          <Check className={`h-3.5 w-3.5 shrink-0 text-accent ${isSelected ? 'opacity-100' : 'opacity-0'}`} />
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
 
               {/* Quick trigger for @ mentions */}
               <button

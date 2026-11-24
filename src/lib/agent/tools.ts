@@ -11,7 +11,7 @@ import { globalRepairSession } from '../repairSession';
 import { describeFinish } from './finishTool';
 import { MCP_TOOL_PREFIX } from './mcpTools';
 import type { ExternalToolDefinition } from './mcpTools';
-import type { ToolEffect } from './runPolicy';
+import type { ToolBundleCategory, ToolEffect } from './runPolicy';
 import { getTurn, hasTurnRead, noteRead } from './turnState';
 import { createAgentCheckpoint, listAgentCheckpoints, restoreAgentCheckpoint } from './checkpoints';
 import { placeholderDiagnostics } from './placeholderLint';
@@ -24,7 +24,7 @@ import { SEMANTIC_SEARCH_TOOLS, SEMANTIC_SEARCH_SCHEMA, handleSemanticSearch } f
 import { WEB_TOOLS, WEB_TOOL_SCHEMAS, handleWebSearch, handleFetchUrl, handlePreviewInspect } from './webTools';
 import { INTERACTION_TOOLS, INTERACTION_SCHEMAS, handleAskUser, handleSpawnSubagent } from './subagent';
 import { DIFF_REVIEW_TOOLS, DIFF_REVIEW_SCHEMA, handleDiffReview } from './diffReview';
-import { resolveActiveTools, type WorkspaceToolContext } from './toolGatekeeper';
+import { listToolBundleCatalog, resolveActiveTools, TOOL_CATEGORY_MAP, type WorkspaceToolContext } from './toolGatekeeper';
 import { serializeCallKey as canonicalSerializeCallKey } from './toolProtocol';
 
 const fallbackFileBackups = new Map<string, string>();
@@ -212,150 +212,148 @@ export const MAX_CALLS_PER_ROUND = 16;
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'list_directory',
-    description: 'List one directory of the opened folder with file sizes. Empty path lists the root. depth walks subdirectories too (max 3); .gitignore rules and generated folders are respected.',
-    parameters: 'path: string (workspace-relative, optional), depth?: number (1-3, default 1)'
+    description: 'List directory entries with sizes (max depth 3; respects .gitignore).',
+    parameters: 'path?: string, depth?: number (1-3)'
   },
   {
     name: 'read_file',
-    description: 'Read a file from disk. Use this before editing anything you have not seen.',
-    parameters: 'path: string (required), start_line?: number, end_line?: number (1-based, inclusive)'
+    description: 'Read a file from disk (use start_line/end_line for >300 line files).',
+    parameters: 'path: string (required), start_line?: number, end_line?: number'
   },
   {
     name: 'find_files',
-    description: 'Find files by path name.',
-    parameters: 'query: string (required, at least 2 characters), limit?: number'
+    description: 'Find workspace files by path substring.',
+    parameters: 'query: string (required, min 2 chars), limit?: number'
   },
   {
     name: 'search_text',
-    description: 'Search inside file contents. The fastest way to find where a symbol or string lives. Users paraphrase and typo when quoting text from their app, so search 1-3 distinctive words (a noun, a year, an identifier), never a whole quoted sentence. If a multi-word plain-text query finds nothing, the tool automatically retries with the query\'s distinctive words and returns partial matches ranked by how many query words each file contains — a full-phrase miss is never proof the text is absent.',
-    parameters: 'query: string (required), include?: string (path glob like "src/**/*.ts"), regex?: boolean, limit?: number'
+    description: 'Search inside file contents (prefer 1-3 distinctive words; falls back to partial word matches).',
+    parameters: 'query: string (required), include?: string, regex?: boolean, limit?: number'
   },
   {
     name: 'write_file',
-    description:
-      'Create a new file or completely overwrite an existing file with the specified content. Saves to disk immediately during this turn.',
-    parameters: 'path: string (required, workspace-relative), content: string (required, full file content)'
+    description: 'Create a new file or completely overwrite an existing file on disk.',
+    parameters: 'path: string (required), content: string (required)'
   },
   {
     name: 'edit_file',
-    description:
-      'Edit an existing file by replacing an exact original snippet with updated text. Saves to disk immediately during this turn. A file you have not read this turn is auto-read first (small files) or the edit is refused until you read it. On a miss the error shows the closest region on disk; after a successful edit the file\'s compiler problems come back with the result.',
-    parameters: 'path: string (required, workspace-relative), original: string (required, exact snippet to replace), updated: string (required, replacement text)'
+    description: 'Replace a unique exact snippet in an existing file on disk (read first on large files).',
+    parameters: 'path: string (required), original: string (required), updated: string (required)'
   },
   {
     name: 'apply_patch',
-    description:
-      'Apply a list of {path, old, new} hunks across one or many files in ONE atomic transaction: either every hunk lands or nothing is written. old must match the file exactly once (empty old creates a new file). On a mismatch the failing hunk and the surrounding lines from disk come back and no file is touched. Prefer this for a coordinated multi-file change.',
-    parameters: 'patches: [{path: string, old: string, new: string}] (required, 1-50 hunks)'
+    description: 'Apply {path, old, new} hunks atomically across one or more files.',
+    parameters: 'patches: [{path: string, old: string, new: string}] (1-50 hunks)'
   },
   {
     name: 'verify',
-    description:
-      'Run the project\'s own checks: detects the project kind from package.json scripts and lockfiles (npm/pnpm/yarn/bun typecheck/build/test), pytest, cargo or go, runs them through the risk-tiered command runner, and returns structured errors (file:line message), failed tests and the commands run. Compiler diagnostics are included. Call this after changing files and before finish.',
+    description: 'Run detected project checks (typecheck/build/test) and return structured errors.',
     parameters: 'none'
   },
   {
     name: 'checkpoint',
-    description:
-      'Save a named checkpoint of the files this turn has read or changed, into the same history the chat timeline uses. A checkpoint is also taken automatically before the turn\'s first write. Restore asks the user to approve.',
-    parameters: 'label: string (optional, a short name for the checkpoint)'
+    description: 'Save a named workspace checkpoint.',
+    parameters: 'label?: string'
   },
   {
     name: 'list_checkpoints',
-    description: 'List this workspace\'s checkpoints, newest first, with ids, labels, dates and file counts.',
+    description: 'List saved workspace checkpoints, newest first.',
     parameters: 'none'
   },
   {
     name: 'restore',
-    description:
-      'Restore a checkpoint by id: files the run created are removed and stored contents are written back. The user approves the exact restore in a dialog first; a cancel changes nothing. Never claim a restore you did not see succeed.',
-    parameters: 'id: string (required, from list_checkpoints)'
+    description: 'Restore a checkpoint by id (requires user approval).',
+    parameters: 'id: string (required)'
   },
   {
     name: 'delete_file',
-    description:
-      'Delete one file from disk, or remove an empty folder. Refuses non-empty folders. The user is asked to approve every delete, so expect a refusal and never retry one. The result is verified against the filesystem; never claim a delete you did not see succeed.',
-    parameters: 'path: string (required, workspace-relative), confirm: true (required — the user still has to click)'
+    description: 'Delete a file or empty folder (requires user approval).',
+    parameters: 'path: string (required), confirm: true (required)'
   },
   {
     name: 'problems',
-    description: 'Real compiler diagnostics for the project or for named files. changed_only checks exactly the files this turn changed; severity filters to errors or warnings.',
-    parameters: 'paths?: string[] (workspace-relative; omit for the whole project), changed_only?: boolean, severity?: "error"|"warning"|"all"'
+    description: 'Get compiler diagnostics for named/changed files or the whole project.',
+    parameters: 'paths?: string[], changed_only?: boolean, severity?: "error"|"warning"|"all"'
   },
   {
     name: 'git_state',
-    description: 'Working-tree status and diff, so you can see what already changed.',
+    description: 'Show git working-tree status and diff.',
     parameters: 'none'
   },
   {
     name: 'run_command',
-    description: 'Run a shell command in the opened folder and return its real exit code, stdout and stderr. Compound lines (&&, ||, |, ;, redirects) are parsed and risk-tiered: reads, builds/tests and installs run automatically; file-modifying and network commands need user approval; dangerous commands always need explicit approval. A command still running after 30s becomes a background job and returns a job id — use job_control to read its output or stop it. Never claim a command result you did not see here.',
-    parameters: 'command: string (required; one command line, compound commands allowed)'
+    description: 'Run a shell command (reads/builds/installs auto-run; destructive/network require approval; >30s backgrounds as a job).',
+    parameters: 'command: string (required)'
   },
   {
     name: 'job_control',
-    description: 'Inspect and control background command jobs created by run_command (long builds, dev servers, anything still running after the foreground wait). list shows every job with status and readiness; status reports one job; read_output returns buffered output (last 200KB kept) with an optional tail size or character range; stop terminates the whole process tree. Read the output before claiming a background command finished or failed.',
-    parameters: 'action: "list"|"read_output"|"status"|"stop" (required), jobId?: string (required for read_output/status/stop), chars?: number (read_output tail size), range?: {start?: number, end?: number} (absolute character offsets for read_output)'
+    description: 'List, inspect status, read buffered output, or stop background command jobs.',
+    parameters: 'action: "list"|"read_output"|"status"|"stop", jobId?: string, chars?: number, range?: {start?: number, end?: number}'
   },
   {
     name: 'preview_control',
-    description: 'Control or inspect the live preview pane (embedded browser). start runs the dev/static server and opens its URL; stop halts the preview; restart stops then starts after a crash or port change; status inspects current URL, port, HMR, output logs, and runtime errors. run_command/job_control manage processes; preview_control manages the pane.',
+    description: 'Control the live preview pane: start, stop, restart, or inspect status/logs/errors.',
     parameters: 'action: "start"|"stop"|"restart"|"status" (required)'
   },
   {
     name: 'terminal_state',
-    description: 'Read the live interactive terminal: current directory, the command that is running, the last exit code, how long the command has produced no output, whether it is waiting for input, how the last failure is classified, and the recent raw output (ANSI stripped) so you can READ the actual prompt instead of guessing. Read-only. Does not type into the terminal.',
+    description: 'Read live terminal state: cwd, command, exit, waiting for input, classified failure, raw output. Does not type.',
     parameters: 'none'
   },
   {
     name: 'terminal_answer',
-    description: 'Type one short answer into the live interactive terminal when the running command is waiting for input (y/N, a menu choice, a path). The user sees the tab, the command and the exact bytes in an approval dialog first; a cancel or a refusal types nothing. Never use it for passwords, tokens or secrets.',
-    parameters: 'text: string (required, one printable line, max 200 characters), session: string (optional terminal session id)'
+    description: 'Send one line to an interactive terminal waiting for input (shows user approval dialog first).',
+    parameters: 'text: string (required, max 200 chars), session?: string'
   },
   {
     name: 'debugger_state',
-    description: 'Read the paused debugger: the stopped frame, its scopes and bounded locals. Refuses when no debug session is paused. Read-only — it never resumes, steps or edits.',
+    description: 'Read paused debugger stopped frame, scopes, and locals (read-only).',
     parameters: 'none'
   },
   {
     name: 'debug_set_breakpoint',
-    description: 'Set or update breakpoints in a file.',
-    parameters: 'path: string (required, workspace-relative), lines: number[] (required, 1-based line numbers)'
+    description: 'Set breakpoints at 1-based lines in a file.',
+    parameters: 'path: string (required), lines: number[] (required)'
   },
   {
     name: 'debug_get_call_stack',
-    description: 'Get the current call stack frames when the debugger is paused.',
+    description: 'Get call stack frames when debugger is paused.',
     parameters: 'none'
   },
   {
     name: 'debug_inspect_variables',
-    description: 'Inspect variables in scopes for a stack frame.',
-    parameters: 'frameId?: number (optional stack frame id)'
+    description: 'Inspect scope variables for a paused stack frame.',
+    parameters: 'frameId?: number'
   },
   {
     name: 'debug_evaluate_expression',
-    description: 'Evaluate an expression in the current paused stack frame context.',
-    parameters: 'expression: string (required), frameId?: number (optional)'
+    description: 'Evaluate an expression in the paused debugger frame.',
+    parameters: 'expression: string (required), frameId?: number'
   },
   {
     name: 'debug_step_execution',
-    description: 'Step execution control in the debugger.',
-    parameters: 'action: "continue" | "stepOver" | "stepInto" | "stepOut" | "pause" (required)'
+    description: 'Control debugger stepping (continue, stepOver, stepInto, stepOut, pause).',
+    parameters: 'action: "continue"|"stepOver"|"stepInto"|"stepOut"|"pause" (required)'
   },
   {
     name: 'outline',
-    description: 'Symbols defined in a file, with line numbers.',
+    description: 'List symbols and line numbers in a file.',
     parameters: 'path: string (required)'
   },
   {
     name: 'update_tasks',
-    description: 'Set or change the plan for this turn. Call it before starting a step and again when it ends. acceptance says what "done" means; a task marked done with an acceptance criterion needs evidence (the check result) or the finish guard asks for it.',
+    description: 'Set or update multi-step task plan with status and evidence.',
     parameters: 'tasks: [{id?: string, subject: string, status: "pending"|"doing"|"done"|"blocked", acceptance?: string, evidence?: string, files?: string[]}]'
   },
   {
     name: 'finish',
-    description: 'End this turn. The summary is the answer the user reads. After any file change, finish is refused until verify/problems/build/test actually ran; set verified from what the check showed.',
+    description: 'End the turn with summary, verified status, and files_changed.',
     parameters: 'summary: string (required), blocked?: string, files_changed?: string[], verified?: boolean, could_not_do?: string, how_to_test?: string'
+  },
+  {
+    name: 'unlock_tools',
+    description: 'Unlock specialized tool bundles on demand for subsequent rounds (categories: preview, debug, git, checkpoints, delete, web, memory, code_intel, review, jobs, terminal, interaction, apply_patch, mcp).',
+    parameters: 'categories: string[] (required)'
   },
   ...PROJECT_MEMORY_TOOLS,
   ...CODE_INTEL_TOOLS,
@@ -369,8 +367,8 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   list_directory: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Workspace-relative directory path; omit for the root.' },
-      depth: { type: 'integer', description: 'How many directory levels to walk (1-3, default 1).' }
+      path: { type: 'string', description: 'Workspace-relative path; omit for root.' },
+      depth: { type: 'integer', description: 'Depth 1-3 (default 1).' }
     },
     additionalProperties: false
   },
@@ -378,8 +376,8 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'Workspace-relative file path.' },
-      start_line: { type: 'integer', description: 'First 1-based line to read.' },
-      end_line: { type: 'integer', description: 'Last 1-based line to read.' }
+      start_line: { type: 'integer', description: '1-based start line.' },
+      end_line: { type: 'integer', description: '1-based end line.' }
     },
     required: ['path'],
     additionalProperties: false
@@ -387,8 +385,8 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   find_files: {
     type: 'object',
     properties: {
-      query: { type: 'string', description: 'Path substring to find.' },
-      limit: { type: 'integer', description: 'Maximum results.' }
+      query: { type: 'string', description: 'Path substring.' },
+      limit: { type: 'integer', description: 'Max results.' }
     },
     required: ['query'],
     additionalProperties: false
@@ -396,10 +394,10 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   search_text: {
     type: 'object',
     properties: {
-      query: { type: 'string', description: 'Text or regular expression to search for. Prefer 1-3 distinctive words over a whole quoted sentence; on a multi-word plain-text miss the tool retries with distinctive words and returns ranked partial matches.' },
-      include: { type: 'string', description: 'Optional workspace-relative path glob.' },
-      regex: { type: 'boolean', description: 'Treat query as a regular expression.' },
-      limit: { type: 'integer', description: 'Maximum results.' }
+      query: { type: 'string', description: 'Text or regex query (1-3 distinctive words recommended).' },
+      include: { type: 'string', description: 'Path glob.' },
+      regex: { type: 'boolean', description: 'Treat query as regex.' },
+      limit: { type: 'integer', description: 'Max results.' }
     },
     required: ['query'],
     additionalProperties: false
@@ -407,9 +405,9 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   problems: {
     type: 'object',
     properties: {
-      paths: { type: 'array', items: { type: 'string' }, description: 'Optional files to check.' },
-      changed_only: { type: 'boolean', description: 'Check exactly the files this turn changed.' },
-      severity: { type: 'string', enum: ['error', 'warning', 'all'], description: 'Filter diagnostics by severity (default all).' }
+      paths: { type: 'array', items: { type: 'string' }, description: 'Files to check.' },
+      changed_only: { type: 'boolean', description: 'Check turn-changed files only.' },
+      severity: { type: 'string', enum: ['error', 'warning', 'all'], description: 'Filter severity.' }
     },
     additionalProperties: false
   },
@@ -417,7 +415,7 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   run_command: {
     type: 'object',
     properties: {
-      command: { type: 'string', description: 'Shell command line to run in the opened folder. Compound commands (&&, ||, |, ;, redirects) are allowed and risk-tiered per segment.' }
+      command: { type: 'string', description: 'Shell command line to run in workspace.' }
     },
     required: ['command'],
     additionalProperties: false
@@ -425,17 +423,17 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   job_control: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['list', 'read_output', 'status', 'stop', 'kill'], description: 'list: all jobs; status: one job\'s state; read_output: buffered output of one job; stop: terminate one job\'s process tree (kill is an alias).' },
-      jobId: { type: 'string', description: 'Job id from run_command or list (e.g. "J3"). Required for read_output, status and stop.' },
-      chars: { type: 'integer', description: 'read_output tail size in characters when no range is given (default 8192, max 204800).' },
+      action: { type: 'string', enum: ['list', 'read_output', 'status', 'stop', 'kill'], description: 'Job action.' },
+      jobId: { type: 'string', description: 'Job id (e.g. "J1").' },
+      chars: { type: 'integer', description: 'Tail size in chars.' },
       range: {
         type: 'object',
         properties: {
-          start: { type: 'integer', description: 'Absolute start character offset (defaults to the tail window).' },
-          end: { type: 'integer', description: 'Absolute end character offset (defaults to the newest output).' }
+          start: { type: 'integer', description: 'Start char offset.' },
+          end: { type: 'integer', description: 'End char offset.' }
         },
         additionalProperties: false,
-        description: 'Optional output window for read_output; offsets stay stable as old output rolls off.'
+        description: 'Optional character range.'
       }
     },
     required: ['action'],
@@ -444,7 +442,7 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   preview_control: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['start', 'stop', 'restart', 'status'], description: 'start: run the project server and point the preview pane at it; stop: halt the preview; restart: stop then start (use after a crash or port change); status: inspect current preview server state, URL/port, crash logs, and runtime error verdict.' }
+      action: { type: 'string', enum: ['start', 'stop', 'restart', 'status'], description: 'Preview pane action.' }
     },
     required: ['action'],
     additionalProperties: false
@@ -453,8 +451,8 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   terminal_answer: {
     type: 'object',
     properties: {
-      text: { type: 'string', description: 'The exact one-line answer to type, without the Enter key.' },
-      session: { type: 'string', description: 'Optional terminal session id; defaults to the active tab.' }
+      text: { type: 'string', description: 'One-line terminal input.' },
+      session: { type: 'string', description: 'Optional session id.' }
     },
     required: ['text'],
     additionalProperties: false
@@ -464,7 +462,7 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'Workspace-relative path.' },
-      lines: { type: 'array', items: { type: 'integer' }, description: 'Line numbers.' }
+      lines: { type: 'array', items: { type: 'integer' }, description: '1-based line numbers.' }
     },
     required: ['path', 'lines'],
     additionalProperties: false
@@ -498,7 +496,7 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'Workspace-relative file path.' },
-      content: { type: 'string', description: 'Full content to write to the file.' }
+      content: { type: 'string', description: 'Full file content.' }
     },
     required: ['path', 'content'],
     additionalProperties: false
@@ -507,7 +505,7 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'Workspace-relative file path.' },
-      original: { type: 'string', description: 'Exact snippet in the file to replace.' },
+      original: { type: 'string', description: 'Exact snippet to replace.' },
       updated: { type: 'string', description: 'Replacement snippet.' }
     },
     required: ['path', 'original', 'updated'],
@@ -518,13 +516,13 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
     properties: {
       patches: {
         type: 'array',
-        description: 'Hunks applied in order, all-or-nothing across files.',
+        description: 'Atomic hunks across files.',
         items: {
           type: 'object',
           properties: {
-            path: { type: 'string', description: 'Workspace-relative file path.' },
-            old: { type: 'string', description: 'Exact text to replace; empty creates a new file.' },
-            new: { type: 'string', description: 'Replacement text (full content when old is empty).' }
+            path: { type: 'string', description: 'File path.' },
+            old: { type: 'string', description: 'Exact text to replace; empty creates file.' },
+            new: { type: 'string', description: 'Replacement text.' }
           },
           required: ['path', 'new'],
           additionalProperties: false
@@ -537,21 +535,21 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   verify: { type: 'object', properties: {}, additionalProperties: false },
   checkpoint: {
     type: 'object',
-    properties: { label: { type: 'string', description: 'A short name for the checkpoint.' } },
+    properties: { label: { type: 'string', description: 'Checkpoint label.' } },
     additionalProperties: false
   },
   list_checkpoints: { type: 'object', properties: {}, additionalProperties: false },
   restore: {
     type: 'object',
-    properties: { id: { type: 'string', description: 'Checkpoint id from list_checkpoints.' } },
+    properties: { id: { type: 'string', description: 'Checkpoint id.' } },
     required: ['id'],
     additionalProperties: false
   },
   delete_file: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Workspace-relative path of the file to delete.' },
-      confirm: { type: 'boolean', description: 'Must be true. Set it only when the user asked for this exact deletion.' }
+      path: { type: 'string', description: 'Path to delete.' },
+      confirm: { type: 'boolean', description: 'Must be true.' }
     },
     required: ['path', 'confirm'],
     additionalProperties: false
@@ -573,9 +571,9 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
             id: { type: 'string' },
             subject: { type: 'string' },
             status: { type: 'string', enum: ['pending', 'doing', 'done', 'blocked'] },
-            acceptance: { type: 'string', description: 'What "done" means for this task.' },
-            evidence: { type: 'string', description: 'The check result proving the acceptance criterion.' },
-            files: { type: 'array', items: { type: 'string' }, description: 'Paths this task touches.' }
+            acceptance: { type: 'string' },
+            evidence: { type: 'string' },
+            files: { type: 'array', items: { type: 'string' } }
           },
           required: ['subject', 'status'],
           additionalProperties: false
@@ -588,14 +586,44 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
   finish: {
     type: 'object',
     properties: {
-      summary: { type: 'string', description: 'Final answer for the user.' },
-      blocked: { type: 'string', description: 'One-line reason the work is incomplete.' },
-      files_changed: { type: 'array', items: { type: 'string' }, description: 'Paths this turn changed.' },
-      verified: { type: 'boolean', description: 'True only when a real check ran after the last change and you saw its result.' },
-      could_not_do: { type: 'string', description: 'What was left undone, plainly.' },
-      how_to_test: { type: 'string', description: 'One line the user can run or click to see the change.' }
+      summary: { type: 'string', description: 'Final user answer.' },
+      blocked: { type: 'string', description: 'Blocker if incomplete.' },
+      files_changed: { type: 'array', items: { type: 'string' }, description: 'Changed paths.' },
+      verified: { type: 'boolean', description: 'True only after passing check.' },
+      could_not_do: { type: 'string', description: 'Undone items.' },
+      how_to_test: { type: 'string', description: 'One-line verification instruction.' }
     },
     required: ['summary'],
+    additionalProperties: false
+  },
+  unlock_tools: {
+    type: 'object',
+    properties: {
+      categories: {
+        type: 'array',
+        items: {
+          type: 'string',
+          enum: [
+            'preview',
+            'debug',
+            'git',
+            'checkpoints',
+            'delete',
+            'web',
+            'memory',
+            'code_intel',
+            'review',
+            'jobs',
+            'terminal',
+            'interaction',
+            'apply_patch',
+            'mcp'
+          ]
+        },
+        description: 'Tool bundle categories to unlock for the next round.'
+      }
+    },
+    required: ['categories'],
     additionalProperties: false
   },
   ...PROJECT_MEMORY_SCHEMAS,
@@ -659,6 +687,7 @@ const NATIVE_TOOL_EFFECTS: Record<string, ToolEffect> = {
   terminal_answer: 'execute',
   update_tasks: 'control',
   finish: 'control',
+  unlock_tools: 'read',
   memory_read: 'read',
   memory_note: 'write',
   find_references: 'read',
@@ -731,6 +760,9 @@ export function describeTools(
       : []),
     ...(hasAny('debugger_state', 'debug_set_breakpoint')
       ? ['DEBUGGER: debugger_state reads a session paused in the debugger — the stopped frame and bounded locals. It refuses when nothing is paused, and it never resumes, steps or edits; those stay the user\'s controls. Never claim a variable value you did not see in its result.']
+      : []),
+    ...(hasAny('unlock_tools')
+      ? ['SPECIALIZED TOOLS: call unlock_tools {"categories":[...]} if you need hidden capabilities mid-turn: ' + listToolBundleCatalog().map((b) => `${b.category}`).join(', ') + '.']
       : []),
     'When you have enough to answer, write the answer as normal text (with any path= edit blocks) and emit no tool block.',
     'PLAN: for a request with several steps, open the turn with update_tasks holding one short subject per step, mark the step you start with "doing" and the step you leave with "done". A single-step request needs no plan.',
@@ -1111,6 +1143,10 @@ export function summarizeCall(call: ToolCall): string {
     const text = asString(call.args.text) ?? '';
     return `terminal_answer · ${text.slice(0, MAX_PREVIEW_CHARS)}`;
   }
+  if (call.name === 'unlock_tools') {
+    const cats = asStringArray(call.args.categories) ?? [];
+    return `unlock_tools${cats.length ? ` · ${cats.join(', ')}` : ''}`;
+  }
   const path = asString(call.args.path) ?? asString(call.args.query) ?? asString(call.args.include);
   if (path) return `${call.name} · ${path.slice(0, MAX_PREVIEW_CHARS)}`;
   if (call.name.startsWith(MCP_TOOL_PREFIX)) {
@@ -1233,9 +1269,49 @@ export async function waitForJobExit(
   return null;
 }
 
+function handleUnlockTools(args: Record<string, unknown>): ToolOutcome {
+  const requested = asStringArray(args.categories) ?? [];
+  if (requested.length === 0) {
+    const catalog = listToolBundleCatalog()
+      .map((entry) => `- ${entry.category}: ${entry.summary}`)
+      .join('\n');
+    return refusal(`unlock_tools needs categories: string[]. Available bundles:\n${catalog}`);
+  }
+  const validCategories = Object.keys(TOOL_CATEGORY_MAP) as ToolBundleCategory[];
+  const matched: ToolBundleCategory[] = [];
+  const unknown: string[] = [];
+  for (const raw of requested) {
+    const normalized = raw.trim().toLowerCase() as ToolBundleCategory;
+    if (validCategories.includes(normalized)) {
+      if (!matched.includes(normalized)) matched.push(normalized);
+    } else {
+      unknown.push(raw);
+    }
+  }
+  if (matched.length === 0) {
+    return refusal(`Unknown tool bundle category: ${unknown.join(', ')}. Valid categories: ${validCategories.join(', ')}.`);
+  }
+  const defByName = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool]));
+  const lines: string[] = [`Unlocked categories: ${matched.join(', ')}.`];
+  for (const cat of matched) {
+    const toolNames = TOOL_CATEGORY_MAP[cat] ?? [];
+    if (cat === 'mcp') {
+      lines.push('- mcp: external MCP tools enabled for subsequent rounds.');
+      continue;
+    }
+    for (const toolName of toolNames) {
+      const def = defByName.get(toolName);
+      if (def) lines.push(`- ${def.name}(${def.parameters}): ${def.description}`);
+    }
+  }
+  if (unknown.length > 0) lines.push(`Ignored unknown categories: ${unknown.join(', ')}.`);
+  return { ok: true, content: lines.join('\n') };
+}
+
 export async function runTool(workspaceId: string, call: ToolCall): Promise<ToolOutcome> {
   const nativeArgError = (call.args as Record<string, unknown>).__nativeArgumentError;
   if (typeof nativeArgError === 'string') return refusal(nativeArgError);
+  if (call.name === 'unlock_tools') return handleUnlockTools(call.args);
   const desktop = getDesktopBridge();
   if (!desktop) return refusal('The desktop bridge is unavailable, so tools cannot read the workspace.');
   if (!isKnownTool(call.name)) return refusal(`Unknown tool "${call.name}".`);

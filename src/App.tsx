@@ -33,7 +33,7 @@ import { useTaskGovernance } from './hooks/useTaskGovernance';
 import { useWorkspace } from './hooks/useWorkspace';
 import { setCodeIntelRoot } from './lib/agent/codeIntel';
 import { setProjectMemoryRoot } from './lib/agent/projectMemory';
-import { normalizePermissionMode, type PermissionMode } from './lib/agent/runPolicy';
+import type { PermissionMode } from './lib/agent/runPolicy';
 import { ASK_USER_EVENT, ASK_USER_RESOLVED_EVENT, answerPendingQuestion, cancelPendingQuestion, type AskUserPrompt } from './lib/agent/subagent';
 import { buildWorkspaceToolContext, type WorkspaceToolContext } from './lib/agent/toolGatekeeper';
 import type { AutomationDesktopApi } from './lib/appHelpers';
@@ -102,22 +102,7 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [updaterStatus, setUpdaterStatus] = useState<UpdaterStatus | null>(null);
   const [refineMode, setRefineMode] = useState<RefineMode>('code');
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => {
-    try {
-      const stored = window.localStorage.getItem('shadrox.permissionMode');
-      return stored === null ? 'agent' : normalizePermissionMode(stored);
-    } catch {
-      return 'agent';
-    }
-  });
-  const handlePermissionModeChange = useCallback((mode: PermissionMode) => {
-    setPermissionMode(mode);
-    try {
-      window.localStorage.setItem('shadrox.permissionMode', mode);
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  const permissionMode: PermissionMode = 'agent';
 
   const [quickOpenMode, setQuickOpenMode] = useState<'files' | 'content' | 'commands' | null>(null);
   const [askUserPrompt, setAskUserPrompt] = useState<AskUserPrompt | null>(null);
@@ -991,8 +976,6 @@ export default function App() {
             canUndoRefine={governance.canUndoRefine}
             refineMode={refineMode}
             onRefineModeChange={setRefineMode}
-            permissionMode={permissionMode}
-            onPermissionModeChange={handlePermissionModeChange}
             models={byok.models}
             selectedModel={byok.selectedModel}
             onSelectModel={byok.selectModel}
