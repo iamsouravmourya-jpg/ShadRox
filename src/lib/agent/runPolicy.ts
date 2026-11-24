@@ -105,7 +105,7 @@ const CODEBASE_NOUN_RE =
   /\b(?:file|files|folder|directory|repo|repository|project|codebase|workspace|component|components|page|pages|route|routes|router|endpoint|endpoints|api|apis|server|backend|frontend|hook|hooks|function|class|module|package\.json|tsconfig|vite|next\.config|tailwind|css|html|svg|logo|icon|navbar|sidebar|footer|header|modal|preview|browser|console|dom|terminal|shell|command|debugger|breakpoint|call\s*stack|checkpoint|git|diff|branch|build|lint|typecheck|error|errors|bug|bugs|warning|warnings|crash|blank\s*(?:page|screen)?|white\s*screen|this\s+app|this\s+page|this\s+file|this\s+code|this\s+project|this\s+repo|is\s+app|yahan)\b/i;
 
 const EXECUTION_IMPERATIVE_RE =
-  /\b(?:implement|build|create|add|edit|modify|update|change|fix|repair|debug|refactor|rewrite|delete|remove|rename|move|wire|connect|integrate|scaffold|setup|install|run|test|verify|start|stop|restart|design|style|make|generate|draw|render|optimize|clean|split|decompose|migrate|upgrade|deploy|commit|restore|revert|apply|banao|bana\s*de|kar\s*de|fix\s*kar|theek\s*kar|likh|badal|hata)\b/i;
+  /\b(?:implement|build|create|add|edit|modify|update|change|fix|repair|debug|refactor|rewrite|patch|write|replace|insert|extract|convert|delete|remove|rename|move|wire|connect|integrate|scaffold|setup|install|run|test|verify|start|stop|restart|design|style|make|generate|draw|(?<!-)render|optimize|clean|split|decompose|migrate|upgrade|deploy|commit|restore|revert|apply|banao|bana\s*de|kar\s*de|fix\s*kar|theek\s*kar|likh|badal|hata)\b/i;
 
 const EXPLORATION_VERB_RE =
   /\b(?:scan|explore|inspect|check|find|search|list|read|open|trace|audit|review|explain|describe|summarize|walkthrough|overview|check\s*kar|dekho|samjhao)\b/i;
@@ -118,6 +118,15 @@ const PLAN_ASK_RE =
 
 const QUESTION_LEAD_RE =
   /^(?:what|why|how|where|when|who|which|explain|describe|summarize|review|audit|compare|walkthrough|overview|scan|explore|list|show|tell|can\s+you\s+(?:explain|show|tell|describe|summarize|review|list|trace|help\s+me\s+understand)|is|are|does|do)\b/i;
+
+const INTERROGATIVE_QA_LEAD_RE =
+  /^(?:why|what|how|when|where|which|who|is|are|does|do|explain|describe)\b/i;
+
+const POLITE_OR_ACTION_REQUEST_RE =
+  /^(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:fix|edit|update|change|add|create|build|implement|patch|refactor|write|delete|remove|run|test|verify|start|stop|restart|install|make|rename|move|wire|connect|integrate)\b|\b(?:and\s+(?:fix|edit|update|change|add|create|build|implement|patch|refactor|write|delete|remove|rename|move|wire|connect|integrate|apply)|fix\s+it|update\s+it|patch\s+it|please\s+(?:fix|edit|update|change|add|create|build|implement|patch|refactor|write|delete|remove|run|test|verify))\b/i;
+
+const FRAMEWORK_OR_CODE_QA_RE =
+  /\b(?:react|next\.?js|vue|svelte|angular|solid|astro|vite|webpack|typescript|javascript|node\.?js|express|prisma|drizzle|tailwind|redux|zustand|useeffect|usestate|usememo|usecallback|useref|usecontext|strict\s*mode|hydrat(?:e|ion)|re-?render(?:s|ing)?|ssr|csr|rsc|jsx|tsx|async|await|promise|middleware|cors|jwt|oauth|dom|state|props|effect|memo)\b|\bmy\s+(?:app|code|component|hook|effect|state|build|server|api|query|route)\b/i;
 
 const GENERAL_CONCEPTUAL_QA_RE =
   /^(?:what\s+(?:is|are)|why\s+(?:does|do|is|are)|how\s+(?:does|do|can\s+i)|explain|describe|compare|difference\s+between)\b/i;
@@ -168,7 +177,8 @@ export function classifyTurnIntent(input: TurnIntentInput): TurnIntentResult {
     FILE_PATH_OR_EXT_RE.test(prompt) ||
     STACK_OR_ERROR_RE.test(prompt) ||
     prompt.includes('`') ||
-    CODEBASE_NOUN_RE.test(prompt);
+    CODEBASE_NOUN_RE.test(prompt) ||
+    FRAMEWORK_OR_CODE_QA_RE.test(prompt);
 
   if (!hasFileOrCodeCue) {
     if (!prompt || PURE_CONVERSATIONAL_RE.test(prompt)) {
@@ -211,8 +221,8 @@ export function classifyTurnIntent(input: TurnIntentInput): TurnIntentResult {
   }
 
   if (
-    (QUESTION_LEAD_RE.test(prompt) || EXPLORATION_VERB_RE.test(prompt)) &&
-    !EXECUTION_IMPERATIVE_RE.test(prompt)
+    ((QUESTION_LEAD_RE.test(prompt) || EXPLORATION_VERB_RE.test(prompt)) && !EXECUTION_IMPERATIVE_RE.test(prompt)) ||
+    (INTERROGATIVE_QA_LEAD_RE.test(prompt) && !POLITE_OR_ACTION_REQUEST_RE.test(prompt))
   ) {
     return {
       kind: 'advisory',

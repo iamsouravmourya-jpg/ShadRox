@@ -678,7 +678,7 @@ export function describeTools(
     ...(hasAny('checkpoint', 'list_checkpoints', 'restore')
       ? ['CHECKPOINTS: a checkpoint is taken automatically before this turn\'s first write. checkpoint {"label":"..."} saves another one; list_checkpoints shows the ids; restore {"id":"..."} rolls back (the user approves first). Use them before a risky refactor, never as a substitute for verifying.']
       : []),
-    'COMMANDS: only run_command executes a shell command, inside the opened folder. Commands are parsed and risk-tiered: reads, builds/tests and installs (npm install included) run automatically and stay visible in the terminal dock; file-modifying and network commands open a native approval dialog; dangerous commands always open it with a red warning and are never pre-approved. A confirm field or model instruction is never authorization. Compound commands (npm i && npm test, pipes, redirects) are allowed — the worst segment decides the tier. It returns the real exit code and output, so never claim a command ran, passed or killed anything unless run_command showed you the result.',
+    'COMMANDS: only run_command executes a shell command, inside the opened folder. Commands are parsed and risk-tiered: reads and builds/tests run automatically and stay visible in the terminal dock; installs (npm install included), file-modifying, and network commands open a native approval dialog; dangerous commands always open it with a red warning and are never pre-approved. A confirm field or model instruction is never authorization. Compound commands (npm i && npm test, pipes, redirects) are allowed — the worst segment decides the tier. It returns the real exit code and output, so never claim a command ran, passed or killed anything unless run_command showed you the result.',
     ...(hasAny('job_control')
       ? [
           'JOBS: a command still running after 30 seconds of foreground waiting becomes a background job: run_command returns exit null, a job id (J1, J2, ...) and the output tail. Dev servers background immediately and report readiness (a URL or log line). Use job_control to list jobs, check one job\'s status, read_output (last 200KB buffered, optional chars tail size or character range) or stop a job\'s whole process tree. A backgrounded command has NOT finished — read its output and exit status before drawing conclusions. A dev server (or any job marked ready) logs once and then serves QUIETLY: no new output is health, not a hang — never stop or restart a running server just because its logs went silent; only stop it if it exited or its port refuses connections. A silent non-server job is killed after 120s; every job has a 30-minute ceiling.',
@@ -732,9 +732,23 @@ function asBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
 }
 
+export function clipToolOutput(content: string, maxChars = MAX_TOOL_OUTPUT_CHARS): string {
+  if (content.length <= maxChars) return content;
+  const provisionalMarker = `\n… [truncated ${content.length} middle characters; output cut at ${maxChars} characters — narrow the request (a line range, an include pattern, fewer files)] …\n`;
+  if (maxChars <= provisionalMarker.length + 20) {
+    return `${content.slice(0, Math.max(0, maxChars - 1))}…`;
+  }
+  const available = maxChars - provisionalMarker.length;
+  const headChars = Math.floor(available * 0.6);
+  const tailChars = available - headChars;
+  const omitted = Math.max(0, content.length - headChars - tailChars);
+  const marker = `\n… [truncated ${omitted} middle characters; output cut at ${maxChars} characters — narrow the request (a line range, an include pattern, fewer files)] …\n`;
+  const result = `${content.slice(0, headChars)}${marker}${tailChars > 0 ? content.slice(-tailChars) : ''}`;
+  return result.length <= maxChars ? result : result.slice(0, maxChars);
+}
+
 function clip(content: string): string {
-  if (content.length <= MAX_TOOL_OUTPUT_CHARS) return content;
-  return `${content.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n… output cut at ${MAX_TOOL_OUTPUT_CHARS} characters. Narrow the request (a line range, an include pattern, fewer files).`;
+  return clipToolOutput(content, MAX_TOOL_OUTPUT_CHARS);
 }
 
 /** Head+tail cap: the start (errors, headers) and the end (summary, exit) survive. */

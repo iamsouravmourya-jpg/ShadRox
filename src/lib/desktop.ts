@@ -781,7 +781,7 @@ export interface ShadRoxDesktopAPI {
   checkForUpdates: () => Promise<{ available: boolean }>;
   onUpdaterStatus: (listener: (status: UpdaterStatus) => void) => () => void;
   secureStore: {
-    getAll: () => Promise<Record<string, string>>;
+    get: (key: string) => Promise<string | null>;
     set: (key: string, value: string) => Promise<boolean>;
     delete: (key: string) => Promise<boolean>;
   };

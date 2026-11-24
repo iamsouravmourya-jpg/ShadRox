@@ -15,10 +15,16 @@ import {
   TOOL_DISCIPLINE_RULES
 } from './promptDiscipline';
 import {
+  appendCoreSectionWithinBudget,
   dedupeAndCapDiagnostics,
+  dedupeContextPaths,
+  dedupeManifestData,
   dedupeWorkspaceFiles,
-  filterFilesForRetrieval
+  filterFilesForRetrieval,
+  serializeDescribeToolsCacheKey
 } from '../contextDedup';
+import { buildContextManifest } from '../contextManifest';
+import { evictSemanticIndex } from './semanticIndex';
 import { decideOrchestration } from '../orchestrate';
 import { estimateTokens } from '../toolUtils';
 
@@ -257,4 +263,61 @@ test('static prompt rules include inline SVG logo discipline', () => {
   assert.match(staticPrompt, /LOGO & VISUAL ASSETS/i);
   assert.match(staticPrompt, /<svg[^>]*>/i);
   assert.match(staticPrompt, /viewBox/i);
+});
+
+test('contextDedup serializes deterministic describeTools keys, deduplicates manifests, and bounds core sections', () => {
+  const ctxA = buildWorkspaceToolContext({
+    workspaceOpen: true,
+    filePaths: ['src/App.tsx'],
+    enabledBundles: new Set(['git', 'core']),
+    unlockedBundles: new Set(['web', 'memory'])
+  });
+  const ctxB = buildWorkspaceToolContext({
+    workspaceOpen: true,
+    filePaths: ['src/App.tsx', 'src/other.ts'],
+    enabledBundles: new Set(['core', 'git']),
+    unlockedBundles: new Set(['memory', 'web'])
+  });
+  assert.equal(
+    serializeDescribeToolsCacheKey(10, [], [], ctxA),
+    serializeDescribeToolsCacheKey(10, [], [], ctxB)
+  );
+  const ctxChanged = { ...ctxA, previewActive: true };
+  assert.notEqual(
+    serializeDescribeToolsCacheKey(10, [], [], ctxA),
+    serializeDescribeToolsCacheKey(10, [], [], ctxChanged)
+  );
+
+  const dedupedPaths = dedupeContextPaths(['./src/App.tsx', 'src\\App.tsx', 'src/main.tsx']);
+  assert.deepEqual(dedupedPaths, ['./src/App.tsx', 'src/main.tsx']);
+
+  const core: string[] = ['base section'];
+  let chars = 'base section'.length;
+  chars = appendCoreSectionWithinBudget(core, chars, ['a'.repeat(500)], 900);
+  assert.equal(core.length, 2);
+  const beforeOverflow = chars;
+  chars = appendCoreSectionWithinBudget(core, chars, ['b'.repeat(800)], 900);
+  assert.ok(chars <= 900);
+  assert.ok(chars >= beforeOverflow);
+
+  const manifestInput = dedupeManifestData({
+    selectedSymbols: [{ name: 'App', file: 'src/App.tsx', line: 4 }],
+    selectedFiles: ['src/App.tsx', 'src/utils.ts'],
+    workspaceFiles: [
+      { name: 'src/App.tsx', content: 'export const App = () => null;', language: 'typescript' },
+      { name: 'src/utils.ts', content: 'export const util = 1;', language: 'typescript' }
+    ],
+    activeFile: { name: './src/App.tsx', content: 'export const App = () => null;', language: 'typescript' },
+    diskFiles: [
+      { name: 'src\\utils.ts', content: 'export const util = 1;', language: 'typescript' },
+      { name: 'src/extra.ts', content: 'export const extra = 2;', language: 'typescript' }
+    ],
+    repoMap: 'src/App.tsx'
+  });
+  assert.deepEqual(manifestInput.resolvedPaths, ['src/App.tsx', 'src/utils.ts', 'src/extra.ts']);
+  const manifest = buildContextManifest(manifestInput);
+  assert.equal(manifest.sources.filter((s) => s.path.toLowerCase().includes('utils.ts')).length, 1);
+  assert.equal(manifest.missing.length, 0);
+
+  evictSemanticIndex('ws-nonexistent');
 });

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   TOOL_DEFINITIONS,
+  clipToolOutput,
   describeTools,
   isKnownTool,
   nativeToolDefinitions,
@@ -49,4 +50,22 @@ test('preview_inspect is listed in prompt descriptions and exposed to native pro
 
 test('summarizeCall labels a verify call without inventing arguments', () => {
   assert.equal(summarizeCall({ name: 'verify', args: {} }), 'verify');
+});
+
+test('describeTools states that installs require a native approval dialog', () => {
+  const prompt = describeTools(3).join('\n');
+  assert.match(prompt, /installs \(npm install included\).*native approval dialog/i);
+  assert.doesNotMatch(prompt, /reads, builds\/tests and installs.*run automatically/i);
+});
+
+test('clipToolOutput keeps both head and tail around an explicit truncation marker', () => {
+  const head = 'HEAD_START_' + 'a'.repeat(400);
+  const middle = '_MIDDLE_'.repeat(300);
+  const tail = 'b'.repeat(400) + '_TAIL_END';
+  const clipped = clipToolOutput(head + middle + tail, 900);
+  assert.ok(clipped.length <= 900, `Expected clipped length <= 900, got ${clipped.length}`);
+  assert.ok(clipped.startsWith('HEAD_START_'), 'Head of tool output must survive');
+  assert.ok(clipped.endsWith('_TAIL_END'), 'Tail of tool output must survive');
+  assert.ok(clipped.includes('output cut at 900 characters'), 'Should preserve output cut marker');
+  assert.ok(clipped.includes('[truncated'), 'Should include truncated marker');
 });

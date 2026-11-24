@@ -25,6 +25,9 @@ import {
 } from '../lib/workspace';
 import type { RecentEntry, WorkspaceFile, WorkspaceFileEntry, WorkspaceFolder } from '../lib/types';
 import { sanitizeProjectName } from '../lib/projectName';
+import { resetProjectRegistry } from '../lib/completionTrie';
+import { resetRetrievalCaches } from '../lib/retrieval';
+import { evictSemanticIndex } from '../lib/agent/semanticIndex';
 import {
   canonicalPathKey,
   dedupePaths,
@@ -33,6 +36,39 @@ import {
   normalizeRepoPath,
   pathsEqual
 } from '../lib/paths';
+
+interface WritableStreamLike {
+  write: (data: string) => Promise<void>;
+  close: () => Promise<void>;
+}
+
+interface WorkspaceFileHandle {
+  kind?: string;
+  name?: string;
+  createWritable?: () => Promise<WritableStreamLike>;
+}
+
+interface WorkspaceDirectoryHandle {
+  getDirectoryHandle: (name: string, options?: { create?: boolean }) => Promise<WorkspaceDirectoryHandle>;
+  getFileHandle: (name: string, options?: { create?: boolean }) => Promise<WorkspaceFileHandle>;
+}
+
+function pruneHandlesForPath(
+  handles: Map<string, WorkspaceFileHandle>,
+  targetPath: string,
+  includeChildren = false
+): void {
+  const targetKey = canonicalPathKey(targetPath);
+  for (const key of handles.keys()) {
+    const candidateKey = canonicalPathKey(key);
+    if (
+      candidateKey === targetKey ||
+      (includeChildren && candidateKey.startsWith(`${targetKey}/`))
+    ) {
+      handles.delete(key);
+    }
+  }
+}
 
 /** What happened to each file the assistant tried to write. */
 export interface ApplyPatchesResult {
@@ -324,8 +360,8 @@ export function useWorkspace(): UseWorkspaceResult {
 
   const filesRef = useRef<WorkspaceFile[]>(files);
   const baselineRef = useRef<Record<string, string>>(diskBaseline);
-  const handlesRef = useRef<Map<string, any>>(new Map());
-  const directoryHandleRef = useRef<any>(null);
+  const handlesRef = useRef<Map<string, WorkspaceFileHandle>>(new Map());
+  const directoryHandleRef = useRef<WorkspaceDirectoryHandle | null>(null);
   const canWriteRef = useRef(false);
   const desktopWorkspaceIdRef = useRef<string | null>(null);
   const workspaceIdentityRef = useRef<string | null>(null);
@@ -368,8 +404,10 @@ export function useWorkspace(): UseWorkspaceResult {
   const mount = useCallback(
     (name: string, path: string, kind: 'folder' | 'file', nextFiles: WorkspaceFile[], options: MountOptions = {}) => {
       const handles = options.handles ?? [];
-      handlesRef.current = new Map(handles.map((entry) => [entry.path, entry.handle]));
-      directoryHandleRef.current = options.directoryHandle ?? null;
+      handlesRef.current = new Map(
+        handles.map((entry) => [entry.path, entry.handle as WorkspaceFileHandle])
+      );
+      directoryHandleRef.current = (options.directoryHandle as WorkspaceDirectoryHandle | undefined) ?? null;
       desktopWorkspaceIdRef.current = options.nativeWorkspaceId ?? null;
       workspaceIdentityRef.current = `${kind}-${path}`;
       filesRef.current = nextFiles;
@@ -943,6 +981,7 @@ export function useWorkspace(): UseWorkspaceResult {
     }
     const next = current.filter((file) => !pathsEqual(file.name, targetName));
     filesRef.current = next;
+    pruneHandlesForPath(handlesRef.current, targetName);
     deleteBaselineKey(baselineRef.current, targetName);
     setDiskBaseline({ ...baselineRef.current });
     setWorkspace((previous) => previous ? { ...previous, files: next } : previous);
@@ -1124,7 +1163,7 @@ export function useWorkspace(): UseWorkspaceResult {
   // --- disk write-back -------------------------------------------------------
 
   /** Finds (or creates) the handle for a workspace-relative path. */
-  const resolveHandle = useCallback(async (path: string): Promise<any | null> => {
+  const resolveHandle = useCallback(async (path: string): Promise<WorkspaceFileHandle | null> => {
     const existing = handlesRef.current.get(path);
     if (existing) return existing;
 
@@ -1133,7 +1172,7 @@ export function useWorkspace(): UseWorkspaceResult {
 
     try {
       const segments = path.split('/').filter(Boolean);
-      let directory = root;
+      let directory: WorkspaceDirectoryHandle = root;
       for (let index = 0; index < segments.length - 1; index += 1) {
         directory = await directory.getDirectoryHandle(segments[index], { create: true });
       }
@@ -1154,7 +1193,7 @@ export function useWorkspace(): UseWorkspaceResult {
   const writeOne = useCallback(
     async (file: WorkspaceFile): Promise<boolean> => {
       const handle = await resolveHandle(file.name);
-      if (!handle) return false;
+      if (!handle || typeof handle.createWritable !== 'function') return false;
 
       if (!(await ensureReadWrite(handle))) {
         setDiskMessage('Write access expired for this folder. Re-open it from the hub to grant it again.');
@@ -1562,6 +1601,7 @@ export function useWorkspace(): UseWorkspaceResult {
     const deletedPath = current[index].name;
     const nextFiles = current.filter((_, fileIndex) => fileIndex !== index);
     filesRef.current = nextFiles;
+    pruneHandlesForPath(handlesRef.current, deletedPath);
     deleteBaselineKey(baselineRef.current, deletedPath);
     setDiskBaseline({ ...baselineRef.current });
     setWorkspace((previous) => previous ? { ...previous, files: nextFiles } : previous);
@@ -1594,6 +1634,9 @@ export function useWorkspace(): UseWorkspaceResult {
         ? { ...file, name: cleanTo, version: renamed.version ?? file.version, language: detectLanguage(cleanTo) }
         : file);
       filesRef.current = next;
+      const existingHandle = handlesRef.current.get(from);
+      pruneHandlesForPath(handlesRef.current, from);
+      if (existingHandle) handlesRef.current.set(cleanTo, existingHandle);
       const previousBaseline = baselineValueFor(baselineRef.current, from);
       deleteBaselineKey(baselineRef.current, from);
       if (previousBaseline !== undefined) baselineRef.current[cleanTo] = previousBaseline;
@@ -1689,6 +1732,7 @@ export function useWorkspace(): UseWorkspaceResult {
         });
       }
       setConflicts((previous) => previous.filter((name) => !matchesDeletedEntry(name)));
+      pruneHandlesForPath(handlesRef.current, clean, true);
       for (const deletedEntry of deletedPaths.current) {
         if (matchesDeletedEntry(deletedEntry)) deletedPaths.current.delete(deletedEntry);
       }
@@ -1762,6 +1806,9 @@ export function useWorkspace(): UseWorkspaceResult {
     const nextFiles = filesRef.current.filter((file) => !shouldDrop(file.name));
     for (const file of filesRef.current) {
       if (shouldDrop(file.name)) deleteBaselineKey(baselineRef.current, file.name);
+    }
+    for (const target of deleteKeys) {
+      pruneHandlesForPath(handlesRef.current, target, true);
     }
 
     for (const restored of restoreFiles) {
@@ -1889,11 +1936,27 @@ export function useWorkspace(): UseWorkspaceResult {
     openTurns.current.clear();
     machineStarting.current = 0;
     activeCheckpointRef.current = null;
-    handlesRef.current = new Map();
+    handlesRef.current.clear();
     directoryHandleRef.current = null;
     desktopWorkspaceIdRef.current = null;
     canWriteRef.current = false;
     setCanWriteToDisk(false);
+    if (currentId) evictSemanticIndex(currentId);
+    resetRetrievalCaches();
+    resetProjectRegistry();
+  }, []);
+
+  useEffect(() => {
+    const handles = handlesRef.current;
+    const dirRequests = directoryRequests.current;
+    return () => {
+      handles.clear();
+      dirRequests.clear();
+      pagesRef.current = {};
+      directoryHandleRef.current = null;
+      resetRetrievalCaches();
+      resetProjectRegistry();
+    };
   }, []);
 
   // --- restore timeline ------------------------------------------------------

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { isProtectedAgentWritePath } from '../lib/agents/applyPolicy';
 import { undoVerdict } from '../lib/agents/scopePreserve';
 import { holdReplyApply, type PermissionMode } from '../lib/agent/runPolicy';
@@ -57,6 +57,13 @@ export function usePatchManager({
   // A prompt asking for a plan is a request to review it first: auto-apply must
   // not write files behind an Approve button the user has not pressed yet.
   const planApprovalGateRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const gate = planApprovalGateRef.current;
+    return () => {
+      gate.clear();
+    };
+  }, [nativeWorkspaceId]);
 
   const toggleAutoApplyChanges = useCallback(() => {
     setAutoApplyChanges((previous) => {

@@ -18,6 +18,21 @@ const IDB_DB_NAME = 'shadrox-keystore';
 const IDB_STORE_NAME = 'keys';
 const IDB_KEY_ID = 'byok-aes-gcm-v1';
 
+/** Explicit allowlist of persisted settings/secrets restored on desktop startup. */
+export const HYDRATE_KEYS: readonly string[] = [
+  'shadrox.byok.gemini',
+  'shadrox.byok.groq',
+  'shadrox.byok.custom',
+  'shadrox.auth.session',
+  'shadrox.provider.active',
+  'shadrox.model.gemini',
+  'shadrox.model.groq',
+  'shadrox.model.custom',
+  'shadrox.recents',
+  'shadrox.endpoint.custom.baseurl',
+  'shadrox.endpoint.custom.models'
+];
+
 export function isSecretKey(key: string): boolean {
   return SECRET_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
@@ -222,8 +237,10 @@ export async function hydrateSecureStore(): Promise<void> {
   }
 
   try {
-    const values = await store.getAll();
-    for (const [key, value] of Object.entries(values)) {
+    const entries = await Promise.all(
+      HYDRATE_KEYS.map(async (key) => [key, await store.get(key)] as const)
+    );
+    for (const [key, value] of entries) {
       if (!key.startsWith(KEY_PREFIX) || typeof value !== 'string') continue;
       if (isSecretKey(key)) {
         secretMemory.set(key, value);

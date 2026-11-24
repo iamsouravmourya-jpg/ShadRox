@@ -217,6 +217,12 @@ export function resetSemanticIndexCache(): void {
   lastRefresh.clear();
 }
 
+export function evictSemanticIndex(workspaceId: string): void {
+  if (!workspaceId) return;
+  memoryIndexes.delete(workspaceId);
+  lastRefresh.delete(workspaceId);
+}
+
 function emptyIndex(): SemanticIndex {
   return { v: 1, updatedAt: 0, truncated: false, files: {} };
 }

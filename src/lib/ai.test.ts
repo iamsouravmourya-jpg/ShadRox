@@ -280,7 +280,7 @@ test('a corrupt snapshot is dropped instead of breaking startup', () => {
 interface FakeBridge {
   platform: string;
   secureStore: {
-    getAll: () => Promise<Record<string, string>>;
+    get: (key: string) => Promise<string | null>;
     set: (key: string, value: string) => Promise<boolean>;
     delete: (key: string) => Promise<boolean>;
   };
@@ -296,7 +296,7 @@ function withEnv(
     ? {
         platform: 'win32',
         secureStore: {
-          getAll: async () => Object.fromEntries(encrypted),
+          get: async (key) => encrypted.get(key) ?? null,
           set: async (key, value) => { encrypted.set(key, value); return true; },
           delete: async (key) => { encrypted.delete(key); return true; }
         }

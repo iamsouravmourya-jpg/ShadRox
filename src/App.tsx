@@ -29,6 +29,7 @@ import { useTaskGovernance } from './hooks/useTaskGovernance';
 import { useWorkspace } from './hooks/useWorkspace';
 import { setCodeIntelRoot } from './lib/agent/codeIntel';
 import { setProjectMemoryRoot } from './lib/agent/projectMemory';
+import { evictSemanticIndex } from './lib/agent/semanticIndex';
 import type { PermissionMode } from './lib/agent/runPolicy';
 import { ASK_USER_EVENT, ASK_USER_RESOLVED_EVENT, answerPendingQuestion, cancelPendingQuestion, type AskUserPrompt } from './lib/agent/subagent';
 import { buildWorkspaceToolContext, type WorkspaceToolContext } from './lib/agent/toolGatekeeper';
@@ -39,9 +40,11 @@ import type { AcceptanceContract, BehaviorEvent } from './lib/behavior/types';
 import { listOutcomes } from './lib/calibratedAuto/ledger';
 import type { OutcomeRecord } from './lib/calibratedAuto/types';
 import type { Command } from './lib/commands';
+import { resetProjectRegistry } from './lib/completionTrie';
 import { confirmAction } from './lib/confirm';
 import { getDesktopBridge, type ShadRoxDesktopAPI, type UpdaterStatus } from './lib/desktop';
 import { buildTsOverrides, isScriptFilePath } from './lib/diagnostics';
+import { resetRetrievalCaches } from './lib/retrieval';
 import { terminalStateManager } from './lib/terminal/state';
 import type {
   ChatMessage,
@@ -388,6 +391,11 @@ export default function App() {
     setIsPreviewFullscreen(false);
     setIsPreviewOpen(true);
     setIsSearchPanelOpen(false);
+    return () => {
+      if (nativeWorkspaceId) evictSemanticIndex(nativeWorkspaceId);
+      resetRetrievalCaches();
+      resetProjectRegistry();
+    };
   }, [nativeWorkspaceId]);
 
   useEffect(() => {

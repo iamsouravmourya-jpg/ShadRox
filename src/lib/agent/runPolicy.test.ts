@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   allowsEffect,
+  classifyTurnIntent,
   holdReplyApply,
   normalizePermissionMode,
   shouldGatePlanApproval,
@@ -111,3 +112,29 @@ test('shouldGatePlanApproval never gates agent or team turns, even with many ste
   assert.equal(shouldGatePlanApproval('ask', 2, 1), false);
 });
 
+test('code and framework questions without file extensions route to advisory instead of conversational', () => {
+  assert.equal(classifyTurnIntent({ prompt: 'what is a closure?', workspaceOpen: true }).kind, 'conversational');
+  for (const prompt of [
+    'why does my React effect run twice?',
+    'how do hooks re-render in Next.js?',
+    'why is my useEffect firing on mount?'
+  ]) {
+    const intent = classifyTurnIntent({ prompt, workspaceOpen: true });
+    assert.equal(intent.kind, 'advisory', `Expected advisory for "${prompt}"`);
+    assert.equal(intent.writesFiles, false);
+    assert.equal(intent.skipVerify, true);
+  }
+});
+
+test('exploration and mutation combinations always route to execution', () => {
+  for (const prompt of [
+    'find and fix the auth bug',
+    'check and update the header',
+    'inspect and patch server.ts',
+    'scan and add error handling'
+  ]) {
+    const intent = classifyTurnIntent({ prompt, workspaceOpen: true });
+    assert.equal(intent.kind, 'execution', `Expected execution for "${prompt}"`);
+    assert.equal(intent.writesFiles, true);
+  }
+});

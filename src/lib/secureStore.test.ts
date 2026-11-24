@@ -113,3 +113,39 @@ test('browser mode encrypts secrets with WebCrypto AES-GCM and migrates plaintex
     env.restore();
   }
 });
+
+test('desktop mode hydrates only explicit allowlisted keys via secureStore.get(key)', async () => {
+  const env = installBrowserMocks();
+  const requestedKeys: string[] = [];
+  const desktopValues = new Map<string, string>([
+    ['shadrox.byok.gemini', 'AIzaDesktopKey1234567890'],
+    ['shadrox.provider.active', 'groq'],
+    ['shadrox.unrelated.key', 'should-never-be-queried']
+  ]);
+  (globalThis as Record<string, unknown>).window = {
+    shadroxDesktop: {
+      secureStore: {
+        get: async (key: string) => {
+          requestedKeys.push(key);
+          return desktopValues.get(key) ?? null;
+        },
+        set: async (key: string, value: string) => { desktopValues.set(key, value); return true; },
+        delete: async (key: string) => desktopValues.delete(key)
+      }
+    }
+  };
+  env.backing.set('shadrox.byok.gemini', 'stale-plaintext-mirror');
+
+  try {
+    resetSecretStoreForTests();
+    await hydrateSecureStore();
+    assert.equal(readSecretItem('shadrox.byok.gemini'), 'AIzaDesktopKey1234567890');
+    assert.equal(env.backing.has('shadrox.byok.gemini'), false, 'plaintext secret mirror purged on desktop');
+    assert.equal(env.backing.get('shadrox.provider.active'), 'groq');
+    assert.equal(requestedKeys.includes('shadrox.unrelated.key'), false);
+    assert.ok(requestedKeys.includes('shadrox.byok.gemini'));
+    assert.ok(requestedKeys.includes('shadrox.auth.session'));
+  } finally {
+    env.restore();
+  }
+});

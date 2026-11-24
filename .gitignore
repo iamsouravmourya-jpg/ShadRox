@@ -12,6 +12,7 @@ reference/
 autonomous/
 # Moved drafts and agent worktree copies. Not part of the app.
 _junk/
+.shadrox/
 shadrox-dist-060/
 vibe_images/
 .DS_Store
