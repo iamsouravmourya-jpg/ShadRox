@@ -41,19 +41,21 @@ export function WorkspaceHeader({
   onToggleSettings
 }: WorkspaceHeaderProps) {
   return (
-    <header className="titlebar window-controls-inset h-12 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-line bg-surface/90 backdrop-blur-xl">
+    <header className="titlebar window-controls-inset h-12 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-line bg-surface/95 backdrop-blur-xl shadow-[0_1px_0_var(--line)]">
       <div className="flex items-center gap-2.5 min-w-0">
         <button
           type="button"
           onClick={onBackToHub}
           title="Back to Workspace Hub"
           aria-label="Back to Workspace Hub"
-          className="p-1.5 rounded-md text-ink-3 hover:text-ink hover:bg-overlay-2 transition-colors cursor-pointer shrink-0"
+          className="p-1.5 rounded-lg border border-transparent text-ink-3 hover:text-ink hover:border-line hover:bg-surface-2 transition-colors cursor-pointer shrink-0"
         >
           <ArrowLeft className="w-4 h-4" />
         </button>
         <span className="flex items-center gap-2 min-w-0">
-          <ShadRoxLogo className="w-4 h-4 shrink-0 text-accent" />
+          <span className="grid size-6 place-items-center rounded-lg border border-accent-line bg-accent-soft shadow-[0_0_16px_var(--glow)] shrink-0">
+            <ShadRoxLogo className="w-3.5 h-3.5 text-accent" />
+          </span>
           <span className="text-xs font-semibold tracking-[-0.02em] text-ink truncate">
             {workspaceName ?? 'ShadRox'}
           </span>
@@ -89,12 +91,17 @@ export function WorkspaceHeader({
             type="button"
             onClick={onToggleAutoSave}
             title="Auto-save to disk on edit"
-            className={`whitespace-nowrap shrink-0 rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-wide transition-colors cursor-pointer ${
+            className={`whitespace-nowrap shrink-0 flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide transition-all cursor-pointer ${
               autoSave
-                ? 'border-accent-line bg-accent-soft text-accent'
-                : 'border-line-2 text-ink-3 hover:text-ink'
+                ? 'border-accent-line bg-accent-soft text-ink shadow-[0_0_14px_-4px_var(--glow)]'
+                : 'border-line bg-surface-2/60 text-ink-3 hover:border-line-2 hover:text-ink'
             }`}
           >
+            <span
+              className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                autoSave ? 'bg-ok shadow-[0_0_8px_var(--ok)]' : 'bg-ink-5'
+              }`}
+            />
             Auto-save {autoSave ? 'on' : 'off'}
           </button>
         )}
@@ -104,10 +111,10 @@ export function WorkspaceHeader({
             type="button"
             onClick={onToggleTerminal}
             aria-pressed={isTerminalOpen}
-            className={`whitespace-nowrap shrink-0 flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-colors cursor-pointer ${
+            className={`whitespace-nowrap shrink-0 flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-all cursor-pointer ${
               isTerminalOpen
-                ? 'border-accent-line bg-accent-soft text-accent'
-                : 'border-line-2 text-ink-3 hover:text-ink'
+                ? 'border-accent-line bg-accent-soft text-accent shadow-[0_0_14px_-4px_var(--glow)]'
+                : 'border-line bg-surface-2/60 text-ink-3 hover:border-line-2 hover:text-ink'
             }`}
             title={isTerminalOpen ? 'Close interactive terminal' : 'Open interactive terminal'}
           >
@@ -120,7 +127,7 @@ export function WorkspaceHeader({
           type="button"
           onClick={onOpenFeedback}
           title="Report a bug or request a feature"
-          className="whitespace-nowrap shrink-0 flex items-center gap-1.5 rounded-full border border-line-2 px-2.5 py-1 text-[11px] text-ink-3 transition-colors hover:border-accent-line hover:text-accent cursor-pointer"
+          className="whitespace-nowrap shrink-0 flex items-center gap-1.5 rounded-lg border border-line bg-surface-2/60 px-2.5 py-1 text-[11px] text-ink-3 transition-colors hover:border-accent-line hover:text-accent cursor-pointer"
         >
           <Bug className="w-3 h-3" />
           Feedback
@@ -130,7 +137,11 @@ export function WorkspaceHeader({
           onClick={onToggleSettings}
           title={isSettingsOpen ? 'Close settings (Esc)' : 'Settings'}
           aria-label="Settings"
-          className="p-1.5 rounded-md text-ink-3 hover:text-ink hover:bg-overlay-2 transition-colors cursor-pointer"
+          className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+            isSettingsOpen
+              ? 'border-accent-line bg-accent-soft text-accent'
+              : 'border-transparent text-ink-3 hover:border-line hover:text-ink hover:bg-surface-2'
+          }`}
         >
           <Settings className="w-4 h-4" />
         </button>

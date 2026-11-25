@@ -99,6 +99,16 @@ const SURFACE_THEME = EditorView.theme({
   '&.cm-editor .cm-foldPlaceholder': { backgroundColor: 'var(--overlay-2)', border: '1px solid var(--line)', color: 'var(--text-4)' }
 });
 
+function explorerIconColor(name: string): string {
+  const base = name.split('/').pop()?.toLowerCase() ?? '';
+  if (base.startsWith('.env')) return 'text-warn';
+  if (/\.(tsx?|mts|cts)$/i.test(base)) return 'text-cool';
+  if (/\.(jsx?|mjs|cjs|json)$/i.test(base)) return 'text-warn';
+  if (/\.(css|scss|less)$/i.test(base)) return 'text-accent';
+  if (/\.(mdx?|txt|rst)$/i.test(base)) return 'text-ink-2';
+  return 'text-ink-4';
+}
+
 interface CodeEditorProps {
   files: WorkspaceFile[];
   activeFileIndex: number;
@@ -1260,14 +1270,14 @@ export function CodeEditor({
       <div
         className={`${
           hideSidebar ? 'hidden' : sidebarPanel ? 'w-72 sm:w-80' : isSidebarOpen ? 'w-60 sm:w-64' : 'w-0'
-        } shrink-0 border-r border-line bg-base flex flex-col transition-all duration-200 overflow-hidden select-none`}
+        } shrink-0 border-r border-line bg-base-2/90 flex flex-col transition-all duration-200 overflow-hidden select-none`}
       >
         {sidebarPanel ? (
           sidebarPanel
         ) : (
           <>
         {/* Explorer Header */}
-        <div className="h-9 shrink-0 flex items-center justify-between px-3 border-b border-line">
+        <div className="h-9 shrink-0 flex items-center justify-between px-3 border-b border-line bg-surface/60">
           <span className="text-[10px] uppercase font-bold tracking-wider text-ink-3 flex items-center gap-1.5">
             <FolderTree className="w-3.5 h-3.5 text-ink-4" />
             Explorer
@@ -1320,7 +1330,7 @@ export function CodeEditor({
               onChange={(e) => setFileFilter(e.target.value)}
               placeholder="Search files..."
               spellCheck={false}
-              className="w-full rounded-lg border border-line bg-base py-1 pl-6 pr-5 text-[11px] text-ink-2 outline-none transition-colors placeholder:text-ink-5 focus:border-accent-line"
+              className="w-full rounded-lg border border-line bg-base/80 py-1 pl-6 pr-5 text-[11px] text-ink-2 outline-none transition-all placeholder:text-ink-5 focus:border-accent-line focus:shadow-[0_0_0_2px_var(--accent-soft)]"
             />
             {fileFilter && (
               <button
@@ -1396,7 +1406,7 @@ export function CodeEditor({
           action row scrolls horizontally instead of spilling over the chat
           column. The scrollbar stays invisible to keep the 36px strip clean.
         */}
-        <div className="h-9 shrink-0 flex min-w-0 items-center justify-between gap-2 overflow-x-auto px-3 border-b border-line bg-base-2/70 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="h-9 shrink-0 flex min-w-0 items-center justify-between gap-2 overflow-x-auto px-3 border-b border-line bg-surface/75 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {/* Active file metadata */}
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {activeFile ? (
@@ -1488,7 +1498,9 @@ export function CodeEditor({
                     if (fromPath) onReorderTabs?.(editorGroupIndex, fromPath, file.name);
                   }}
                   className={`group flex shrink-0 items-center gap-1.5 border-r border-line px-2.5 transition-colors ${
-                    isActive ? 'bg-base-2 text-ink' : 'text-ink-4 hover:bg-overlay hover:text-ink-3'
+                    isActive
+                      ? 'bg-surface text-ink shadow-[inset_0_-2px_0_var(--accent-strong)]'
+                      : 'text-ink-4 hover:bg-surface/60 hover:text-ink-2'
                   }`}
                 >
                   <button
@@ -1556,7 +1568,7 @@ export function CodeEditor({
 
         {/* Sticky File Path Breadcrumb Bar */}
         {activeFile && (
-          <div className="flex h-6 shrink-0 items-center gap-1.5 border-b border-line bg-base/70 px-3 text-[10px] font-mono text-ink-3">
+          <div className="flex h-6 shrink-0 items-center gap-1.5 border-b border-line bg-base-2/60 px-3 text-[10px] font-mono text-ink-3">
             <span className="flex items-center gap-1 text-ink-4">
               <Folder className="h-3 w-3 text-ink-4" />
               {activeFile.name.split('/').slice(0, -1).join(' / ') || '.'}
@@ -1832,8 +1844,12 @@ export function CodeEditor({
 
         {/* Professional IDE Status Bar */}
         {activeFile && (
-          <div className="h-6 shrink-0 border-t border-line bg-base px-3 flex min-w-0 items-center justify-between gap-2 text-[10px] font-mono text-ink-4 select-none whitespace-nowrap">
+          <div className="h-6 shrink-0 border-t border-line bg-base-2/95 px-3 flex min-w-0 items-center justify-between gap-2 text-[10px] font-mono text-ink-4 select-none whitespace-nowrap">
             <div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap">
+              <span className="inline-flex items-center gap-1.5 shrink-0 text-ink-3">
+                <span className="h-1.5 w-1.5 rounded-full bg-ok shadow-[0_0_6px_var(--ok)]" />
+                Ready
+              </span>
               <span className="shrink-0">{lineCount} lines</span>
               <span className="hidden shrink-0 lg:inline">{charCount} chars</span>
               <span className="hidden shrink-0 xl:inline">~{tokenEst} tokens</span>
@@ -1879,13 +1895,13 @@ export function CodeEditor({
           onClick={() => onSelectFile(index)}
           title={file.name}
           className={`flex flex-1 min-w-0 items-center gap-1.5 rounded-md py-1 text-left transition-colors cursor-pointer ${
-            isActive ? 'bg-accent-soft text-ink' : 'text-ink-3 hover:bg-overlay'
+            isActive ? 'bg-accent-soft text-ink shadow-[inset_2px_0_0_var(--accent)]' : 'text-ink-3 hover:bg-overlay'
           }`}
           style={{ paddingLeft: `${8 + (depth + 1) * 14}px` }}
         >
           <FileCode2
             className={`w-3 h-3 shrink-0 ${
-              isActive ? 'text-accent' : 'text-ink-4 group-hover:text-ink-3'
+              isActive ? 'text-accent' : `${explorerIconColor(file.name)} group-hover:text-ink-2`
             }`}
           />
           <span className="font-mono text-[11px] truncate">{file.name.split('/').pop()}</span>
@@ -2018,14 +2034,14 @@ export function CodeEditor({
                 type="button"
                 onClick={() => index >= 0 ? onSelectFile(index) : onOpenPath?.(entry.path)}
                 title={entry.path}
-                className={`flex flex-1 min-w-0 items-center gap-1.5 rounded-md py-1 text-left transition-colors cursor-pointer ${isActive ? 'bg-accent-soft text-ink' : 'text-ink-3 hover:bg-overlay'}`}
+                className={`flex flex-1 min-w-0 items-center gap-1.5 rounded-md py-1 text-left transition-colors cursor-pointer ${isActive ? 'bg-accent-soft text-ink shadow-[inset_2px_0_0_var(--accent)]' : 'text-ink-3 hover:bg-overlay'}`}
                 style={{
                   paddingLeft: `${22 + depth * 14}px`,
                   contentVisibility: 'auto',
                   containIntrinsicSize: '24px'
                 }}
               >
-                <FileCode2 className={`w-3 h-3 shrink-0 ${isActive ? 'text-accent' : 'text-ink-4'}`} />
+                <FileCode2 className={`w-3 h-3 shrink-0 ${isActive ? 'text-accent' : explorerIconColor(entry.name)}`} />
                 <span className="font-mono text-[11px] truncate">{entry.name}</span>
                 {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-warn shrink-0" />}
               </button>

@@ -891,6 +891,11 @@ export default function App() {
             onSend={(pastedTexts, externalAttachments) =>
               orchestration.handleChatSend(undefined, pastedTexts, externalAttachments)
             }
+            userFirstName={
+              auth.user?.name?.trim().split(/\s+/)[0] ||
+              auth.user?.email?.split('@')[0] ||
+              null
+            }
             workspaceKey={workspace.workspace?.id ?? null}
             restorableMessageIds={orchestration.restorableMessageIds}
             restorableCheckpointTooltips={orchestration.restorableCheckpointTooltips}

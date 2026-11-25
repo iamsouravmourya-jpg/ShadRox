@@ -93,6 +93,7 @@ interface ChatPanelProps {
   input: string;
   onInputChange: (value: string) => void;
   onSend: (pastedTexts?: PastedText[], externalAttachments?: ExternalFileAttachment[]) => void;
+  userFirstName?: string | null;
   workspaceKey?: string | null;
   restorableMessageIds?: ReadonlySet<string>;
   restorableCheckpointTooltips?: Readonly<Record<string, string>>;
@@ -394,6 +395,7 @@ export function ChatPanel({
   input,
   onInputChange,
   onSend,
+  userFirstName = null,
   workspaceKey = null,
   restorableMessageIds,
   restorableCheckpointTooltips,
@@ -853,7 +855,7 @@ export function ChatPanel({
   return (
     <div className="relative h-full flex flex-col bg-base select-text">
       {/* Header */}
-      <header className="h-12 shrink-0 flex items-center justify-between gap-2 px-3 border-b border-line bg-surface/80">
+      <header className="h-12 shrink-0 flex items-center justify-between gap-2 px-3 border-b border-line bg-surface/95 backdrop-blur-xl">
         <button
           type="button"
           ref={modelTriggerRef}
@@ -1172,6 +1174,7 @@ export function ChatPanel({
         {messages.length === 0 && (
           <ChatEmptyState
             hasKey={hasKey}
+            userFirstName={userFirstName}
             onOpenSettings={() => onOpenSettings('CHAT')}
             onSelectStarter={(prompt) => {
               handleInputChange(prompt);
@@ -1240,13 +1243,13 @@ export function ChatPanel({
             )}
 
             {message.role === 'user' ? (
-              <div className="max-w-[88%] rounded-2xl rounded-br-sm border border-accent-line bg-accent-soft px-3.5 py-2.5 text-[12.5px] text-ink leading-relaxed whitespace-pre-wrap">
+              <div className="max-w-[88%] rounded-2xl rounded-br-sm border border-accent-line bg-accent-soft/85 px-3.5 py-2.5 text-[12.5px] text-ink leading-relaxed whitespace-pre-wrap shadow-[0_4px_20px_-8px_var(--glow)]">
                 {message.content}
               </div>
             ) : (
               <div
-                className={`w-full max-w-[98%] overflow-hidden rounded-2xl border bg-surface shadow-[var(--shadow-panel)] transition-colors ${
-                  message.streaming ? 'border-accent-line' : 'border-line'
+                className={`w-full max-w-[98%] overflow-hidden rounded-2xl border bg-surface/95 shadow-[var(--shadow-panel)] transition-colors ${
+                  message.streaming ? 'border-accent-line shadow-[0_0_24px_-10px_var(--glow)]' : 'border-line'
                 }`}
               >
                 {message.streaming && (
@@ -1880,7 +1883,7 @@ export function ChatPanel({
         {/* Prompt Input Box */}
         <div
           ref={composerBoxRef}
-          className="relative rounded-2xl border border-line-2 bg-surface shadow-[var(--shadow-panel)] transition-colors focus-within:border-accent-line"
+          className="relative rounded-2xl border border-line-2 bg-surface/95 shadow-[var(--shadow-panel)] transition-all focus-within:border-accent-line focus-within:shadow-[0_0_0_1px_var(--accent-line),0_12px_28px_-12px_var(--glow)]"
         >
           {skillMatches.length > 0 && (
             <div className="absolute bottom-full left-1 right-1 z-20 mb-2 overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-[var(--shadow-sheet)]">
@@ -2165,7 +2168,7 @@ export function ChatPanel({
                   onClick={submitDraft}
                   disabled={!canSend}
                   title="Send message (Enter)"
-                  className="flex h-7 whitespace-nowrap items-center gap-1.5 rounded-lg bg-accent-strong px-3.5 text-[11px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-35 cursor-pointer"
+                  className="flex h-7 whitespace-nowrap items-center gap-1.5 rounded-lg bg-accent-strong px-3.5 text-[11px] font-semibold text-white shadow-[0_2px_12px_var(--glow)] transition-all hover:brightness-110 disabled:opacity-35 disabled:shadow-none cursor-pointer"
                 >
                   <Send className="w-3 h-3" />
                   Send

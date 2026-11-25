@@ -1,5 +1,5 @@
 export interface ChatStarter {
-  id: 'explain' | 'fix' | 'plan' | 'refactor';
+  id: 'build' | 'explain' | 'optimize' | 'plan';
   title: string;
   subtitle: string;
   prompt: string;
@@ -7,28 +7,28 @@ export interface ChatStarter {
 
 export const CHAT_STARTERS: readonly ChatStarter[] = [
   {
+    id: 'build',
+    title: 'Build full-stack app',
+    subtitle: 'Scaffold routes, UI & APIs end-to-end',
+    prompt: 'Design and scaffold a clean full-stack feature in this workspace with types, UI, and tests.'
+  },
+  {
     id: 'explain',
     title: 'Explain this code',
     subtitle: 'Trace responsibilities & data flow',
     prompt: 'Explain how the active file works and trace its main data flow before suggesting any changes.'
   },
   {
-    id: 'fix',
-    title: 'Find & fix bugs',
-    subtitle: 'Check edge cases with minimal edits',
-    prompt: 'Inspect this workspace for bugs or edge cases, explain the root cause, and propose the smallest clean fix.'
+    id: 'optimize',
+    title: 'Optimize performance',
+    subtitle: 'Profile hot paths & reduce overhead',
+    prompt: 'Inspect the active module for bottlenecks, unnecessary re-renders, or edge cases and propose targeted improvements.'
   },
   {
     id: 'plan',
-    title: 'Plan an architecture change',
+    title: 'Create a project plan',
     subtitle: 'Step-by-step design before coding',
     prompt: 'Write a step-by-step implementation plan with file targets and risks first. Do not edit files yet.'
-  },
-  {
-    id: 'refactor',
-    title: 'Refactor for clarity',
-    subtitle: 'Simplify structure, keep behavior identical',
-    prompt: 'Refactor the selected code for readability and maintainability while keeping all existing behavior intact.'
   }
 ];
 

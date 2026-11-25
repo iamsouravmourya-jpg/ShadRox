@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ShadRox IDE — UI Concept</title>
+<style>
+:root{
+  --bg:#090812;--panel:#100e1d;--panel2:#151126;--panel3:#1b1630;
+  --line:rgba(166,126,255,.20);--line2:rgba(166,126,255,.34);
+  --text:#f4f0ff;--muted:#a49bbd;--purple:#a855f7;--purple2:#7c3aed;
+  --cyan:#55d9ff;--green:#32df91;--shadow:0 18px 60px rgba(0,0,0,.42);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer}
+.app{height:100vh;min-height:650px;display:grid;grid-template-rows:62px minmax(0,1fr) 34px;background:radial-gradient(ellipse at 75% 0%,#21113b 0%,transparent 34%),#090812}
+.topbar{display:flex;align-items:center;gap:18px;padding:0 18px;border-bottom:1px solid var(--line);background:rgba(13,11,24,.94);z-index:5}
+.brand{display:flex;align-items:center;gap:10px;font-size:17px;font-weight:750;letter-spacing:-.5px;white-space:nowrap}
+.logo{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;background:linear-gradient(145deg,#c084fc,#6d28d9);box-shadow:0 0 24px #9333ea66;font-weight:900;font-size:21px}
+.workspace{padding:7px 12px;border:1px solid var(--line);border-radius:10px;background:#171326;color:#ddd4f4;white-space:nowrap}
+.search{height:36px;max-width:470px;flex:1;margin:auto;display:flex;align-items:center;gap:10px;padding:0 13px;border:1px solid var(--line);border-radius:12px;background:#171326;color:var(--muted)}
+.search kbd{margin-left:auto;color:#bcb1d5;border:1px solid #55466d;border-radius:5px;padding:1px 5px;font-size:11px}
+.top-actions{display:flex;align-items:center;gap:9px}
+.pill,.icon-btn{height:36px;border:1px solid var(--line);border-radius:11px;background:#171326;color:#e9e2fa}
+.pill{padding:0 13px;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.icon-btn{width:36px;display:grid;place-items:center;font-size:17px}
+.icon-btn:hover,.pill:hover{border-color:var(--line2);background:#211938}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green)}
+.main{min-height:0;display:grid;grid-template-columns:56px 260px minmax(340px,1fr) 390px;gap:0}
+.activity{border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:13px;background:#0e0c19}
+.activity button{width:38px;height:38px;border:0;border-radius:11px;background:transparent;color:#9d93b7;font-size:18px}
+.activity button.active,.activity button:hover{background:#281747;color:#d8b4fe;box-shadow:inset 0 0 0 1px #9b5cf755}
+.activity .spacer{flex:1}
+.explorer{min-width:0;background:#100e1b;border-right:1px solid var(--line);display:flex;flex-direction:column}
+.panel-head{height:48px;padding:0 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);font-weight:650}
+.panel-head small{color:var(--muted);font-weight:500}
+.file-tree{padding:12px 9px;overflow:auto;color:#d9d2e9}
+.tree-row{height:32px;display:flex;align-items:center;gap:9px;padding:0 9px;border-radius:7px;white-space:nowrap}
+.tree-row:hover,.tree-row.selected{background:#24183a}
+.tree-row.indent{padding-left:27px}
+.folder{color:#c4a7ff}.file{color:#8bdcff}.muted{color:var(--muted)}
+.editor-area{min-width:0;display:grid;grid-template-rows:46px minmax(0,1fr) 26px;background:#0b0a14}
+.tabs{display:flex;align-items:stretch;border-bottom:1px solid var(--line);overflow:hidden}
+.tab{padding:0 16px;display:flex;align-items:center;gap:9px;border-right:1px solid var(--line);color:#aaa1bf;white-space:nowrap}
+.tab.active{color:#f4eaff;background:#171126;box-shadow:inset 0 -2px var(--purple)}
+.editor{overflow:auto;padding:22px 20px;font:14px/2.0 ui-monospace,SFMono-Regular,Consolas,monospace;color:#e9e2f7}
+.code-line{display:flex;min-width:500px}
+.ln{width:40px;flex:none;text-align:right;padding-right:20px;color:#625a77;user-select:none}
+.kw{color:#e879f9}.fn{color:#facc15}.tag{color:#67e8f9}.str{color:#a3e635}.comment{color:#779b65}
+.statusline{display:flex;align-items:center;justify-content:space-between;padding:0 13px;color:#9d94b5;border-top:1px solid var(--line);font-size:11px}
+.ai-panel{min-width:0;background:linear-gradient(180deg,#151027,#0e0c18);border-left:1px solid var(--line2);display:flex;flex-direction:column;position:relative}
+.ai-head{height:48px;display:flex;align-items:center;gap:18px;padding:0 15px;border-bottom:1px solid var(--line)}
+.ai-tab{height:100%;display:flex;align-items:center;gap:8px;color:#f1e8ff;font-weight:650;border-bottom:2px solid var(--purple)}
+.model{margin-left:auto;color:#c7b8e6;font-size:12px}
+.chat-scroll{flex:1;overflow:auto;padding:20px 17px;display:flex;flex-direction:column;gap:17px}
+.welcome{text-align:center;padding:25px 8px 12px;background:radial-gradient(ellipse at 50% 0%,#4c1d9560,transparent 70%)}
+.welcome-logo{margin:0 auto 14px;width:66px;height:66px;border-radius:20px;display:grid;place-items:center;font-size:40px;font-weight:900;background:linear-gradient(145deg,#35165d,#17102b);border:1px solid #7839bb;box-shadow:0 0 35px #9333ea55}
+.welcome h2{margin:0 0 5px;font-size:24px;letter-spacing:-.8px}.welcome h2 span{color:#c084fc}
+.welcome p{margin:0;color:#aaa0c1}
+.quick-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:22px}
+.quick{min-height:42px;padding:9px 10px;border:1px solid var(--line);border-radius:12px;background:#1b1530;color:#e7ddfa;text-align:left;font-size:12px}
+.quick:hover{border-color:#a855f7;background:#281b43}
+.chat-input{margin:0 15px 15px;border:1px solid var(--line2);border-radius:14px;background:#1a1530;padding:12px;box-shadow:var(--shadow)}
+.chat-input textarea{width:100%;height:46px;resize:none;background:transparent;border:0;outline:0;color:white;font:inherit}
+.input-bottom{display:flex;align-items:center;justify-content:space-between;color:#9d91b8}
+.send{border:0;border-radius:9px;width:34px;height:32px;background:linear-gradient(135deg,#c084fc,#7c3aed);font-size:16px}
+.bottom{height:100%;min-height:0;display:grid;grid-template-rows:39px minmax(0,1fr);border-top:1px solid var(--line2);background:#0d0b17;box-shadow:0 -12px 35px #0005}
+.terminal-head{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--line);color:#e9ddff}
+.terminal-tab{height:100%;display:flex;align-items:center;gap:8px;border-bottom:2px solid var(--purple);font-weight:650}
+.terminal-actions{margin-left:auto;display:flex;gap:15px;color:#a79bbd}
+.terminal-body{padding:12px 20px;overflow:auto;font:13px/1.9 ui-monospace,Consolas,monospace;color:#ddd6ed}
+.prompt{color:var(--green)}.terminal-muted{color:#8e86a3}
+.footer{display:flex;align-items:center;gap:9px;padding:0 14px;border-top:1px solid var(--line);background:#0c0a15;color:#c7bddb;font-size:12px}
+.footer .right{margin-left:auto;display:flex;gap:18px}
+.settings-wrap{position:relative}
+.settings-menu{position:absolute;right:0;top:44px;width:235px;padding:7px;background:#171326;border:1px solid #7550a6;border-radius:13px;box-shadow:0 18px 55px #000a;display:none;z-index:20}
+.settings-menu.open{display:block;animation:pop .12s ease-out}
+@keyframes pop{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
+.menu-item{display:flex;align-items:center;gap:11px;width:100%;padding:10px;border:0;border-radius:8px;background:transparent;text-align:left;color:#e9e1f7}
+.menu-item:hover{background:#2a1b43}.menu-icon{width:20px;text-align:center;color:#c084fc}
+.menu-sep{height:1px;background:var(--line);margin:6px 4px}
+.toast{position:fixed;bottom:48px;right:20px;padding:11px 15px;border:1px solid var(--line2);border-radius:10px;background:#211735;color:#eee4ff;box-shadow:var(--shadow);opacity:0;transform:translateY(8px);pointer-events:none;transition:.2s;z-index:30}
+.toast.show{opacity:1;transform:translateY(0)}
+@media(max-width:1100px){.main{grid-template-columns:48px 210px minmax(280px,1fr) 330px}.search{max-width:300px}.workspace{display:none}}
+@media(max-width:800px){body{overflow:auto}.app{height:auto;min-height:100vh;grid-template-rows:58px auto 34px}.main{grid-template-columns:44px 180px minmax(300px,1fr);min-height:620px}.ai-panel{grid-column:2/4;min-height:450px;border-top:1px solid var(--line)}.bottom{min-height:180px}.top-actions .pill{display:none}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand"><div class="logo">S</div>ShadRox</div>
+    <button class="workspace" onclick="notify('Workspace switcher')">LernexAI Workspace⌄</button>
+    <div class="search">⌕ <span>Search files, commands...</span><kbd>Ctrl + K</kbd></div>
+    <div class="top-actions">
+      <button class="pill" onclick="toggleAutoSave(this)"><span class="dot"></span><span>AUTO-SAVE ON</span></button>
+      <button class="pill" onclick="notify('Preview opened')">▷ &nbsp;Preview</button>
+      <button class="icon-btn" title="Source control" onclick="notify('Source control')">⑂</button>
+      <div class="settings-wrap">
+        <button class="icon-btn" id="settingsButton" title="Settings" aria-label="Open settings">⚙</button>
+        <div class="settings-menu" id="settingsMenu">
+          <button class="menu-item" onclick="openSetting('Settings')"><span class="menu-icon">⚙</span>Settings <span style="margin-left:auto;color:#9388aa;font-size:11px">Ctrl + ,</span></button>
+          <button class="menu-item" onclick="openSetting('BYOK & Models')"><span class="menu-icon">♧</span>BYOK &amp; Models</button>
+          <button class="menu-item" onclick="openSetting('Appearance')"><span class="menu-icon">◐</span>Appearance <span style="margin-left:auto;color:#9388aa">›</span></button>
+          <button class="menu-item" onclick="openSetting('Tools & Features')"><span class="menu-icon">⌘</span>Tools &amp; Features</button>
+          <button class="menu-item" onclick="openSetting('Extensions')"><span class="menu-icon">▧</span>Extensions</button>
+          <div class="menu-sep"></div>
+          <button class="menu-item" onclick="openSetting('About ShadRox')"><span class="menu-icon">ⓘ</span>About ShadRox</button>
+          <button class="menu-item" onclick="openSetting('Check for Updates')"><span class="menu-icon">↻</span>Check for Updates</button>
+          <button class="menu-item" onclick="openSetting('Feedback')"><span class="menu-icon">✧</span>Feedback</button>
+          <button class="menu-item" onclick="openSetting('Exit')"><span class="menu-icon">⇥</span>Exit</button>
+        </div>
+      </div>
+      <button class="icon-btn" title="Notifications" onclick="notify('No new notifications')">♧</button>
+      <button class="icon-btn" title="Window minimize" onclick="notify('Window controls are demo only')">—</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <nav class="activity">
+      <button class="active" title="Explorer">▣</button><button title="Search" onclick="notify('Search panel')">⌕</button><button title="Source Control" onclick="notify('Source control panel')">⑂</button><button title="Run" onclick="notify('Run and debug')">▷</button><button title="Extensions" onclick="openSetting('Extensions')">▧</button>
+      <div class="spacer"></div><button title="Settings" onclick="toggleSettings()">⚙</button>
+    </nav>
+    <aside class="explorer">
+      <div class="panel-head"><span>EXPLORER</span><small>＋</small></div>
+      <div class="file-tree">
+        <div class="tree-row"><span>⌄</span><strong>LernexAI</strong></div>
+        <div class="tree-row indent"><span class="muted">›</span><span class="folder">▰</span>.next</div>
+        <div class="tree-row indent"><span class="muted">›</span><span class="folder">▰</span>app</div>
+        <div class="tree-row indent"><span class="muted">›</span><span class="folder">▰</span>components</div>
+        <div class="tree-row indent"><span class="muted">›</span><span class="folder">▰</span>lib</div>
+        <div class="tree-row indent"><span class="muted">›</span><span class="folder">▰</span>public</div>
+        <div class="tree-row indent"><span class="muted">›</span><span class="folder">▰</span>styles</div>
+        <div class="tree-row indent"><span class="file">⚙</span>.env.local</div>
+        <div class="tree-row indent"><span class="file">JS</span>next.config.js</div>
+        <div class="tree-row indent"><span class="file">{} </span>package.json</div>
+        <div class="tree-row indent"><span class="file">TS</span>tsconfig.json</div>
+        <div class="tree-row indent selected"><span class="file">▤</span>README.md</div>
+      </div>
+    </aside>
+
+    <section class="editor-area">
+      <div class="tabs"><div class="tab active"><span style="color:#69c9ff">✿</span>page.tsx　×</div><div class="tab">◇ layout.tsx</div><div class="tab">◇ globals.css</div><div class="tab">＋</div></div>
+      <div class="editor">
+        <div class="code-line"><span class="ln">1</span><span><span class="kw">export default function</span> <span class="fn">Home</span>() {</span></div>
+        <div class="code-line"><span class="ln">2</span><span>　<span class="kw">return</span> (</span></div>
+        <div class="code-line"><span class="ln">3</span><span>　　<span class="tag">&lt;div</span> className=<span class="str">"min-h-screen"</span><span class="tag">&gt;</span></span></div>
+        <div class="code-line"><span class="ln">4</span><span>　　　<span class="tag">&lt;HeroSection /&gt;</span></span></div>
+        <div class="code-line"><span class="ln">5</span><span>　　　<span class="tag">&lt;Features /&gt;</span></span></div>
+        <div class="code-line"><span class="ln">6</span><span>　　　<span class="tag">&lt;Testimonials /&gt;</span></span></div>
+        <div class="code-line"><span class="ln">7</span><span>　　　<span class="tag">&lt;CTASection /&gt;</span></span></div>
+        <div class="code-line"><span class="ln">8</span><span>　　<span class="tag">&lt;/div&gt;</span></span></div>
+        <div class="code-line"><span class="ln">9</span><span>　);</span></div>
+        <div class="code-line"><span class="ln">10</span><span>}</span></div>
+        <div class="code-line"><span class="ln">11</span><span></span></div>
+        <div class="code-line"><span class="ln">12</span><span class="comment">// Built with ♥ using ShadRox</span></div>
+      </div>
+      <div class="statusline"><span>Ln 1, Col 1　 Spaces: 2　 UTF-8　 LF</span><span>TypeScript JSX</span></div>
+    </section>
+
+    <aside class="ai-panel">
+      <div class="ai-head"><div class="ai-tab">✦ AI Assistant</div><span class="model">GPT-4.1 Mini⌄</span></div>
+      <div class="chat-scroll">
+        <div class="welcome">
+          <div class="welcome-logo">S</div>
+          <h2>Hello, <span>Builder</span> 👋</h2>
+          <p>What do you want to build today?</p>
+          <div class="quick-grid">
+            <button class="quick" onclick="fillPrompt('Generate a full-stack app')">🚀 Generate a full-stack app</button>
+            <button class="quick" onclick="fillPrompt('Explain this code')">▣ Explain this code</button>
+            <button class="quick" onclick="fillPrompt('Optimize performance')">ϟ Optimize performance</button>
+            <button class="quick" onclick="fillPrompt('Create a project plan')">▧ Create a project plan</button>
+          </div>
+        </div>
+      </div>
+      <div class="chat-input">
+        <textarea id="prompt" placeholder="Ask ShadRox AI anything..."></textarea>
+        <div class="input-bottom"><span>＠　⌁　▧</span><button class="send" onclick="sendPrompt()">➤</button></div>
+      </div>
+    </aside>
+  </main>
+
+  <section class="bottom">
+    <div class="terminal-head"><div class="terminal-tab">▣ &nbsp;Terminal</div><span style="color:#a99fba">＋</span><div class="terminal-actions"><span>—</span><span>×</span></div></div>
+    <div class="terminal-body"><div><span class="prompt">➜　LernexAI git:(main)</span>　npm run dev</div><div class="terminal-muted">&gt; lernexai@0.1.0 dev</div><div class="terminal-muted">&gt; next dev</div><br><div><span class="prompt">✓</span>　Ready in 800ms</div><div><span class="prompt">➜</span>　Local:　　http://localhost:3000</div><div><span class="prompt">➜</span>　Network:　http://192.168.1.10:3000</div></div>
+  </section>
+  <footer class="footer"><span class="dot"></span>Ready <div class="right"><span>☁ &nbsp;ShadRox v0.1.4</span><strong style="color:#c084fc">Free</strong></div></footer>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const menu=document.getElementById('settingsMenu');
+const settingsButton=document.getElementById('settingsButton');
+function toggleSettings(){menu.classList.toggle('open')}
+settingsButton.addEventListener('click',e=>{e.stopPropagation();toggleSettings()});
+document.addEventListener('click',e=>{if(!e.target.closest('.settings-wrap'))menu.classList.remove('open')});
+document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key===','){e.preventDefault();menu.classList.toggle('open')}if(e.key==='Escape')menu.classList.remove('open')});
+function notify(message){const t=document.getElementById('toast');t.textContent=message;t.classList.add('show');clearTimeout(window.toastTimer);window.toastTimer=setTimeout(()=>t.classList.remove('show'),2200)}
+function openSetting(name){menu.classList.remove('open');notify(name+' panel — UI demo')}
+function toggleAutoSave(button){const label=button.querySelector('span:last-child');const on=label.textContent.includes('ON');label.textContent=on?'AUTO-SAVE OFF':'AUTO-SAVE ON';button.querySelector('.dot').style.background=on?'#9388aa':'var(--green)';notify('Auto-save '+(on?'disabled':'enabled'))}
+function fillPrompt(value){document.getElementById('prompt').value=value}
+function sendPrompt(){const input=document.getElementById('prompt');if(!input.value.trim()){notify('Type a message first');return}notify('Chat interaction is a visual demo');input.value=''}
+</script>
+</body>
+</html>

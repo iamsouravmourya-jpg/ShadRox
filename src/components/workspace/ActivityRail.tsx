@@ -30,16 +30,16 @@ export function ActivityRail({
   onSignOut
 }: ActivityRailProps) {
   return (
-    <nav className="relative order-first flex w-full shrink-0 items-center gap-1 border-b border-line bg-surface/60 px-2 py-1.5 md:h-auto md:w-12 md:flex-col md:border-b-0 md:border-r md:px-0 md:py-2">
+    <nav className="relative order-first flex w-full shrink-0 items-center gap-1.5 border-b border-line bg-base-2/95 px-2 py-1.5 md:h-auto md:w-12 md:flex-col md:border-b-0 md:border-r md:px-0 md:py-2.5">
       <button
         type="button"
         onClick={onSelectWorkspaceView}
         aria-pressed={!isPreviewOpen && !isSearchPanelOpen && !isScmPanelOpen}
         title="Open the code workspace"
-        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-colors cursor-pointer ${
+        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-all cursor-pointer ${
           !isPreviewOpen && !isSearchPanelOpen && !isScmPanelOpen
-            ? 'border-accent-line bg-accent-soft text-accent'
-            : 'border-transparent text-ink-4 hover:bg-overlay-2 hover:text-ink'
+            ? 'border-accent-line bg-accent-soft text-accent shadow-[0_0_16px_var(--glow)]'
+            : 'border-transparent text-ink-4 hover:bg-surface-2 hover:text-ink'
         }`}
       >
         <FolderTree className="h-[18px] w-[18px]" />
@@ -49,10 +49,10 @@ export function ActivityRail({
         onClick={onSelectPreviewView}
         aria-pressed={isPreviewOpen}
         title="Show preview"
-        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-colors cursor-pointer ${
+        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-all cursor-pointer ${
           isPreviewOpen
-            ? 'border-accent-line bg-accent-soft text-accent'
-            : 'border-transparent text-ink-4 hover:bg-overlay-2 hover:text-ink'
+            ? 'border-accent-line bg-accent-soft text-accent shadow-[0_0_16px_var(--glow)]'
+            : 'border-transparent text-ink-4 hover:bg-surface-2 hover:text-ink'
         }`}
       >
         <MonitorPlay className="h-[18px] w-[18px]" />
@@ -62,10 +62,10 @@ export function ActivityRail({
         onClick={onToggleSearchPanel}
         aria-pressed={isSearchPanelOpen}
         title={isSearchPanelOpen ? 'Close search' : 'Search in files'}
-        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-colors cursor-pointer ${
+        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-all cursor-pointer ${
           isSearchPanelOpen
-            ? 'border-accent-line bg-accent-soft text-accent'
-            : 'border-transparent text-ink-4 hover:bg-overlay-2 hover:text-ink'
+            ? 'border-accent-line bg-accent-soft text-accent shadow-[0_0_16px_var(--glow)]'
+            : 'border-transparent text-ink-4 hover:bg-surface-2 hover:text-ink'
         }`}
       >
         <Search className="h-[18px] w-[18px]" />
@@ -75,10 +75,10 @@ export function ActivityRail({
         onClick={onToggleScmPanel}
         aria-pressed={isScmPanelOpen}
         title={isScmPanelOpen ? 'Close source control' : 'Source control'}
-        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-colors cursor-pointer ${
+        className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-all cursor-pointer ${
           isScmPanelOpen
-            ? 'border-accent-line bg-accent-soft text-accent'
-            : 'border-transparent text-ink-4 hover:bg-overlay-2 hover:text-ink'
+            ? 'border-accent-line bg-accent-soft text-accent shadow-[0_0_16px_var(--glow)]'
+            : 'border-transparent text-ink-4 hover:bg-surface-2 hover:text-ink'
         }`}
       >
         <GitBranch className="h-[18px] w-[18px]" />

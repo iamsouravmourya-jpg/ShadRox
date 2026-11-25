@@ -891,7 +891,7 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
         </div>
       </div>
 
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-base px-2">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-base-2/95 px-2">
         <div role="tablist" aria-label="Terminal sessions" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {sessionsState.sessions.map((session) => {
             const isActive = session.key === sessionsState.activeKey;
@@ -900,8 +900,10 @@ export function TerminalPanel({ desktop, workspaceId, workspaceName, onClose }: 
                 key={session.key}
                 role="tab"
                 aria-selected={isActive}
-                className={`flex h-6 shrink-0 items-center gap-1 rounded border px-1.5 text-[10px] font-mono ${
-                  isActive ? 'border-ok/30 bg-ok/10 text-ok' : 'border-line bg-overlay text-ink-4 hover:text-ink-3'
+                className={`flex h-6 shrink-0 items-center gap-1 rounded border px-1.5 text-[10px] font-mono transition-colors ${
+                  isActive
+                    ? 'border-accent-line bg-accent-soft text-ink shadow-[inset_0_-2px_0_var(--accent-strong)]'
+                    : 'border-line bg-overlay text-ink-4 hover:text-ink-3'
                 }`}
                 tabIndex={isActive ? 0 : -1}
                 onKeyDown={(event) => {
