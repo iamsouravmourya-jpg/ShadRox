@@ -76,3 +76,35 @@ test('preview:start still returns selection-required when multiple nested projec
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('preview:start normalizes ready responses when runtime or static preview omits status', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shadrox-prev-norm-'));
+  try {
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'root-app', scripts: { dev: 'vite' } }));
+    const handlers = new Map();
+    registerPreviewRuntimeHandlers({
+      BrowserWindow: { fromWebContents: () => null },
+      dialog: { showMessageBox: async () => ({ response: 1 }), showSaveDialog: async () => ({ canceled: true }) },
+      ipcMain: { handle: (channel, fn) => handlers.set(channel, fn) },
+      handleMachineSensitive: (channel, fn) => handlers.set(channel, fn),
+      assertTrustedRenderer: () => {},
+      workspaceAccess: { getWorkspace: () => ({ root, mode: 'folder' }) },
+      previewRuntime: {
+        start: async () => ({ url: 'http://127.0.0.1:5173/', port: 5173, script: 'dev', hmr: true }),
+        stop: async () => true,
+        getStatus: () => ({ status: 'idle', url: null }),
+        startPlan: async () => ({ url: 'http://127.0.0.1:3001/' }),
+        stopBackend: async () => true
+      },
+      startProtocolPreview: async () => ({ url: 'shadrox-preview://ws/index.html', script: 'static' }),
+      runPreviewAssertion: async () => ({ ok: true }),
+      getMainWindow: () => ({ webContents: { send: () => {} } })
+    });
+    const result = await handlers.get('preview:start')({ sender: {} }, 'ws', {});
+    assert.equal(result.status, 'ready');
+    assert.equal(result.url, 'http://127.0.0.1:5173/');
+    assert.equal(result.port, 5173);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

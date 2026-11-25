@@ -231,15 +231,17 @@ export const PreviewPane = memo(function PreviewPane({
   const setLocalFrameRef = useCallback((node: HTMLIFrameElement | null) => {
     previewFrameRef.current = node;
   }, []);
+  const safeLocalLogs = Array.isArray(localPreviewLogs) ? localPreviewLogs : [];
+  const safePreviewProjects = Array.isArray(previewProjects) ? previewProjects : [];
   const displayedLogs = localPreviewAvailable
-    ? localPreviewLogs.map((entry) => ({
+    ? safeLocalLogs.map((entry) => ({
         type: entry.type === 'stderr' || entry.type === 'error' ? 'error' as const
           : 'log' as const,
         message: entry.message,
         timestamp: new Date().toLocaleTimeString('en-US', { hour12: false })
       }))
     : logs;
-  const previewStartMessage = [...localPreviewLogs].reverse().find((entry) => entry.type === 'status')?.message;
+  const previewStartMessage = [...safeLocalLogs].reverse().find((entry) => entry.type === 'status')?.message;
 
   // Drives the split layout. BackendPreview owns runtime detection and reports
   // whether a backend plan exists; the frontend preview stays full-width until
@@ -541,19 +543,23 @@ export const PreviewPane = memo(function PreviewPane({
             frameRef={setLocalFrameRef}
             onFramePaint={onFramePaint}
           />
-        ) : localPreviewAvailable && previewProjects.length > 0 ? (
+        ) : localPreviewAvailable && safePreviewProjects.length > 0 ? (
           <div className="w-full max-w-xl self-center px-6 py-8">
             <div className="flex items-center gap-2 text-sm text-ink font-medium">
               <FolderOpen className="w-4 h-4 text-accent" />
               Choose a folder to preview
             </div>
             <p className="mt-2 text-xs text-ink-4">
-              {previewProjects[0]?.kind === 'static'
+              {safePreviewProjects[0]?.kind === 'static'
                 ? 'Choose the nested static website folder to serve through ShadRox.'
                 : 'More than one runnable app was found in this workspace.'}
             </p>
             <div className="mt-4 space-y-2">
-              {previewProjects.map((project) => (
+              {safePreviewProjects.map((project) => {
+                const missingDeps = project.kind === 'node' && Array.isArray(project.missingDependencies)
+                  ? project.missingDependencies
+                  : [];
+                return (
                 <button
                   key={`${project.kind}:${project.projectPath}`}
                   type="button"
@@ -567,8 +573,8 @@ export const PreviewPane = memo(function PreviewPane({
                         {project.packageManager} run {project.scriptName} · {project.scriptCommand}
                       </span>
                       <span className="mt-1 block text-[10px] text-ink-4">
-                        {project.missingDependencies.length > 0
-                          ? `${project.missingDependencies.length} dependency package(s) will be installed when it starts`
+                        {missingDeps.length > 0
+                          ? `${missingDeps.length} dependency package(s) will be installed when it starts`
                           : 'Dependencies appear to be installed'}
                       </span>
                     </>
@@ -576,7 +582,8 @@ export const PreviewPane = memo(function PreviewPane({
                     <span className="mt-1 block text-[11px] text-ink-3">Static website · served locally without running a project script</span>
                   )}
                 </button>
-              ))}
+                );
+              })}
             </div>
             <button type="button" onClick={onCancelProjectSelection} className="mt-3 text-[11px] text-ink-4 hover:text-ink">Cancel</button>
           </div>

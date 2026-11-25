@@ -2199,14 +2199,14 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
             lines.push(`preview runId: ${currentRunId}`);
           }
           if (runtimeStatus) {
-            lines.push(`status: ${runtimeStatus.status}`);
+            lines.push(`status: ${runtimeStatus.status ?? 'unknown'}`);
             if (runtimeStatus.url) lines.push(`url: ${runtimeStatus.url}`);
             if (typeof runtimeStatus.port === 'number') lines.push(`port: ${runtimeStatus.port}`);
             if (runtimeStatus.script) lines.push(`script: ${runtimeStatus.script}`);
             if (typeof runtimeStatus.hmr === 'boolean') lines.push(`hmr: ${runtimeStatus.hmr ? 'on' : 'off'}`);
             if (runtimeStatus.backendUrl) lines.push(`backend: ${runtimeStatus.backendUrl}${typeof runtimeStatus.backendPort === 'number' ? ` (port ${runtimeStatus.backendPort})` : ''}`);
             if (runtimeStatus.lastError) lines.push(`lastError: ${runtimeStatus.lastError}`);
-            if (runtimeStatus.recentOutput && runtimeStatus.recentOutput.trim()) {
+            if (typeof runtimeStatus.recentOutput === 'string' && runtimeStatus.recentOutput.trim()) {
               // Only the latest run's last 30 lines — stale crash history from previous runs is not shown.
               const allLines = runtimeStatus.recentOutput.trim().split(/\r?\n/);
               const latest = allLines.slice(-30);
@@ -2214,28 +2214,78 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
             }
           }
           if (runtimeVerdict) {
-            lines.push(`runtime verdict: ${runtimeVerdict.ok ? 'healthy (no console/runtime errors)' : `${runtimeVerdict.errorCount} error(s)${runtimeVerdict.detail ? ` — ${runtimeVerdict.detail}` : ''}`}`);
+            const consoleErrors = Array.isArray(runtimeVerdict.consoleErrors) ? runtimeVerdict.consoleErrors : [];
+            const failedSelectors = Array.isArray(runtimeVerdict.failedSelectors) ? runtimeVerdict.failedSelectors : [];
+            const warningSelectors = Array.isArray(runtimeVerdict.warningSelectors) ? runtimeVerdict.warningSelectors : [];
+            const errorCount = typeof runtimeVerdict.errorCount === 'number' ? runtimeVerdict.errorCount : consoleErrors.length;
+            lines.push(`runtime verdict: ${runtimeVerdict.ok ? 'healthy (no console/runtime errors)' : `${errorCount} error(s)${runtimeVerdict.detail ? ` — ${runtimeVerdict.detail}` : ''}`}`);
+            if (consoleErrors.length > 0) {
+              lines.push(`console errors: ${consoleErrors.slice(0, 5).map((entry) => String(entry)).join(' | ')}`);
+            }
+            if (failedSelectors.length > 0) {
+              lines.push(`failed selectors: ${failedSelectors.map((entry) => String(entry)).join(', ')}`);
+            }
+            if (warningSelectors.length > 0) {
+              lines.push(`warning selectors: ${warningSelectors.map((entry) => String(entry)).join(', ')}`);
+            }
           }
           return { ok: true, content: clip(lines.join('\n')) };
         }
         if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
           window.dispatchEvent(new CustomEvent(PREVIEW_AGENT_CONTROL_EVENT, { detail: { action } }));
         }
-        if (action === 'stop' || action === 'restart') await desktop.stopPreview(workspaceId);
+        if (action === 'stop' || action === 'restart') {
+          if (typeof desktop.stopPreview === 'function') {
+            await desktop.stopPreview(workspaceId);
+          }
+        }
         if (action === 'restart') nextPreviewRunId(workspaceId);
         if (action === 'stop') {
           return { ok: true, content: 'Preview stopped; the pane is idle. Use preview_control start to run it again.' };
         }
         if (action === 'start') nextPreviewRunId(workspaceId);
-        const result = await desktop.startPreview(workspaceId);
-        if (result.status === 'ready') {
-          return { ok: true, content: `Preview ready at ${result.url} (script: ${result.script}${result.hmr ? ', HMR on' : ''}). The preview pane now points at this URL.` };
+        if (typeof desktop.startPreview !== 'function') {
+          return { ok: false, content: 'Preview start channel is unavailable in this build.', error: 'preview start unavailable' };
+        }
+        const rawResult = await desktop.startPreview(workspaceId);
+        if (!rawResult || typeof rawResult !== 'object') {
+          return { ok: false, content: 'Preview start returned no result.', error: 'invalid preview start result' };
+        }
+        const result = rawResult as Record<string, unknown>;
+        if (result.status === 'ready' || (!result.status && typeof result.url === 'string' && result.url.length > 0)) {
+          const url = typeof result.url === 'string' ? result.url : '';
+          const scriptLabel = typeof result.script === 'string' && result.script ? result.script : 'unknown';
+          const portNote = typeof result.port === 'number' ? `, port ${result.port}` : '';
+          return {
+            ok: true,
+            content: `Preview ready at ${url} (script: ${scriptLabel}${portNote}${result.hmr ? ', HMR on' : ''}). The preview pane now points at this URL.`
+          };
         }
         if (result.status === 'approval-required') {
           return { ok: false, content: 'Preview start is waiting on the user’s install/run consent dialog. Ask them to approve it (or press Run project in the preview pane); nothing started yet.', error: 'preview approval required', refused: true };
         }
-        const names = result.projects.map((project) => project.projectPath).join(', ');
-        return { ok: false, content: `More than one preview project found (${names}). Ask the user which to run, or pick one in the preview pane; nothing started yet.`, error: 'preview selection required' };
+        if (result.status === 'selection-required') {
+          const projects = Array.isArray(result.projects) ? result.projects : [];
+          const names = projects
+            .map((project) => (project && typeof (project as { projectPath?: unknown }).projectPath === 'string'
+              ? (project as { projectPath: string }).projectPath
+              : ''))
+            .filter(Boolean)
+            .join(', ');
+          return {
+            ok: false,
+            content: names
+              ? `More than one preview project found (${names}). Ask the user which to run, or pick one in the preview pane; nothing started yet.`
+              : 'More than one preview project found, but project paths were unavailable. Pick one in the preview pane; nothing started yet.',
+            error: 'preview selection required'
+          };
+        }
+        const detail = typeof result.error === 'string' && result.error
+          ? result.error
+          : typeof result.message === 'string' && result.message
+            ? result.message
+            : `Preview failed to start (unexpected status: ${String(result.status ?? 'unknown')}).`;
+        return { ok: false, content: detail, error: detail };
       }
       case 'terminal_state': {
         const summary = terminalStateManager.getSummary();

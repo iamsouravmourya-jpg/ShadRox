@@ -21,14 +21,15 @@ import { usePreviewSync } from './usePreviewSync';
 
 /** Keep only entries matching the highest active previewRunId so stale run logs never bleed into context. */
 export function filterLogsForLatestPreviewRun(logs: DesktopPreviewOutput[]): DesktopPreviewOutput[] {
+  if (!Array.isArray(logs)) return [];
   let latestRunId = 0;
   for (const entry of logs) {
-    if (typeof entry.previewRunId === 'number' && Number.isFinite(entry.previewRunId) && entry.previewRunId > latestRunId) {
+    if (entry && typeof entry.previewRunId === 'number' && Number.isFinite(entry.previewRunId) && entry.previewRunId > latestRunId) {
       latestRunId = entry.previewRunId;
     }
   }
   if (latestRunId <= 0) return logs;
-  return logs.filter((entry) => entry.previewRunId === latestRunId);
+  return logs.filter((entry) => entry && entry.previewRunId === latestRunId);
 }
 
 export interface UseLocalPreviewControllerOptions {
@@ -274,9 +275,12 @@ export function useLocalPreviewController({
           : project ? { projectPath: project.projectPath, projectKind: project.kind, approved: false } : undefined
       );
       if (attempt !== previewStartAttemptRef.current) return;
+      if (!result || typeof result !== 'object') {
+        throw new Error('Preview failed to return a start result.');
+      }
       if (result.status === 'selection-required') {
         previewActiveRef.current = false;
-        setPreviewProjects(result.projects);
+        setPreviewProjects(Array.isArray(result.projects) ? result.projects : []);
         setLocalRuntime({ status: 'idle', url: null });
         return;
       }
@@ -284,6 +288,9 @@ export function useLocalPreviewController({
         previewActiveRef.current = false;
         setLocalRuntime({ status: 'idle', url: null });
         return;
+      }
+      if (typeof result.url !== 'string' || !result.url) {
+        throw new Error('Preview did not return a local URL.');
       }
       setPreviewProjects([]);
       setLocalRuntime({
@@ -341,13 +348,15 @@ export function useLocalPreviewController({
   }, [desktop, desktopBridge, nativeWorkspaceId]);
 
   const previewDiagnostics = useMemo(() => {
-    const latestLogs = filterLogsForLatestPreviewRun(localRuntimeLogs);
+    const latestLogs = filterLogsForLatestPreviewRun(Array.isArray(localRuntimeLogs) ? localRuntimeLogs : []);
+    const safeSecrets = Array.isArray(secrets) ? secrets : [];
     const entries = latestLogs.slice(-50).map((entry) => {
-      const safeMessage = secrets.reduce(
-        (message, secret) => secret.value ? message.split(secret.value).join('[REDACTED]') : message,
-        entry.message
+      const rawMessage = typeof entry?.message === 'string' ? entry.message : String(entry?.message ?? '');
+      const safeMessage = safeSecrets.reduce(
+        (message, secret) => secret?.value ? message.split(secret.value).join('[REDACTED]') : message,
+        rawMessage
       );
-      return `[${entry.type}] ${safeMessage.slice(0, 1600)}`;
+      return `[${entry?.type ?? 'log'}] ${safeMessage.slice(0, 1600)}`;
     });
     return entries.join('\n').slice(-12000);
   }, [localRuntimeLogs, secrets]);
@@ -441,12 +450,14 @@ export function useLocalPreviewController({
   const handleDismissPreviewError = useCallback(() => setRuntimeError(null), []);
   const handleBrowserConsoleLog = useCallback(
     (entries: { type: string; message: string }[]) => {
+      const safeEntries = Array.isArray(entries) ? entries : [];
+      if (safeEntries.length === 0) return;
       const previewRunId = activeRemoteRunIdRef.current ?? currentPreviewRunIdRef.current;
       setLocalRuntimeLogs((previous) => [
-        ...previous,
-        ...entries.map((entry) => ({
-          type: entry.type as DesktopPreviewOutput['type'],
-          message: entry.message,
+        ...(Array.isArray(previous) ? previous : []),
+        ...safeEntries.map((entry) => ({
+          type: (entry?.type ?? 'console') as DesktopPreviewOutput['type'],
+          message: typeof entry?.message === 'string' ? entry.message : String(entry?.message ?? ''),
           workspaceId: nativeWorkspaceId ?? '',
           previewRunId
         }))
