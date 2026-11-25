@@ -155,6 +155,10 @@ export function detectIntentToolBundles(input: TurnIntentInput): Set<ToolBundleC
   if ((input.activeJobCount ?? 0) > 0) bundles.add('jobs');
   if (input.terminalAwaitingInput) bundles.add('terminal');
   if (input.multiFileSignal) bundles.add('apply_patch');
+  // Multi-file / multi-module work is exactly when parallel read-only scouts pay
+  // off: auto-enable the interaction bundle (spawn_subagent) without bloating the
+  // lean core bundle every other execution turn carries.
+  if (input.multiFileSignal) bundles.add('interaction');
 
   for (const [bundle, pattern] of BUNDLE_RULES) {
     if (!pattern.test(prompt)) continue;

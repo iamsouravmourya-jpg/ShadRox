@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import type { ChatMessage } from '../../lib/types';
 import { dedupePaths } from '../../lib/paths';
+import { MAX_CONCURRENT_SUBAGENTS } from '../../lib/agent/subagent';
 import { formatToolDuration, summarizeToolActivity } from './chatUx';
 
 const ORCHESTRATION_STATUS: Record<string, { label: string; tone: string }> = {
@@ -608,6 +609,84 @@ export function ToolActivityFeed({ tools, streaming }: { tools: NonNullable<Chat
               tool={tool}
               isLiveActive={Boolean(streaming && index === tools.length - 1)}
             />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export interface SubagentActivityItem {
+  id: string;
+  label: string;
+  status: 'running' | 'done' | 'error';
+  summary?: string;
+}
+
+/**
+ * Live "Subagents (N/2)" group: shows a spinner per running scout and an
+ * expandable file:line summary once each finishes. Fed by SUBAGENT_EVENT.
+ */
+export function SubagentActivityFeed({ items, streaming }: { items: SubagentActivityItem[]; streaming?: boolean }) {
+  const [expanded, setExpanded] = useState(Boolean(streaming));
+  useEffect(() => {
+    if (streaming) setExpanded(true);
+  }, [streaming]);
+  if (items.length === 0) return null;
+  const running = items.filter((item) => item.status === 'running').length;
+  const done = items.filter((item) => item.status === 'done').length;
+  const failed = items.filter((item) => item.status === 'error').length;
+
+  return (
+    <div className="mb-3 overflow-hidden rounded-xl border border-line bg-surface-2/70 text-[11px]">
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        className="flex w-full cursor-pointer items-center justify-between gap-2 px-2.5 py-2 text-left transition-colors hover:bg-surface-2"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="grid size-5 shrink-0 place-items-center rounded-md border border-line bg-surface text-accent">
+            {running > 0 ? <Loader2 className="h-3 w-3 animate-spin" /> : <Users className="h-3 w-3" />}
+          </span>
+          <span className="truncate font-medium text-ink">
+            Subagents ({running}/{MAX_CONCURRENT_SUBAGENTS})
+          </span>
+          {done > 0 && (
+            <span className="shrink-0 rounded-md border border-ok/30 bg-ok/10 px-1.5 py-px font-mono text-[9.5px] text-ok">
+              {done} done
+            </span>
+          )}
+          {failed > 0 && (
+            <span className="shrink-0 rounded-md border border-danger/30 bg-danger/10 px-1.5 py-px font-mono text-[9.5px] text-danger">
+              {failed} failed
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2 font-mono text-[10px] text-ink-4">
+          <ChevronRight className={`h-3.5 w-3.5 text-ink-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="max-h-64 overflow-y-auto border-t border-line bg-surface/50">
+          {items.map((item) => (
+            <div key={item.id} className="flex items-start gap-2 border-b border-line/40 px-2.5 py-2 last:border-b-0">
+              <span className="mt-0.5 shrink-0">
+                {item.status === 'running' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                ) : item.status === 'done' ? (
+                  <Check className="h-3.5 w-3.5 text-ok" />
+                ) : (
+                  <AlertCircle className="h-3.5 w-3.5 text-danger" />
+                )}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-ink">{item.label}</p>
+                {item.summary && (
+                  <p className="mt-0.5 whitespace-pre-wrap text-[10.5px] leading-snug text-ink-3">{item.summary}</p>
+                )}
+              </div>
+            </div>
           ))}
         </div>
       )}

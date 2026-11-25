@@ -18,6 +18,23 @@ const dispatched: Array<{ type: string; detail: unknown }> = [];
 };
 
 const sa = await import('./subagent');
+const { runToolRounds } = await import('./toolLoop');
+const { classifyTurnIntent } = await import('./runPolicy');
+const { isToolEnabledInContext } = await import('./toolGatekeeper');
+
+const toolBlock = (calls: unknown) => '```shadrox:tools\n' + JSON.stringify(calls) + '\n```';
+
+function ctx(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    workspaceOpen: true,
+    filePaths: [],
+    previewActive: false,
+    activeJobCount: 0,
+    terminalAwaitingInput: false,
+    checkpointCount: 0,
+    ...overrides
+  };
+}
 
 test('ask_user pauses until the pick, then resumes with the answer', async () => {
   dispatched.length = 0;
@@ -149,4 +166,121 @@ test('spawn_subagent validates its task and refuses without a key when no stream
   const noKey = await sa.handleSpawnSubagent('ws', { task: 'do things' });
   assert.equal(noKey.refused, true);
   assert.ok(noKey.error?.includes('BYOK'));
+});
+
+test('tool loop runs at most 2 subagents in parallel and caps the 3rd in the same round', async () => {
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  sa.configureSubagentStream(async () => {
+    concurrent += 1;
+    maxConcurrent = Math.max(maxConcurrent, concurrent);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    concurrent -= 1;
+    return { text: toolBlock({ name: 'finish', args: { summary: 'scout done' } }), error: null };
+  });
+  // runTool refuses every call up front without a desktop bridge; provide a stub.
+  const savedBridge = (globalThis as Record<string, unknown>).window;
+  (globalThis as Record<string, unknown>).window = { shadroxDesktop: {}, dispatchEvent: () => true };
+  try {
+    const calls = [1, 2, 3].map((n) => ({ name: 'spawn_subagent', args: { task: `scout ${n}` } }));
+    let round = 0;
+    const stream = async () => {
+      round += 1;
+      if (round === 1) return { text: toolBlock(calls), error: null };
+      return { text: 'done', error: null };
+    };
+    const result = await runToolRounds({
+      messages: [{ role: 'user', content: 'audit many files across modules' }],
+      workspaceId: 'ws',
+      aborted: () => false,
+      stream
+    });
+    assert.equal(maxConcurrent, 2, 'exactly two scouts run concurrently');
+    const spawns = result.activity.filter((entry) => entry.name === 'spawn_subagent');
+    assert.equal(spawns.length, 3, 'all three calls are accounted for');
+    const capped = spawns.filter((entry) => entry.refused && /Subagent cap/.test(entry.error ?? ''));
+    assert.equal(capped.length, 1, 'the third scout is capped cleanly');
+  } finally {
+    (globalThis as Record<string, unknown>).window = savedBridge;
+    sa.configureSubagentStream(null);
+  }
+});
+
+test('a subagent is read-only and cannot recurse via spawn_subagent', async () => {
+  sa.configureSubagentStream(async () => ({
+    text: toolBlock([
+      { name: 'write_file', args: { path: 'src/evil.ts', content: 'export const x = 1;' } },
+      { name: 'spawn_subagent', args: { task: 'recurse' } }
+    ]),
+    error: null
+  }));
+  try {
+    const result = await sa.handleSpawnSubagent('ws', { task: 'try to write and recurse' });
+    assert.equal(result.changedFiles, 0, 'no file was written');
+    assert.ok(result.content.includes('read-only'), 'summary marks the scout read-only');
+    assert.ok(!result.content.includes('write-capable'));
+  } finally {
+    sa.configureSubagentStream(null);
+  }
+});
+
+test('abortActiveSubagents cancels a running scout immediately', async () => {
+  sa.configureSubagentStream(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    return { text: toolBlock({ name: 'finish', args: { summary: 'too late' } }), error: null };
+  });
+  try {
+    const pending = sa.handleSpawnSubagent('ws', { task: 'slow scout' });
+    sa.abortActiveSubagents();
+    const outcome = await pending;
+    assert.equal(outcome.refused, true);
+    assert.match(outcome.error ?? '', /stopped/i);
+  } finally {
+    sa.configureSubagentStream(null);
+  }
+});
+
+test('conversational and advisory turns are unaffected; scouts are execution-only', async () => {
+  const conv = classifyTurnIntent({ prompt: 'hi' });
+  assert.equal(conv.kind, 'conversational');
+  assert.equal(
+    isToolEnabledInContext('spawn_subagent', ctx({ turnIntent: 'conversational' }) as never),
+    false,
+    'conversational attaches zero tools'
+  );
+
+  const adv = classifyTurnIntent({ prompt: 'explain the repo without editing' });
+  assert.equal(adv.kind, 'advisory');
+  assert.equal(
+    isToolEnabledInContext(
+      'spawn_subagent',
+      ctx({ turnIntent: 'advisory', enabledBundles: new Set(adv.enabledBundles), unlockedBundles: new Set<string>(), isReadOnlyTurn: true }) as never
+    ),
+    false,
+    'advisory is read-only and never offers scouts'
+  );
+
+  const exec = classifyTurnIntent({ prompt: 'build and fix the app' });
+  assert.equal(exec.kind, 'execution');
+  // A plain execution turn keeps the lean core bundle (no scout bloat).
+  assert.equal(
+    isToolEnabledInContext(
+      'spawn_subagent',
+      ctx({ turnIntent: 'execution', enabledBundles: new Set(exec.enabledBundles), unlockedBundles: new Set<string>(), isReadOnlyTurn: false }) as never
+    ),
+    false,
+    'a single-file execution turn does not bloat the core bundle with scouts'
+  );
+  // Multi-file / multi-module work auto-enables the interaction bundle (scouts).
+  const multi = classifyTurnIntent({ prompt: 'refactor the app across modules', multiFileSignal: true });
+  assert.equal(multi.kind, 'execution');
+  assert.ok(multi.enabledBundles.has('interaction'), 'multi-file work enables the interaction bundle');
+  assert.equal(
+    isToolEnabledInContext(
+      'spawn_subagent',
+      ctx({ turnIntent: 'execution', enabledBundles: new Set(multi.enabledBundles), unlockedBundles: new Set<string>(), isReadOnlyTurn: false }) as never
+    ),
+    true,
+    'multi-file execution turns expose spawn_subagent'
+  );
 });

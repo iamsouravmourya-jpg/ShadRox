@@ -6,6 +6,7 @@ import { applyTaskUpdates, completionGuard, renderTaskPlan, type TaskPlan } from
 import { FINISH_TOOL_NAME, parseFinishDetails, renderFinishSummary } from './finishTool';
 import { allowsEffect, type RunPolicy, type ToolBundleCategory, type ToolEffect } from './runPolicy';
 import { TOOL_CATEGORY_MAP } from './toolGatekeeper';
+import { MAX_CONCURRENT_SUBAGENTS } from './subagent';
 import type { AttemptRecord, AttemptState } from '../taskUsage';
 import type { FailureReceipt } from '../repairProof';
 import { flightRecorder } from '../observability/flightRecorder';
@@ -1047,6 +1048,41 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
 
         let position = 0;
         while (position < batch.length) {
+          const isParallelScout = !isExternal[position] && batch[position].name === 'spawn_subagent';
+          if (isParallelScout) {
+            // Qoder/Kilo-style 2-scout model: run the first MAX_CONCURRENT_SUBAGENTS
+            // spawn_subagent calls in parallel, and cleanly cap any excess in the
+            // same round with a notice instead of running them.
+            let groupEnd = position + 1;
+            while (
+              groupEnd < batch.length &&
+              !isExternal[groupEnd] &&
+              batch[groupEnd].name === 'spawn_subagent'
+            ) {
+              groupEnd += 1;
+            }
+            const indices: number[] = [];
+            for (let idx = position; idx < groupEnd; idx += 1) indices.push(idx);
+            const allowed = indices.slice(0, MAX_CONCURRENT_SUBAGENTS);
+            const excess = indices.slice(MAX_CONCURRENT_SUBAGENTS);
+            await Promise.all(
+              allowed.map(async (batchIndex) => {
+                batchOutcomes[batchIndex] = await runTool(input.workspaceId as string, batch[batchIndex]);
+              })
+            );
+            for (const batchIndex of excess) {
+              batchOutcomes[batchIndex] = {
+                ok: false,
+                content: '',
+                refused: true,
+                error: `Subagent cap: at most ${MAX_CONCURRENT_SUBAGENTS} subagents run per round. `
+                  + `The first ${MAX_CONCURRENT_SUBAGENTS} scouts are running in parallel; `
+                  + 're-spawn this scout in the next round once they finish.'
+              };
+            }
+            position = groupEnd;
+            continue;
+          }
           const isParallelTerminal = !isExternal[position] && batch[position].name === 'run_command';
           if (isParallelTerminal) {
             let groupEnd = position + 1;

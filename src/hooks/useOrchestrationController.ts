@@ -12,6 +12,7 @@ import {
   type TurnIntentResult
 } from '../lib/agent/runPolicy';
 import { DEFAULT_MAX_TOOL_ROUNDS, runToolRounds, type ToolLoopResumeState } from '../lib/agent/toolLoop';
+import { abortActiveSubagents } from '../lib/agent/subagent';
 import { parseToolBlocks, repairAndParseNativeToolArgs, stripToolBlocks } from '../lib/agent/toolProtocol';
 import { buildWorkspaceToolContext, type WorkspaceToolContext } from '../lib/agent/toolGatekeeper';
 import { nativeToolDefinitions, summarizeCall } from '../lib/agent/tools';
@@ -373,7 +374,10 @@ export function useOrchestrationController({
   }, [messages, resumePrefixes, refineMode, restoreWorkspaceId]);
 
   useEffect(() => {
-    return () => abortRef.current?.abort();
+    return () => {
+      abortRef.current?.abort();
+      abortActiveSubagents();
+    };
   }, []);
 
   const handleSend = useCallback(async (
@@ -2612,6 +2616,7 @@ export function useOrchestrationController({
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    abortActiveSubagents();
     setIsGenerating(false);
     setMessages((previous) =>
       previous.map((message) => message.streaming

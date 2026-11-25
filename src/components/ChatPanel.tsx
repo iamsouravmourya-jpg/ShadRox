@@ -50,10 +50,13 @@ import {
   TaskPlanView,
   ThinkingTrace,
   ToolActivityFeed,
+  SubagentActivityFeed,
+  type SubagentActivityItem,
   VerificationOutcomeBanner,
   WorkingResponseSkeleton
 } from './chat/AssistantActivityView';
 import { appendMentionTrigger, computeComposerHeight, describeLivePhase, stripTrailingMention } from './chat/chatUx';
+import { SUBAGENT_EVENT, type SubagentProgress } from '../lib/agent/subagent';
 
 /** A symbol the user pinned with `@`, sent as an explicit context marker. */
 export interface PinnedSymbol {
@@ -556,6 +559,26 @@ export function ChatPanel({
   const canQueue = hasDraft && isGenerating;
   const manifestTotals = contextManifest ? contextManifestTotals(contextManifest) : null;
   const lastAssistantId = [...messages].reverse().find((message) => message.role === 'model')?.id ?? null;
+
+  // Live subagent scouts (SUBAGENT_EVENT): a per-turn list rendered under the
+  // streaming assistant message. Reset whenever a new assistant turn begins.
+  const [subagents, setSubagents] = useState<SubagentActivityItem[]>([]);
+  useEffect(() => {
+    setSubagents([]);
+  }, [lastAssistantId]);
+  useEffect(() => {
+    const onSubagent = (event: Event) => {
+      const detail = (event as CustomEvent<SubagentProgress>).detail;
+      if (!detail || typeof detail.id !== 'string') return;
+      setSubagents((previous) => {
+        const next = previous.filter((item) => item.id !== detail.id);
+        next.push({ id: detail.id, label: detail.label, status: detail.status, summary: detail.summary });
+        return next;
+      });
+    };
+    window.addEventListener(SUBAGENT_EVENT, onSubagent);
+    return () => window.removeEventListener(SUBAGENT_EVENT, onSubagent);
+  }, []);
 
   /**
    * @-mention picker: files and the active file's symbols. A symbol is pinned
@@ -1154,6 +1177,10 @@ export function ChatPanel({
 
                 {message.toolActivity && message.toolActivity.length > 0 && (
                   <ToolActivityFeed tools={message.toolActivity} streaming={message.streaming} />
+                )}
+
+                {message.id === lastAssistantId && subagents.length > 0 && (
+                  <SubagentActivityFeed items={subagents} streaming={message.streaming} />
                 )}
 
                 {message.verificationResult && (
