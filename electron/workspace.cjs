@@ -73,6 +73,12 @@ const ASSET_MIME_TYPES = {
   '.pdf': 'application/pdf'
 };
 
+const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
+function isWindowsReservedName(segment) {
+  return typeof segment === 'string' && WINDOWS_RESERVED_NAME.test(segment.trim());
+}
+
 function normalizeRelativePath(value) {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('A workspace-relative file path is required.');
@@ -88,7 +94,7 @@ function normalizeRelativePath(value) {
     throw new Error('The file path contains an unsafe path segment.');
   }
   if (segments.some((segment) =>
-    /[<>:"|?*\0]/.test(segment) || /[. ]$/.test(segment) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(segment)
+    /[<>:"|?*\0]/.test(segment) || /[. ]$/.test(segment) || isWindowsReservedName(segment)
   )) {
     throw new Error('The file path contains a name that is unsafe or invalid on Windows.');
   }
@@ -272,7 +278,7 @@ async function listWorkspaceFiles(root, limit = MAX_TREE_FILES) {
       continue;
     }
     for (const entry of entries) {
-      if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+      if (entry.name.startsWith('.') || entry.isSymbolicLink() || isWindowsReservedName(entry.name)) continue;
       if (entry.isDirectory()) {
         if (!IGNORED_DIRECTORIES.has(entry.name)) {
           queue.push({
@@ -332,7 +338,7 @@ async function listProjectDocs(root) {
       continue;
     }
     for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue;
+      if (entry.isSymbolicLink() || isWindowsReservedName(entry.name)) continue;
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         if (IGNORED_DIRECTORIES.has(entry.name)) continue;
@@ -525,7 +531,7 @@ function createWorkspaceAccess() {
     if (!stat.isDirectory()) throw new Error('The requested path is not a directory.');
     const entries = await fs.readdir(realDirectory, { withFileTypes: true });
     const visible = entries
-      .filter((entry) => !entry.name.startsWith('.') && !entry.isSymbolicLink() && (entry.isDirectory() || entry.isFile()))
+      .filter((entry) => !entry.name.startsWith('.') && !entry.isSymbolicLink() && !isWindowsReservedName(entry.name) && (entry.isDirectory() || entry.isFile()))
       .filter((entry) => !entry.isDirectory() || !IGNORED_DIRECTORIES.has(entry.name))
       .filter((entry) => entry.isDirectory() || (!isIgnoredFile(entry.name) && !isPreviewAsset(entry.name)))
       .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
@@ -685,7 +691,7 @@ function createWorkspaceAccess() {
         continue;
       }
       for (const entry of entries) {
-        if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+        if (entry.name.startsWith('.') || entry.isSymbolicLink() || isWindowsReservedName(entry.name)) continue;
         const childPath = relative ? `${relative}/${entry.name}` : entry.name;
         if (entry.isDirectory()) {
           if (!IGNORED_DIRECTORIES.has(entry.name)) pending.push(childPath);
@@ -805,6 +811,7 @@ function createWorkspaceAccess() {
 
     if (workspace.mode !== 'folder') {
       for (const [childPath, absolute] of workspace.fileMap) {
+        if (childPath.split('/').some((part) => isWindowsReservedName(part))) continue;
         if (!matchesInclude(childPath, include)) continue;
         if (!namesOnly && LOCKFILES.has(path.posix.basename(childPath).toLowerCase())) continue;
         if (namesOnly) {
@@ -853,7 +860,7 @@ function createWorkspaceAccess() {
       }
       for (const entry of entries) {
         if (visited >= MAX_SEARCH_ENTRIES) { capped = true; break; }
-        if (entry.isSymbolicLink()) continue;
+        if (entry.isSymbolicLink() || isWindowsReservedName(entry.name)) continue;
         if (entry.name.startsWith('.') && !(entry.isFile() && entry.name.startsWith('.env'))) continue;
         const childPath = relative ? `${relative}/${entry.name}` : entry.name;
         if (entry.isDirectory()) {

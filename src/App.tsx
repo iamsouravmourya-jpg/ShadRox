@@ -891,7 +891,9 @@ export default function App() {
             onSend={(pastedTexts, externalAttachments) =>
               orchestration.handleChatSend(undefined, pastedTexts, externalAttachments)
             }
+            workspaceKey={workspace.workspace?.id ?? null}
             restorableMessageIds={orchestration.restorableMessageIds}
+            restorableCheckpointTooltips={orchestration.restorableCheckpointTooltips}
             onRestorePromptCheckpoint={(id) => void orchestration.handleRestorePromptCheckpoint(id)}
             queuedMessages={orchestration.queuedChatItems}
             onCancelQueuedMessage={orchestration.handleCancelQueuedChat}
@@ -927,12 +929,6 @@ export default function App() {
             checkpoints={workspace.checkpoints}
             onRestoreCheckpoint={governance.handleRestoreCheckpoint}
             restoringCheckpointId={governance.restoringCheckpointId}
-            activeCheckpointId={governance.activeCheckpointId}
-            onShowCheckpoint={governance.setActiveCheckpointId}
-            onCloseCheckpoint={() => governance.setActiveCheckpointId(null)}
-            checkpointDiff={governance.checkpointDiff}
-            checkpointDiffLoading={governance.checkpointDiffLoading}
-            onExportDeltaReceipt={workspace.exportDeltaReceipt}
             patchSets={patchManager.patchSets}
             autoApplyChanges={patchManager.autoApplyChanges}
             onToggleAutoApply={patchManager.toggleAutoApplyChanges}

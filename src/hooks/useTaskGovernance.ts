@@ -10,7 +10,6 @@ import { routeProfiles } from '../lib/calibratedAuto/ledger';
 import { listPreferences, setPreferredModel, type ModelPreferences } from '../lib/calibratedAuto/preferences';
 import { rankModels } from '../lib/calibratedAuto/router';
 import type { CalibratedTaskType, OutcomeRecord } from '../lib/calibratedAuto/types';
-import type { CheckpointDiff } from '../lib/checkpointDiff';
 import { collectCommitContext, generateCommitMessage } from '../lib/commitMessage';
 import { hasConflictMarkers, parseConflicts, resolveConflictFile, type ConflictChoice } from '../lib/conflicts';
 import type { ShadRoxDesktopAPI } from '../lib/desktop';
@@ -80,10 +79,6 @@ export function useTaskGovernance({
   const [calibratedTaskType, setCalibratedTaskType] = useState<CalibratedTaskType>('chat');
   const [modelPins, setModelPins] = useState<ModelPreferences>(() => listPreferences());
   const [restoringCheckpointId, setRestoringCheckpointId] = useState<string | null>(null);
-  const [activeCheckpointId, setActiveCheckpointId] = useState<string | null>(null);
-  const [checkpointDiff, setCheckpointDiff] = useState<CheckpointDiff | null>(null);
-  const [checkpointDiffLoading, setCheckpointDiffLoading] = useState(false);
-  const [checkpointNonce, setCheckpointNonce] = useState(0);
   const [unmergedPaths, setUnmergedPaths] = useState<string[]>([]);
   const [isWritingCommitMessage, setIsWritingCommitMessage] = useState(false);
   const [isRefining, setIsRefining] = useState(false);
@@ -256,12 +251,11 @@ export function useTaskGovernance({
             window.setTimeout(() => setToast(null), 3000);
             return;
           }
-          setCheckpointNonce((previous) => previous + 1);
           const isMachine = Boolean(workspace.checkpoints.find((entry) => entry.id === checkpointId)?.machine);
           setToast(isMachine
             ? result.partial
-              ? 'Rewind was partial: the captured files came back on disk, but some steps did not finish — see the timeline limits.'
-              : 'Captured changes rewound on disk. See timeline for limits.'
+              ? 'Rewind was partial: the captured files came back on disk, but some steps did not finish.'
+              : 'Captured changes rewound on disk.'
             : 'Editor buffers restored; save to persist them on disk.');
           window.setTimeout(() => setToast(null), 3000);
         }
@@ -270,33 +264,6 @@ export function useTaskGovernance({
     [workspace, chatDispatchLockRef, setToast]
   );
 
-  useEffect(() => {
-    if (activeCheckpointId) void workspace.inspectMachineCheckpoint(activeCheckpointId);
-  }, [activeCheckpointId, checkpointNonce, workspace.inspectMachineCheckpoint]);
-
-  useEffect(() => {
-    if (!activeCheckpointId || !workspace.checkpoints.some((entry) => entry.id === activeCheckpointId)) {
-      setCheckpointDiff(null);
-      return;
-    }
-    let cancelled = false;
-    setCheckpointDiffLoading(true);
-    void workspace
-      .previewCheckpointDiff(activeCheckpointId)
-      .then((result) => {
-        if (!cancelled) setCheckpointDiff(result);
-      })
-      .catch(() => {
-        if (!cancelled) setCheckpointDiff(null);
-      })
-      .finally(() => {
-        if (!cancelled) setCheckpointDiffLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeCheckpointId, checkpointNonce, workspace]);
-
   return {
     calibratedTaskType,
     setCalibratedTaskType,
@@ -304,10 +271,6 @@ export function useTaskGovernance({
     calibratedRanking,
     pinCalibratedModel,
     restoringCheckpointId,
-    activeCheckpointId,
-    setActiveCheckpointId,
-    checkpointDiff,
-    checkpointDiffLoading,
     unmergedPaths,
     conflictHunks,
     resolveConflicts,

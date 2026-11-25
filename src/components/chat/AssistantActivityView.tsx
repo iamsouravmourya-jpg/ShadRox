@@ -13,6 +13,7 @@ import {
   Pause,
   Pencil,
   Play,
+  RotateCcw,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
@@ -22,10 +23,10 @@ import {
   Users,
   X
 } from 'lucide-react';
-import type { ChatMessage } from '../../lib/types';
+import type { ChatMessage, SubagentActivityRecord } from '../../lib/types';
 import { dedupePaths } from '../../lib/paths';
 import { MAX_CONCURRENT_SUBAGENTS } from '../../lib/agent/subagent';
-import { formatToolDuration, summarizeToolActivity } from './chatUx';
+import { findRecoveredToolIndices, formatToolDuration, formatTurnElapsed, summarizeToolActivity } from './chatUx';
 
 const ORCHESTRATION_STATUS: Record<string, { label: string; tone: string }> = {
   planning: { label: 'planning', tone: 'text-accent border-accent-line bg-accent-soft' },
@@ -453,14 +454,21 @@ export function CollapsiblePatchFailurePill({
 
 function ToolStepRow({
   tool,
-  isLiveActive
+  isLiveActive,
+  recovered,
+  turnStreaming
 }: {
   tool: NonNullable<ChatMessage['toolActivity']>[number];
   isLiveActive: boolean;
+  recovered: boolean;
+  turnStreaming?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [errorDetailsOpen, setErrorDetailsOpen] = useState(false);
-  const stage = tool.stage ?? (tool.ok ? (tool.name.includes('read') || tool.name.includes('list') ? 'reading' : 'completed') : 'failed');
+  const isCalmAdjustment = !tool.ok && !tool.refused && (recovered || Boolean(turnStreaming));
+  const stage = isCalmAdjustment
+    ? 'adjusted'
+    : (tool.stage ?? (tool.ok ? (tool.name.includes('read') || tool.name.includes('list') ? 'reading' : 'completed') : 'failed'));
 
   const stageStyles: Record<string, { label: string; tone: string; Icon: typeof FileSearch }> = {
     reading: { label: 'READ', tone: 'text-cool', Icon: FileSearch },
@@ -468,10 +476,11 @@ function ToolStepRow({
     editing: { label: 'EDIT', tone: 'text-warn', Icon: Pencil },
     checking: { label: 'CHECK', tone: 'text-cool', Icon: Terminal },
     completed: { label: 'DONE', tone: 'text-ok', Icon: Check },
+    adjusted: { label: 'ADJ', tone: 'text-ink-3', Icon: RotateCcw },
     failed: { label: 'FAIL', tone: 'text-danger', Icon: AlertCircle }
   };
   const config = tool.refused
-    ? { label: 'HELD', tone: 'text-warn', Icon: AlertCircle }
+    ? { label: 'HELD', tone: 'text-ink-3', Icon: RotateCcw }
     : stageStyles[stage] || { label: 'STEP', tone: 'text-ink-3', Icon: Terminal };
   const StageIcon = config.Icon;
   const isPatchMismatchError = Boolean(
@@ -504,8 +513,8 @@ function ToolStepRow({
           )}
           {isLiveActive ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
-          ) : tool.refused ? (
-            <AlertCircle className="h-3.5 w-3.5 text-warn" />
+          ) : tool.refused || isCalmAdjustment ? (
+            <RotateCcw className="h-3 w-3 text-ink-4" />
           ) : tool.ok ? (
             <Check className="h-3.5 w-3.5 text-ok" />
           ) : (
@@ -518,7 +527,7 @@ function ToolStepRow({
       {open && (
         <div className="space-y-2 border-t border-line/60 bg-base px-2.5 py-2 text-[10.5px]">
           {tool.error && (
-            isPatchMismatchError ? (
+            isPatchMismatchError && !isCalmAdjustment ? (
               <div className="space-y-1.5">
                 <CollapsiblePatchFailurePill
                   failure={tool.error}
@@ -532,7 +541,13 @@ function ToolStepRow({
                 )}
               </div>
             ) : (
-              <div className="break-all rounded border border-danger/30 bg-danger/10 p-2 font-mono text-danger">
+              <div
+                className={`break-all rounded border p-2 font-mono ${
+                  isCalmAdjustment || tool.refused
+                    ? 'border-line bg-surface-2 text-ink-3'
+                    : 'border-danger/30 bg-danger/10 text-danger'
+                }`}
+              >
                 {tool.error}
               </div>
             )
@@ -559,16 +574,41 @@ function ToolStepRow({
   );
 }
 
-export function ToolActivityFeed({ tools, streaming }: { tools: NonNullable<ChatMessage['toolActivity']>; streaming?: boolean }) {
+export function ToolActivityFeed({
+  tools,
+  streaming,
+  turnDurationMs,
+  turnStartedAt
+}: {
+  tools: NonNullable<ChatMessage['toolActivity']>;
+  streaming?: boolean;
+  turnDurationMs?: number;
+  turnStartedAt?: number;
+}) {
   // Open live steps while the agent is actively executing so users see progress
   // immediately, then fold cleanly into a compact summary once the turn settles.
   const [expanded, setExpanded] = useState(Boolean(streaming));
+  const [liveNow, setLiveNow] = useState(() => Date.now());
+
   useEffect(() => {
     setExpanded(Boolean(streaming));
   }, [streaming]);
 
-  const summary = useMemo(() => summarizeToolActivity(tools), [tools]);
-  const durationLabel = formatToolDuration(summary.totalDurationMs);
+  useEffect(() => {
+    if (!streaming || !turnStartedAt) return;
+    setLiveNow(Date.now());
+    const timer = window.setInterval(() => setLiveNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [streaming, turnStartedAt]);
+
+  const recoveredIndices = useMemo(() => findRecoveredToolIndices(tools), [tools]);
+  const summary = useMemo(() => summarizeToolActivity(tools, { streaming }), [tools, streaming]);
+  const elapsedMs = streaming && turnStartedAt
+    ? Math.max(0, liveNow - turnStartedAt)
+    : (turnDurationMs ?? (summary.totalDurationMs > 0 ? summary.totalDurationMs : undefined));
+  const durationLabel = turnDurationMs || (streaming && turnStartedAt)
+    ? formatTurnElapsed(elapsedMs)
+    : formatToolDuration(summary.totalDurationMs);
 
   return (
     <div className="mb-3 overflow-hidden rounded-xl border border-line bg-surface-2/70 text-[11px]">
@@ -584,19 +624,29 @@ export function ToolActivityFeed({ tools, streaming }: { tools: NonNullable<Chat
           <span className="truncate font-medium text-ink">
             {streaming ? 'Working' : 'Operations'} · {summary.total} step{summary.total === 1 ? '' : 's'}
           </span>
-          {summary.failed > 0 && (
+          {!streaming && summary.failed > 0 && (
             <span className="shrink-0 rounded-md border border-danger/30 bg-danger/10 px-1.5 py-px font-mono text-[9.5px] text-danger">
               {summary.failed} failed
             </span>
           )}
+          {summary.recovered > 0 && (
+            <span className="shrink-0 rounded-md border border-line bg-surface px-1.5 py-px font-mono text-[9.5px] text-ink-3">
+              {summary.recovered} adjusted
+            </span>
+          )}
           {summary.held > 0 && (
-            <span className="shrink-0 rounded-md border border-warn/30 bg-warn/10 px-1.5 py-px font-mono text-[9.5px] text-warn">
-              {summary.held} held
+            <span className="shrink-0 rounded-md border border-line bg-surface px-1.5 py-px font-mono text-[9.5px] text-ink-3">
+              {summary.held} checked
             </span>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2 font-mono text-[10px] text-ink-4">
-          {durationLabel && <span className="tabular-nums">{durationLabel}</span>}
+          {durationLabel && (
+            <span className="flex items-center gap-1 tabular-nums">
+              <Clock className="h-2.5 w-2.5" />
+              {durationLabel}
+            </span>
+          )}
           <ChevronRight className={`h-3.5 w-3.5 text-ink-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />
         </div>
       </button>
@@ -608,6 +658,8 @@ export function ToolActivityFeed({ tools, streaming }: { tools: NonNullable<Chat
               key={`${tool.name}-${index}`}
               tool={tool}
               isLiveActive={Boolean(streaming && index === tools.length - 1)}
+              recovered={recoveredIndices.has(index)}
+              turnStreaming={streaming}
             />
           ))}
         </div>
@@ -616,26 +668,22 @@ export function ToolActivityFeed({ tools, streaming }: { tools: NonNullable<Chat
   );
 }
 
-export interface SubagentActivityItem {
-  id: string;
-  label: string;
-  status: 'running' | 'done' | 'error';
-  summary?: string;
-}
+export type SubagentActivityItem = SubagentActivityRecord;
 
 /**
- * Live "Subagents (N/2)" group: shows a spinner per running scout and an
- * expandable file:line summary once each finishes. Fed by SUBAGENT_EVENT.
+ * Live Qoder-style 2-column parallel scout cards: shows up to 2 side-by-side live
+ * worker cards with real-time currentAction + stepsCount and collapsible findings.
  */
 export function SubagentActivityFeed({ items, streaming }: { items: SubagentActivityItem[]; streaming?: boolean }) {
-  const [expanded, setExpanded] = useState(Boolean(streaming));
+  const [expanded, setExpanded] = useState(true);
   useEffect(() => {
     if (streaming) setExpanded(true);
   }, [streaming]);
   if (items.length === 0) return null;
-  const running = items.filter((item) => item.status === 'running').length;
-  const done = items.filter((item) => item.status === 'done').length;
-  const failed = items.filter((item) => item.status === 'error').length;
+  const ordered = [...items].sort((a, b) => (a.index ?? 9) - (b.index ?? 9));
+  const running = ordered.filter((item) => item.status === 'running').length;
+  const done = ordered.filter((item) => item.status === 'done').length;
+  const failed = ordered.filter((item) => item.status === 'error').length;
 
   return (
     <div className="mb-3 overflow-hidden rounded-xl border border-line bg-surface-2/70 text-[11px]">
@@ -649,14 +697,14 @@ export function SubagentActivityFeed({ items, streaming }: { items: SubagentActi
             {running > 0 ? <Loader2 className="h-3 w-3 animate-spin" /> : <Users className="h-3 w-3" />}
           </span>
           <span className="truncate font-medium text-ink">
-            Subagents ({running}/{MAX_CONCURRENT_SUBAGENTS})
+            Subagent Scouts ({running > 0 ? `${running}/${MAX_CONCURRENT_SUBAGENTS} active` : `${ordered.length}/${MAX_CONCURRENT_SUBAGENTS}`})
           </span>
           {done > 0 && (
             <span className="shrink-0 rounded-md border border-ok/30 bg-ok/10 px-1.5 py-px font-mono text-[9.5px] text-ok">
               {done} done
             </span>
           )}
-          {failed > 0 && (
+          {failed > 0 && !streaming && (
             <span className="shrink-0 rounded-md border border-danger/30 bg-danger/10 px-1.5 py-px font-mono text-[9.5px] text-danger">
               {failed} failed
             </span>
@@ -668,24 +716,63 @@ export function SubagentActivityFeed({ items, streaming }: { items: SubagentActi
       </button>
 
       {expanded && (
-        <div className="max-h-64 overflow-y-auto border-t border-line bg-surface/50">
-          {items.map((item) => (
-            <div key={item.id} className="flex items-start gap-2 border-b border-line/40 px-2.5 py-2 last:border-b-0">
-              <span className="mt-0.5 shrink-0">
-                {item.status === 'running' ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
-                ) : item.status === 'done' ? (
-                  <Check className="h-3.5 w-3.5 text-ok" />
-                ) : (
-                  <AlertCircle className="h-3.5 w-3.5 text-danger" />
-                )}
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-ink">{item.label}</p>
-                {item.summary && (
-                  <p className="mt-0.5 whitespace-pre-wrap text-[10.5px] leading-snug text-ink-3">{item.summary}</p>
+        <div className="grid grid-cols-1 gap-2.5 border-t border-line bg-surface/50 p-2.5 md:grid-cols-2">
+          {ordered.map((item, idx) => (
+            <div
+              key={item.id}
+              className={`flex flex-col justify-between rounded-lg border p-2.5 transition-colors ${
+                item.status === 'running'
+                  ? 'border-accent-line bg-surface'
+                  : item.status === 'done'
+                    ? 'border-line bg-surface/80'
+                    : 'border-danger/30 bg-danger/5'
+              }`}
+            >
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="rounded border border-line bg-surface-2 px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-3">
+                      Agent {item.index ?? idx + 1}
+                    </span>
+                    <span className="truncate text-[11.5px] font-semibold text-ink" title={item.label}>
+                      {item.title || item.label}
+                    </span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {typeof item.stepsCount === 'number' && (
+                      <span className="font-mono text-[9.5px] tabular-nums text-ink-4">
+                        {item.stepsCount} step{item.stepsCount === 1 ? '' : 's'}
+                      </span>
+                    )}
+                    {item.status === 'running' ? (
+                      <span className="inline-flex items-center gap-1 text-accent">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent-strong" />
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      </span>
+                    ) : item.status === 'done' ? (
+                      <Check className="h-3.5 w-3.5 text-ok" />
+                    ) : (
+                      <AlertCircle className="h-3.5 w-3.5 text-danger" />
+                    )}
+                  </div>
+                </div>
+                {item.currentAction && (
+                  <p className="mt-1.5 truncate font-mono text-[10px] text-ink-3" title={item.currentAction}>
+                    {item.currentAction}
+                  </p>
                 )}
               </div>
+
+              {item.summary && (
+                <details className="mt-2 border-t border-line/60 pt-1.5">
+                  <summary className="cursor-pointer font-mono text-[9.5px] text-ink-4 hover:text-ink-2">
+                    Findings
+                  </summary>
+                  <p className="mt-1 max-h-36 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-snug text-ink-2">
+                    {item.summary}
+                  </p>
+                </details>
+              )}
             </div>
           ))}
         </div>

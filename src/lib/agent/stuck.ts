@@ -185,3 +185,85 @@ export function failureBlockMessage(label: string): string {
   return `${label} is blocked: it failed the same way three times this turn. `
     + 'Do not ask for it again — take a different approach (read the current file, change the arguments, or another tool) and say what you changed.';
 }
+
+/* ------------------------------------------------------------------ *
+ * Per-file 3-strike edit circuit breaker:
+ * Counts consecutive failed edit_file / write_file / apply_patch operations
+ * targeting the same file path this turn (ignoring guard refusals). On strike 2
+ * returns 'nudge'; on strike 3 locks that file for the remainder of the turn
+ * (until reset or skipped) so the agent cannot loop forever on broken edits.
+ * ------------------------------------------------------------------ */
+
+export interface PerFileFailureObservation {
+  path: string;
+  ok: boolean;
+  refused?: boolean;
+  /** Optional call key: distinct failing call attempts increment the strike count. */
+  callKey?: string;
+}
+
+export function createPerFileFailureTracker() {
+  const streaks = new Map<string, { strikes: number; keys: Set<string>; sequence: number }>();
+  const blocked = new Set<string>();
+
+  const normalize = (rawPath: string): string =>
+    rawPath.trim().replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+
+  const note = (entry: PerFileFailureObservation): FailureVerdict => {
+    const key = normalize(entry.path);
+    if (!key) return null;
+    if (entry.ok) {
+      streaks.delete(key);
+      blocked.delete(key);
+      return null;
+    }
+    if (entry.refused) return null;
+    if (blocked.has(key)) return 'block';
+
+    const state = streaks.get(key) ?? { strikes: 0, keys: new Set<string>(), sequence: 0 };
+    if (entry.callKey !== undefined) {
+      if (state.keys.has(entry.callKey)) {
+        return null;
+      }
+      state.keys.add(entry.callKey);
+    }
+    state.sequence += 1;
+    state.strikes += 1;
+    streaks.set(key, state);
+
+    if (state.strikes === 2) return 'nudge';
+    if (state.strikes >= 3) {
+      blocked.add(key);
+      return 'block';
+    }
+    return null;
+  };
+
+  const isBlocked = (rawPath: string): boolean => {
+    const key = normalize(rawPath);
+    return Boolean(key && blocked.has(key));
+  };
+
+  const resetPath = (rawPath: string): void => {
+    const key = normalize(rawPath);
+    if (!key) return;
+    streaks.delete(key);
+    blocked.delete(key);
+  };
+
+  const reset = (): void => {
+    streaks.clear();
+    blocked.clear();
+  };
+
+  return { note, isBlocked, resetPath, reset };
+}
+
+export function perFileFailureNudge(filePath: string): string {
+  return `Edits to ${filePath} have failed twice this turn. Read ${filePath} again with start_line/end_line or switch to a smaller edit_file/apply_patch hunk — a third failure will lock edits to this file for the rest of the turn.`;
+}
+
+export function perFileFailureBlockMessage(filePath: string): string {
+  return `Blocked further edits to ${filePath} after 3 consecutive failed edit attempts this turn. Explain the blocker or continue remaining tasks without touching ${filePath}.`;
+}
+

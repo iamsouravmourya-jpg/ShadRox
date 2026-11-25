@@ -277,7 +277,7 @@ test('E2E 2: Large file (>500 lines) + CRLF (\\r\\n) edit reports line metadata,
 
     const { bridge } = createDiskDesktopBridge(rootDir);
     const model = scriptedModel([
-      // Unranged read on >300 line file
+      // Unranged read on >400 line file
       toolBlock([{ name: 'read_file', args: { path: 'src/LargeService.ts' } }]),
       // Targeted ranged read of bottom section (supports camelCase startLine/endLine)
       toolBlock([{ name: 'read_file', args: { path: 'src/LargeService.ts', startLine: 520, endLine: 551 } }]),
@@ -316,7 +316,7 @@ test('E2E 2: Large file (>500 lines) + CRLF (\\r\\n) edit reports line metadata,
       // Inspect observation after round 1 un-ranged read
       const afterFirstRead = model.seenTranscripts[1].map((m) => m.content).join('\n');
       assert.match(afterFirstRead, /Total lines: 551/);
-      assert.match(afterFirstRead, /Showing lines 1-250/);
+      assert.match(afterFirstRead, /Showing lines 1-400/);
       assert.match(afterFirstRead, /start_line\/end_line/);
 
       // Inspect observation after round 2 ranged read

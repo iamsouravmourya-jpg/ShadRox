@@ -321,3 +321,33 @@ test('contextDedup serializes deterministic describeTools keys, deduplicates man
 
   evictSemanticIndex('ws-nonexistent');
 });
+
+test('agent, parallel, subagent, and multi-directory prompts expose spawn_subagent while plain advisory stays clean', () => {
+  for (const prompt of [
+    'use 2 parallel subagents to inspect frontend and backend',
+    'launch an agent swarm to trace auth flow',
+    'update src/api/routes.ts and electron/workspace.cjs'
+  ]) {
+    const intent = classifyTurnIntent({ prompt, workspaceOpen: true });
+    assert.ok(intent.enabledBundles.has('interaction'), `Expected interaction bundle for "${prompt}"`);
+    const tools = nativeToolDefinitions(true, {
+      ...buildWorkspaceToolContext({ filePaths: ['src/App.tsx', 'electron/workspace.cjs'], workspaceOpen: true }),
+      turnIntent: intent.kind,
+      enabledBundles: intent.enabledBundles,
+      isReadOnlyTurn: intent.kind !== 'execution'
+    }).map((t) => t.name);
+    assert.ok(tools.includes('spawn_subagent'), `Expected spawn_subagent to be exposed for "${prompt}"`);
+  }
+
+  const plainAdvisory = classifyTurnIntent({ prompt: 'explain the repo without editing', workspaceOpen: true });
+  assert.equal(plainAdvisory.kind, 'advisory');
+  assert.ok(!plainAdvisory.enabledBundles.has('interaction'));
+  const advisoryTools = nativeToolDefinitions(true, {
+    ...buildWorkspaceToolContext({ filePaths: ['src/App.tsx'], workspaceOpen: true }),
+    turnIntent: 'advisory',
+    enabledBundles: plainAdvisory.enabledBundles,
+    isReadOnlyTurn: true
+  }).map((t) => t.name);
+  assert.ok(!advisoryTools.includes('spawn_subagent'));
+});
+

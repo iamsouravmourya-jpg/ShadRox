@@ -19,7 +19,7 @@ import {
   Paperclip,
   Pause,
   Play,
-  History,
+  Clock,
   Image,
   RotateCcw,
   Search,
@@ -38,8 +38,6 @@ import type { Skill } from '../lib/skills';
 import { contextManifestTotals, shouldSubmitOnEnter, type ContextManifest } from '../lib/contextManifest';
 import type { ChatMessage, ExternalFileAttachment, PatchSet, RefineMode, SemanticStatus, SettingsTab, WorkspaceFile } from '../lib/types';
 import type { CheckpointMeta } from '../lib/history';
-import type { CheckpointDiff } from '../lib/checkpointDiff';
-import { TimelineSlider } from './TimelineSlider';
 import { ShadRoxLogo } from './Logo';
 import { ChatEmptyState } from './chat/ChatEmptyState';
 import {
@@ -55,8 +53,9 @@ import {
   VerificationOutcomeBanner,
   WorkingResponseSkeleton
 } from './chat/AssistantActivityView';
-import { appendMentionTrigger, computeComposerHeight, describeLivePhase, stripTrailingMention } from './chat/chatUx';
+import { appendMentionTrigger, computeComposerHeight, describeLivePhase, formatTurnElapsed, stripTrailingMention } from './chat/chatUx';
 import { SUBAGENT_EVENT, type SubagentProgress } from '../lib/agent/subagent';
+import { loadWorkspaceUiState, saveWorkspaceSubagents } from '../lib/workspaceStateStore';
 
 /** A symbol the user pinned with `@`, sent as an explicit context marker. */
 export interface PinnedSymbol {
@@ -94,7 +93,9 @@ interface ChatPanelProps {
   input: string;
   onInputChange: (value: string) => void;
   onSend: (pastedTexts?: PastedText[], externalAttachments?: ExternalFileAttachment[]) => void;
+  workspaceKey?: string | null;
   restorableMessageIds?: ReadonlySet<string>;
+  restorableCheckpointTooltips?: Readonly<Record<string, string>>;
   onRestorePromptCheckpoint?: (userMessageId: string) => void;
   queuedMessages?: Array<{ id: string; text: string }>;
   onCancelQueuedMessage?: (id: string) => void;
@@ -132,13 +133,6 @@ interface ChatPanelProps {
   checkpoints: CheckpointMeta[];
   onRestoreCheckpoint: (id: string) => void;
   restoringCheckpointId: string | null;
-  /** Opening a checkpoint previews the restore instead of performing it. */
-  activeCheckpointId: string | null;
-  onShowCheckpoint: (id: string) => void;
-  onCloseCheckpoint: () => void;
-  checkpointDiff: CheckpointDiff | null;
-  checkpointDiffLoading: boolean;
-  onExportDeltaReceipt?: (checkpointId: string) => Promise<string>;
   patchSets: PatchSet[];
   autoApplyChanges: boolean;
   onToggleAutoApply: () => void;
@@ -400,7 +394,9 @@ export function ChatPanel({
   input,
   onInputChange,
   onSend,
+  workspaceKey = null,
   restorableMessageIds,
+  restorableCheckpointTooltips,
   onRestorePromptCheckpoint,
   queuedMessages = [],
   onCancelQueuedMessage,
@@ -431,12 +427,6 @@ export function ChatPanel({
   checkpoints,
   onRestoreCheckpoint,
   restoringCheckpointId,
-  activeCheckpointId,
-  onShowCheckpoint,
-  onCloseCheckpoint,
-  checkpointDiff,
-  checkpointDiffLoading,
-  onExportDeltaReceipt,
   patchSets,
   autoApplyChanges,
   onToggleAutoApply,
@@ -559,21 +549,127 @@ export function ChatPanel({
   const canQueue = hasDraft && isGenerating;
   const manifestTotals = contextManifest ? contextManifestTotals(contextManifest) : null;
   const lastAssistantId = [...messages].reverse().find((message) => message.role === 'model')?.id ?? null;
+  const streamingAssistant = [...messages].reverse().find((message) => message.role === 'model' && message.streaming) ?? null;
+  const hasStreamingTimer = Boolean(streamingAssistant?.startedAt);
+  const [turnNow, setTurnNow] = useState(() => Date.now());
 
-  // Live subagent scouts (SUBAGENT_EVENT): a per-turn list rendered under the
-  // streaming assistant message. Reset whenever a new assistant turn begins.
-  const [subagents, setSubagents] = useState<SubagentActivityItem[]>([]);
   useEffect(() => {
-    setSubagents([]);
-  }, [lastAssistantId]);
+    if (!hasStreamingTimer) return;
+    setTurnNow(Date.now());
+    const id = window.setInterval(() => setTurnNow(Date.now()), 250);
+    return () => window.clearInterval(id);
+  }, [hasStreamingTimer]);
+
+  // Live subagent scouts (SUBAGENT_EVENT): persisted per assistant message in
+  // workspace-indexed storage so completed 2-agent parallel grids survive restarts.
+  const targetAssistantIdRef = useRef<string | null>(lastAssistantId);
+  targetAssistantIdRef.current = streamingAssistant?.id ?? lastAssistantId;
+  const workspaceKeyRef = useRef<string | null>(workspaceKey);
+  workspaceKeyRef.current = workspaceKey;
+  const prevWorkspaceKeyRef = useRef<string | null>(workspaceKey);
+  const prevMessageIdsRef = useRef<string[]>([]);
+  const [subagentsByMessage, setSubagentsByMessage] = useState<Record<string, SubagentActivityItem[]>>({});
+
+  useEffect(() => {
+    setSubagentsByMessage({});
+    if (!workspaceKey) return;
+    let cancelled = false;
+    void loadWorkspaceUiState(workspaceKey).then((loaded) => {
+      if (cancelled || workspaceKeyRef.current !== workspaceKey) return;
+      if (Object.keys(loaded.subagentsByMessage).length === 0) return;
+      setSubagentsByMessage((previous) => ({
+        ...loaded.subagentsByMessage,
+        ...previous
+      }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceKey]);
+
+  useEffect(() => {
+    const switchedWorkspace = prevWorkspaceKeyRef.current !== workspaceKey;
+    prevWorkspaceKeyRef.current = workspaceKey;
+
+    const prevIds = prevMessageIdsRef.current;
+    const nextIds = messages.map((message) => message.id);
+    prevMessageIdsRef.current = nextIds;
+
+    if (switchedWorkspace) {
+      return;
+    }
+
+    if (prevIds.length > 0 && nextIds.length === 0) {
+      setSubagentsByMessage({});
+      if (workspaceKeyRef.current) {
+        void saveWorkspaceSubagents(workspaceKeyRef.current, {});
+      }
+      return;
+    }
+
+    if (nextIds.length === 0) return;
+    const nextSet = new Set(nextIds);
+    const hadRemovedMessage = prevIds.some((id) => !nextSet.has(id));
+    const embeddedEntries = messages.filter(
+      (message) => Array.isArray(message.subagents) && message.subagents.length > 0
+    );
+
+    if (!hadRemovedMessage && embeddedEntries.length === 0) return;
+    setSubagentsByMessage((previous) => {
+      let changed = false;
+      const next: Record<string, SubagentActivityItem[]> = {};
+      for (const [msgId, items] of Object.entries(previous)) {
+        if (nextSet.has(msgId)) {
+          next[msgId] = items;
+        } else {
+          changed = true;
+        }
+      }
+      for (const message of embeddedEntries) {
+        if (!next[message.id] && message.subagents) {
+          next[message.id] = message.subagents;
+          changed = true;
+        }
+      }
+      if (!changed) return previous;
+      if (hadRemovedMessage && workspaceKeyRef.current) {
+        void saveWorkspaceSubagents(workspaceKeyRef.current, next);
+      }
+      return next;
+    });
+  }, [messages, workspaceKey]);
+
   useEffect(() => {
     const onSubagent = (event: Event) => {
       const detail = (event as CustomEvent<SubagentProgress>).detail;
       if (!detail || typeof detail.id !== 'string') return;
-      setSubagents((previous) => {
-        const next = previous.filter((item) => item.id !== detail.id);
-        next.push({ id: detail.id, label: detail.label, status: detail.status, summary: detail.summary });
-        return next;
+      const item: SubagentActivityItem = {
+        id: detail.id,
+        index: detail.index,
+        title: detail.title,
+        label: detail.label,
+        status: detail.status,
+        currentAction: detail.currentAction,
+        stepsCount: detail.stepsCount,
+        summary: detail.summary
+      };
+      setSubagentsByMessage((previous) => {
+        const existingMsgId = Object.keys(previous).find((msgId) =>
+          previous[msgId].some((entry) => entry.id === detail.id)
+        );
+        const targetId = existingMsgId ?? targetAssistantIdRef.current;
+        if (!targetId) return previous;
+        const currentList = previous[targetId] ?? [];
+        const existingIndex = currentList.findIndex((entry) => entry.id === detail.id);
+        const nextList =
+          existingIndex >= 0
+            ? currentList.map((entry, idx) => (idx === existingIndex ? item : entry))
+            : [...currentList, item];
+        const nextMap = { ...previous, [targetId]: nextList };
+        if (workspaceKeyRef.current) {
+          void saveWorkspaceSubagents(workspaceKeyRef.current, nextMap);
+        }
+        return nextMap;
       });
     };
     window.addEventListener(SUBAGENT_EVENT, onSubagent);
@@ -1094,18 +1190,32 @@ export function ChatPanel({
                 <span className="uppercase font-semibold tracking-wider">You</span>
                 <span>·</span>
                 <span className="font-mono tabular-nums">{message.timestamp}</span>
-                {restorableMessageIds?.has(message.id) && onRestorePromptCheckpoint && (
-                  <button
-                    type="button"
-                    disabled={isGenerating}
-                    onClick={() => onRestorePromptCheckpoint(message.id)}
-                    title="Restore workspace files to before this prompt"
-                    className="ml-1 inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3 transition-colors hover:border-accent-line hover:text-accent disabled:opacity-40 cursor-pointer"
-                  >
-                    <RotateCcw className="h-2.5 w-2.5" />
-                    Restore
-                  </button>
-                )}
+                {restorableMessageIds?.has(message.id) && onRestorePromptCheckpoint && (() => {
+                  const restoreTooltip =
+                    restorableCheckpointTooltips?.[message.id] ??
+                    'Restore workspace files to before this prompt';
+                  return (
+                    <span className="group/restore relative ml-1 inline-flex">
+                      <button
+                        type="button"
+                        disabled={isGenerating}
+                        onClick={() => onRestorePromptCheckpoint(message.id)}
+                        title={restoreTooltip}
+                        aria-label={`Restore (${restoreTooltip})`}
+                        className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3 transition-colors hover:border-accent-line hover:text-accent disabled:opacity-40 cursor-pointer"
+                      >
+                        <RotateCcw className="h-2.5 w-2.5" />
+                        Restore
+                      </button>
+                      <span
+                        role="tooltip"
+                        className="pointer-events-none absolute right-0 top-full z-20 mt-1.5 whitespace-nowrap rounded-md border border-line-2 bg-surface px-2 py-1 font-mono text-[10px] text-ink-2 opacity-0 shadow-[var(--shadow-panel)] transition-opacity duration-150 group-hover/restore:opacity-100 group-focus-within/restore:opacity-100"
+                      >
+                        {restoreTooltip}
+                      </span>
+                    </span>
+                  );
+                })()}
               </div>
             )}
 
@@ -1149,6 +1259,21 @@ export function ChatPanel({
                     </span>
                     <span className="text-[11.5px] font-semibold tracking-tight text-ink">ShadRox</span>
                     <span className="font-mono tabular-nums text-[10px] text-ink-4">{message.timestamp}</span>
+                    {(() => {
+                      const elapsedLabel = message.streaming && message.startedAt
+                        ? formatTurnElapsed(Math.max(0, turnNow - message.startedAt))
+                        : formatTurnElapsed(message.durationMs ?? message.metrics?.durationMs ?? undefined);
+                      if (!elapsedLabel) return null;
+                      return (
+                        <span
+                          title={message.streaming ? 'Elapsed turn time' : 'Total turn completion time'}
+                          className="inline-flex items-center gap-1 rounded border border-line bg-base px-1.5 py-0.5 font-mono text-[9.5px] tabular-nums text-ink-3"
+                        >
+                          <Clock className="h-2.5 w-2.5 text-ink-4" />
+                          {elapsedLabel}
+                        </span>
+                      );
+                    })()}
                     {message.streaming && (
                       <span className="ml-auto inline-flex items-center gap-1.5 text-[10.5px] font-medium text-accent">
                         <Loader2 className="size-3 animate-spin" />
@@ -1176,11 +1301,19 @@ export function ChatPanel({
                 )}
 
                 {message.toolActivity && message.toolActivity.length > 0 && (
-                  <ToolActivityFeed tools={message.toolActivity} streaming={message.streaming} />
+                  <ToolActivityFeed
+                    tools={message.toolActivity}
+                    streaming={message.streaming}
+                    turnDurationMs={message.durationMs}
+                    turnStartedAt={message.startedAt}
+                  />
                 )}
 
-                {message.id === lastAssistantId && subagents.length > 0 && (
-                  <SubagentActivityFeed items={subagents} streaming={message.streaming} />
+                {(subagentsByMessage[message.id]?.length ?? 0) > 0 && (
+                  <SubagentActivityFeed
+                    items={subagentsByMessage[message.id]}
+                    streaming={message.streaming}
+                  />
                 )}
 
                 {message.verificationResult && (
@@ -1436,28 +1569,6 @@ export function ChatPanel({
                         {copiedMessageId === message.id ? 'Copied' : 'Copy'}
                       </button>
                     )}
-                    {(() => {
-                      const checkpoint = checkpoints.find((entry) => entry.messageId === message.id);
-                      if (!checkpoint) return null;
-                      const restoring = restoringCheckpointId === checkpoint.id;
-                      const open = activeCheckpointId === checkpoint.id;
-                      return (
-                        <button
-                          type="button"
-                          onClick={() => (open ? onCloseCheckpoint() : onShowCheckpoint(checkpoint.id))}
-                          disabled={restoring}
-                          title={open ? 'Hide the history rail' : `See what restoring before this reply changes (${checkpoint.fileCount} files)`}
-                          className={`flex items-center gap-1 transition-colors hover:text-warn disabled:opacity-40 cursor-pointer ${open ? 'text-warn' : ''}`}
-                        >
-                          {restoring ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <History className="w-3 h-3" />
-                          )}
-                          {restoring ? 'Restoring…' : open ? 'History' : 'Checkpoint'}
-                        </button>
-                      );
-                    })()}
                     {message.resumable && !isGenerating && (
                       <button
                         type="button"
@@ -1530,23 +1641,6 @@ export function ChatPanel({
           >
             <X className="h-3 w-3" />
           </button>
-        </div>
-      )}
-
-      {activeCheckpointId && (
-        <div className="shrink-0 px-3 pb-1 pt-2">
-          <TimelineSlider
-            checkpoints={checkpoints}
-            selectedId={activeCheckpointId}
-            onSelect={onShowCheckpoint}
-            onRestore={onRestoreCheckpoint}
-            restoringId={restoringCheckpointId}
-            onClose={onCloseCheckpoint}
-            diff={checkpointDiff}
-            diffLoading={checkpointDiffLoading}
-            onExportReceipt={onExportDeltaReceipt}
-            disabled={isGenerating}
-          />
         </div>
       )}
 

@@ -111,7 +111,6 @@ const MUTATING_OR_EXECUTE_TOOLS: ReadonlySet<string> = new Set([
   'preview_control',
   'terminal_answer',
   'memory_note',
-  'spawn_subagent',
   'rename_symbol',
   'update_tasks'
 ]);
@@ -222,7 +221,7 @@ export function isToolEnabledInContext(toolName: string, state: WorkspaceToolCon
     if (toolName === 'diff_review') return activeBundles.has('review');
     if (toolName === 'job_control') return state.activeJobCount > 0 || activeBundles.has('jobs');
     if (toolName === 'terminal_state') return state.hasActiveTerminal === true || state.terminalAwaitingInput || activeBundles.has('terminal');
-    if (toolName === 'ask_user') return activeBundles.has('interaction');
+    if (toolName === 'ask_user' || toolName === 'spawn_subagent') return activeBundles.has('interaction');
     return false;
   }
 

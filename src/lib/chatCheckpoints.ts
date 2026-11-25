@@ -22,10 +22,20 @@ export interface PromptCheckpointRestorePlan {
 
 export const MAX_PROMPT_CHECKPOINTS = 40;
 
+const WINDOWS_RESERVED_SEGMENT = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
+export function isWindowsReservedCheckpointPath(rawPath: string): boolean {
+  const clean = rawPath.trim().replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!clean) return false;
+  return clean.split('/').some((part) => WINDOWS_RESERVED_SEGMENT.test(part));
+}
+
 export function normalizeCheckpointPath(rawPath: string): string | null {
   const clean = rawPath.trim().replace(/\\/g, '/').replace(/^\.\//, '');
   if (!clean || clean.startsWith('/') || /^[a-z]:/i.test(clean)) return null;
-  if (clean.split('/').some((part) => !part || part === '.' || part === '..')) return null;
+  if (clean.split('/').some((part) => !part || part === '.' || part === '..' || WINDOWS_RESERVED_SEGMENT.test(part))) {
+    return null;
+  }
   return clean;
 }
 
@@ -132,3 +142,40 @@ export function computeRestorePlan(
     remainingCheckpoints: checkpoints.slice(0, targetIndex)
   };
 }
+
+/**
+ * Formats a compact one-line impact summary for hovering a prompt's Restore
+ * button (e.g. "Reverts 3 modified, deletes 1 created file").
+ */
+export function formatRestoreImpactTooltip(modifiedCount: number, createdCount: number): string {
+  const modified = Number.isFinite(modifiedCount) ? Math.max(0, Math.trunc(modifiedCount)) : 0;
+  const created = Number.isFinite(createdCount) ? Math.max(0, Math.trunc(createdCount)) : 0;
+  if (modified === 0 && created === 0) {
+    return 'Restore workspace files to before this prompt';
+  }
+  if (modified > 0 && created > 0) {
+    return `Reverts ${modified} modified, deletes ${created} created ${created === 1 ? 'file' : 'files'}`;
+  }
+  if (modified > 0) {
+    return `Reverts ${modified} modified ${modified === 1 ? 'file' : 'files'}`;
+  }
+  return `Deletes ${created} created ${created === 1 ? 'file' : 'files'}`;
+}
+
+/** Computes restore impact tooltip strings keyed by userMessageId for all restorable checkpoints. */
+export function summarizeRestoreCheckpoints(
+  checkpoints: readonly PromptCheckpointSnapshot[]
+): Record<string, string> {
+  const summaries: Record<string, string> = {};
+  for (const checkpoint of checkpoints) {
+    if (!hasCheckpointDelta(checkpoint)) continue;
+    const plan = computeRestorePlan(checkpoints, checkpoint.userMessageId);
+    if (!plan) continue;
+    summaries[checkpoint.userMessageId] = formatRestoreImpactTooltip(
+      plan.restoreFiles.length,
+      plan.deletePaths.length
+    );
+  }
+  return summaries;
+}
+

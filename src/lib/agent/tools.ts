@@ -217,7 +217,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'read_file',
-    description: 'Read a file from disk (use start_line/end_line for >300 line files).',
+    description: 'Read a file from disk (use start_line/end_line for >400 line files).',
     parameters: 'path: string (required), start_line?: number, end_line?: number'
   },
   {
@@ -632,7 +632,7 @@ const NATIVE_TOOL_EFFECTS: Record<string, ToolEffect> = {
   // Inspecting the preview reads a screenshot and console logs; it moves nothing.
   preview_inspect: 'read',
   ask_user: 'read',
-  spawn_subagent: 'execute',
+  spawn_subagent: 'read',
   diff_review: 'read'
 };
 
@@ -1252,7 +1252,13 @@ function handleUnlockTools(args: Record<string, unknown>): ToolOutcome {
   return { ok: true, content: lines.join('\n') };
 }
 
-export async function runTool(workspaceId: string, call: ToolCall): Promise<ToolOutcome> {
+export interface RunToolOptions {
+  signal?: AbortSignal;
+  subagentSlot?: 1 | 2;
+  nestedSubagent?: boolean;
+}
+
+export async function runTool(workspaceId: string, call: ToolCall, options?: RunToolOptions): Promise<ToolOutcome> {
   const nativeArgError = (call.args as Record<string, unknown>).__nativeArgumentError;
   if (typeof nativeArgError === 'string') return refusal(nativeArgError);
   if (call.name === 'unlock_tools') return handleUnlockTools(call.args);
@@ -1323,15 +1329,17 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         const raw = isEnvFile ? maskEnvSecrets(file.content) : file.content;
         const lines = raw.split(/\r?\n/);
         const totalLines = lines.length;
+        const activeTurn = getTurn(workspaceId);
+        if (activeTurn) noteRead(activeTurn, normalized);
         const start = asNumber(call.args.start_line) ?? asNumber(call.args.startLine);
         const end = asNumber(call.args.end_line) ?? asNumber(call.args.endLine);
         if (start === undefined && end === undefined) {
-          const cap = totalLines > 300 ? 250 : totalLines;
+          const cap = totalLines > 400 ? 400 : totalLines;
           const slice = lines.slice(0, cap).map((line, index) => `${index + 1}| ${line}`).join('\n');
           const header = `[File: ${normalized} | Total lines: ${totalLines} | Showing lines 1-${cap}]`;
-          const bottomStart = Math.max(251, totalLines - 100);
-          const guidance = totalLines > 300
-            ? `\nFile has ${totalLines} lines (>300). Showing lines 1-${cap}. Use read_file with start_line/end_line (for example start_line: ${bottomStart}, end_line: ${totalLines}) or search_text before editing.`
+          const bottomStart = Math.max(401, totalLines - 120);
+          const guidance = totalLines > 400
+            ? `\nFile has ${totalLines} lines (>400). Showing lines 1-${cap}. Use read_file with start_line/end_line (for example start_line: ${bottomStart}, end_line: ${totalLines}) or search_text before editing.`
             : '';
           return { ok: true, content: clip(`${header}\n${slice}${guidance}`) };
         }
@@ -1343,7 +1351,7 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         const truncated = totalLines > (to - from + 1);
         const slice = lines.slice(from - 1, to).map((line, index) => `${from + index}| ${line}`).join('\n');
         const header = `[File: ${normalized} | Total lines: ${totalLines} | Showing lines ${from}-${to}]`;
-        const truncationHint = truncated && totalLines > 300
+        const truncationHint = truncated && totalLines > 400
           ? '\nPartial slice shown. Use read_file with start_line/end_line or search_text to inspect the rest of the file before editing.'
           : '';
         return { ok: true, content: clip(`${header}\n${slice}${truncationHint}`) };
@@ -1447,8 +1455,9 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
         // never read uses the read above as its auto-read — unless the file is
         // too large to have entered the context honestly, which is refused.
         const turn = getTurn(workspaceId);
+        const explicitlyReadThisTurn = Boolean(turn && hasTurnRead(turn, normalized));
         let autoReadNote = '';
-        if (turn && !hasTurnRead(turn, normalized)) {
+        if (turn && !explicitlyReadThisTurn) {
           if (current && current.content.length > AUTO_READ_LIMIT) {
             return refusal(`${path} is ${current.content.length} characters and was not read this turn, so it is too large to auto-read. read_file it first (a line range covering the change is enough), then retry ${call.name}.`);
           }
@@ -1487,10 +1496,14 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
             // to overwrite outright instead of gate-keeping on rewrite risk.
             const editFailedTwice = isWriteFileAllowedAfterEditFailure(workspaceId, normalized);
             if (!editFailedTwice) {
-              const risk = assessRewriteRisk(path, content, current.content, { extractedFilesCreated, backupCreated });
+              const risk = assessRewriteRisk(path, content, current.content, {
+                extractedFilesCreated,
+                backupCreated,
+                readThisTurn: explicitlyReadThisTurn
+              });
               if (risk) {
                 recordIdenticalFailure(workspaceId, call);
-                return { ok: false, content: '', error: `${risk} Use edit_file with an exact original snippet for targeted changes instead.` };
+                return { ok: false, content: '', refused: true, error: `${risk} Use edit_file with an exact original snippet for targeted changes instead.` };
               }
             } else {
               matchModeNote = ' (write_file allowed after repeated edit_file failures on this file)';
@@ -2280,7 +2293,11 @@ export async function runTool(workspaceId: string, call: ToolCall): Promise<Tool
       case 'ask_user':
         return handleAskUser(workspaceId, call.args);
       case 'spawn_subagent':
-        return handleSpawnSubagent(workspaceId, call.args);
+        return handleSpawnSubagent(workspaceId, call.args, {
+          signal: options?.signal,
+          slotIndex: options?.subagentSlot,
+          nested: options?.nestedSubagent
+        });
       case 'diff_review':
         return handleDiffReview(workspaceId, call.args);
       default:

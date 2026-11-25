@@ -161,11 +161,11 @@ export async function handleAskUser(_workspaceId: string, args: Record<string, u
 
 /** Hard cap on subagents running at once (Qoder/Kilo-style 2-scout model). */
 export const MAX_CONCURRENT_SUBAGENTS = 2;
-/** Isolated scout loop: short on purpose so heavy reads never bloat the main context. */
-export const MAX_SUBAGENT_ROUNDS = 4;
-export const DEFAULT_SUBAGENT_ROUNDS = 4;
+/** Isolated scout loop: bounded 5 rounds so deep exploration stays focused without bloating main context. */
+export const MAX_SUBAGENT_ROUNDS = 5;
+export const DEFAULT_SUBAGENT_ROUNDS = 5;
 export const SUBAGENT_TIMEOUT_MS = 240_000;
-export const MAX_SUBAGENT_SUMMARY_CHARS = 2_000;
+export const MAX_SUBAGENT_SUMMARY_CHARS = 2_400;
 /** The read-only exploration toolset a scout may use — no writes, shell, git, or recursion. */
 export const SUBAGENT_READ_ONLY_TOOLS: readonly string[] = [
   'read_file',
@@ -186,9 +186,17 @@ export const SUBAGENT_EVENT = 'shadrox:subagent';
 export interface SubagentProgress {
   /** Stable id for this scout across its lifecycle. */
   id: string;
+  /** 1-based slot index when spawned in parallel (Agent 1 / Agent 2). */
+  index?: 1 | 2;
+  /** Concise card title derived from the task or focus paths. */
+  title?: string;
   /** Short task label shown in the UI. */
   label: string;
   status: 'running' | 'done' | 'error';
+  /** Live description of what tool/file the scout is currently reading or searching. */
+  currentAction?: string;
+  /** Total tool steps completed by this scout. */
+  stepsCount?: number;
   /** Final crisp summary (done) or error message (error). */
   summary?: string;
 }
@@ -203,6 +211,43 @@ function emitSubagent(detail: SubagentProgress): void {
 const activeSubagents = new Set<AbortController>();
 let runningSubagents = 0;
 let subagentSeq = 0;
+
+function deriveScoutTitle(task: string, focusFiles: string[]): string {
+  const firstClause = task.split(/[\r\n.;:]+/)[0]?.trim() ?? task;
+  const cleaned = firstClause.replace(/^analyze\s+|^inspect\s+|^explore\s+|^audit\s+/i, '').trim() || firstClause;
+  if (cleaned.length <= 44) return cleaned;
+  if (focusFiles.length > 0) {
+    const lead = focusFiles[0].split('/').slice(-2).join('/');
+    if (lead.length <= 44) return `Explore ${lead}`;
+  }
+  return `${cleaned.slice(0, 41).trim()}…`;
+}
+
+function describeScoutStep(name: string, args: Record<string, unknown>): string {
+  const target = typeof args.path === 'string' && args.path.trim()
+    ? args.path.trim()
+    : typeof args.query === 'string' && args.query.trim()
+      ? `"${args.query.trim().slice(0, 32)}"`
+      : '';
+  switch (name) {
+    case 'read_file':
+      return target ? `Reading ${target}` : 'Reading file';
+    case 'search_text':
+      return target ? `Searching ${target}` : 'Searching text';
+    case 'find_files':
+      return target ? `Finding files matching ${target}` : 'Finding files';
+    case 'list_directory':
+      return target ? `Listing ${target}` : 'Listing directory';
+    case 'outline':
+      return target ? `Outlining ${target}` : 'Reading file outline';
+    case 'problems':
+      return 'Checking diagnostics';
+    case 'finish':
+      return 'Compiling file:line report';
+    default:
+      return target ? `${name} ${target}` : name;
+  }
+}
 
 /** Host hook (Stop / unmount): abort every running scout immediately. */
 export function abortActiveSubagents(): void {
@@ -252,7 +297,20 @@ function filesFromActivity(activity: Array<{ name: string; ok?: boolean; input?:
   return [...paths].slice(0, 40);
 }
 
-export async function handleSpawnSubagent(workspaceId: string, args: Record<string, unknown>): Promise<ToolOutcome> {
+export interface SpawnSubagentOptions {
+  signal?: AbortSignal;
+  slotIndex?: 1 | 2;
+  nested?: boolean;
+}
+
+export async function handleSpawnSubagent(
+  workspaceId: string,
+  args: Record<string, unknown>,
+  options?: SpawnSubagentOptions
+): Promise<ToolOutcome> {
+  if (options?.nested) {
+    return refusal('Nested spawn_subagent calls are refused — subagents cannot spawn further subagents.');
+  }
   const task = typeof args.task === 'string' ? args.task.trim() : '';
   if (!task) return refusal('spawn_subagent needs a task: one bounded, self-contained instruction.');
   if (task.length > MAX_TASK_CHARS) return refusal(`spawn_subagent tasks are capped at ${MAX_TASK_CHARS} characters — split the work.`);
@@ -271,18 +329,46 @@ export async function handleSpawnSubagent(workspaceId: string, args: Record<stri
       + 'Wait for a running scout to finish, then spawn this one again.'
     );
   }
+  if (options?.signal?.aborted) {
+    return refusal('Subagent stopped before starting.');
+  }
 
   const subagentId = `scout-${++subagentSeq}-${Date.now().toString(36)}`;
+  const slotIndex = options?.slotIndex ?? (runningSubagents === 0 ? 1 : 2);
+  const title = deriveScoutTitle(task, focusFiles);
   const label = task.length > 80 ? `${task.slice(0, 79)}…` : task;
   const controller = new AbortController();
+  const onParentAbort = () => controller.abort();
+  if (options?.signal) {
+    options.signal.addEventListener('abort', onParentAbort, { once: true });
+  }
   activeSubagents.add(controller);
   runningSubagents += 1;
-  emitSubagent({ id: subagentId, label, status: 'running' });
+  let stepsCount = 0;
+  let currentAction = focusFiles.length > 0 ? `Inspecting ${focusFiles[0]}` : 'Starting scout exploration';
+  emitSubagent({
+    id: subagentId,
+    index: slotIndex,
+    title,
+    label,
+    status: 'running',
+    currentAction,
+    stepsCount
+  });
   const timer = setTimeout(() => controller.abort(), SUBAGENT_TIMEOUT_MS);
   try {
     const stream = injectedStream ?? byokStream(controller.signal);
     if (typeof stream !== 'function') {
-      emitSubagent({ id: subagentId, label, status: 'error', summary: stream.error });
+      emitSubagent({
+        id: subagentId,
+        index: slotIndex,
+        title,
+        label,
+        status: 'error',
+        currentAction: 'Configuration error',
+        stepsCount,
+        summary: stream.error
+      });
       return refusal(stream.error);
     }
     // Lazy imports: the registry imports this module, and these modules import
@@ -292,9 +378,9 @@ export async function handleSpawnSubagent(workspaceId: string, args: Record<stri
     const { stripToolBlocks } = await import('./toolProtocol');
 
     // Scouts are strictly read-only: offer only the exploration toolset via an
-    // advisory (read-only) context, then strip the unlock_tools discovery line so
-    // a scout can never widen its own reach. The 'plan' policy below is the
-    // runtime backstop that refuses any write/execute/external call regardless.
+    // advisory (read-only) context, then strip unlock_tools so a scout can
+    // never widen its own reach. The 'plan' policy + disallowSubagents below
+    // are the runtime backstops that refuse any write/execute/external/spawn call.
     const readOnlyContext = {
       workspaceOpen: true,
       filePaths: [] as string[],
@@ -308,13 +394,13 @@ export async function handleSpawnSubagent(workspaceId: string, args: Record<stri
       isReadOnlyTurn: true
     };
     const toolLines = describeTools(maxRounds, [], [], readOnlyContext)
-      .filter((line) => !line.startsWith('- unlock_tools') && !line.startsWith('SPECIALIZED TOOLS'));
+      .filter((line) => !line.startsWith('- unlock_tools') && !line.startsWith('- spawn_subagent') && !line.startsWith('SPECIALIZED TOOLS'));
 
     const systemInstruction = [
       'You are a bounded, READ-ONLY scout agent working inside the user\'s opened folder. You have your own isolated context; the main agent sees ONLY your final summary, so make it self-contained and factual.',
-      `You have at most ${maxRounds} tool rounds and a hard time ceiling. Work efficiently: batch reads, then answer with the finish tool (summary = the report the main agent receives).`,
+      `You have at most ${maxRounds} tool rounds and a hard time ceiling. Work efficiently: batch reads, never stop after only listing directories — perform real read_file or search_text inspections on relevant files, then answer with the finish tool (summary = the report the main agent receives).`,
       'You are strictly READ-ONLY: explore with read_file, search_text, find_files, list_directory, outline, problems only. Writes, shell, git and spawning further subagents are all refused — the main agent applies changes itself.',
-      'Return a CRISP, structured summary of at most 250 words that cites exact file:line findings (e.g. `src/app.ts:42`). No preamble, no restating the task.',
+      'Return a CRISP, structured report of at most 300 words that cites exact file:line findings (e.g. `src/app.ts:42`) and concise symbol/line references. No preamble, no restating the task.',
       focusFiles.length > 0 ? `Focus files (start here): ${focusFiles.join(', ')}` : '',
       ...toolLines
     ].filter(Boolean).join('\n');
@@ -328,6 +414,26 @@ export async function handleSpawnSubagent(workspaceId: string, args: Record<stri
       maxRounds,
       aborted: () => controller.signal.aborted,
       signal: controller.signal,
+      disallowSubagents: true,
+      onToolStep: (event) => {
+        if (event.phase === 'start') {
+          currentAction = describeScoutStep(event.call.name, event.call.args);
+        } else {
+          stepsCount += 1;
+          currentAction = event.outcome?.ok
+            ? describeScoutStep(event.call.name, event.call.args)
+            : `Checked ${describeScoutStep(event.call.name, event.call.args)}`;
+        }
+        emitSubagent({
+          id: subagentId,
+          index: slotIndex,
+          title,
+          label,
+          status: 'running',
+          currentAction,
+          stepsCount
+        });
+      },
       // Scouts are always read-only: 'plan' refuses every write/execute/external
       // effect at the runtime boundary, so allowWrites can never widen a scout.
       policy: { mode: 'plan' }
@@ -340,7 +446,16 @@ export async function handleSpawnSubagent(workspaceId: string, args: Record<stri
       : rawSummary.trim();
     const filesRead = filesFromActivity(loop.activity as Array<{ name: string; ok?: boolean; input?: Record<string, unknown> | string }>);
     if (stopped) {
-      emitSubagent({ id: subagentId, label, status: 'error', summary: 'Stopped before it finished.' });
+      emitSubagent({
+        id: subagentId,
+        index: slotIndex,
+        title,
+        label,
+        status: 'error',
+        currentAction: 'Stopped',
+        stepsCount,
+        summary: 'Stopped before it finished.'
+      });
       return { ok: false, content: `Subagent stopped · ${loop.rounds}/${maxRounds} rounds.`, error: 'Subagent stopped.', refused: true };
     }
     const lines = [
@@ -350,17 +465,38 @@ export async function handleSpawnSubagent(workspaceId: string, args: Record<stri
       `FILES READ: ${filesRead.length > 0 ? filesRead.join(', ') : '(none)'}`,
       `FILES CHANGED (tool-reported): ${loop.changedFiles}`
     ];
-    emitSubagent({ id: subagentId, label, status: loop.error ? 'error' : 'done', summary: summary || undefined });
+    emitSubagent({
+      id: subagentId,
+      index: slotIndex,
+      title,
+      label,
+      status: loop.error ? 'error' : 'done',
+      currentAction: loop.error ? 'Scout failed' : 'Findings ready',
+      stepsCount,
+      summary: summary || undefined
+    });
     if (loop.error) {
       lines.push(`ERROR: ${loop.error}`);
       return { ok: false, content: lines.join('\n'), error: loop.error, changedFiles: loop.changedFiles };
     }
     return { ok: true, content: lines.join('\n'), changedFiles: loop.changedFiles };
   } catch (error) {
-    emitSubagent({ id: subagentId, label, status: 'error', summary: error instanceof Error ? error.message : String(error) });
+    emitSubagent({
+      id: subagentId,
+      index: slotIndex,
+      title,
+      label,
+      status: 'error',
+      currentAction: 'Scout error',
+      stepsCount,
+      summary: error instanceof Error ? error.message : String(error)
+    });
     return { ok: false, content: '', error: error instanceof Error ? error.message : String(error) };
   } finally {
     clearTimeout(timer);
+    if (options?.signal) {
+      options.signal.removeEventListener('abort', onParentAbort);
+    }
     activeSubagents.delete(controller);
     runningSubagents = Math.max(0, runningSubagents - 1);
   }
@@ -405,8 +541,8 @@ export const SPAWN_SUBAGENT_SCHEMA: Record<string, unknown> = {
   properties: {
     task: { type: 'string', description: 'Self-contained instruction for helper.' },
     files: { type: 'array', items: { type: 'string' }, description: 'Focus file paths.' },
-    allowWrites: { type: 'boolean', description: 'Allow verified disk writes (default false).' },
-    maxRounds: { type: 'integer', description: 'Round cap (default 4, max 4).' }
+    allowWrites: { type: 'boolean', description: 'Deprecated: scouts are always read-only.' },
+    maxRounds: { type: 'integer', description: 'Round cap (default 5, max 5).' }
   },
   required: ['task'],
   additionalProperties: false

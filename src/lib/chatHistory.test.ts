@@ -177,3 +177,33 @@ test('a stored outcome that is not a real state is dropped, not replayed', () =>
   assert.ok(restored);
   assert.deepEqual(restored[0].writeOutcomes, { 'src/a.ts': 'applied' });
 });
+
+test('turn timers, tool stages/timings, and subagent records persist across restarts', () => {
+  const store = memoryStore();
+  const modelMsg: ChatMessage = {
+    ...turn('2', 'model', 'Audited modules'),
+    startedAt: 1_700_000_000_000,
+    durationMs: 12_340,
+    toolActivity: [
+      { name: 'read_file', label: 'Read App.tsx', ok: true, stage: 'reading', durationMs: 42 },
+      { name: 'edit_file', label: 'Edit App.tsx', ok: false, refused: true, stage: 'editing', durationMs: 18 }
+    ],
+    subagents: [
+      { id: 'sa-1', index: 1, title: 'Frontend scout', label: 'Inspect UI', status: 'done', stepsCount: 3, summary: 'Clean' },
+      { id: 'sa-2', index: 2, title: 'Backend scout', label: 'Inspect API', status: 'running', stepsCount: 2 }
+    ]
+  };
+  saveConversation(store, 'folder-a', [turn('1', 'user', 'audit'), modelMsg]);
+  const restored = loadConversation(store, 'folder-a');
+  assert.ok(restored);
+  assert.equal(restored[1].startedAt, 1_700_000_000_000);
+  assert.equal(restored[1].durationMs, 12_340);
+  assert.deepEqual(restored[1].toolActivity, [
+    { name: 'read_file', label: 'Read App.tsx', ok: true, stage: 'reading', durationMs: 42 },
+    { name: 'edit_file', label: 'Edit App.tsx', ok: false, refused: true, stage: 'editing', durationMs: 18 }
+  ]);
+  assert.equal(restored[1].subagents?.length, 2);
+  assert.equal(restored[1].subagents?.[0].status, 'done');
+  assert.equal(restored[1].subagents?.[1].status, 'error');
+});
+

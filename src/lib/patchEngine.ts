@@ -972,6 +972,7 @@ export function resolvePatchContent(
 export interface RewriteRiskOptions {
   extractedFilesCreated?: number;
   backupCreated?: boolean;
+  readThisTurn?: boolean;
 }
 
 export function assessRewriteRisk(
@@ -992,6 +993,15 @@ export function assessRewriteRisk(
     .split('\n')
     .filter((line) => line.trim() && newContent.includes(line.trim()))
     .length;
+
+  // Guard against accidental truncation shrinking a real file (>= 20 lines) down to a < 15-line stub.
+  if (before >= 20 && after < 15 && kept / before < 0.4) {
+    return `${path}: the model returned a ${after}-line replacement for a ${before}-line file (whole-file rewrite blocked — stub truncation). If removing a feature or page, delete the file with delete_file (if unreferenced) or use edit_file to remove only its nav/route entries — otherwise provide the complete replacement or use edit_file.`;
+  }
+
+  // Large rewrites (>= 15 non-blank lines) of a file read this turn are permitted cleanly.
+  if (options?.readThisTurn && after >= 15) return null;
+
   if (kept / before >= 0.4) return null;
   if (after >= before * 0.4) return null;
 

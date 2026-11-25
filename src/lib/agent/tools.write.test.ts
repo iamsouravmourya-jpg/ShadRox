@@ -334,3 +334,44 @@ test('write_file allows monolith shrinking inside an active turn after creating 
     }
   });
 });
+
+test('read_file returns up to 400 lines in one call and write_file allows substantial rewrites read this turn while blocking stubs', async () => {
+  const lines450 = Array.from({ length: 450 }, (_, i) => `export const val${i} = ${i};`).join('\n');
+  const lines60 = Array.from({ length: 60 }, (_, i) => `export const item${i} = ${i};`).join('\n');
+  const rewritten20 = Array.from({ length: 20 }, (_, i) => `export const nextItem${i} = ${i * 2};`).join('\n');
+  const stub3 = 'export const a = 1;\nexport const b = 2;\n';
+
+  const disk = diskStub({
+    'src/long.ts': lines450,
+    'src/component.ts': lines60
+  });
+
+  await withBridge(disk.bridge, async () => {
+    beginTurn('ws', 'update component and inspect long file', { scaffold: false, addPage: false });
+    try {
+      const readOutcome = await runTool('ws', { name: 'read_file', args: { path: 'src/long.ts' } });
+      assert.equal(readOutcome.ok, true);
+      assert.match(readOutcome.content, /Total lines: 450 \| Showing lines 1-400/);
+
+      // Stub truncation (<15 lines on >=20-line file) is still blocked even after reading
+      await runTool('ws', { name: 'read_file', args: { path: 'src/component.ts' } });
+      const stubOutcome = await runTool('ws', {
+        name: 'write_file',
+        args: { path: 'src/component.ts', content: stub3 }
+      });
+      assert.equal(stubOutcome.ok, false);
+      assert.equal(stubOutcome.refused, true);
+      assert.match(stubOutcome.error ?? '', /stub|whole-file rewrite/i);
+
+      // Complete replacement (>=15 non-blank lines) succeeds when explicitly read this turn
+      const fullRewriteOutcome = await runTool('ws', {
+        name: 'write_file',
+        args: { path: 'src/component.ts', content: rewritten20 }
+      });
+      assert.equal(fullRewriteOutcome.ok, true, fullRewriteOutcome.error ?? 'expected substantial rewrite after read to succeed');
+      assert.equal(disk.files.get('src/component.ts')?.content, rewritten20);
+    } finally {
+      resetTurns();
+    }
+  });
+});

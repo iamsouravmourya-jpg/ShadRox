@@ -40,6 +40,12 @@ const LIMITS = { files: 400, bytes: 8 * 1024 * 1024, directories: 300, records: 
 const LOCKFILES = ['yarn.lock', 'poetry.lock', 'uv.lock', 'Cargo.lock', 'Pipfile.lock', 'bun.lock'];
 const DEPENDENCY = /(?:^|\/)(?:package\.json|package-lock\.json|requirements\.txt|pyproject\.toml|pnpm-lock\.yaml|yarn\.lock|poetry\.lock|uv\.lock|Cargo\.(?:toml|lock)|Pipfile(?:\.lock)?|bun\.lock)$/i;
 const EXCLUDED = /(?:^|\/)(?:\.[^/]*|node_modules|vendor|dist[^/]*|build|out|coverage|reference|__pycache__|[^/]*(?:secret|credential)[^/]*)(?:\/|$)|\.(?:pem|key|pfx|p12|exe|dll)$/i;
+const WINDOWS_RESERVED_SEGMENT = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
+function isWindowsReservedPath(relativePath) {
+  if (typeof relativePath !== 'string' || !relativePath) return false;
+  return relativePath.replace(/\\/g, '/').split('/').some((part) => WINDOWS_RESERVED_SEGMENT.test(part.trim()));
+}
 
 function defaultQueryNtfsHardlinks(destination) {
   return new Promise((resolve) => {
@@ -138,7 +144,7 @@ function createMachineDelta({ access, readSystem, prepareGitRestore, stopOwnedPr
           }
         }
         for (const entry of page.entries) {
-          if (EXCLUDED.test(entry.path)) continue;
+          if (EXCLUDED.test(entry.path) || isWindowsReservedPath(entry.path)) continue;
           if (entry.kind === 'directory') { pending.push(entry.path); continue; }
           if (++count > limits.files) { omissions.push('File capture limit reached.'); break; }
           try {

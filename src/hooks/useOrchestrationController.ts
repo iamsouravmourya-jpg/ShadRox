@@ -71,9 +71,16 @@ import {
   hasCheckpointDelta,
   normalizeCheckpointPath,
   recordPreMutationState,
+  summarizeRestoreCheckpoints,
   upsertPromptCheckpoint,
   type PromptCheckpointSnapshot
 } from '../lib/chatCheckpoints';
+import {
+  clearWorkspaceCheckpoints,
+  clearWorkspaceSubagents,
+  loadWorkspaceUiState,
+  saveWorkspaceCheckpoints
+} from '../lib/workspaceStateStore';
 import { confirmAction } from '../lib/confirm';
 import { createRequestEnvelope, describeEnvelopeDrift, envelopeDrift } from '../lib/requestEnvelope';
 import { renderSkill, skillInvocation, type Skill } from '../lib/skills';
@@ -271,11 +278,47 @@ export function useOrchestrationController({
   }, [workspaceRootPath, snapshotStore]);
 
   const restoreWorkspaceId = workspace.workspace?.id ?? null;
+  const restoreWorkspaceIdRef = useRef<string | null>(restoreWorkspaceId);
+  restoreWorkspaceIdRef.current = restoreWorkspaceId;
   const restoreWorkspaceKey = restoreWorkspaceId ?? workspaceRootPath ?? 'default';
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const historyStore = useRef(getHistoryStore()).current;
+
   useEffect(() => {
     promptCheckpointsRef.current = [];
     setPromptCheckpoints([]);
-  }, [restoreWorkspaceId]);
+    if (!restoreWorkspaceId) return;
+
+    let cancelled = false;
+    void loadWorkspaceUiState(restoreWorkspaceId).then((loaded) => {
+      if (cancelled || restoreWorkspaceIdRef.current !== restoreWorkspaceId) return;
+      if (loaded.promptCheckpoints.length === 0) return;
+      const activeMessages =
+        messagesRef.current.length > 0
+          ? messagesRef.current
+          : (loadConversation(historyStore, restoreWorkspaceId) ?? []);
+      const validUserIds = new Set(
+        activeMessages.filter((m) => m.role === 'user').map((m) => m.id)
+      );
+      const filteredLoaded =
+        validUserIds.size > 0
+          ? loaded.promptCheckpoints.filter((cp) => validUserIds.has(cp.userMessageId))
+          : [];
+      if (filteredLoaded.length === 0) return;
+
+      const currentIds = new Set(promptCheckpointsRef.current.map((cp) => cp.userMessageId));
+      const merged = [
+        ...filteredLoaded.filter((cp) => !currentIds.has(cp.userMessageId)),
+        ...promptCheckpointsRef.current
+      ];
+      promptCheckpointsRef.current = merged;
+      setPromptCheckpoints(merged);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [historyStore, restoreWorkspaceId]);
 
   const readPreTurnContent = useCallback(async (filePath: string): Promise<string | null> => {
     const clean = normalizeCheckpointPath(filePath);
@@ -330,9 +373,11 @@ export function useOrchestrationController({
     const nextCheckpoints = upsertPromptCheckpoint(promptCheckpointsRef.current, updated);
     promptCheckpointsRef.current = nextCheckpoints;
     setPromptCheckpoints(nextCheckpoints);
+    if (restoreWorkspaceIdRef.current) {
+      void saveWorkspaceCheckpoints(restoreWorkspaceIdRef.current, nextCheckpoints);
+    }
   }, [readPreTurnContent, restoreWorkspaceKey]);
 
-  const historyStore = useRef(getHistoryStore()).current;
   const snapshotConsumedFor = useRef(new Set<string>());
   const lastWorkspaceIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -424,6 +469,7 @@ export function useOrchestrationController({
     setPinnedSymbols([]);
 
     const mode = getRefineMode(requestRefineMode);
+    const turnStartedAt = Date.now();
     const timestamp = formatTime();
     const userMessageId = makeId('user');
     const visiblePromptText = submission?.text ?? typed;
@@ -464,6 +510,7 @@ export function useOrchestrationController({
       role: 'model',
       content: '',
       timestamp,
+      startedAt: turnStartedAt,
       streaming: true
     };
 
@@ -704,6 +751,7 @@ export function useOrchestrationController({
     };
 
     const markInterrupted = (error: string) => {
+      const wallDurationMs = Math.max(1, Date.now() - turnStartedAt);
       if (!reply.trim()) {
         const lower = error.toLowerCase();
         const hint = /api key|authenticate|unauthorized|invalid.*key|permission denied|\b401\b|\b403\b/.test(lower)
@@ -717,6 +765,7 @@ export function useOrchestrationController({
               ? {
                   ...message,
                   streaming: false,
+                  durationMs: wallDurationMs,
                   content: `**Generation Error:** ${error}\n\n${hint}`
                 }
               : message
@@ -727,7 +776,7 @@ export function useOrchestrationController({
       setMessages((previous) =>
         previous.map((message) =>
           message.id === modelMessage.id
-            ? { ...message, streaming: false, resumable: true }
+            ? { ...message, streaming: false, durationMs: wallDurationMs, resumable: true }
             : message
         )
       );
@@ -935,6 +984,10 @@ export function useOrchestrationController({
       try {
         const visible = stripToolBlocks(roundText);
         if (visible.trim()) {
+          const parsedPaths = extractUnifiedPatches(visible, workspace.files).map((patch) => patch.path);
+          if (parsedPaths.length > 0) {
+            await capturePreMutationPaths(userMessageId, visiblePromptText, parsedPaths);
+          }
           mergeApply(await applyPatchesFromReply(modelMessage.id, visible, effectiveMode, {
             merge: stagedRoundPatches,
             onFailures: runRepair,
@@ -956,6 +1009,7 @@ export function useOrchestrationController({
           markInterrupted(streamed.error);
         } else {
           const answer = reply || stripToolBlocks(streamed.text) || streamed.text;
+          const wallDurationMs = Math.max(1, Date.now() - turnStartedAt);
           turnSignals.answerEmpty = !answer.trim();
           const answerAttempts = turnAttempts.filter((attempt) => attempt.role === 'answer');
           const lastAnswerAttempt = answerAttempts[answerAttempts.length - 1];
@@ -971,6 +1025,7 @@ export function useOrchestrationController({
               ? {
                   ...message,
                   streaming: false,
+                  durationMs: wallDurationMs,
                   content: answer,
                   metrics: {
                     tokens: turnUsage.tokens,
@@ -982,7 +1037,7 @@ export function useOrchestrationController({
                     usageState,
                     attempts: turnAttempts.length,
                     firstTokenMs: turnUsage.firstTokenMs,
-                    durationMs: turnUsage.durationMs
+                    durationMs: wallDurationMs
                   }
                 }
               : message
@@ -1077,6 +1132,7 @@ export function useOrchestrationController({
           }
         } else {
           const answer = reply || loop.text;
+          const wallDurationMs = Math.max(1, Date.now() - turnStartedAt);
           turnSignals.activity = loop.activity;
           turnSignals.blocked = loop.finish?.blocked ?? null;
           turnSignals.answerEmpty = !answer.trim();
@@ -1101,6 +1157,7 @@ export function useOrchestrationController({
               ? {
                   ...message,
                   streaming: false,
+                  durationMs: wallDurationMs,
                   content: loop.finish?.blocked
                     ? `${answer}\n\n> Stopped early: ${loop.finish.blocked}`
                     : answer,
@@ -1119,7 +1176,7 @@ export function useOrchestrationController({
                     usageState,
                     attempts: turnAttempts.length,
                     firstTokenMs: turnUsage.firstTokenMs,
-                    durationMs: turnUsage.durationMs
+                    durationMs: wallDurationMs
                   }
                 }
               : message
@@ -1722,12 +1779,14 @@ export function useOrchestrationController({
               : `Agent team failed${team.state?.error ? `: ${team.state.error.replace(/\.$/, '')}` : ''}.`;
     }
 
+    const orchestrationWallMs = Math.max(1, Date.now() - active.startedAt);
     setMessages((previous) =>
       previous.map((message) =>
         message.id === active.messageId && message.orchestration
           ? {
               ...message,
               streaming: false,
+              durationMs: orchestrationWallMs,
               content,
               orchestration: {
                 ...message.orchestration,
@@ -1877,11 +1936,13 @@ export function useOrchestrationController({
             ]
           : undefined
     };
+    const orchestrationStartedAt = Date.now();
     const modelMessage: ChatMessage = {
       id: makeId('model'),
       role: 'model',
       content: '',
       timestamp,
+      startedAt: orchestrationStartedAt,
       streaming: true,
       orchestration: {
         kind,
@@ -1915,7 +1976,7 @@ export function useOrchestrationController({
     orchestrationRef.current = {
       messageId: modelMessage.id,
       goal: modelText,
-      startedAt: Date.now(),
+      startedAt: orchestrationStartedAt,
       kind,
       seenRunning: false
     };
@@ -2085,6 +2146,11 @@ export function useOrchestrationController({
     [promptCheckpoints]
   );
 
+  const restorableCheckpointTooltips = useMemo(
+    () => summarizeRestoreCheckpoints(promptCheckpoints),
+    [promptCheckpoints]
+  );
+
   const handleRestorePromptCheckpoint = useCallback(async (userMessageId: string) => {
     if (isGenerating || chatDispatchLockRef.current || autonomy.isRunning || team.isRunning) return;
     const plan = computeRestorePlan(promptCheckpointsRef.current, userMessageId);
@@ -2105,6 +2171,9 @@ export function useOrchestrationController({
     });
     promptCheckpointsRef.current = plan.remainingCheckpoints;
     setPromptCheckpoints(plan.remainingCheckpoints);
+    if (restoreWorkspaceIdRef.current) {
+      void saveWorkspaceCheckpoints(restoreWorkspaceIdRef.current, plan.remainingCheckpoints);
+    }
 
     const targetIndex = messages.findIndex((message) => message.id === userMessageId);
     if (targetIndex >= 0) {
@@ -2146,7 +2215,11 @@ export function useOrchestrationController({
     setPendingRefine(null);
     setAttachedFiles([]);
     setPinnedSymbols([]);
-    if (restoreWorkspaceId) clearConversation(historyStore, restoreWorkspaceId);
+    if (restoreWorkspaceId) {
+      clearConversation(historyStore, restoreWorkspaceId);
+      void clearWorkspaceCheckpoints(restoreWorkspaceId);
+      void clearWorkspaceSubagents(restoreWorkspaceId);
+    }
     setToast('Started a new chat.');
     window.setTimeout(() => setToast(null), 2500);
   }, [
@@ -2274,9 +2347,10 @@ export function useOrchestrationController({
         });
         const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), buildResumeToolContext(baseToolContext));
 
+        const resumeStartedAt = Date.now();
         setMessages((previous) =>
           previous.map((message) =>
-            message.id === messageId ? { ...message, streaming: true, resumable: false } : message
+            message.id === messageId ? { ...message, streaming: true, resumable: false, startedAt: message.startedAt ?? resumeStartedAt } : message
           )
         );
         setIsGenerating(true);
@@ -2417,6 +2491,7 @@ export function useOrchestrationController({
                     ...message,
                     streaming: false,
                     resumable: false,
+                    durationMs: Date.now() - (message.startedAt ?? resumeStartedAt),
                     content: loopResult.text || message.content,
                     toolActivity: loopResult.activity.length > 0 ? loopResult.activity : undefined,
                     toolRounds: loopResult.rounds,
@@ -2501,9 +2576,10 @@ export function useOrchestrationController({
       });
       setContextNotice(contextFitNotice(fit, byok.selectedModel));
 
+      const resumeStartedAt = Date.now();
       setMessages((previous) =>
         previous.map((message) =>
-          message.id === messageId ? { ...message, streaming: true, resumable: false } : message
+          message.id === messageId ? { ...message, streaming: true, resumable: false, startedAt: message.startedAt ?? resumeStartedAt } : message
         )
       );
       setIsGenerating(true);
@@ -2552,6 +2628,7 @@ export function useOrchestrationController({
                         ...message,
                         streaming: false,
                         resumable: false,
+                        durationMs: Date.now() - (message.startedAt ?? resumeStartedAt),
                         metrics: {
                           tokens: info.tokens,
                           inputTokens: info.inputTokens,
@@ -2746,6 +2823,7 @@ export function useOrchestrationController({
     handleDismissBackgroundResume,
     fixTypeErrors,
     restorableMessageIds,
+    restorableCheckpointTooltips,
     handleRestorePromptCheckpoint
   };
 }

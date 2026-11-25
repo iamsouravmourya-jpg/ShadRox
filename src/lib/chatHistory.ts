@@ -1,4 +1,4 @@
-import type { ChatMessage, PersistedWriteOutcome } from './types';
+import type { ChatMessage, PersistedWriteOutcome, SubagentActivityRecord } from './types';
 
 /**
  * The chat transcript used to live only in React state, so closing the folder —
@@ -117,10 +117,49 @@ function sanitizeMessage(raw: unknown, position: number): ChatMessage | null {
   }
   if (message.refinedMeta) stored.refinedMeta = message.refinedMeta;
   if (message.metrics) stored.metrics = message.metrics;
+  if (typeof message.startedAt === 'number' && Number.isFinite(message.startedAt) && message.startedAt > 0) {
+    stored.startedAt = message.startedAt;
+  }
+  if (typeof message.durationMs === 'number' && Number.isFinite(message.durationMs) && message.durationMs >= 0) {
+    stored.durationMs = message.durationMs;
+  }
   if (Array.isArray(message.toolActivity)) {
+    const validStages = new Set(['reading', 'planning', 'editing', 'checking', 'completed', 'failed']);
     stored.toolActivity = message.toolActivity
       .filter((tool) => tool && typeof tool.name === 'string' && typeof tool.label === 'string')
-      .map((tool) => ({ name: tool.name, label: tool.label, ok: tool.ok === true, error: typeof tool.error === 'string' ? tool.error : undefined }));
+      .map((tool) => {
+        const entry: NonNullable<ChatMessage['toolActivity']>[number] = {
+          name: tool.name,
+          label: tool.label,
+          ok: tool.ok === true
+        };
+        if (typeof tool.error === 'string') entry.error = tool.error;
+        if (typeof tool.stage === 'string' && validStages.has(tool.stage)) {
+          entry.stage = tool.stage as NonNullable<ChatMessage['toolActivity']>[number]['stage'];
+        }
+        if (typeof tool.refused === 'boolean') entry.refused = tool.refused;
+        if (typeof tool.durationMs === 'number' && Number.isFinite(tool.durationMs) && tool.durationMs >= 0) {
+          entry.durationMs = tool.durationMs;
+        }
+        return entry;
+      });
+  }
+  if (Array.isArray(message.subagents)) {
+    const cleanSubagents: SubagentActivityRecord[] = [];
+    for (const item of message.subagents.slice(0, 8)) {
+      if (!item || typeof item.id !== 'string' || typeof item.label !== 'string') continue;
+      cleanSubagents.push({
+        id: item.id,
+        ...(item.index === 1 || item.index === 2 ? { index: item.index } : {}),
+        ...(typeof item.title === 'string' && item.title ? { title: item.title.slice(0, 120) } : {}),
+        label: item.label.slice(0, 240),
+        status: item.status === 'done' ? 'done' : 'error',
+        ...(typeof item.currentAction === 'string' && item.currentAction ? { currentAction: item.currentAction.slice(0, 200) } : {}),
+        ...(typeof item.stepsCount === 'number' && Number.isFinite(item.stepsCount) ? { stepsCount: Math.max(0, Math.trunc(item.stepsCount)) } : {}),
+        ...(typeof item.summary === 'string' && item.summary ? { summary: item.summary.slice(0, 4_000) } : {})
+      });
+    }
+    if (cleanSubagents.length > 0) stored.subagents = cleanSubagents;
   }
   if (typeof message.toolRounds === 'number') stored.toolRounds = message.toolRounds;
   // A stored turn is history by definition; the chat uses this to avoid

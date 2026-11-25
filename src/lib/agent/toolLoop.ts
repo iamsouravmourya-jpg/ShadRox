@@ -1,5 +1,5 @@
 import type { ChatTurn } from '../ai';
-import { availableToolNames, classifyToolEffect, isControlTool, isKnownTool, MAX_CALLS_PER_ROUND, resetToolTurnTracking, runTool, summarizeCall, TOOL_DEFINITIONS, type ToolCall, type ToolOutcome } from './tools';
+import { availableToolNames, classifyToolEffect, isControlTool, isKnownTool, MAX_CALLS_PER_ROUND, resetToolTurnTracking, runTool, summarizeCall, TOOL_DEFINITIONS, type RunToolOptions, type ToolCall, type ToolOutcome } from './tools';
 import type { McpToolHandle } from './mcpTools';
 import { parseToolBlocks, serializeCallKey, serializeResults, stripToolBlocks } from './toolProtocol';
 import { applyTaskUpdates, completionGuard, renderTaskPlan, type TaskPlan } from './taskPlan';
@@ -18,7 +18,10 @@ import {
 } from './turnState';
 import { detectScaffoldIntent, detectAddPageIntent, scaffoldNudge, addPageNudge, previewNudge } from './scaffold';
 import { compactToolObservations, hardCapChatHistory, upsertWorkingMemory, type WorkingMemoryState } from './loopContext';
-import { createFailureRepeatTracker, failureNudge, failureBlockMessage } from './stuck';
+import {
+  createFailureRepeatTracker, createPerFileFailureTracker, failureBlockMessage, failureNudge,
+  perFileFailureBlockMessage, perFileFailureNudge
+} from './stuck';
 import { ensureTurnCheckpoint } from './checkpoints';
 import { isVerifyCommand } from './verifyProject';
 import { confinePatches, isInsideWorkspaceRoot } from '../autonomy/confinement';
@@ -198,6 +201,10 @@ export interface ToolLoopInput {
   onUnlockTools?: (unlocked: ReadonlySet<ToolBundleCategory>) => void;
   /** Called before any write/delete tool or path= edit fence modifies the given workspace paths. */
   onBeforeMutatePaths?: (paths: string[]) => Promise<void> | void;
+  /** When true (inside an isolated scout), spawn_subagent is strictly refused to prevent recursion. */
+  disallowSubagents?: boolean;
+  /** Live per-tool execution hook (used by subagents for real-time card step telemetry). */
+  onToolStep?: (event: { phase: 'start' | 'done'; call: ToolCall; outcome?: ToolOutcome }) => void;
 }
 
 /* ------------------------------------------------------------------ *
@@ -511,6 +518,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   const externalNames = external ? external.describe().map((tool) => tool.name) : [];
   const tracker = createProgressTracker();
   const failureTracker = createFailureRepeatTracker();
+  const perFileTracker = createPerFileFailureTracker();
   let text = '';
   let round = 0;
   let capped = false;
@@ -825,6 +833,12 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
           problems.push(`"${call.name}" is not a tool. Available: ${availableToolNames(externalNames)}.`);
           continue;
         }
+        if (input.disallowSubagents && call.name === 'spawn_subagent') {
+          const effect = classifyToolEffect(call.name);
+          denied.push({ call, effect });
+          problems.push(`${summarizeCall(call)} was refused: subagents cannot spawn nested subagents.`);
+          continue;
+        }
         if (policy) {
           const effect = classifyToolEffect(call.name);
           if (!allowsEffect(policy.mode, effect)) {
@@ -836,6 +850,16 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
           }
         }
         const key = serializeCallKey(call);
+        if (call.name === 'edit_file' || call.name === 'write_file' || call.name === 'apply_patch') {
+          const blockedPath = writePathsOf(call).find((targetPath) => perFileTracker.isBlocked(targetPath));
+          if (blockedPath) {
+            const message = perFileFailureBlockMessage(blockedPath);
+            problems.push(message);
+            activity.push({ name: call.name, label: summarizeCall(call), ok: false, error: message, input: call.args, stage: 'failed', refused: true });
+            flightRecorder.record('tool_result', { tool: call.name, status: 'refused', refused: true, error_code: 'BLOCKED', error: message }, runId);
+            continue;
+          }
+        }
         // A call that failed the same way three times is blocked for the turn:
         // repeating it cannot change the result, so the model is told to switch
         // approach instead of spending another round on it.
@@ -1027,8 +1051,18 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         }
       }
       const t0 = Date.now();
+      const executeTool = async (call: ToolCall, options?: RunToolOptions): Promise<ToolOutcome> => {
+        input.onToolStep?.({ phase: 'start', call });
+        const outcome = await runTool(input.workspaceId as string, call, {
+          signal: input.signal,
+          nestedSubagent: input.disallowSubagents,
+          ...options
+        });
+        input.onToolStep?.({ phase: 'done', call, outcome });
+        return outcome;
+      };
       const hasSequentialStep = batch.some(
-        (call, position) => isExternal[position] || classifyToolEffect(call.name) !== 'read'
+        (call, position) => isExternal[position] || call.name === 'spawn_subagent' || classifyToolEffect(call.name) !== 'read'
       );
       let batchOutcomes: ToolOutcome[];
       if (hasSequentialStep) {
@@ -1066,8 +1100,10 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
             const allowed = indices.slice(0, MAX_CONCURRENT_SUBAGENTS);
             const excess = indices.slice(MAX_CONCURRENT_SUBAGENTS);
             await Promise.all(
-              allowed.map(async (batchIndex) => {
-                batchOutcomes[batchIndex] = await runTool(input.workspaceId as string, batch[batchIndex]);
+              allowed.map(async (batchIndex, slotPosition) => {
+                batchOutcomes[batchIndex] = await executeTool(batch[batchIndex], {
+                  subagentSlot: ((slotPosition % MAX_CONCURRENT_SUBAGENTS) + 1) as 1 | 2
+                });
               })
             );
             for (const batchIndex of excess) {
@@ -1105,7 +1141,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
                   const slotIdx = activeSlots[0] ? 1 : 0;
                   activeSlots[slotIdx] = true;
                   try {
-                    const outcome = await runTool(input.workspaceId as string, batch[batchIndex]);
+                    const outcome = await executeTool(batch[batchIndex]);
                     batchOutcomes[batchIndex] = labelWithSlot(outcome, slotIdx + 1);
                   } finally {
                     activeSlots[slotIdx] = false;
@@ -1119,14 +1155,19 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
           }
 
           const call = batch[position];
-          batchOutcomes[position] = isExternal[position] && external
-            ? await external.call(call)
-            : await runTool(input.workspaceId as string, call);
+          if (isExternal[position] && external) {
+            input.onToolStep?.({ phase: 'start', call });
+            const outcome = await external.call(call);
+            input.onToolStep?.({ phase: 'done', call, outcome });
+            batchOutcomes[position] = outcome;
+          } else {
+            batchOutcomes[position] = await executeTool(call);
+          }
           position += 1;
         }
       } else {
         batchOutcomes = await Promise.all(
-          batch.map((call) => runTool(input.workspaceId as string, call))
+          batch.map((call) => executeTool(call))
         );
       }
       batchDurationMs = Math.max(1, Date.now() - t0);
@@ -1185,6 +1226,22 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         if (verdict === 'nudge' || verdict === 'block') {
           const base = verdict === 'nudge' ? failureNudge(summarizeCall(call)) : failureBlockMessage(summarizeCall(call));
           problems.push(isPortLoopFailure(outcome) ? `${base} ${PORT_LOOP_ADVICE}` : base);
+        }
+        if (call.name === 'edit_file' || call.name === 'write_file' || call.name === 'apply_patch') {
+          const targets = outcome.ok && outcome.changedPaths && outcome.changedPaths.length > 0
+            ? outcome.changedPaths
+            : writePathsOf(call);
+          const callKey = serializeCallKey(call);
+          for (const target of targets) {
+            const fileVerdict = perFileTracker.note({
+              path: target,
+              ok: outcome.ok,
+              refused: outcome.refused,
+              callKey
+            });
+            if (fileVerdict === 'nudge') problems.push(perFileFailureNudge(target));
+            else if (fileVerdict === 'block') problems.push(perFileFailureBlockMessage(target));
+          }
         }
       }
       // Verification records land even when the check FAILED — a failed check

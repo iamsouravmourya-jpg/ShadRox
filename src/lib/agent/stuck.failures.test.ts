@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createFailureRepeatTracker, failureNudge, failureBlockMessage } from './stuck';
+import {
+  createFailureRepeatTracker,
+  createPerFileFailureTracker,
+  failureNudge,
+  failureBlockMessage,
+  perFileFailureBlockMessage,
+  perFileFailureNudge
+} from './stuck';
 
 const fail = (key: string, error: string) => ({ key, ok: false, error });
 
@@ -65,4 +72,28 @@ test('the nudge and block messages name the call and the next step', () => {
   assert.match(failureNudge('edit_file · a.ts'), /change approach/);
   assert.match(failureBlockMessage('edit_file · a.ts'), /blocked/);
   assert.match(failureBlockMessage('edit_file · a.ts'), /three times/);
+});
+
+test('per-file 3-strike circuit breaker nudges at 2, blocks at 3, ignores refusals, and resets on success', () => {
+  const tracker = createPerFileFailureTracker();
+
+  assert.equal(tracker.note({ path: './src\\App.tsx', ok: false }), null);
+  assert.equal(tracker.note({ path: 'src/app.tsx', ok: false, refused: true }), null, 'refusals never count');
+  assert.equal(tracker.note({ path: 'src/App.tsx', ok: false }), 'nudge');
+  assert.equal(tracker.isBlocked('src/App.tsx'), false);
+
+  // Distinct file stays untouched
+  assert.equal(tracker.note({ path: 'src/Other.tsx', ok: false }), null);
+
+  assert.equal(tracker.note({ path: 'src/App.tsx', ok: false }), 'block');
+  assert.equal(tracker.isBlocked('./src\\App.tsx'), true);
+  assert.equal(tracker.isBlocked('src/Other.tsx'), false);
+
+  // A successful write/edit unblocks and resets that file
+  assert.equal(tracker.note({ path: 'src/App.tsx', ok: true }), null);
+  assert.equal(tracker.isBlocked('src/App.tsx'), false);
+  assert.equal(tracker.note({ path: 'src/App.tsx', ok: false }), null);
+
+  assert.match(perFileFailureNudge('src/App.tsx'), /twice this turn/);
+  assert.match(perFileFailureBlockMessage('src/App.tsx'), /3 consecutive failed edit/);
 });

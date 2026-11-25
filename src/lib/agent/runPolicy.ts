@@ -142,10 +142,27 @@ const BUNDLE_RULES: Array<[ToolBundleCategory, RegExp]> = [
   ['review', /\b(?:diff\s*review|code\s*review|review\s+(?:my|the|this)\s+(?:diff|changes)|audit\s+diff)\b/i],
   ['jobs', /\b(?:background\s+job|jobs|job_control|running\s+server|dev\s+server|port\s+already\s+in\s+use|eaddrinuse|kill\s+server)\b/i],
   ['terminal', /\b(?:terminal|pty|stdin|waiting\s+for\s+input|interactive\s+prompt|answer\s+prompt)\b/i],
-  ['interaction', /\b(?:ask\s+me|subagent|spawn\s+agent|delegate)\b/i],
+  ['interaction', /\b(?:ask\s+me|subagent|spawn\s+agent|delegate|agent|agents|parallel|multiple|swarm|scouts?)\b/i],
   ['apply_patch', /\b(?:multi[-\s]?file|across\s+files|refactor|migrate|patch|apply_patch|full[-\s]?stack|end[-\s]?to[-\s]?end)\b/i],
   ['mcp', /\b(?:mcp|external\s+tool|connector|plugin)\b/i]
 ];
+
+const MULTI_DIR_PATH_RE = /(?:^|[\s`'"(\[,])((?:[a-zA-Z0-9._-]+\/)+[a-zA-Z0-9._-]+)(?=$|[\s`'")\],:;?!])/g;
+const MULTI_MODULE_CUE_RE = /\b(?:across\s+(?:modules|folders|directories|files)|multi[-\s]?(?:file|module)|multiple\s+(?:modules|directories|folders|files|components|pages)|both\s+(?:frontend|client|backend|server)\s+and\s+(?:frontend|client|backend|server))\b/i;
+
+function hasMultiDirectoryOrModuleCue(prompt: string): boolean {
+  if (MULTI_MODULE_CUE_RE.test(prompt)) return true;
+  const dirs = new Set<string>();
+  let match: RegExpExecArray | null;
+  MULTI_DIR_PATH_RE.lastIndex = 0;
+  while ((match = MULTI_DIR_PATH_RE.exec(prompt)) !== null) {
+    const clean = match[1].replace(/^\.\//, '');
+    const slash = clean.lastIndexOf('/');
+    if (slash > 0) dirs.add(clean.slice(0, slash).toLowerCase());
+    if (dirs.size >= 2) return true;
+  }
+  return false;
+}
 
 export function detectIntentToolBundles(input: TurnIntentInput): Set<ToolBundleCategory> {
   const bundles = new Set<ToolBundleCategory>(['core']);
@@ -154,11 +171,12 @@ export function detectIntentToolBundles(input: TurnIntentInput): Set<ToolBundleC
   if (input.previewActive) bundles.add('preview');
   if ((input.activeJobCount ?? 0) > 0) bundles.add('jobs');
   if (input.terminalAwaitingInput) bundles.add('terminal');
-  if (input.multiFileSignal) bundles.add('apply_patch');
+  const multiCue = Boolean(input.multiFileSignal) || hasMultiDirectoryOrModuleCue(prompt);
+  if (multiCue) bundles.add('apply_patch');
   // Multi-file / multi-module work is exactly when parallel read-only scouts pay
   // off: auto-enable the interaction bundle (spawn_subagent) without bloating the
   // lean core bundle every other execution turn carries.
-  if (input.multiFileSignal) bundles.add('interaction');
+  if (multiCue) bundles.add('interaction');
 
   for (const [bundle, pattern] of BUNDLE_RULES) {
     if (!pattern.test(prompt)) continue;

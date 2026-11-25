@@ -97,6 +97,8 @@ export interface ChatMessage {
     stage?: 'reading' | 'planning' | 'editing' | 'checking' | 'completed' | 'failed';
     refused?: boolean;
   }>;
+  /** Read-only subagent scouts spawned during this turn, persisted across restarts. */
+  subagents?: SubagentActivityRecord[];
   /** Live status during execution (e.g. "Reading src/App.tsx...", "Running checks..."). */
   activeStatus?: string;
   /** Plan approval gate for multi-file or architectural tasks. */
@@ -119,6 +121,8 @@ export interface ChatMessage {
   finishedWith?: { summary: string; blocked: string | null };
   /** Provider reasoning stream (Gemini thoughts / Groq reasoning models). */
   reasoning?: string;
+  /** Epoch ms when this turn started, used for live wall-clock elapsed timer. */
+  startedAt?: number;
   /** Total duration in milliseconds for this agent turn. */
   durationMs?: number;
   /** Latency and token usage reported by the streaming endpoint. */
@@ -179,6 +183,18 @@ export interface ChatMessage {
 
 /** Write outcomes that survive in chat history; transient states never persist. */
 export type PersistedWriteOutcome = 'applied' | 'pending' | 'failed' | 'skipped' | 'reverted';
+
+/** Persisted telemetry record for one read-only subagent scout spawned in a turn. */
+export interface SubagentActivityRecord {
+  id: string;
+  index?: 1 | 2;
+  title?: string;
+  label: string;
+  status: 'running' | 'done' | 'error';
+  currentAction?: string;
+  stepsCount?: number;
+  summary?: string;
+}
 
 /** A single file change proposed by one assistant reply, awaiting review. */
 export interface ReviewPatch {

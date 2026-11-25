@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { SubagentProgress } from './subagent';
 
 const storage = new Map<string, string>();
 (globalThis as unknown as Record<string, unknown>).localStorage = {
@@ -283,4 +284,79 @@ test('conversational and advisory turns are unaffected; scouts are execution-onl
     true,
     'multi-file execution turns expose spawn_subagent'
   );
+});
+
+test('subagent runs up to 5 rounds, emits live SubagentProgress telemetry, and respects parent AbortSignal', async () => {
+  assert.equal(sa.MAX_SUBAGENT_ROUNDS, 5);
+  assert.equal(sa.DEFAULT_SUBAGENT_ROUNDS, 5);
+
+  dispatched.length = 0;
+  const savedBridge = (globalThis as Record<string, unknown>).window;
+  (globalThis as Record<string, unknown>).window = {
+    shadroxDesktop: {
+      findFiles: async () => ['src/App.tsx', 'src/main.tsx']
+    },
+    dispatchEvent: (event: { type: string; detail?: unknown }) => {
+      dispatched.push({ type: event.type, detail: event.detail });
+      return true;
+    }
+  };
+
+  let roundSeen = 0;
+  sa.configureSubagentStream(async (_messages, round) => {
+    roundSeen = round;
+    if (round < 3) {
+      return { text: toolBlock({ name: 'find_files', args: { pattern: '*.ts' } }), error: null };
+    }
+    return { text: toolBlock({ name: 'finish', args: { summary: 'Mapped entry and routes cleanly.' } }), error: null };
+  });
+
+  try {
+    const result = await sa.handleSpawnSubagent(
+      'ws',
+      { task: 'Inspect module structure', files: ['src/App.tsx'] },
+      { slotIndex: 2 }
+    );
+    assert.equal(result.ok, true);
+    assert.equal(roundSeen, 3);
+    const events = dispatched
+      .filter((entry) => entry.type === sa.SUBAGENT_EVENT)
+      .map((entry) => entry.detail as SubagentProgress);
+    assert.ok(events.length >= 3);
+    assert.equal(events[0].index, 2);
+    assert.ok(events[0].title && events[0].title.length > 0);
+    assert.ok(events.some((ev) => ev.status === 'running' && (ev.stepsCount ?? 0) >= 1 && Boolean(ev.currentAction)));
+    const done = events[events.length - 1];
+    assert.equal(done.status, 'done');
+    assert.match(done.summary ?? '', /Mapped entry/);
+  } finally {
+    (globalThis as Record<string, unknown>).window = savedBridge;
+    sa.configureSubagentStream(null);
+  }
+
+  // Parent AbortSignal propagates immediately into running subagent
+  const parentController = new AbortController();
+  sa.configureSubagentStream(async (_messages, _round, signal) => {
+    await new Promise<void>((resolve) => {
+      if (signal?.aborted) return resolve();
+      signal?.addEventListener('abort', () => resolve(), { once: true });
+      setTimeout(resolve, 200);
+    });
+    return { text: toolBlock({ name: 'finish', args: { summary: 'late' } }), error: null };
+  });
+  try {
+    const pending = sa.handleSpawnSubagent('ws', { task: 'Slow task' }, { signal: parentController.signal });
+    parentController.abort();
+    const aborted = await pending;
+    assert.equal(aborted.refused, true);
+    assert.match(aborted.error ?? '', /stopped/i);
+  } finally {
+    sa.configureSubagentStream(null);
+  }
+
+  // Nested subagent calls are blocked immediately even though effect is read-only
+  const nested = await sa.handleSpawnSubagent('ws', { task: 'Child scout' }, { nested: true });
+  assert.equal(nested.ok, false);
+  assert.equal(nested.refused, true);
+  assert.match(nested.error ?? '', /Nested spawn_subagent/);
 });

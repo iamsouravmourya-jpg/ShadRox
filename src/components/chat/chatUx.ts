@@ -70,6 +70,7 @@ export function computeComposerHeight(
 export interface ToolActivitySummary {
   total: number;
   failed: number;
+  recovered: number;
   held: number;
   reads: number;
   edits: number;
@@ -84,26 +85,87 @@ export function formatToolDuration(ms?: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+export function formatTurnElapsed(ms?: number): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '';
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+}
+
+interface ActivityTargetEntry {
+  name: string;
+  label: string;
+  ok?: boolean;
+  refused?: boolean;
+  stage?: string;
+  durationMs?: number;
+  input?: Record<string, unknown> | string;
+}
+
+function targetPathOf(tool: ActivityTargetEntry): string | null {
+  if (tool.input && typeof tool.input === 'object') {
+    const record = tool.input as Record<string, unknown>;
+    if (typeof record.path === 'string' && record.path.trim()) {
+      return record.path.trim().replace(/\\/g, '/').toLowerCase();
+    }
+    if (Array.isArray(record.patches) && record.patches.length === 1) {
+      const first = record.patches[0];
+      if (first && typeof first === 'object' && typeof (first as Record<string, unknown>).path === 'string') {
+        return String((first as Record<string, unknown>).path).trim().replace(/\\/g, '/').toLowerCase();
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Returns indices of non-refused intermediate errors that were later succeeded by a
+ * matching tool call (same tool name or same target file path).
+ */
+export function findRecoveredToolIndices(tools: ReadonlyArray<ActivityTargetEntry>): Set<number> {
+  const recovered = new Set<number>();
+  for (let i = 0; i < tools.length; i += 1) {
+    const entry = tools[i];
+    if (entry.ok || entry.refused) continue;
+    const targetPath = targetPathOf(entry);
+    for (let j = i + 1; j < tools.length; j += 1) {
+      const later = tools[j];
+      if (!later.ok) continue;
+      if (later.name === entry.name) {
+        recovered.add(i);
+        break;
+      }
+      if (targetPath && targetPathOf(later) === targetPath) {
+        recovered.add(i);
+        break;
+      }
+    }
+  }
+  return recovered;
+}
+
 export function summarizeToolActivity(
-  tools: ReadonlyArray<{
-    name: string;
-    label: string;
-    ok?: boolean;
-    refused?: boolean;
-    stage?: string;
-    durationMs?: number;
-  }>
+  tools: ReadonlyArray<ActivityTargetEntry>,
+  options?: { streaming?: boolean }
 ): ToolActivitySummary {
   let failed = 0;
+  let recovered = 0;
   let held = 0;
   let reads = 0;
   let edits = 0;
   let checks = 0;
   let totalDurationMs = 0;
+  const recoveredIndices = findRecoveredToolIndices(tools);
 
-  for (const tool of tools) {
+  for (let index = 0; index < tools.length; index += 1) {
+    const tool = tools[index];
     if (tool.refused) held += 1;
-    else if (!tool.ok) failed += 1;
+    else if (!tool.ok) {
+      if (recoveredIndices.has(index) || options?.streaming) recovered += 1;
+      else failed += 1;
+    }
 
     const stage = tool.stage ?? (tool.name.includes('read') || tool.name.includes('list') ? 'reading' : 'completed');
     if (stage === 'reading') reads += 1;
@@ -118,6 +180,7 @@ export function summarizeToolActivity(
   return {
     total: tools.length,
     failed,
+    recovered,
     held,
     reads,
     edits,
@@ -140,3 +203,4 @@ export function describeLivePhase(options: {
   if (options.hasReasoning) return 'Reasoning through approach…';
   return 'Analyzing workspace & planning response…';
 }
+

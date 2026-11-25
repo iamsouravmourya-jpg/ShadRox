@@ -386,3 +386,49 @@ test('withNtfsRetry recovers from transient EBUSY and EPERM locks and clears rea
   assert.deepEqual(chmodArgs, { target: 'C:\\repo\\locked.txt', mode: 0o666 });
 });
 
+test('Windows reserved device names (nul, CON) are skipped cleanly by workspace listing and machine-delta capture', async (t) => {
+  const f = await fixture(t);
+  // Creating a real 'nul' / 'CON.txt' file on POSIX tests workspace traversal filters
+  await f.write('nul', 'trap');
+  await f.write('nested/CON.txt', 'trap');
+  const listed = await f.access.listDirectory(f.id, '', 0);
+  assert.equal(listed.entries.some((entry) => entry.path === 'nul'), false);
+  const nestedListed = await f.access.listDirectory(f.id, 'nested', 0);
+  assert.equal(nestedListed.entries.some((entry) => entry.path.includes('CON.txt')), false);
+  const searched = await f.access.searchContent(f.id, { query: 'trap' });
+  const paths = searched.matches.map((entry) => entry.path);
+  assert.equal(paths.some((name) => name === 'nul' || name.includes('CON.txt')), false);
+
+  // Even if an injected directory listing surfaces reserved names, capture skips them with zero omissions
+  const wrappedAccess = {
+    getWorkspace: (id) => f.access.getWorkspace(id),
+    listDirectory: async (id, dir, cursor) => {
+      const page = await f.access.listDirectory(id, dir, cursor);
+      if (dir === '' && cursor === 0) {
+        return {
+          ...page,
+          entries: [
+            { path: 'nul', kind: 'file' },
+            { path: 'CON', kind: 'file' },
+            { path: 'sub/lpt1.log', kind: 'file' },
+            ...page.entries
+          ]
+        };
+      }
+      return page;
+    }
+  };
+  const guardedService = createMachineDelta({
+    access: wrappedAccess,
+    readSystem: async () => structuredClone(f.state),
+    prepareGitRestore: async () => { throw new Error('Unexpected Git restore'); },
+    stopOwnedPreview: async () => true
+  });
+  await guardedService.begin(f.id, 'cp-win-reserved');
+  await f.write('a.txt', 'after');
+  const report = await guardedService.finish(f.id, 'cp-win-reserved');
+  assert.deepEqual(report.omissions, []);
+  assert.equal(report.canRestore, true);
+  assert.deepEqual(report.files.map((entry) => entry.path), ['a.txt']);
+});
+

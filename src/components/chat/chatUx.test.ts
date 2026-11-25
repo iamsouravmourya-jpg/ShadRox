@@ -5,7 +5,9 @@ import {
   CHAT_STARTERS,
   computeComposerHeight,
   describeLivePhase,
+  findRecoveredToolIndices,
   formatToolDuration,
+  formatTurnElapsed,
   stripTrailingMention,
   summarizeToolActivity
 } from './chatUx';
@@ -43,10 +45,14 @@ test('computeComposerHeight clamps between minHeight and maxHeight and toggles s
   assert.deepEqual(computeComposerHeight(Number.NaN), { height: 58, overflowY: 'hidden' });
 });
 
-test('formatToolDuration and summarizeToolActivity aggregate stages and counts accurately', () => {
+test('formatToolDuration, formatTurnElapsed, and summarizeToolActivity aggregate stages, recovered adjustments, and counts accurately', () => {
   assert.equal(formatToolDuration(420), '420ms');
   assert.equal(formatToolDuration(1450), '1.4s');
   assert.equal(formatToolDuration(undefined), '');
+
+  assert.equal(formatTurnElapsed(5200), '5.2s');
+  assert.equal(formatTurnElapsed(74000), '1m 14s');
+  assert.equal(formatTurnElapsed(undefined), '');
 
   const summary = summarizeToolActivity([
     { name: 'read_file', label: 'Read src/App.tsx', ok: true, stage: 'reading', durationMs: 40 },
@@ -59,9 +65,29 @@ test('formatToolDuration and summarizeToolActivity aggregate stages and counts a
   assert.equal(summary.edits, 2);
   assert.equal(summary.checks, 1);
   assert.equal(summary.failed, 1);
+  assert.equal(summary.recovered, 0);
   assert.equal(summary.held, 1);
   assert.equal(summary.totalDurationMs, 1000);
   assert.equal(summary.latestLabel, 'Held write');
+});
+
+test('findRecoveredToolIndices and summarizeToolActivity downgrade intermediate recovered failures to calm adjustments', () => {
+  const tools = [
+    { name: 'edit_file', label: 'Edit App.tsx', ok: false, stage: 'editing', input: { path: 'src/App.tsx' } },
+    { name: 'write_file', label: 'Write App.tsx', ok: true, stage: 'editing', input: { path: 'src/App.tsx' } },
+    { name: 'verify', label: 'Run typecheck', ok: false, stage: 'checking' }
+  ];
+  const recovered = findRecoveredToolIndices(tools);
+  assert.equal(recovered.has(0), true);
+  assert.equal(recovered.has(2), false);
+
+  const completed = summarizeToolActivity(tools, { streaming: false });
+  assert.equal(completed.recovered, 1);
+  assert.equal(completed.failed, 1);
+
+  const active = summarizeToolActivity(tools, { streaming: true });
+  assert.equal(active.recovered, 2);
+  assert.equal(active.failed, 0);
 });
 
 test('describeLivePhase prioritizes explicit status, then content, tool, or reasoning', () => {

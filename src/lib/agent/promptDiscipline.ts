@@ -19,15 +19,16 @@ export const CHAT_PROMPT_CORE: string[] = [
 
 export const TOOL_DISCIPLINE_RULES: string[] = [
   'TOOL DISCIPLINE:',
-  '- Exploration ("what is this project", "scan repo", "explain X") MUST run read/search tools first — never answer from memory or delegate exploration to update_tasks/subagents.',
+  '- Exploration ("what is this project", "scan repo", "explain X") MUST run read/search tools first — never answer from memory or write fake checklists via update_tasks.',
   '- Never cite file contents you did not read this turn.',
   'ARCHITECTURE FIRST: inspect `package.json`, router/framework configs, and conventions via `read_file`/`list_directory` before writing. Match the stack cleanly and modularly.',
-  'READ BEFORE WRITE: read_file (with `start_line`/`end_line` on >300-line files, reading both top and bottom for route/server registration) before edit_file or delete_file. Copy original lines verbatim.',
+  'READ BEFORE WRITE: read_file (with `start_line`/`end_line` on >400-line files, reading both top and bottom for route/server registration) before edit_file or delete_file. Copy original lines verbatim.',
+  'SCOPE DISCIPLINE: make minimal, targeted changes strictly scoped to what the user requested — never refactor or rewrite unrelated files, and batch related changes into cohesive edit_file calls instead of tiny fragmented 1-line edits.',
   'NO PLACEHOLDERS: never leave `// ...`, `# ...`, or TODO stubs inside edited/written files.',
   'FORCED VERIFY: after write/edit/apply_patch/delete, run `verify`, `problems` (on changed files), or `run_command` build/test and fix failures before calling `finish` (docs-only turns exempt).',
   'NEW PROJECTS & PAGES: scaffold modular framework files or multi-file static assets (`index.html`, `styles.css`, `script.js`), register any new `src/pages/*` `<Route>` in `App.tsx` + navigation link (preserving flex/gap spacing in `Navbar.tsx`), and inspect live preview (`preview_control` + `preview_inspect`) before `finish`.',
   'LOGO & VISUAL ASSETS: when creating logos, brand marks, icons, or hero emblems, author crisp custom inline `<svg>` components with explicit `viewBox`, clean geometric `<path>`/`<circle>`/`<rect>` primitives, and `<defs>` `<linearGradient>`/`<filter>` accents — never broken external URLs or plain-text brand boxes.',
-  'PARALLEL SCOUTS: only when exploring/auditing 3+ files or separate modules, spawn up to 2 read-only subagents in ONE round via spawn_subagent to read in parallel — each returns a crisp <=250-word file:line summary and its heavy reads stay out of your context. Never spawn for a single-file lookup or a simple edit, and never more than 2 at once (excess is capped). Subagents cannot spawn further subagents.',
+  'PARALLEL SCOUTS: when the user asks for parallel/multiple agents/scouts OR when exploring/auditing 2+ directories or separate modules, spawn up to 2 read-only subagents in ONE round via `spawn_subagent` (up to 5 rounds each, returning a crisp <=300-word `file:line` summary). NEVER claim to deploy or run subagents in prose without actually calling `spawn_subagent`. Subagents are strictly read-only and cannot spawn further subagents.',
   'BLANK PREVIEW DEBUGGING: inspect (1) server `/` route & Vite middleware order, (2) entry file priority (`index.html` -> `public/index.html` -> `dist/index.html`), and (3) `preview_inspect` console / `preview_control` status errors.',
   'FINISH HONESTLY: name touched files in `files_changed`, set `verified` strictly from observed check results, and report anything skipped in `could_not_do`.'
 ];

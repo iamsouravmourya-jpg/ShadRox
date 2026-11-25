@@ -261,9 +261,13 @@ export function normalizeWorkspacePath(value: string): string {
   return normalizeRepoPath(value);
 }
 
-/** Traversal-safe, dot-free workspace-relative path. */
+const WINDOWS_RESERVED_SEGMENT = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
+/** Traversal-safe, dot-free, Windows-safe workspace-relative path. */
 function isEditablePath(path: string): boolean {
-  return path.length > 0 && path.split('/').every((part) => part && part !== '.' && part !== '..');
+  return path.length > 0 && path.split('/').every((part) => (
+    Boolean(part) && part !== '.' && part !== '..' && !WINDOWS_RESERVED_SEGMENT.test(part)
+  ));
 }
 
 function baselineKeyFor(baseline: Record<string, string>, name: string): string {
@@ -1758,11 +1762,16 @@ export function useWorkspace(): UseWorkspaceResult {
     const desktop = getDesktopBridge();
     const id = desktopWorkspaceIdRef.current;
 
+    const safeRestoreFiles = restoreFiles.filter((file) => isEditablePath(normalizeWorkspacePath(file.path)));
+    const safeDeletePaths = deletePaths
+      .map((entry) => normalizeWorkspacePath(entry))
+      .filter((entry) => isEditablePath(entry));
+
     if (desktop && id) {
-      if (restoreFiles.length > 0) {
+      if (safeRestoreFiles.length > 0) {
         try {
-          const writes = restoreFiles.map((file) => ({
-            name: file.path,
+          const writes = safeRestoreFiles.map((file) => ({
+            name: normalizeWorkspacePath(file.path),
             content: file.content
           }));
           const saved = await desktop.saveFiles(id, writes);
@@ -1776,9 +1785,7 @@ export function useWorkspace(): UseWorkspaceResult {
           errors.push(error instanceof Error ? error.message : String(error));
         }
       }
-      for (const rawTarget of deletePaths) {
-        const clean = normalizeWorkspacePath(rawTarget);
-        if (!clean) continue;
+      for (const clean of safeDeletePaths) {
         try {
           const removed = await desktop.deletePath(id, clean);
           applyDiskTreeChanges([{ path: clean, kind: removed.kind === 'directory' ? 'unlinkDir' : 'unlink' }]);
@@ -1794,10 +1801,7 @@ export function useWorkspace(): UseWorkspaceResult {
       void loadDirectory('');
     }
 
-    const deleteKeys = deletePaths
-      .map((entry) => normalizeWorkspacePath(entry))
-      .filter(Boolean)
-      .map((entry) => canonicalPathKey(entry));
+    const deleteKeys = safeDeletePaths.map((entry) => canonicalPathKey(entry));
     const shouldDrop = (candidate: string) => {
       const key = canonicalPathKey(candidate);
       return deleteKeys.some((target) => key === target || key.startsWith(`${target}/`));
@@ -1811,7 +1815,7 @@ export function useWorkspace(): UseWorkspaceResult {
       pruneHandlesForPath(handlesRef.current, target, true);
     }
 
-    for (const restored of restoreFiles) {
+    for (const restored of safeRestoreFiles) {
       const target = normalizeWorkspacePath(restored.path);
       if (!target) continue;
       const version = await contentVersion(restored.content).catch(() => undefined);
@@ -1845,7 +1849,7 @@ export function useWorkspace(): UseWorkspaceResult {
             treeMap.delete(key);
           }
         }
-        for (const restored of restoreFiles) {
+        for (const restored of safeRestoreFiles) {
           const target = normalizeWorkspacePath(restored.path);
           if (target) treeMap.set(canonicalPathKey(target), { path: target, size: restored.content.length });
         }
