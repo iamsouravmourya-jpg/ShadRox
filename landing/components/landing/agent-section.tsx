@@ -18,9 +18,9 @@ const panels: Panel[] = [
     tab: 'Agent loop',
     title: 'Reads first.',
     accent: 'Then proposes.',
-    text: 'The agent reads your project — files, search, TypeScript diagnostics, preview, debugger, Git — and proposes changes as diffs you accept or reject. Every turn is verified before claiming completion.',
+    text: 'The agent reads your project — files, search, TypeScript diagnostics, preview, Git — and proposes changes as diffs you accept or reject. Every turn is verified before claiming completion.',
     bullets: [
-      '40 built-in tools across reads, search, diagnostics, preview, debug, and Git',
+      '40 built-in tools across reads, search, diagnostics, preview, and Git',
       'Bounded loop with progress-based stall detection and prompt-injection hygiene',
       'Edits go through an atomic patch → verify → review pipeline; unsafe edits wait for approval',
       'Cut-off or malformed edit blocks fail loudly and trigger a repair retry — never silently dropped',
@@ -28,16 +28,34 @@ const panels: Panel[] = [
     ],
     steps: [
       { mark: '1', title: 'Read the files', sub: 'list_dir · read_file · search_text' },
-      { mark: '2', title: 'Check diagnostics & preview', sub: 'problems · preview_inspect · debugger' },
+      { mark: '2', title: 'Check diagnostics & preview', sub: 'problems · preview_inspect · console' },
       { mark: '3', title: 'Propose an atomic patch', sub: 'verified before disk commit' },
       { mark: '4', title: 'Verify & report', sub: 'real exit code + TS diagnostics' },
+    ],
+  },
+  {
+    tab: 'Unified agent',
+    title: 'One agent,',
+    accent: 'auto-routed.',
+    text: 'There is no mode switcher to babysit. A single autonomous agent classifies every turn and routes it automatically — conversational, advisory, or execution — so a greeting stays tiny and cheap while a build request unlocks the full toolkit.',
+    bullets: [
+      'Automatic conversational / advisory / execution routing — no manual mode buttons',
+      'Conversational turns send a tiny prompt with zero tools, logs, or memory (ultra-lean BYOK)',
+      'Execution turns unlock reads, edits, preview, Git, and guarded commands as needed',
+      'Inline <svg> generation for logos, icons, and brand marks — crisp, not broken image URLs',
+    ],
+    steps: [
+      { mark: 'C', title: 'Conversational', sub: 'tiny prompt · 0 tools · cheapest' },
+      { mark: 'A', title: 'Advisory', sub: 'read-only exploration & planning' },
+      { mark: 'E', title: 'Execution', sub: 'full toolkit · guarded writes' },
+      { mark: '↺', title: 'Checkpoint', sub: '1-click restore if a turn goes sideways' },
     ],
   },
   {
     tab: 'Autonomous runs',
     title: 'Plan. Patch.',
     accent: 'Verify. Repair.',
-    text: 'Big goals compile into a validated task DAG of milestones. When TypeScript checks fail, v0.1.4 feeds exact line-numbered source and local import contracts back into the repair turn.',
+    text: 'Big goals compile into a validated task DAG of milestones. When TypeScript checks fail, v0.1.04 feeds exact line-numbered source and local import contracts back into the repair turn.',
     bullets: [
       'Verified with TypeScript diagnostics and allowlisted or approved commands',
       'Failure briefs include failing source lines + exported signatures of local imports',
@@ -48,23 +66,6 @@ const panels: Panel[] = [
       { mark: 'V', title: 'Verify', sub: 'TS diagnostics + real proof command' },
       { mark: 'C', title: 'Contract Context', sub: 'failing source + local import types' },
       { mark: 'R', title: 'Repair or rollback', sub: 'bounded retries or atomic rewind' },
-    ],
-  },
-  {
-    tab: 'Agent teams',
-    title: 'Specialist team,',
-    accent: 'strict boundaries.',
-    text: 'A Coordinator partitions the goal across Frontend, Backend, Tests, and Reviewer roles. Every specialist receives your real package.json dependencies, and missing target paths fail explicitly.',
-    bullets: [
-      'Manifest-grounded prompts prevent hallucinated external package imports',
-      'Explicit target-file existence checks catch bad modification paths upfront',
-      'Reviewer reads and audits cross-file integration — changes nothing',
-    ],
-    steps: [
-      { mark: 'C', title: 'Coordinator', sub: 'validates targets & plans ownership' },
-      { mark: 'F', title: 'Frontend', sub: 'components, styling, client state' },
-      { mark: 'B', title: 'Backend', sub: 'APIs, data access, services' },
-      { mark: 'T', title: 'Tests · Reviewer', sub: 'real TS checks · read-only audit' },
     ],
   },
   {

@@ -4,7 +4,7 @@ import { ArrowRight, Download } from 'lucide-react'
 import { APP_VERSION, WINDOWS_DOWNLOAD_URL } from '@/lib/download'
 import { WorkspaceMockup } from './workspace-mockup'
 
-const trust = ['Local files on disk', 'BYOK · Gemini, Groq, Ollama', 'Bundled debugger', 'Google sign-in']
+const trust = ['Local files on disk', 'BYOK · Gemini, Groq, Ollama', '1-click checkpoints', 'Google sign-in']
 
 export function Hero() {
   return (
@@ -47,9 +47,9 @@ export function Hero() {
           className="hero-rise mx-auto mt-6 max-w-[620px] text-pretty text-[15px] leading-7 text-[var(--mut)] sm:text-[17px]"
           style={{ '--rise-delay': '160ms' } as React.CSSProperties}
         >
-          Open a project folder and work with its files, code editor, autonomous AI agents, bundled
-          Node debugger, live preview, Git tools, and terminal in one
-          desktop app. Your code stays on your computer.
+          Open a project folder and work with its files, code editor, a unified autonomous AI
+          agent, live preview with console error forwarding, Git source control, and a
+          parallel terminal in one desktop app. Your code stays on your computer.
         </p>
 
         {/* CTAs */}

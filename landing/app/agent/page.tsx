@@ -53,7 +53,7 @@ const loopFacts: LoopFact[] = [
     icon: Wrench,
     value: '40',
     label: 'built-in tools',
-    sub: 'A fixed toolkit for reading, searching, editing, debugging and verifying.',
+    sub: 'A fixed toolkit for reading, searching, editing, previewing and verifying.',
   },
   {
     icon: Repeat,
@@ -124,7 +124,7 @@ export default function AgentPage() {
       eyebrow="The agent"
       title="Bounded,"
       accent="reviewable, honest."
-      sub="It reads before it writes, asks before it runs, and reports what actually happened. The loop is bounded and every patch is reviewable — and the agent, autonomous run and team features are still beta."
+      sub="It reads before it writes, asks before it runs, and reports what actually happened. The loop is bounded and every patch is reviewable — and the agent and its autonomous runs are still beta."
     >
       <AgentSection />
 
@@ -245,7 +245,7 @@ export default function AgentPage() {
                 <p className="mt-4 text-sm leading-7 text-[var(--mut)]">
                   Malformed blocks never disappear silently. When TypeScript diagnostics fail during
                   an autonomous run, repair retries receive the failing file&apos;s source lines and
-                  imported local contracts — and teams check explicit target paths before dispatch.
+                  imported local contracts — and the agent checks explicit target paths before it edits.
                 </p>
                 <ul className="mt-6 space-y-3">
                   <li className="flex gap-3 text-sm leading-6 text-[var(--ink2)]">
@@ -254,7 +254,7 @@ export default function AgentPage() {
                   </li>
                   <li className="flex gap-3 text-sm leading-6 text-[var(--ink2)]">
                     <span className="mt-[9px] size-1.5 shrink-0 rounded-full bg-[var(--ac)]" aria-hidden />
-                    Explicit missing-target verification before specialist teams execute edits
+                    Explicit missing-target verification before the agent executes edits
                   </li>
                   <li className="flex gap-3 text-sm leading-6 text-[var(--ink2)]">
                     <span className="mt-[9px] size-1.5 shrink-0 rounded-full bg-[var(--ac)]" aria-hidden />
@@ -366,7 +366,7 @@ export default function AgentPage() {
               <div>
                 <h2 className="text-lg font-bold text-[var(--ink)]">Beta, and evolving.</h2>
                 <p className="mt-2 max-w-[720px] text-sm leading-7 text-[var(--mut)]">
-                  Agent, autonomous run and team features are beta. Model output can be wrong —
+                  The unified agent and its autonomous runs are beta. Model output can be wrong —
                   review the results and keep backups of important work.{' '}
                   <Link
                     href={RELEASES_URL}

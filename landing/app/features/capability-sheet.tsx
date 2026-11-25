@@ -4,8 +4,8 @@ import type { MouseEvent } from 'react'
 import {
   FileCode2, SearchCode, Command, Replace,
   AtSign, ListChecks, Plug, BookOpen,
-  Terminal, GitBranch, History, RefreshCw, Bug, ShieldCheck,
-  GitPullRequest, Puzzle,
+  Terminal, GitBranch, History, RefreshCw, Eye, ShieldCheck,
+  GitPullRequest, Image as ImageIcon,
   Bot, SquareTerminal, Rocket, TriangleAlert, Info,
 } from 'lucide-react'
 import { Reveal } from '@/components/landing/reveal'
@@ -82,10 +82,16 @@ const groups: Group[] = [
       },
       {
         icon: ListChecks,
-        title: 'Multi-step runs & teams',
-        text: 'Plan a goal into tasks grounded in package.json, verify target paths before dispatch, and inject failing source lines plus imported contracts on repair retries.',
-        specs: ['plan → verify', 'source-aware repair'],
+        title: 'Unified autonomous agent',
+        text: 'One agent classifies every turn and auto-routes it — conversational, advisory, or execution — with no mode switcher. Greetings stay tiny and cheap; build requests unlock the full toolkit.',
+        specs: ['auto-routed', 'conversational · advisory · execution', 'ultra-lean BYOK'],
         beta: true,
+      },
+      {
+        icon: ImageIcon,
+        title: 'Image paste & inline SVG',
+        text: 'Paste a screenshot with Ctrl+V to attach it to a message, and the agent authors crisp inline <svg> logos, icons, and brand marks instead of broken image URLs.',
+        specs: ['Ctrl+V paste', 'inline <svg>'],
       },
       {
         icon: Plug,
@@ -106,20 +112,20 @@ const groups: Group[] = [
     index: '03',
     label: 'Run',
     icon: SquareTerminal,
-    headline: 'Run, debug, and rewind.',
-    tagline: 'A real shell, a bundled Node debugger, OS-encrypted secret protection, real Git, and a way back when an experiment goes sideways.',
+    headline: 'Run, preview, and rewind.',
+    tagline: 'A real shell with parallel terminals, live preview with console error forwarding, OS-encrypted secret protection, real Git, and a way back when an experiment goes sideways.',
     items: [
       {
         icon: Terminal,
-        title: 'Integrated terminal',
-        text: 'An interactive shell rooted in your workspace, with sessions and splits. PowerShell and bash report live cwd and exit codes back to the panel.',
-        specs: ['PowerShell', 'bash', 'live cwd', 'exit codes'],
+        title: 'Parallel terminals',
+        text: 'Run two interactive shells side by side in resizable splits rooted in your workspace. PowerShell and bash report live cwd and exit codes back to the panel.',
+        specs: ['2 parallel sessions', 'PowerShell', 'bash', 'exit codes'],
       },
       {
-        icon: Bug,
-        title: 'Bundled Node debugger',
-        text: '@vscode/js-debug ships inside ShadRox with an automatic stdio-to-TCP bridge — pause on breakpoints, step frames, and inspect locals with zero external installs.',
-        specs: ['@vscode/js-debug', 'breakpoints', 'locals'],
+        icon: Eye,
+        title: 'Live preview + console',
+        text: 'Preview static sites and detected Node, Python, Go, PHP, Java, and .NET projects with runtime error capture and console error forwarding — click any error to jump to source.',
+        specs: ['live preview', 'console forwarding', 'click-to-source'],
       },
       {
         icon: ShieldCheck,
@@ -142,13 +148,13 @@ const groups: Group[] = [
     label: 'Ship',
     icon: Rocket,
     headline: 'Get it out the door.',
-    tagline: 'Push the work, track desktop releases, and automate the repeat parts without switching to another app.',
+    tagline: 'Push, pull, and sync the work, track desktop releases, and roll back with one click — without switching to another app.',
     items: [
       {
         icon: GitPullRequest,
-        title: 'GitHub integration',
-        text: 'Validate a GitHub token inside the app and push your commits straight from the workspace — no separate Git client needed for the everyday path.',
-        specs: ['validate token', 'push from app'],
+        title: 'GitHub Push / Pull / Sync',
+        text: 'Validate a GitHub token inside the app, review inline diffs, then push, pull, or sync your commits straight from the workspace — no separate Git client needed.',
+        specs: ['validate token', 'push · pull · sync', 'inline diff'],
       },
       {
         icon: RefreshCw,
@@ -157,11 +163,10 @@ const groups: Group[] = [
         specs: ['checks on start', 'badge only', 'manual install'],
       },
       {
-        icon: Puzzle,
-        title: 'Plugins & automations',
-        text: 'Workspace plugins extend what ShadRox can do, and automations fire on a schedule or from a webhook so recurring jobs run without you.',
-        specs: ['workspace plugins', 'scheduled', 'webhook triggers'],
-        beta: true,
+        icon: History,
+        title: '1-click checkpoints',
+        text: 'AI Studio-style checkpoints snapshot the workspace before a risky turn. Press ↺ Restore to rewind files and your local Git position in a single click.',
+        specs: ['one-click restore', 'files + Git position'],
       },
       {
         icon: History,

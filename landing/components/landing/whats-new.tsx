@@ -1,15 +1,15 @@
 'use client'
 
-import { BugPlay, GitCompareArrows, ShieldCheck } from 'lucide-react'
+import { GitCompareArrows, ShieldCheck, Sparkles } from 'lucide-react'
 import { APP_VERSION } from '@/lib/download'
 import { Reveal } from './reveal'
 
 const notes = [
   {
-    icon: BugPlay,
-    kicker: '01. Debugger',
-    title: 'Bundled zero-config Node debugger',
-    text: 'Microsoft\'s js-debug adapter now ships directly inside ShadRox — launch Node, TypeScript, Vite, or Next.js targets out of the box, pause on breakpoints, inspect locals, and send crashes straight to AI chat.',
+    icon: Sparkles,
+    kicker: '01. Unified agent',
+    title: 'One autonomous agent, auto-routed',
+    text: 'No mode switcher to manage. ShadRox classifies every turn and routes it automatically — a greeting sends a tiny prompt with zero tools, while a build request unlocks reads, edits, preview, Git, and guarded commands. Inline <svg> generation is built in.',
   },
   {
     icon: ShieldCheck,
@@ -19,9 +19,9 @@ const notes = [
   },
   {
     icon: GitCompareArrows,
-    kicker: '03. Autonomous Repair',
-    title: 'Source-aware retries & missing-target checks',
-    text: 'Failed TypeScript checks now inject line-numbered failing source and exported signatures of local imports into autonomous repair turns, while non-existent modification targets fail loudly before edits drift.',
+    kicker: '03. Source control',
+    title: 'Git Push / Pull / Sync + 1-click restore',
+    text: 'Review inline diffs, then Push, Pull, or Sync without leaving the app. AI Studio-style checkpoints add a one-click ↺ Restore that rewinds files and your local Git position when a turn goes sideways.',
   },
 ]
 
@@ -42,8 +42,8 @@ export function WhatsNew() {
         </Reveal>
         <Reveal delay={160}>
           <p className="mx-auto mb-12 max-w-[640px] text-center text-base leading-7 text-[var(--mut)]">
-            Zero-config debugging out of the box, hardened desktop security and Windows NTFS
-            reliability, and autonomous repair turns grounded in exact source lines and local contracts.
+            One auto-routed autonomous agent, ultra-lean BYOK token usage, hardened desktop
+            security, and one-click checkpoints with Git Push / Pull / Sync built in.
           </p>
         </Reveal>
 

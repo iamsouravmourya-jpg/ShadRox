@@ -5,7 +5,7 @@ import type { ReactNode } from 'react'
 import {
   MessagesSquare, FileCode2, SearchCode, Command,
   Eye, Terminal, GitBranch, Replace, History, ArrowRight,
-  BugPlay,
+  Image as ImageIcon,
 } from 'lucide-react'
 import { Reveal } from './reveal'
 import { cn } from '@/lib/utils'
@@ -37,9 +37,14 @@ const features: Feature[] = [
     ),
   },
   {
-    icon: BugPlay,
-    title: 'Bundled Node debugger',
-    text: 'Ships with Microsoft js-debug out of the box. Infer Node, TypeScript, Vite, or Next.js launch targets automatically, set breakpoints, step frames, inspect locals, and send pauses straight to AI chat.',
+    icon: History,
+    title: '1-Click checkpoints',
+    text: 'AI Studio-style checkpoints snapshot your workspace before a risky turn. Press ↺ Restore to rewind files and your local Git position in one click — no manual stashing.',
+  },
+  {
+    icon: ImageIcon,
+    title: 'Paste screenshots · Ctrl+V',
+    text: 'Drop or paste an image straight into chat with Ctrl+V. ShadRox attaches the screenshot to your message so the agent can read UI bugs and mockups visually.',
   },
   {
     icon: FileCode2,
@@ -58,18 +63,18 @@ const features: Feature[] = [
   },
   {
     icon: Eye,
-    title: 'Local preview',
-    text: 'Preview static sites, Vite, Next.js, Nuxt, Astro, Angular, SvelteKit, and Node projects with runtime error capture and click-to-source jump.',
+    title: 'Local preview + console',
+    text: 'Preview static sites, Vite, Next.js, Nuxt, Astro, Angular, SvelteKit, and Node projects with runtime error capture, console error forwarding, and click-to-source jump.',
   },
   {
     icon: Terminal,
-    title: 'Integrated terminal',
-    text: 'Multiple terminal sessions with resizable split panes rooted in your workspace. Assistant-initiated commands use a separate risk-tiered approval gate.',
+    title: 'Parallel terminals',
+    text: 'Run two terminal sessions side by side with resizable split panes rooted in your workspace. Assistant-initiated commands use a separate risk-tiered approval gate.',
   },
   {
     icon: GitBranch,
     title: 'Source control & checkpoints',
-    text: 'Inspect staged and unstaged changes, resolve conflicts cleanly, commit with AI-generated messages, or rewind files and local Git position to an earlier checkpoint.',
+    text: 'Inspect staged and unstaged changes with inline diffs, then Git Push, Pull, or Sync and commit with AI-generated messages — or rewind to an earlier checkpoint.',
     wide: 'from-md',
   },
   {
@@ -101,8 +106,8 @@ export function Features() {
         </Reveal>
         <Reveal delay={160}>
           <p className="mx-auto mb-14 max-w-[620px] text-center text-base leading-7 text-[var(--mut)]">
-            Editor, AI agent teams, bundled debugger, live preview, Git tools,
-            and terminal live side by side in one local-first workspace.
+            Editor, a unified autonomous AI agent, live preview, Git tools,
+            and parallel terminals live side by side in one local-first workspace.
           </p>
         </Reveal>
 

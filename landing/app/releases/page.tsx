@@ -18,7 +18,7 @@ import { APP_VERSION, INSTALLER_DOWNLOAD_URL } from '@/lib/download'
 export const metadata: Metadata = {
   title: 'ShadRox — Releases',
   description:
-    'What is new in ShadRox v0.1.4: enterprise security hardening (DNS-rebinding SSRF defense, sandboxed blob windows, strict env packaging), Windows NTFS rewind safety & verified process termination, modular Electron/React architecture, and sharper autonomous verification.',
+    'What is new in ShadRox v0.1.04: one auto-routed autonomous agent (conversational / advisory / execution), ultra-lean BYOK token usage, AI Studio-style 1-click checkpoints with ↺ Restore, Git Push/Pull/Sync with inline diff, parallel terminals, Ctrl+V image paste, and inline SVG generation.',
   alternates: { canonical: '/releases' },
 }
 
@@ -132,14 +132,15 @@ export default function ReleasesPage() {
                 </div>
 
                 <h2 className="mt-6 max-w-[700px] text-balance text-[clamp(26px,3.6vw,42px)] font-bold tracking-[-0.04em] leading-[1.1] text-[var(--ink)]">
-                  Enterprise hardened, modularly rebuilt,{' '}
-                  <em className="font-normal italic text-[var(--ac)]">rock-solid on Windows.</em>
+                  One autonomous agent,{' '}
+                  <em className="font-normal italic text-[var(--ac)]">ultra-lean and in control.</em>
                 </h2>
                 <p className="mt-4 max-w-[680px] text-sm leading-7 text-[var(--mut)]">
-                  Building on the v0.1.3 bundled Node debugger, v{APP_VERSION} hardens
-                  custom endpoint SSRF protection, sandboxes popup windows, guarantees safe Windows NTFS rewind &amp;
-                  process-tree cleanup, decomposes the core desktop &amp; workspace architecture, and refines autonomous
-                  milestone verification — still free, still BYOK, with zero billing.
+                  v{APP_VERSION} unifies the agent into a single auto-routed loop — conversational,
+                  advisory, or execution — that keeps greetings tiny and only spends tokens when a
+                  turn needs tools. Adds AI Studio-style 1-click checkpoints (↺ Restore), Git
+                  Push / Pull / Sync with inline diffs, parallel terminals, Ctrl+V image paste, and
+                  inline &lt;svg&gt; generation — still free, still BYOK, with zero billing.
                 </p>
 
                 {/* Highlights */}

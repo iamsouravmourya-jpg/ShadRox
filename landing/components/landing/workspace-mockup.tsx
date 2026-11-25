@@ -38,7 +38,7 @@ export function WorkspaceMockup() {
           <i className="size-2.5 rounded-full bg-amber-300/80" />
           <i className="size-2.5 rounded-full bg-emerald-400/80" />
         </div>
-        <span className="font-mono">ShadRox v0.1.4 — my-project</span>
+        <span className="font-mono">ShadRox v0.1.04 — my-project</span>
         <span className="ml-auto font-mono text-zinc-400">Ctrl+K</span>
       </div>
 
@@ -84,7 +84,7 @@ export function WorkspaceMockup() {
             <span className="opacity-60">·</span>
             <span>0 errors</span>
             <span className="opacity-60">·</span>
-            <span>js-debug ready</span>
+            <span>↺ checkpoint saved</span>
             <span className="opacity-60">·</span>
             <span>Preview :5173</span>
           </div>

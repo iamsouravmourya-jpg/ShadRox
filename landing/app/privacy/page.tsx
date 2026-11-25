@@ -49,15 +49,15 @@ const places: {
     icon: HardDrive,
     tag: 'stays local',
     title: 'On your computer',
-    lead: 'Everything the app needs to open, edit, and debug your project lives on this machine.',
+    lead: 'Everything the app needs to open, edit, and run your project lives on this machine.',
     rows: [
       {
         label: 'Project files',
         text: 'Opened and edited locally. There is no ShadRox cloud project sync — the app works in the folder you pick.',
       },
       {
-        label: 'Bundled local debugger',
-        text: 'The bundled @vscode/js-debug adapter inspects local scripts exclusively on your device with zero external API calls.',
+        label: 'Live preview & terminals',
+        text: 'The preview server and parallel terminals run local scripts exclusively on your device with zero external API calls.',
       },
       {
         label: 'Provider keys & rules',

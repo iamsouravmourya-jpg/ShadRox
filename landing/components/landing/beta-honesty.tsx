@@ -7,7 +7,7 @@ import { Reveal } from './reveal'
 const points = [
   'Review every AI diff and keep Git or backups for important work',
   'Google sign-in is required to enter the app',
-  'Agent, autonomous run, team, plugin, and automation features are evolving',
+  'The unified autonomous agent and its multi-step runs are evolving',
   'Preview support depends on your project and installed runtimes',
   'Turns on your own key are neither metered nor capped; ShadRox has no plan, no checkout and no payments — your provider bills you directly',
 ]

@@ -205,7 +205,7 @@ export default function DownloadPage() {
                 </div>
 
                 <p className="mt-6 text-xs font-medium text-[var(--mut)]">
-                  Bundled Node debugger · Local-first BYOK · Free during beta
+                  Unified autonomous agent · Local-first BYOK · Free during beta
                 </p>
                 <p className="mt-2 break-all font-mono text-[11px] text-[var(--mut)]">{INSTALLER_NAME}</p>
 

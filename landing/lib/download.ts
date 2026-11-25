@@ -1,4 +1,4 @@
-export const APP_VERSION = '0.1.4'
+export const APP_VERSION = '0.1.04'
 
 export const RELEASES_URL = '/releases'
 

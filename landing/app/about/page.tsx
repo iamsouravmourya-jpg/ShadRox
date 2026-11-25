@@ -41,11 +41,11 @@ const makerLinks: { icon: typeof Globe; label: string; href: string; external?: 
   { icon: CodeXml, label: 'Contributors', href: '/contributors' },
 ]
 
-const before = ['editor', 'terminal', 'browser preview', 'debugger', 'separate AI tool']
-const inside = ['files', 'editor', 'AI chat', 'bundled debugger', 'preview', 'Git', 'terminal']
+const before = ['editor', 'terminal', 'browser preview', 'separate AI tool', 'manual git client']
+const inside = ['files', 'editor', 'AI agent', 'preview', 'Git sync', 'terminals', 'checkpoints']
 
 const stack: { icon: typeof Cpu; name: string; detail: string }[] = [
-  { icon: Cpu, name: 'Electron', detail: 'v44 · js-debug' },
+  { icon: Cpu, name: 'Electron', detail: 'v44' },
   { icon: Atom, name: 'React', detail: 'v19' },
   { icon: CodeXml, name: 'CodeMirror', detail: 'v6' },
   { icon: SquareTerminal, name: 'xterm.js', detail: 'terminal' },

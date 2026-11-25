@@ -65,9 +65,9 @@ const sessionSteps: SessionStep[] = [
   {
     icon: GitCommitHorizontal,
     num: '05',
-    title: 'Run, debug & commit',
-    text: 'Launch a detected preview with your approval, debug Node scripts with bundled @vscode/js-debug, run verification commands, and commit with AI.',
-    specs: ['bundled debugger', 'live preview', 'terminal', 'AI commit message'],
+    title: 'Run, preview & commit',
+    text: 'Launch a detected preview with your approval, watch console errors forward into the app, run verification in parallel terminals, and commit or Git Push / Pull / Sync with AI.',
+    specs: ['live preview + console', 'parallel terminals', 'Git sync', 'AI commit message'],
   },
 ]
 

@@ -11,11 +11,11 @@ const stats = [
     label: 'project files synced to cloud storage — your workspace stays on your disk',
   },
   { value: 3, label: 'AI provider families: Gemini, Groq, OpenAI-compatible (Ollama & LM Studio)' },
-  { value: 5, label: 'autonomous team roles with explicit target validation and contract-aware repair' },
+  { value: 3, label: 'auto-routed turn types: conversational, advisory, and execution — no mode switcher' },
   {
-    value: 40,
+    value: 2,
     label:
-      'built-in agent tools across reads, edits, preview inspection, bundled js-debug telemetry and guarded commands',
+      'parallel terminals side by side, plus live preview with console error forwarding and 1-click checkpoints',
   },
 ]
 

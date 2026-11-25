@@ -56,8 +56,12 @@ export const faqs = [
     a: 'ShadRox is proprietary software founded and built by Sourav Maurya, a 19-year-old full-stack developer and AI engineer based in Delhi, India. There is no outside company behind it — the app, the website, and all releases are built and owned by its founder.',
   },
   {
-    q: 'Do I have to install a debugger separately?',
-    a: 'No. ShadRox v0.1.4 bundles Microsoft\'s js-debug adapter directly inside the app and infers Node.js, TypeScript, Vite, and Next.js launch configs automatically when shadrox.debug.json is absent.',
+    q: 'What can the agent do on its own?',
+    a: 'One unified agent handles every turn — it automatically routes a plain greeting or question to a tiny, cheap conversational reply, and only pulls in workspace tools, files, and diagnostics when the request actually needs them. Coding requests become reviewable diffs, and shell commands stay risk-tiered behind an approval gate.',
+  },
+  {
+    q: 'Can I undo a bad AI change?',
+    a: `Yes. ShadRox v${APP_VERSION} has AI Studio-style one-click checkpoints — press ↺ Restore to rewind your files and local Git position to an earlier point. Source Control also supports Git Push, Pull, and Sync with inline diffs, so you can review and roll back from the app itself.`,
   },
   {
     q: 'Where does feedback go?',
