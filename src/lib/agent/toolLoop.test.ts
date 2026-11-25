@@ -1236,6 +1236,20 @@ test('requireFileMutation intercepts zero-write plain-text reply once before all
   });
 });
 
+test('finish is rejected in an execution turn when the user asked for file work but nothing was written', async () => {
+  const model = scripted([finishWith('I created src/notes.txt with a greeting.'), finishWith('I created src/notes.txt with a greeting.')]);
+  const result = await runToolRounds({
+    messages: [{ role: 'user', content: 'Create a new file src/notes.txt with a greeting.' }],
+    workspaceId: 'ws',
+    aborted: () => false,
+    policy: { mode: 'agent' },
+    maxRounds: 2,
+    stream: model.stream
+  });
+  assert.equal(result.finish, undefined, 'finish must be refused when no write/edit tool ran');
+  assert.ok(model.seen.some((turns) => turns.some((turn) => typeof turn.content === 'string' && turn.content.includes('You have not created or edited any files yet'))), 'refusal surfaced to the model');
+});
+
 test('apply_patch counts as mutation progress across 9+ rounds without tripping stuck detector', async () => {
   const files = new Map<string, string>([['src/a.ts', 'export const v = 0;\n']]);
   const staged = new Map<string, Array<{ name: string; content: string }>>();

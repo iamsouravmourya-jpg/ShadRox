@@ -32,9 +32,6 @@ ShadRox is a native Electron desktop app that puts a code editor, BYOK AI chat a
 - [Git & checkpoints](#git--checkpoints)
 - [MCP servers](#mcp-servers)
 - [Rules and skills](#rules-and-skills)
-- [Debugger (DAP)](#debugger-dap)
-- [Plugins and automations](#plugins-and-automations)
-- [Task Inspector](#task-inspector)
 - [Workspace basics](#workspace-basics)
 - [Tech stack](#tech-stack)
 - [Architecture](#architecture)
@@ -58,15 +55,17 @@ ShadRox is a native Electron desktop app that puts a code editor, BYOK AI chat a
 
 ## Features
 
-- **Editor** — CodeMirror 6, split groups, pinned tabs, quick open, outline, Ctrl+K inline AI edit, ghost-text completions, Markdown source/preview toggle.
-- **AI chat (BYOK)** — Gemini, Groq, or any OpenAI-compatible endpoint with your own key; Ask/Plan/Agent modes, `@` mentions, file/photo attachments, message queue.
-- **Agent with guardrails** — risk-tiered command approval (safe commands auto-run, risky ones ask, dangerous ones always ask in red), background jobs, contract-aware TypeScript repairs, verified file writes.
+- **Editor** — CodeMirror 6, split groups, pinned tabs, breadcrumb navigation, quick open, outline, symbol references, Ctrl+K inline AI edit, ghost-text completions.
+- **AI chat (BYOK)** — Gemini, Groq, or any OpenAI-compatible endpoint (Ollama, LM Studio, OpenRouter, Anthropic proxies) with your own key; unified autonomous agent, `@` mentions, image pasting/attachments, message queue.
+- **Agent with guardrails** — 60-round bounded agent loop with risk-tiered command approval (safe commands auto-run, risky ones ask, dangerous ones always ask in red), background jobs, contract-aware TypeScript repairs, verified file writes, and multi-file atomic patches.
+- **Dynamic Tool Bundles** — Base workspace tools plus on-demand category unlocking (`preview`, `git`, `checkpoints`, `delete`, `web`, `memory`, `code_intel`, `review`, `jobs`, `terminal`, `interaction`, `apply_patch`, `mcp`).
+- **Resilience & Anti-Stall** — Auto-recovery from edit failures (after 2 failed edits, switches to clean rewrite), identical-call capping, progress-based stuck detection, and head+tail output clipping.
 - **Bundled Node debugger** — ships `@vscode/js-debug` with an automatic stdio-to-TCP DAP bridge for breakpoints, step-debugging, and local variable inspection with zero external setup.
-- **Live preview** — static sites, Node web frameworks, and detected Python/Go/PHP/Java/.NET backends, with a bounded health check.
-- **Terminal** — interactive shell rooted in the workspace; PowerShell and bash report cwd and exit codes.
-- **Git & checkpoints** — diffs, staging, AI commit messages, branches, conflict resolution, GitHub push, and rewindable workspace checkpoints.
-- **Multi-step runs & teams (beta)** — larger goals escalate from chat to a plan-edit-verify run or a coordinator-led agent team with explicit target-file checks.
-- **Extensible** — MCP servers, project rules and skills, plugins and automations (beta).
+- **Live preview** — static sites, Node web frameworks, and detected Python/Go/PHP/Java/.NET backends, with DOM inspection and bounded health checks.
+- **Terminal** — interactive shell rooted in the workspace (xterm.js + node-pty); PowerShell and bash report cwd and exit codes.
+- **Git & checkpoints** — diffs, staging, AI commit messages, branches, conflict resolution, GitHub push, and rewindable workspace checkpoints with baseline Git comparison.
+- **Multi-step runs & agent teams (beta)** — larger goals escalate from chat to a plan-edit-verify run or a coordinator-led agent team with explicit target-file checks.
+- **Extensible** — MCP servers, project rules (`SHADROX.md`, `.cursorrules`, `AGENTS.md`) and skills.
 
 ## Quick start
 
@@ -78,9 +77,10 @@ ShadRox is a native Electron desktop app that puts a code editor, BYOK AI chat a
 ## Editor
 
 - CodeMirror 6 editing with split editor groups and pinned, reorderable tabs.
+- **Persistent Auto-Save** — toggle auto-save on/off in the top bar; your preference is persisted across restarts and debounces disk saves safely (1.2s after typing).
 - Quick open, file outline, and a command palette that fuzzy-finds files, workspace symbols, and commands.
 - Select code and press **Ctrl+K** for an inline AI edit on just that selection; accept ghost-text completions powered by server-side fill-in-the-middle (FIM).
-- TypeScript diagnostics, go-to-definition, find references, rename, quick fixes, semantic highlighting, and workspace symbol search where supported. Diagnostics come from a bundled TypeScript 5.9 language service so the editor matches what ships inside the app (the renderer itself is built with TypeScript 7).
+- **Multi-Language Intelligence** — dynamic syntax highlighters for TypeScript, JavaScript, Python, HTML, CSS, JSON, Markdown, and shell. Deep diagnostics, go-to-definition, find references, rename, and quick fixes powered by a bundled TypeScript 5.9 worker for web projects, plus automated `verify` test/build detection for Python (`pytest`), Rust (`cargo check`), and Go (`go vet`).
 - One-click **Source/Preview** toggle for Markdown files (`.md`, `.markdown`).
 - Workspace search and replace across files on disk and open buffers, with a reviewable result list.
 
@@ -153,28 +153,47 @@ Any tool that is not a known native read/write/execute/control tool — every MC
 
 ### Tool surface
 
-| Tool | What it does |
-|---|---|
-| `list_directory` | List one directory of the opened folder (paged) |
-| `read_file` | Read a file, optionally a 1-based line range. `.env` files are readable but secret values are masked (below) |
-| `find_files` | Find files by path name |
-| `search_text` | Search file contents; paraphrase-tolerant fallback (below) |
-| `write_file` | Create a file or overwrite one it has read; refuses destructive whole-file rewrites |
-| `edit_file` | Replace an exact, unique snippet in an existing file |
-| `delete_file` | Delete one file or an empty folder; needs `confirm: true` **and** a native user dialog, then a disk read-back proves absence |
-| `problems` | Real compiler diagnostics (project or named files) |
-| `git_state` | Working-tree status and diff |
-| `run_command` | One shell command line (max 2000 chars) in the opened folder; real exit code, stdout, stderr; risk-tiered (below) |
-| `job_control` | `list` / `status` / `read_output` / `stop` for background command jobs |
-| `preview_control` | `start` / `stop` / `restart` the live preview pane |
-| `terminal_state` | Read the interactive terminal: cwd, running command, last exit, silent seconds, awaiting-input, last failure class. Never types |
-| `terminal_answer` | Type one printable line (max 200 chars) into a command that is waiting for input — only after the user approves the exact bytes in a dialog. Never for passwords, tokens, or secrets |
-| `debugger_state` | Read a paused debug session: top frame, scopes, bounded locals (10 frames / 3 scopes / 30 variables / 200 chars per value). Read-only; refuses when nothing is paused |
-| `outline` | Symbols defined in a file, with line numbers |
-| `update_tasks` | Set/update the turn's plan (`pending` / `doing` / `done` / `blocked`) |
-| `finish` | End the turn with a summary (and an optional `blocked` reason) |
+ShadRox equips the agent with native workspace tools split into base tools (always available in Agent mode) and specialized bundles that unlock on demand via `unlock_tools`:
 
-User-configured MCP tools join the same list and share the round budget. Tool output is capped (24,000 chars per result) with an honest truncation note.
+| Tool | Category | What it does |
+|---|---|---|
+| `list_directory` | Base (FS) | List entries with sizes (max depth 3; respects `.gitignore`) |
+| `read_file` | Base (FS) | Read file contents (with `start_line`/`end_line` slicing; `.env` secrets masked) |
+| `find_files` | Base (FS) | Fast substring match across workspace file paths |
+| `search_text` | Base (FS) | Search file contents with tokenized paraphrase-tolerant fallback |
+| `write_file` | Base (FS) | Create a new file or rewrite an existing file (unlocked automatically if edits fail) |
+| `edit_file` | Base (FS) | Replace an exact, unique snippet in an existing file |
+| `apply_patch` | Base / Patch | Atomically apply multi-file hunks (`{path, old, new}`) with rollback on error |
+| `verify` | Base / Quality | Run detected project checks (`typecheck`/`build`/`test`) and return structured error diagnostics |
+| `problems` | Base / Diagnostics | Real compiler diagnostics (project-wide or for specific/changed files) |
+| `outline` | Base / Code | List symbols, classes, functions, and line numbers in a file |
+| `update_tasks` | Base / Workflow | Set or update the turn's multi-step task plan (`pending`, `doing`, `done`, `blocked`) with evidence |
+| `finish` | Base / Workflow | End the turn with a summary, changed files list, verification status, and testing instructions |
+| `unlock_tools` | Base / Meta | Unlock specialized tool categories dynamically for subsequent rounds |
+| `run_command` | Base / Exec | Execute shell commands in the workspace root; risk-tiered approval (READ/BUILD/INSTALL auto-run; MUTATE/NETWORK/DANGEROUS require approval) |
+| `job_control` | Jobs Bundle | List, inspect status, read buffered output tail, or stop background jobs |
+| `terminal_state` | Terminal Bundle | Read live interactive terminal: cwd, active command, exit code, silence duration, waiting-for-input status |
+| `terminal_answer` | Terminal Bundle | Send a single line to an interactive prompt waiting for input (requires explicit user confirmation dialog) |
+| `preview_control` | Preview Bundle | Control embedded preview: `start`, `stop`, `restart`, or inspect server logs/health status |
+| `git_state` | Git Bundle | Show working-tree git status and unstaged/staged diffs |
+| `checkpoint` | Checkpoints Bundle | Save a named snapshot of workspace files and git baseline |
+| `list_checkpoints`| Checkpoints Bundle | List saved workspace checkpoints, newest first |
+| `restore` | Checkpoints Bundle | Rollback workspace to a previous checkpoint (requires user approval dialog) |
+| `delete_file` | Delete Bundle | Delete a file or recursively delete a directory (requires `confirm: true` and native confirmation dialog) |
+| `read_memory` | Memory Bundle | Read long-term project memory and architecture decisions from `.shadrox/memory.json` |
+| `note_memory` | Memory Bundle | Persist architectural decisions, project conventions, and key notes to memory |
+| `find_references` | Code Intel Bundle | Find all reference usages of a symbol across the project |
+| `go_to_definition`| Code Intel Bundle | Locate definition and declaration sites for a symbol |
+| `rename_symbol` | Code Intel Bundle | Project-wide symbol rename analysis and changes |
+| `semantic_search` | Search Bundle | Vector embedding search over codebase files using local transformers |
+| `web_search` | Web Bundle | Query documentation or search the web for solutions |
+| `fetch_url` | Web Bundle | Fetch and parse clean markdown/text content from external documentation URLs |
+| `preview_inspect`| Web Bundle | Inspect live preview DOM elements, console logs, and runtime errors |
+| `ask_user` | Interaction Bundle | Pause the agent turn to ask the user a clarifying question |
+| `spawn_subagent` | Interaction Bundle | Delegate a focused sub-task to an isolated subagent |
+| `diff_review` | Review Bundle | Inspect full diff before landing changes to prevent unintended regressions |
+
+User-configured MCP (Model Context Protocol) tools dynamically join the agent tool catalog and share the turn budget. Output is capped at 24,000 characters per result with balanced head+tail retention.
 
 ### File writes are verified, not arbitrary
 
@@ -276,6 +295,28 @@ The suite refuses a hollow pass: each case must fail its baseline and assert at 
 
 The loop is an early implementation and can make mistakes. Reads and inspections are unguarded; edits go through the verified pipeline; commands follow the tier table. Agent loops, autonomous runs, teams, plugins, and automations are evolving — verify important work yourself and keep backups or Git.
 
+## The 3 Pillars of ShadRox
+
+ShadRox is built from scratch to reject the generic "wrapper" paradigm. It introduces a distinct, human-centric, verified engineering personality:
+
+### 1. Human Engineering Partner Persona (Not a Bot, a Senior 10x Lead)
+- **Engineer-to-Engineer Communication:** ShadRox does not recite robotic boilerplate or generic disclaimers. It acts like a sharp, calm, dependable senior software engineer sitting right next to you.
+- **Zero Sugar-Coating & Brutal Honesty:** Never flatters, sugar-coats, or pretends something works when it doesn't. ShadRox tells the raw technical truth about compiler errors, failed assertions, security edge-cases, and performance trade-offs.
+- **No Claims Without Proof:** The agent never claims code was written, a bug was fixed, or a test passed unless verified by real tool execution on disk this turn. If something was not run or checked, it explicitly states: `Not checked: <what>`.
+- **Proactive Ownership:** When tasked with a bug or feature, it explains what it is inspecting, executes targeted changes, runs real compiler/runtime checks, and reports verified results with concrete how-to-test instructions.
+
+### 2. Autonomous Engineering Squad (Ultra-Token-Efficient Multi-Agent Collaboration)
+Instead of a single monolithic agent hallucinating across dozens of files, ShadRox coordinates a specialist squad:
+- **Coordinator (Tech Lead):** Deconstructs goals into an execution task DAG without touching code directly.
+- **Builders (Frontend & Backend Specialists):** Work strictly within their designated file-ownership domains.
+- **Tests & Reviewer (QA / Quality Gate):** Audits code diffs, asserts compiler diagnostics, and verifies tests without weakening assertions.
+- **Ultra-Token-Efficient Micro-Envelopes:** Agents do not burn tokens on long conversational banter. They communicate over a shared memory blackboard using compact micro-envelopes and pass **diff-only slices (not entire file dumps)**, saving up to 80% token expenditure.
+
+### 3. The Verification & Proof Engine (Quality Over Hallucination)
+- **Zero-Guesswork Completion:** A task is never marked finished on mere generation. ShadRox validates that compiler errors are zero (`problems`/`verify`), checks live preview HTTP health, and attaches an Ed25519-signed proof receipt to the audit ledger.
+
+---
+
 ## Multi-step runs & agent teams (beta)
 
 Chat is the front door. A deterministic router (no extra model call) decides whether a message stays a normal chat turn or escalates, and the chat card shows the reason — an escalation is never silent. Questions, short prompts, read-only requests, and Plan mode always stay on the chat path.
@@ -323,25 +364,6 @@ Connect user-configured Model Context Protocol servers in Settings. Starting a s
 ## Rules and skills
 
 Project conventions load from `SHADROX.md`, `AGENTS.md` (root or nested per-directory), `QODER.md`, `.cursorrules`, and `.shadrox/rules/*.md`; reusable skills live under `.shadrox/skills/`. Rules and skills are treated as untrusted reference data, and read-only rule docs cannot be overwritten by the agent.
-
-## Debugger (DAP)
-
-Add a `shadrox.debug.json` at the workspace root with one or more `node` launch configurations, then start it from the Debug panel: breakpoints in the editor gutter, call stack, scopes and variables, hover evaluation while paused, and pause/continue/step. Programs and working directories outside the workspace are refused. Bundled adapters may start directly; external adapters require native approval and a scrubbed environment, and run as bounded argv processes, never through a shell. Heap profiling is not included. The agent can read a paused session with `debugger_state` (read-only).
-
-## Plugins and automations (beta)
-
-Declarative workspace plugins extend the app; automations fire on a schedule or from a webhook. Agent edits to plugin and automation manifests are blocked.
-
-## Task Inspector
-
-One dock for the local-first engineering records that accompany an AI task:
-
-- **Behavior Studio** — records preview bridge events (source-mapped clicks, runtime errors) into a bounded interaction history and generates an editable acceptance contract: target source location, observed failure, expected behavior, reproduction steps. Running the contract captures evidence per phase (screenshot digest plus DOM/console assertions) for `baseline` and `postPatch`.
-- **Living Intent Graph** — indexes symbols and dependency edges from loaded source; user-approved decisions are stored locally, re-hashed (SHA-256) against current files, and marked `stale` when their governing content changes. Budgeted intent context is injected into AI tasks.
-- **Outcome-Calibrated Auto** — a bounded local ledger of route, model, verification, repair, token, and latency outcomes. Ranking uses a pass rate shrunk toward the pool's prior and only reorders a route after five verified runs; unproven models keep the neutral fallback order. Every choice carries a human-readable reason, and a model can be pinned per task type (`bugfix`, `refactor`, `feature`, `test`, `chat`).
-- **Capsules** — context capsule capture with redaction and sandboxing; capsule and intent data support offline JSON export/import (imports are validated before storage).
-
-These records stay local to the workspace/browser profile.
 
 ## Workspace basics
 
@@ -441,10 +463,12 @@ Timeouts are about **silence**, not wall-clock duration:
 
 The model is told explicitly: a backgrounded command has NOT finished — read its output and exit status before drawing conclusions, and never restart a healthy server just because its logs went silent.
 
-## The agent loop: 60 rounds, progress-based stuck detection
+## The agent loop: 60 rounds, progress-based stuck detection & self-healing
 
 - A turn gets **60 tool rounds** by default, each holding up to **16 calls** that run in parallel. Calls beyond the cap are reported and stay runnable next round.
 - At **80% of the budget** (round 48) the model gets one soft wrap-up note. At the cap, one final stream is forced ("answer now with what you have"); the stop carries a resumable state summary so a Continue button can pick up later.
+- **Auto-Recovery on Edit Failures:** If `edit_file` or `apply_patch` fails 2 consecutive times on the same target file (due to snippet drift, unexpected whitespace, or stale buffers), ShadRox automatically unlocks clean overwrite mode via `write_file` for that specific file during the turn.
+- **Identical Call Loop Capping:** Calling the exact same tool with identical arguments repeatedly is capped at 2 attempts. On the second failure, the loop returns an actionable recovery hint ("Stop retrying identical arguments — re-read the exact start_line/end_line range with read_file...").
 - **Stuck detection is progress-based, not repetition-based.** Real progress signals: a new file read, a file content-hash change, a diagnostics count decrease, a command exit-code change, a mutation landing, a task marked done — plus any result that says something new. **8 consecutive steps** with zero progress and zero new information earn one nudge, then a forced final answer. Repeating a call is not a crime; seeing nothing new is.
 - **Duplicate calls are never refused.** A succeeded call repeated in the same turn is served from a result cache prefixed `[unchanged since step N]`. Cache entries are invalidated by real workspace mutations (a mutation epoch) and content hashes — a verified delete, an approved command, a landed write, or an MCP write makes earlier reads runnable again. Failed or refused calls are never cached, so they stay retryable.
 - An exploration-style ask ("explain this project", "scan…") answered without a single workspace read gets one nudge to inspect first.

@@ -113,10 +113,19 @@ test('without any UI the broker resolves immediately (no-ui), never parks', asyn
 
 test('spawn_subagent returns only a summary and files list from a separate context', async () => {
   const seenSystems: string[] = [];
+  let round = 0;
   sa.configureSubagentStream(async (messages) => {
-    // The helper gets its own transcript: exactly the task, nothing from main.
-    assert.equal(messages.length, 1);
-    assert.equal(messages[0].content, 'Survey the src folder and report the entry point.');
+    const isFirst = round === 0;
+    if (isFirst) {
+      // The helper gets its own transcript: exactly the task, nothing from main.
+      assert.equal(messages.length, 1);
+      assert.equal(messages[0].content, 'Survey the src folder and report the entry point.');
+    }
+    round += 1;
+    if (round === 1) {
+      // A real scout must read a file before it may finish.
+      return { text: '```shadrox:tools\n{"name":"read_file","args":{"path":"src/main.ts"}}\n```', error: null };
+    }
     return {
       text: '```shadrox:tools\n{"name":"finish","args":{"summary":"Entry point is src/main.ts; it mounts App."}}\n```',
       error: null
@@ -131,30 +140,54 @@ test('spawn_subagent returns only a summary and files list from a separate conte
     assert.ok(result.content.includes('FILES CHANGED'));
     assert.ok(!result.content.includes('shadrox:tools')); // transcript never leaks
     assert.equal(result.changedFiles, 0);
+    assert.ok(round >= 2, 'the scout read a file before finishing');
   } finally {
     sa.configureSubagentStream(null);
   }
   void seenSystems;
 });
 
+test('spawn_subagent cannot finish with zero tool calls: it is re-nudged, then refused', async () => {
+  sa.configureSubagentStream(async () => ({
+    text: '```shadrox:tools\n{"name":"finish","args":{"summary":"I just know the answer."}}\n```',
+    error: null
+  }));
+  try {
+    const result = await sa.handleSpawnSubagent('ws', { task: 'Tell me about the codebase.' });
+    assert.equal(result.ok, false);
+    assert.equal(result.refused, true);
+    assert.ok(/without calling any read-only tool/i.test(result.error ?? ''), 'refuses a zero-step finish');
+  } finally {
+    sa.configureSubagentStream(null);
+  }
+});
+
 test('spawn_subagent is read-only by default: writes are refused by policy', async () => {
   let round = 0;
-  sa.configureSubagentStream(async () => {
-    round += 1;
-    if (round === 1) {
-      return {
-        text: '```shadrox:tools\n{"name":"write_file","args":{"path":"src/evil.ts","content":"export const x = 1;"}}\n```',
-        error: null
-      };
-    }
-    return { text: '```shadrox:tools\n{"name":"finish","args":{"summary":"Could not write; read-only helper."}}\n```', error: null };
-  });
+  const savedBridge = (globalThis as Record<string, unknown>).window;
+  (globalThis as Record<string, unknown>).window = {
+    shadroxDesktop: {
+      readFile: async (_id: string, path: string) => ({ name: path, content: 'export const x = 1;\n', version: 'v1' })
+    },
+    dispatchEvent: () => true
+  };
   try {
+    sa.configureSubagentStream(async () => {
+      round += 1;
+      if (round === 1) {
+        return { text: '```shadrox:tools\n{"name":"write_file","args":{"path":"src/evil.ts","content":"export const x = 1;"}}\n```', error: null };
+      }
+      if (round === 2) {
+        return { text: '```shadrox:tools\n{"name":"read_file","args":{"path":"src/main.ts"}}\n```', error: null };
+      }
+      return { text: '```shadrox:tools\n{"name":"finish","args":{"summary":"Could not write; read-only helper."}}\n```', error: null };
+    });
     const result = await sa.handleSpawnSubagent('ws', { task: 'Try to write a file.' });
     assert.equal(result.ok, true);
     assert.equal(result.changedFiles, 0);
-    assert.ok(result.content.includes('read-only'));
+    assert.ok(result.content.includes('read-only'), 'summary marks the scout read-only');
   } finally {
+    (globalThis as Record<string, unknown>).window = savedBridge;
     sa.configureSubagentStream(null);
   }
 });

@@ -1,4 +1,4 @@
-import { streamChat, type ChatTurn } from '../ai';
+import { streamChat, type ChatTurn, type ChatToolDefinition } from '../ai';
 import { getActiveProvider, getApiKey, getCustomBaseUrl, getSelectedModel } from '../storage';
 import type { ToolDefinition, ToolOutcome } from './tools';
 
@@ -166,6 +166,9 @@ export const MAX_SUBAGENT_ROUNDS = 5;
 export const DEFAULT_SUBAGENT_ROUNDS = 5;
 export const SUBAGENT_TIMEOUT_MS = 240_000;
 export const MAX_SUBAGENT_SUMMARY_CHARS = 2_400;
+/** How many times a scout that finishes with zero tool calls is re-nudged before being refused. */
+export const ZERO_STEP_RETRIES = 2;
+const ZERO_STEP_NUDGE = 'You returned without calling any read-only tool. Before you may finish, inspect real workspace files: call read_file, search_text, find_files, list_directory, outline, or problems on actual files, then call finish with your file:line findings.';
 /** The read-only exploration toolset a scout may use — no writes, shell, git, or recursion. */
 export const SUBAGENT_READ_ONLY_TOOLS: readonly string[] = [
   'read_file',
@@ -264,7 +267,7 @@ export function configureSubagentStream(stream: SubagentStream | null): void {
 }
 
 /** The default helper stream: the user's own BYOK provider, plain text protocol. */
-function byokStream(signal: AbortSignal): SubagentStream | { error: string } {
+function byokStream(signal: AbortSignal, toolDefinitions?: ChatToolDefinition[]): SubagentStream | { error: string } {
   const provider = getActiveProvider();
   const apiKey = getApiKey(provider);
   if (!apiKey) return { error: 'spawn_subagent needs a configured provider key (BYOK). None is set — ask the user to add one in Settings. No helper was started.' };
@@ -276,9 +279,15 @@ function byokStream(signal: AbortSignal): SubagentStream | { error: string } {
     let text = '';
     let error: string | null = null;
     await streamChat(
-      { provider, model, apiKey, baseUrl, messages, temperature: 0.2, signal },
+      { provider, model, apiKey, baseUrl, messages, temperature: 0.2, signal, toolDefinitions },
       {
         onDelta: (delta) => { text += delta; },
+        onToolCalls: (calls) => {
+          // Native tool calls the scout made are re-emitted as text tool blocks so
+          // the shared runToolRounds loop parses and executes them uniformly.
+          const serialized = JSON.stringify(calls.map((call) => ({ name: call.name, args: call.arguments }))).replaceAll('`', '\\u0060');
+          text += `\n\`\`\`shadrox:tools\n${serialized}\n\`\`\``;
+        },
         onError: (message) => { error = message; }
       }
     );
@@ -357,29 +366,14 @@ export async function handleSpawnSubagent(
   });
   const timer = setTimeout(() => controller.abort(), SUBAGENT_TIMEOUT_MS);
   try {
-    const stream = injectedStream ?? byokStream(controller.signal);
-    if (typeof stream !== 'function') {
-      emitSubagent({
-        id: subagentId,
-        index: slotIndex,
-        title,
-        label,
-        status: 'error',
-        currentAction: 'Configuration error',
-        stepsCount,
-        summary: stream.error
-      });
-      return refusal(stream.error);
-    }
     // Lazy imports: the registry imports this module, and these modules import
     // the registry — dynamic import keeps the cycle out of module evaluation.
     const { runToolRounds } = await import('./toolLoop');
-    const { describeTools } = await import('./tools');
+    const { describeTools, nativeToolDefinitions } = await import('./tools');
     const { stripToolBlocks } = await import('./toolProtocol');
 
     // Scouts are strictly read-only: offer only the exploration toolset via an
-    // advisory (read-only) context, then strip unlock_tools so a scout can
-    // never widen its own reach. The 'plan' policy + disallowSubagents below
+    // advisory (read-only) context. The 'plan' policy + disallowSubagents below
     // are the runtime backstops that refuse any write/execute/external/spawn call.
     const readOnlyContext = {
       workspaceOpen: true,
@@ -395,6 +389,23 @@ export async function handleSpawnSubagent(
     };
     const toolLines = describeTools(maxRounds, [], [], readOnlyContext)
       .filter((line) => !line.startsWith('- unlock_tools') && !line.startsWith('- spawn_subagent') && !line.startsWith('SPECIALIZED TOOLS'));
+    const readOnlyNativeDefinitions = nativeToolDefinitions(true, readOnlyContext)
+      .filter((tool) => SUBAGENT_READ_ONLY_TOOLS.includes(tool.name));
+
+    const stream = injectedStream ?? byokStream(controller.signal, readOnlyNativeDefinitions);
+    if (typeof stream !== 'function') {
+      emitSubagent({
+        id: subagentId,
+        index: slotIndex,
+        title,
+        label,
+        status: 'error',
+        currentAction: 'Configuration error',
+        stepsCount,
+        summary: stream.error
+      });
+      return refusal(stream.error);
+    }
 
     const systemInstruction = [
       'You are a bounded, READ-ONLY scout agent working inside the user\'s opened folder. You have your own isolated context; the main agent sees ONLY your final summary, so make it self-contained and factual.',
@@ -406,12 +417,12 @@ export async function handleSpawnSubagent(
     ].filter(Boolean).join('\n');
 
     const messages: ChatTurn[] = [{ role: 'user', content: task }];
-    const loop = await runToolRounds({
-      messages,
+    const runScout = async (msgs: ChatTurn[], rounds: number) => runToolRounds({
+      messages: msgs,
       systemInstruction,
       workspaceId,
-      stream: async (turns, round) => stream(turns, round, controller.signal),
-      maxRounds,
+      stream: async (turns: ChatTurn[], round: number) => stream(turns, round, controller.signal),
+      maxRounds: rounds,
       aborted: () => controller.signal.aborted,
       signal: controller.signal,
       disallowSubagents: true,
@@ -438,6 +449,31 @@ export async function handleSpawnSubagent(
       // effect at the runtime boundary, so allowWrites can never widen a scout.
       policy: { mode: 'plan' }
     });
+
+    let loop = await runScout(messages, maxRounds);
+    let zeroStepRetries = 0;
+    // A scout that tries to finish without a single read-only tool call is
+    // hallucinating from memory: nudge it to inspect real files and re-run,
+    // then refuse if it still returns with zero tool calls.
+    while (loop.finish && stepsCount === 0 && !controller.signal.aborted && zeroStepRetries < ZERO_STEP_RETRIES) {
+      zeroStepRetries += 1;
+      messages.push({ role: 'assistant', content: loop.text });
+      messages.push({ role: 'user', content: ZERO_STEP_NUDGE });
+      loop = await runScout(messages, Math.min(maxRounds, 3));
+    }
+    if (loop.finish && stepsCount === 0 && !controller.signal.aborted) {
+      emitSubagent({
+        id: subagentId,
+        index: slotIndex,
+        title,
+        label,
+        status: 'error',
+        currentAction: 'Scout inspected no files',
+        stepsCount: 0,
+        summary: 'The scout did not inspect any files.'
+      });
+      return { ok: false, content: `Subagent inspected no files · ${loop.rounds}/${maxRounds} rounds.`, error: 'The scout returned without calling any read-only tool. It must read real workspace files first.', refused: true };
+    }
 
     const stopped = controller.signal.aborted;
     const rawSummary = loop.finish?.summary ?? (loop.text ? stripToolBlocks(loop.text) : '');

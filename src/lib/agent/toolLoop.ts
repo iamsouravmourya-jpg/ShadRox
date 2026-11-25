@@ -588,6 +588,13 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   let mutationNudgeUsed = false;
   const hasPendingPathFence = (rawText: string): boolean => /```[^\n]*\bpath=/.test(rawText);
   const hasTurnWrites = (): boolean => changedFilesTotal > 0 || changedPathsSet.size > 0;
+  const FILE_WORK_VERBS = /\b(create|write|edit|modify|update|add|make|generate|implement|build|new)\b/i;
+  const FILE_WORK_NOUNS = /\b(file|component|page|script|stylesheet|module|document|program|class|function|feature)\b/i;
+  const FILE_PATH_RE = /\b[\w/.-]+\.(ts|tsx|js|jsx|html|css|json|md|py|go|rs|txt|env)\b/;
+  /** True when the user's ask is about creating or editing a file (or running a check on one). */
+  function userRequestedFileWork(ask: string): boolean {
+    return (FILE_WORK_VERBS.test(ask) && FILE_WORK_NOUNS.test(ask)) || FILE_PATH_RE.test(ask);
+  }
   const mayNudgeMutation = (): boolean =>
     input.requireFileMutation === true && !mutationNudgeUsed && !hasTurnWrites() && round < maxRounds;
   const inspectedWorkspace = () => activity.some((entry) => !isControlTool(entry.name));
@@ -678,6 +685,15 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
       return { ok: false, content: '', error: MUTATION_REQUIRED_NUDGE, refused: true };
     }
     if (!turn) return null;
+    // An execution turn that asked for file work but ran no write/edit tool may
+    // not finish with a prose-only summary — force real writes and a check first.
+    if (
+      (policy?.mode === 'agent' || policy?.mode === 'team')
+      && !hasTurnWrites()
+      && userRequestedFileWork(latestUserAsk)
+    ) {
+      return { ok: false, content: '', error: 'You have not created or edited any files yet. Call write_file / edit_file and run_command to verify before calling finish.', refused: true };
+    }
     if (turn.scaffoldIntent && !turn.scaffoldNudged && turn.created.size < 2) {
       turn.scaffoldNudged = true;
       return { ok: false, content: '', error: scaffoldNudge(turn.created.size), refused: true };

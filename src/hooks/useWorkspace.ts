@@ -312,7 +312,24 @@ export function useWorkspace(): UseWorkspaceResult {
   const [canWriteToDisk, setCanWriteToDisk] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [diskMessage, setDiskMessage] = useState<string | null>(null);
-  const [autoSave, setAutoSave] = useState(false);
+  const [autoSave, setAutoSaveState] = useState<boolean>(() => {
+    try {
+      return typeof window !== 'undefined' && window.localStorage.getItem('shadrox:auto-save') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const setAutoSave = useCallback((value: boolean) => {
+    setAutoSaveState(value);
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('shadrox:auto-save', String(value));
+      }
+    } catch {
+      // ignore storage unavailability
+    }
+  }, []);
   const [checkpoints, setCheckpoints] = useState<CheckpointMeta[]>([]);
   const machineTurns = useRef(new Map<string, string>());
   /** Turn checkpoints awaiting their finish call; the only-if-idle gate reads this. */
