@@ -536,6 +536,13 @@ export function useOrchestrationController({
           }
         : rawTurnIntent;
     const effectivePermissionMode: PermissionMode = effectiveTurnIntent.effectivePermissionMode;
+    // Conversational turns ("hi", "thanks", a casual follow-up) stay ultra-cheap
+    // even late in a long session: send only the last few messages instead of
+    // 20+ old code-heavy turns. The current ask is always the last message.
+    const CONVERSATIONAL_HISTORY_MESSAGES = 6;
+    if (effectiveTurnIntent.kind === 'conversational' && history.length > CONVERSATIONAL_HISTORY_MESSAGES) {
+      history = history.slice(-CONVERSATIONAL_HISTORY_MESSAGES);
+    }
     const unlockedBundles = new Set<ToolBundleCategory>();
     const defaultToolContext = (): WorkspaceToolContext =>
       buildWorkspaceToolContext({

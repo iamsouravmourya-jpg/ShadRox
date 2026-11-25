@@ -343,6 +343,8 @@ interface ResultEntry {
   name: string;
   ok: boolean;
   text: string;
+  /** Exact workspace path the tool acted on, when it has one (read/edit/write/outline). */
+  path?: string;
 }
 
 function framePayload(payload: unknown): string {
@@ -352,13 +354,16 @@ function framePayload(payload: unknown): string {
 function payloadOf(entries: ResultEntry[], share: number | null): unknown[] {
   return entries.map((entry) => {
     const text = share === null ? entry.text : cutToShare(entry.text, share);
+    // The path rides along so a compacted observation can still name the exact
+    // file it read/edited — the agent never re-reads a file it already touched.
+    const path = entry.path ? { path: entry.path } : {};
     return entry.ok
-      ? { tool: entry.name, ok: true, result: markUntrustedData(text) }
-      : { tool: entry.name, ok: false, error: markUntrustedData(text) };
+      ? { tool: entry.name, ok: true, result: markUntrustedData(text), ...path }
+      : { tool: entry.name, ok: false, error: markUntrustedData(text), ...path };
   });
 }
 
-export function serializeResults(results: Array<{ name: string; ok: boolean; content: string; error?: string }>, budget = MAX_ROUND_RESULT_CHARS): string {
+export function serializeResults(results: Array<{ name: string; ok: boolean; content: string; error?: string; path?: string }>, budget = MAX_ROUND_RESULT_CHARS): string {
   // The whole observation is paid for out of the model's context: successful
   // content, error strings and the JSON/fence/marker framing alike. Budget the
   // serialized total, not just the happy-path bodies, so a round of failures or
@@ -366,7 +371,8 @@ export function serializeResults(results: Array<{ name: string; ok: boolean; con
   const entries: ResultEntry[] = results.map((result) => ({
     name: result.name,
     ok: result.ok,
-    text: result.ok ? result.content : (result.error ?? 'The tool failed.')
+    text: result.ok ? result.content : (result.error ?? 'The tool failed.'),
+    ...(typeof result.path === 'string' && result.path.trim() ? { path: result.path } : {})
   }));
   const fixed = framePayload(payloadOf(entries.map((entry) => ({ ...entry, text: '' })), null)).length;
   const variable = entries.reduce((sum, entry) => sum + entry.text.length, 0);

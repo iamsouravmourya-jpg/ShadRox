@@ -71,6 +71,19 @@ test('summarizeObservation keeps one line per tool and the appended decision not
   assert.doesNotMatch(summary, /SHADROX_UNTRUSTED_DATA/, 'the data markers are stripped');
 });
 
+test('summarizeObservation preserves the exact file path so an already-read file is not re-read', () => {
+  const content = serializeResults([
+    { name: 'read_file', ok: true, content: 'const a = 1;', path: 'src/lib/agent/tools.ts' },
+    { name: 'edit_file', ok: true, content: 'changed 1 line', path: 'src/App.tsx' }
+  ]);
+  // The path rides in the serialized observation JSON...
+  assert.ok(content.includes('"path": "src/App.tsx"'), 'serializeResults carries the path');
+  // ...and survives compaction verbatim (no truncation, forward slashes kept).
+  const summary = summarizeObservation(content);
+  assert.match(summary, /read_file src\/lib\/agent\/tools\.ts → ok: const a = 1;/);
+  assert.match(summary, /edit_file src\/App\.tsx → ok: changed 1 line/);
+});
+
 test('isToolObservation only flags user turns carrying a results fence', () => {
   assert.equal(isToolObservation(observation('x')), true);
   assert.equal(isToolObservation({ role: 'user', content: 'a plain question' }), false);

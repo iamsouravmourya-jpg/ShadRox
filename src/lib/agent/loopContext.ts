@@ -29,6 +29,12 @@ const MIN_COMPACT_CHARS = 400;
  * transcripts from the active model's context window so smaller/free BYOK
  * models compact stale file dumps before overflowing their window.
  *
+ * The threshold is DERIVED from `resolveContextWindow(model)` — ~65% of the
+ * usable window (after the output reservation and the system instruction) —
+ * then capped cleanly to `[MIN_LOOP_CONTEXT_BUDGET_CHARS, LOOP_CONTEXT_BUDGET_CHARS]`
+ * so a huge window never over-spends and a tiny one still gets a usable budget.
+ * There is no fixed 160K threshold: 160K is only the upper clamp.
+ *
  * `schemaChars` accounts for the native tool schemas that ride in every
  * request but are not part of the message array — they consume tokens too.
  */
@@ -40,7 +46,7 @@ export function computeLoopContextBudgetChars(
 ): number {
   const usableTokens = Math.max(2_000, contextWindowTokens - Math.max(512, reservedOutputTokens));
   const systemTokens = Math.ceil(Math.max(0, systemInstructionChars + schemaChars) / 4);
-  const loopTokens = Math.max(5_000, Math.floor((usableTokens - systemTokens) * 0.75));
+  const loopTokens = Math.max(5_000, Math.floor((usableTokens - systemTokens) * 0.65));
   return Math.max(MIN_LOOP_CONTEXT_BUDGET_CHARS, Math.min(LOOP_CONTEXT_BUDGET_CHARS, loopTokens * 4));
 }
 
@@ -141,12 +147,15 @@ export function summarizeObservation(content: string): string {
   const lines: string[] = [];
   if (match) {
     try {
-      const parsed = JSON.parse(match[1]) as Array<{ tool?: string; ok?: boolean; result?: string; error?: string }>;
+      const parsed = JSON.parse(match[1]) as Array<{ tool?: string; ok?: boolean; result?: string; error?: string; path?: string }>;
       if (Array.isArray(parsed)) {
         for (const entry of parsed) {
           const name = typeof entry.tool === 'string' ? entry.tool : 'tool';
           const body = entry.ok ? entry.result ?? '' : entry.error ?? '';
-          lines.push(`${name} → ${entry.ok ? 'ok' : 'error'}: ${flatHead(String(body), SUMMARY_ENTRY_CHARS)}`);
+          // Keep the exact path verbatim so the agent can see which file it
+          // already read/edited and never spends tokens re-reading it.
+          const path = typeof entry.path === 'string' && entry.path.trim() ? ` ${entry.path.trim()}` : '';
+          lines.push(`${name}${path} → ${entry.ok ? 'ok' : 'error'}: ${flatHead(String(body), SUMMARY_ENTRY_CHARS)}`);
         }
       }
     } catch {

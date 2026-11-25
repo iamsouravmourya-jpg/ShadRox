@@ -29,7 +29,7 @@ export const MAX_MEMORY_CHARS = 16_000;
 export const MAX_NOTE_CHARS = 1_200;
 /** Turn-start excerpt budget: ~1.5k tokens, bounded hard. */
 export const MEMORY_CONTEXT_BUDGET_CHARS = 6_000;
-const MAX_NOTES = 40;
+export const MAX_NOTES = 40;
 const STORE_PREFIX = 'shadrox.projectMemory.v1:';
 
 /**

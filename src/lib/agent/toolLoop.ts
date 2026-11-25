@@ -1358,18 +1358,24 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
       ...usable.map((call, index) => {
         const { proof: _proof, ...rest } = outcomes[index];
         const rereadPath = unchangedRereads.get(index);
+        const callPath = normalizePath(call.args.path) ?? undefined;
         return {
           name: call.name,
           ...rest,
+          ...(callPath ? { path: callPath } : {}),
           content: rereadPath ? `[re-read: ${rereadPath} is unchanged since the last read this turn]\n${rest.content}` : rest.content
         };
       }),
       // A cached duplicate is answered with its earlier result, honestly labelled.
-      ...cachedHits.map(({ call, entry }) => ({
-        name: call.name,
-        ok: true,
-        content: `[unchanged since step ${entry.step}]\n${entry.outcome.content}`
-      }))
+      ...cachedHits.map(({ call, entry }) => {
+        const callPath = normalizePath(call.args.path) ?? undefined;
+        return {
+          name: call.name,
+          ok: true,
+          ...(callPath ? { path: callPath } : {}),
+          content: `[unchanged since step ${entry.step}]\n${entry.outcome.content}`
+        };
+      })
     ]);
     // A call that was refused or cut still needs saying when the round ran
     // something: dropping the note is how a model keeps re-asking blind.
