@@ -670,11 +670,6 @@ export function useOrchestrationController({
       setResumePrefixes((previous) => ({ ...previous, [modelMessage.id]: reply }));
     };
 
-    const machineCheckpoint =
-      effectiveTurnIntent.kind === 'conversational'
-        ? null
-        : await workspace.markCheckpoint(modelMessage.id, text);
-
     const turnUsage = {
       tokens: 0,
       inputTokens: 0,
@@ -1074,9 +1069,6 @@ export function useOrchestrationController({
     } finally {
       try { if (streamCompleted && effectiveTurnIntent.kind !== 'conversational') await applyReplyPatches(); }
       finally {
-        if (machineCheckpoint) {
-          await workspace.finishMachineCheckpoint(machineCheckpoint);
-        }
         const turnEnded = (streamCompleted || turnSignals.streamError !== null) && !controller.signal.aborted;
         if (turnEnded) {
           const repairIterations = turnAttempts.length > 1 ? turnAttempts.length - 1 : 0;
@@ -1167,11 +1159,6 @@ export function useOrchestrationController({
   ]);
 
   const runStore = useMemo(() => browserRunStore(), []);
-
-  const autonomyCheckpoint = useCallback(
-    (goal: string) => workspace.markCheckpoint(makeId('run'), `Run: ${goal}`, false, false, false),
-    [workspace]
-  );
 
   const askPlanText = useCallback(
     async (prompt: string): Promise<string> => {
@@ -1275,9 +1262,7 @@ export function useOrchestrationController({
       const runPolicy = { mode: permissionMode };
       const runId = makeId('run');
       const requireFileMutation = milestoneCategory === 'file_mutation' && request.milestone.expectedFiles.length > 0;
-      const machineCheckpoint = await workspace.markCheckpoint(runId, instruction);
-      try {
-        const outcome = await runAgentTurn({
+      const outcome = await runAgentTurn({
           instruction,
           expectedFiles: request.milestone.expectedFiles,
           applyPolicy: request.applyPolicy,
@@ -1412,8 +1397,7 @@ export function useOrchestrationController({
           toolEvents: outcome.toolEvents,
           toolCalls: executedToolCallCount(outcome.toolActivity)
         };
-      } finally { await workspace.finishMachineCheckpoint(machineCheckpoint); }
-    },
+      },
     [
       byok.activeKey,
       byok.activeProvider,
@@ -1513,8 +1497,8 @@ export function useOrchestrationController({
     host: autonomyHost,
     rootPath: workspaceRootPath,
     store: runStore,
-    onCheckpoint: autonomyCheckpoint,
-    onRollback: workspace.rollbackToCheckpoint,
+    onCheckpoint: async () => null,
+    onRollback: async () => false,
     budget: DEFAULT_RUN_BUDGET
   });
 
@@ -1524,9 +1508,7 @@ export function useOrchestrationController({
     budget: DEFAULT_TEAM_BUDGET,
     provider: byok.activeProvider,
     isFreeTier: activeModel?.tier === 'free',
-    onCheckpoint: async (goal) => {
-      await autonomyCheckpoint(goal);
-    }
+    onCheckpoint: async () => {}
   });
 
   busyRef.current = isGenerating || autonomy.isRunning || team.isRunning;

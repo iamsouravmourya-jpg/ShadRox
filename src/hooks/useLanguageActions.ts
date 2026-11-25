@@ -385,7 +385,6 @@ export function useLanguageActions({
         return { ok: true, message: `updated ${fileLabel} — save manually (${saved.message ?? 'disk write failed'})` };
       }
       if (saved.written > 0 && buffers.created.length > 0) {
-        await workspace.noteCheckpointCreated(buffers.created);
         for (const directory of new Set(buffers.created.map((path) => path.split('/').slice(0, -1).join('/')))) {
           void workspace.loadDirectory(directory);
         }

@@ -4,10 +4,7 @@ import { resolveActiveFileIndex } from '../lib/activeFile';
 import { detectLanguage } from '../lib/languages';
 import type { FilePatch } from '../lib/markdown';
 import { loadHandleRecord, pruneHandles, saveHandles } from '../lib/fileHandles';
-import { addCheckpointCreatedPaths, listCheckpoints, loadCheckpointCreatedPaths, loadCheckpointFiles, mergeCheckpointFiles, saveCheckpoint, type CheckpointMeta } from '../lib/history';
-import { diskCurrentView, diffToCheckpoint, type CheckpointDiff } from '../lib/checkpointDiff';
 import { contentVersion, expectedDiskVersion } from '../lib/saveVersions';
-import { composerAfterCheckpointFailure } from '../lib/agents/scopePreserve';
 import { getSnapshot, pruneSnapshots, saveSnapshot } from '../lib/snapshots';
 import { getRecentWorkspaces, pushRecentWorkspace, removeRecentWorkspace } from '../lib/storage';
 import { getDesktopBridge, type DirectoryPage, type StagedTransaction, type WorkspaceChange } from '../lib/desktop';
@@ -193,11 +190,6 @@ interface UseWorkspaceResult {
    * a file the user has not opened, or the edit is treated as a new file.
    */
   loadFilesForPatching: (paths: string[]) => Promise<WorkspaceFile[]>;
-  /**
-   * Records which paths the current turn created onto the checkpoint taken
-   * before it, so a rollback deletes them from disk instead of leaving them.
-   */
-  noteCheckpointCreated: (paths: string[]) => Promise<void>;
   /** Reloads the active buffer from disk, discarding local edits. */
   revertActiveFile: () => Promise<void>;
   closeWorkspace: () => void;
@@ -224,34 +216,7 @@ interface UseWorkspaceResult {
    */
   saveFilesAtomic: (names: string[]) => Promise<SaveOutcome>;
 
-  // --- restore timeline ----------------------------------------------------
-  checkpoints: CheckpointMeta[];
-  /**
-   * Snapshots the current files so a later chat turn can be undone.
-   * `onlyIfIdle` skips the snapshot while a machine turn is open — a nested
-   * apply then rides the turn's checkpoint instead of double-snapshotting.
-   * `turn` marks the checkpoint as one a finish call will close; run-level
-   * bookmarks pass false so they never hold the idle gate open.
-   */
-  markCheckpoint: (messageId: string, label: string, machine?: boolean, onlyIfIdle?: boolean, turn?: boolean) => Promise<string | null>;
-  finishMachineCheckpoint: (id: string | null) => Promise<void>;
-  inspectMachineCheckpoint: (id: string) => Promise<void>;
-  exportDeltaReceipt: (id: string) => Promise<string>;
-  /** `ok` = the state was restored; `partial` = restored, but some steps failed. */
-  restoreCheckpoint: (id: string) => Promise<{ ok: boolean; partial: boolean; noop?: boolean }>;
-  /** What restoring would do to the current buffers, so a restore is never blind. */
-  previewCheckpointDiff: (id: string) => Promise<CheckpointDiff | null>;
-  /**
-   * Restores a checkpoint and writes it through to disk in one transaction.
-   * Used by the autonomous run's failure path; the manual timeline restore
-   * stays buffer-only so the user can inspect before saving.
-   */
-  rollbackToCheckpoint: (id: string) => Promise<boolean>;
-  /** Applies a 1-click chat prompt checkpoint delta to disk and editor buffers. */
-  applyCheckpointRestore: (plan: {
-    restoreFiles: Array<{ path: string; content: string }>;
-    deletePaths: string[];
-  }) => Promise<{ ok: boolean; errors: string[] }>;
+// --- restore timeline ----------------------------------------------------
 }
 
 const EMPTY_FILES: WorkspaceFile[] = [];
@@ -341,12 +306,6 @@ export function useWorkspace(): UseWorkspaceResult {
       // ignore storage unavailability
     }
   }, []);
-  const [checkpoints, setCheckpoints] = useState<CheckpointMeta[]>([]);
-  const machineTurns = useRef(new Map<string, string>());
-  /** Turn checkpoints awaiting their finish call; the only-if-idle gate reads this. */
-  const openTurns = useRef(new Set<string>());
-  const machineStarting = useRef(0);
-
   const files = workspace?.files ?? EMPTY_FILES;
   /**
    * The whole workspace, not just the open tabs. A folder mount keeps its file
@@ -429,10 +388,6 @@ export function useWorkspace(): UseWorkspaceResult {
     return files.filter((file) => baselineValueFor(diskBaseline, file.name) !== file.content).map((file) => file.name);
   }, [files, diskBaseline, canWriteToDisk]);
 
-  const refreshCheckpoints = useCallback(async (workspacePath: string) => {
-    setCheckpoints(await listCheckpoints(workspacePath));
-  }, []);
-
   const mount = useCallback(
     (name: string, path: string, kind: 'folder' | 'file', nextFiles: WorkspaceFile[], options: MountOptions = {}) => {
       const handles = options.handles ?? [];
@@ -492,9 +447,8 @@ export function useWorkspace(): UseWorkspaceResult {
       }));
       void saveSnapshot({ path, name, kind, files: nextFiles });
       if (handles.length > 0 || options.directoryHandle) void saveHandles(path, handles, options.directoryHandle);
-      void refreshCheckpoints(path);
     },
-    [refreshCheckpoints]
+    []
   );
 
   const openFolder = useCallback(async () => {
@@ -1173,7 +1127,6 @@ export function useWorkspace(): UseWorkspaceResult {
     const next = [...filesRef.current, ...additions];
     const active = activeCheckpointRef.current;
     if (active && workspaceIdentityRef.current === identity) {
-      void mergeCheckpointFiles(active.id, additions);
     }
     const protect = additions.map((file) => file.name);
     while (next.length > MAX_LOADED_BUFFERS) {
@@ -1498,16 +1451,6 @@ export function useWorkspace(): UseWorkspaceResult {
     }
   }, [loadDirectory]);
 
-  /**
-   * Tags the turn's checkpoint with the paths an apply created, so a rollback
-   * deletes them again. A file the user made by hand is never in this list.
-   */
-  const noteCheckpointCreated = useCallback(async (paths: string[]): Promise<void> => {
-    const active = activeCheckpointRef.current;
-    if (!active || paths.length === 0) return;
-    await addCheckpointCreatedPaths(active.id, paths);
-  }, []);
-
   const createFile = useCallback((name: string, content = '') => {
     const cleanName = normalizeWorkspacePath(name);
     if (!cleanName || !isEditablePath(cleanName)) {
@@ -1535,18 +1478,16 @@ export function useWorkspace(): UseWorkspaceResult {
     setSelectedFileIndex(next.length - 1);
 
     // "New file" must produce a file. In a desktop folder the buffer is written
-    // straight through; the created path is tagged on the turn's checkpoint so a
-    // rollback can delete it again.
+    // straight through.
     const desktop = getDesktopBridge();
     const id = desktopWorkspaceIdRef.current;
     if (desktop && id && workspaceIdentityRef.current?.startsWith('folder-')) {
       void saveFilesAtomic([cleanName]).then((outcome) => {
         if (outcome.failed || outcome.written === 0) return;
-        void noteCheckpointCreated([cleanName]);
         void loadDirectory(cleanName.split('/').slice(0, -1).join('/'));
       });
     }
-  }, [saveFilesAtomic, noteCheckpointCreated, loadDirectory]);
+  }, [saveFilesAtomic, loadDirectory]);
 
   const newFile = useCallback(async () => {
     const desktop = getDesktopBridge();
@@ -1779,139 +1720,6 @@ export function useWorkspace(): UseWorkspaceResult {
     }
   }, [loadDirectory, applyDiskTreeChanges]);
 
-  const applyCheckpointRestore = useCallback(async ({
-    restoreFiles,
-    deletePaths
-  }: {
-    restoreFiles: Array<{ path: string; content: string }>;
-    deletePaths: string[];
-  }): Promise<{ ok: boolean; errors: string[] }> => {
-    const errors: string[] = [];
-    const desktop = getDesktopBridge();
-    const id = desktopWorkspaceIdRef.current;
-
-    const safeRestoreFiles = restoreFiles.filter((file) => isEditablePath(normalizeWorkspacePath(file.path)));
-    const safeDeletePaths = deletePaths
-      .map((entry) => normalizeWorkspacePath(entry))
-      .filter((entry) => isEditablePath(entry));
-
-    if (desktop && id) {
-      if (safeRestoreFiles.length > 0) {
-        try {
-          const writes = safeRestoreFiles.map((file) => ({
-            name: normalizeWorkspacePath(file.path),
-            content: file.content
-          }));
-          const saved = await desktop.saveFiles(id, writes);
-          for (const err of saved.errors) {
-            errors.push(`${err.name || 'File'}: ${err.message}`);
-          }
-          if (saved.saved.length > 0) {
-            applyDiskTreeChanges(saved.saved.map((path) => ({ path, kind: 'add' as const })));
-          }
-        } catch (error) {
-          errors.push(error instanceof Error ? error.message : String(error));
-        }
-      }
-      for (const clean of safeDeletePaths) {
-        try {
-          const removed = await desktop.deletePath(id, clean);
-          applyDiskTreeChanges([{ path: clean, kind: removed.kind === 'directory' ? 'unlinkDir' : 'unlink' }]);
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error);
-          if (!/ENOENT|not exist|no longer exists/i.test(msg)) {
-            errors.push(`${clean}: ${msg}`);
-          } else {
-            applyDiskTreeChanges([{ path: clean, kind: 'unlink' }]);
-          }
-        }
-      }
-      void loadDirectory('');
-    }
-
-    const deleteKeys = safeDeletePaths.map((entry) => canonicalPathKey(entry));
-    const shouldDrop = (candidate: string) => {
-      const key = canonicalPathKey(candidate);
-      return deleteKeys.some((target) => key === target || key.startsWith(`${target}/`));
-    };
-
-    const nextFiles = filesRef.current.filter((file) => !shouldDrop(file.name));
-    for (const file of filesRef.current) {
-      if (shouldDrop(file.name)) deleteBaselineKey(baselineRef.current, file.name);
-    }
-    for (const target of deleteKeys) {
-      pruneHandlesForPath(handlesRef.current, target, true);
-    }
-
-    for (const restored of safeRestoreFiles) {
-      const target = normalizeWorkspacePath(restored.path);
-      if (!target) continue;
-      const version = await contentVersion(restored.content).catch(() => undefined);
-      const existingIndex = nextFiles.findIndex((file) => pathsEqual(file.name, target));
-      if (existingIndex >= 0) {
-        nextFiles[existingIndex] = {
-          ...nextFiles[existingIndex],
-          content: restored.content,
-          ...(version ? { version } : {})
-        };
-      } else {
-        nextFiles.push({
-          name: target,
-          content: restored.content,
-          language: detectLanguage(target),
-          ...(version ? { version } : {})
-        });
-      }
-      baselineRef.current[baselineKeyFor(baselineRef.current, target)] = restored.content;
-    }
-
-    filesRef.current = nextFiles;
-    setDiskBaseline({ ...baselineRef.current });
-    setWorkspace((previous) => {
-      if (!previous) return previous;
-      let nextTree = previous.diskFileTree;
-      if (!desktop && nextTree) {
-        const treeMap = new Map(nextTree.map((entry) => [canonicalPathKey(entry.path), entry]));
-        for (const key of treeMap.keys()) {
-          if (deleteKeys.some((target) => key === target || key.startsWith(`${target}/`))) {
-            treeMap.delete(key);
-          }
-        }
-        for (const restored of safeRestoreFiles) {
-          const target = normalizeWorkspacePath(restored.path);
-          if (target) treeMap.set(canonicalPathKey(target), { path: target, size: restored.content.length });
-        }
-        nextTree = [...treeMap.values()].sort((a, b) => a.path.localeCompare(b.path));
-      }
-      return {
-        ...previous,
-        files: nextFiles,
-        ...(nextTree ? { diskFileTree: nextTree, diskFileCount: nextTree.length } : {})
-      };
-    });
-    setEditorGroups((previous) => previous.map((group) => ({
-      ...group,
-      tabs: group.tabs.filter((path) => !shouldDrop(path)),
-      pinnedTabs: group.pinnedTabs.filter((path) => !shouldDrop(path)),
-      activePath: group.activePath && shouldDrop(group.activePath) ? null : group.activePath
-    })));
-    setConflicts((previous) => previous.filter((name) => !shouldDrop(name)));
-    for (const entry of deletedPaths.current) {
-      if (shouldDrop(entry)) deletedPaths.current.delete(entry);
-    }
-    setSelectedFileIndex((current) => {
-      if (current === -1) return -1;
-      return nextFiles.length === 0 ? -1 : Math.min(current, nextFiles.length - 1);
-    });
-
-    if (errors.length === 0) {
-      setDiskMessage('Restored workspace to before the selected prompt.');
-    } else {
-      setDiskMessage(`Restored with ${errors.length} issue(s): ${errors[0]}`);
-    }
-    return { ok: errors.length === 0, errors };
-  }, [applyDiskTreeChanges, loadDirectory]);
-
   const revertActiveFile = useCallback(async () => {
     const file = filesRef.current[activeFileIndex];
     if (!file) return;
@@ -1960,13 +1768,6 @@ export function useWorkspace(): UseWorkspaceResult {
     proposalRef.current = null;
     setStatusMessage(null);
     setDiskMessage(null);
-    setCheckpoints([]);
-    // A closed workspace can never finish its turns; drop the idle gate so a
-    // later manual apply is not blocked by checkpoints of a workspace that is
-    // gone. Their native snapshots die with the workspace handle anyway.
-    machineTurns.current.clear();
-    openTurns.current.clear();
-    machineStarting.current = 0;
     activeCheckpointRef.current = null;
     handlesRef.current.clear();
     directoryHandleRef.current = null;
@@ -1991,280 +1792,6 @@ export function useWorkspace(): UseWorkspaceResult {
       resetProjectRegistry();
     };
   }, []);
-
-  // --- restore timeline ------------------------------------------------------
-
-  const markCheckpoint = useCallback(
-    async (messageId: string, label: string, machine = true, onlyIfIdle = false, turn = true): Promise<string | null> => {
-      // The idle gate covers every open turn — native machine turns *and* plain
-      // buffer-only ones — so a nested apply never takes a second snapshot while
-      // a turn is running, and never re-points activeCheckpointRef mid-turn.
-      if (!workspace || (onlyIfIdle && (machineTurns.current.size || openTurns.current.size || machineStarting.current))) return null;
-      machineStarting.current++;
-      const desktop = getDesktopBridge();
-      const nativeId = desktopWorkspaceIdRef.current;
-      try {
-        const meta = await saveCheckpoint({
-          workspacePath: workspace.path, messageId, label, files: filesRef.current,
-          machine: Boolean(machine && desktop && nativeId && workspace.kind === 'folder')
-        });
-        if (!meta) return null;
-        if (turn) openTurns.current.add(meta.id);
-        if (meta.machine && desktop && nativeId) {
-          machineTurns.current.set(meta.id, nativeId);
-          try { meta.machineReport = await desktop.beginMachineTurn(nativeId, meta.id); }
-          catch { machineTurns.current.delete(meta.id); setDiskMessage('Machine snapshot unavailable for this turn; disk rewind is disabled.'); }
-        }
-        if (desktopWorkspaceIdRef.current !== nativeId) return meta.id;
-        activeCheckpointRef.current = { id: meta.id, workspacePath: workspace.path };
-        setCheckpoints((previous) => [meta, ...previous]);
-        return meta.id;
-      } catch (error) {
-        // S17: a failed checkpoint must leave the composer usable and say plainly
-        // that nothing changed — never a half-rewound state to reason about.
-        setDiskMessage(composerAfterCheckpointFailure(error instanceof Error ? error.message : String(error)).status);
-        return null;
-      } finally { machineStarting.current--; }
-    },
-    [workspace]
-  );
-
-  const inspectMachineCheckpoint = useCallback(async (id: string) => {
-    const desktop = getDesktopBridge();
-    const nativeId = desktopWorkspaceIdRef.current;
-    if (!desktop || !nativeId) return;
-    const report = await desktop.inspectMachineTurn(nativeId, id).catch(() => null);
-    if (desktopWorkspaceIdRef.current === nativeId) {
-      setCheckpoints((previous) => previous.map((entry) => entry.id === id ? { ...entry, machineReport: report } : entry));
-    }
-  }, []);
-
-  const exportDeltaReceipt = useCallback(async (id: string): Promise<string> => {
-    const checkpoint = checkpoints.find((entry) => entry.id === id);
-    if (!checkpoint?.machine) return 'This checkpoint is not a machine turn; only Machine Delta receipts can be exported.';
-    const desktop = getDesktopBridge();
-    const nativeId = desktopWorkspaceIdRef.current;
-    if (!desktop || !nativeId) return 'Machine receipts need the desktop workspace that captured this turn; it is not open.';
-    try {
-      const exported = await desktop.exportMachineReceipt(nativeId, id);
-      const verdict = await desktop.verifyMachineReceipt(nativeId, exported.receiptId);
-      return `${verdict.message} Written to ${exported.filePath}${exported.partial ? ' (partial capture — see omissions).' : ''}`;
-    } catch (error) {
-      return error instanceof Error ? error.message : 'Delta receipt export failed.';
-    }
-  }, [checkpoints]);
-
-  const finishMachineCheckpoint = useCallback(async (id: string | null) => {
-    if (!id) return;
-    // Buffer-only turns have no native snapshot to finish, but they still hold
-    // the idle gate open until this runs — clear it for every checkpoint id.
-    openTurns.current.delete(id);
-    const nativeId = machineTurns.current.get(id);
-    const desktop = getDesktopBridge();
-    if (!desktop || !nativeId) return;
-    try {
-      await desktop.finishMachineTurn(nativeId, id);
-    } catch {
-      setDiskMessage('End snapshot failed; this turn cannot be rewound.');
-    } finally {
-      machineTurns.current.delete(id);
-      await inspectMachineCheckpoint(id);
-    }
-  }, [inspectMachineCheckpoint]);
-
-  /**
-   * Restores one checkpoint. A machine checkpoint rewinds through the native
-   * delta only — it never silently degrades into the buffer rollback below.
-   * `ok` means the captured state was restored; `partial` means it was restored
-   * but some steps (e.g. stopping owned previews) did not complete. Legacy
-   * checkpoints stay buffer-only; the user saves to disk deliberately.
-   */
-  const restoreCheckpoint = useCallback(
-    async (id: string): Promise<{ ok: boolean; partial: boolean; noop?: boolean }> => {
-      const failure = { ok: false, partial: false };
-      const checkpoint = checkpoints.find((entry) => entry.id === id);
-      if (checkpoint?.machine) {
-        const desktop = getDesktopBridge();
-        const nativeId = desktopWorkspaceIdRef.current;
-        if (!desktop || !nativeId) {
-          setDiskMessage('Machine rewind needs the desktop workspace that captured this turn; it is not open, so nothing was restored.');
-          return failure;
-        }
-        if (filesRef.current.some((file) => baselineValueFor(baselineRef.current, file.name) !== file.content)) {
-          setDiskMessage('Save or discard unsaved editor changes before machine rewind.');
-          return failure;
-        }
-        try {
-          const result = await desktop.restoreMachineTurn(nativeId, id);
-          if (desktopWorkspaceIdRef.current !== nativeId) return failure;
-          if (result.status === 'noop' || result.report?.noChanges) {
-            const msg = result.message || 'No file changes in this turn to undo.';
-            betaLogger.record({
-              level: 'info',
-              source: 'checkpoint',
-              event: 'machine_rewind_noop',
-              message: msg,
-              meta: { checkpointId: id }
-            });
-            setDiskMessage(msg);
-            await inspectMachineCheckpoint(id);
-            return { ok: true, partial: false, noop: true };
-          }
-          // The native response separates "files restored" (report state) from
-          // "every step succeeded" (ok). Say partial when the disk contents came
-          // back but e.g. a preview could not be stopped — never plain success.
-          const restoredState = result.report.state === 'restored';
-          setDiskMessage(
-            result.ok
-              ? result.message
-              : restoredState
-                ? `Partial rewind — the captured files were restored, but not every step finished: ${result.message}`
-                : result.message
-          );
-          if (restoredState) {
-            for (const change of result.report.files) {
-              if (change.beforeHash === null) {
-                const buffered = filesRef.current.find((file) => pathsEqual(file.name, change.path));
-                if (buffered && buffered.content !== baselineValueFor(baselineRef.current, buffered.name)) {
-                  setConflicts((previous) => dedupePaths([...previous, buffered.name]));
-                  continue;
-                }
-                filesRef.current = filesRef.current.filter((file) => !pathsEqual(file.name, change.path));
-                deleteBaselineKey(baselineRef.current, change.path);
-                setEditorGroups((previous) => previous.map((group) => ({ ...group,
-                  tabs: group.tabs.filter((name) => !pathsEqual(name, change.path)), pinnedTabs: group.pinnedTabs.filter((name) => !pathsEqual(name, change.path)),
-                  activePath: group.activePath && pathsEqual(group.activePath, change.path) ? null : group.activePath
-                })));
-              } else if (filesRef.current.some((file) => pathsEqual(file.name, change.path))) {
-                await refreshDiskFile(change.path);
-              }
-            }
-            setWorkspace((previous) => previous ? { ...previous, files: [...filesRef.current] } : previous);
-            setDiskBaseline({ ...baselineRef.current });
-            for (const directory of new Set(['', ...result.report.files.map((file) => file.path.split('/').slice(0, -1).join('/'))])) {
-              await loadDirectory(directory);
-            }
-          }
-          await inspectMachineCheckpoint(id);
-          return restoredState ? { ok: true, partial: !result.ok } : failure;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Machine rewind failed.';
-          betaLogger.record({
-            level: 'error',
-            source: 'checkpoint',
-            event: 'machine_rewind_failed',
-            message,
-            meta: { checkpointId: id }
-          });
-          setDiskMessage(message);
-          await inspectMachineCheckpoint(id);
-          return failure;
-        }
-      }
-      const restored = await loadCheckpointFiles(id);
-      if (!restored || restored.length === 0) return failure;
-
-      const activeName = filesRef.current[activeFileIndex]?.name;
-      setWorkspace((previous) =>
-        previous ? { ...previous, files: restored } : previous
-      );
-      const nextIndex = activeName ? restored.findIndex((file) => pathsEqual(file.name, activeName)) : -1;
-      setSelectedFileIndex(nextIndex);
-      setDiskMessage('Legacy checkpoint restored in the editor buffers only — nothing was written to disk. Click "Save to disk" to persist the files.');
-      return { ok: true, partial: false };
-    },
-    [activeFileIndex, checkpoints, refreshDiskFile, loadDirectory, inspectMachineCheckpoint]
-  );
-
-  /**
-   * What a rewind would do, read from the disk rather than the editor tabs.
-   *
-   * A machine checkpoint rewinds bytes, so answering from buffers would hide
-   * every edit made outside ShadRox — including a file created or deleted after
-   * the checkpoint, which the rewind is about to overwrite. Beyond the cap, or
-   * without a native folder, the buffers are the only honest answer left.
-   */
-  const previewCheckpointDiff = useCallback(async (id: string): Promise<CheckpointDiff | null> => {
-    const stored = await loadCheckpointFiles(id);
-    if (!stored) return null;
-    const desktop = getDesktopBridge();
-    const nativeId = desktopWorkspaceIdRef.current;
-    const names = dedupePaths([
-      ...stored.map((file) => normalizeWorkspacePath(file.name)),
-      ...filesRef.current.map((file) => normalizeWorkspacePath(file.name))
-    ]).filter(isEditablePath);
-    if (!desktop || !nativeId || names.length > MAX_PREVIEW_DISK_FILES) {
-      return diffToCheckpoint(filesRef.current, stored);
-    }
-    const disk = await desktop.loadFiles(nativeId, names, { maxBytesPerFile: MAX_PREVIEW_DISK_FILE_BYTES }).catch(() => null);
-    if (!disk || desktopWorkspaceIdRef.current !== nativeId) return diffToCheckpoint(filesRef.current, stored);
-    return diffToCheckpoint(diskCurrentView(filesRef.current, disk), stored);
-  }, []);
-
-  /**
-   * Restores a checkpoint and persists it. Files the run created after the
-   * checkpoint are reported rather than silently left behind, because the
-   * bridge has no delete primitive; every pre-existing file is restored.
-   */
-  const rollbackToCheckpoint = useCallback(
-    async (id: string): Promise<boolean> => {
-      // A machine checkpoint owns an on-disk delta; restoring from the stored
-      // buffer copy would silently destroy exactly what the native rewind is
-      // meant to reverse. Refuse and point the caller at the timeline instead.
-      if (checkpoints.some((entry) => entry.id === id && entry.machine)) {
-        setDiskMessage('This checkpoint captured machine state — rewind it from the timeline instead; the buffer rollback was not run.');
-        return false;
-      }
-      const restored = await loadCheckpointFiles(id);
-      if (!restored) return false;
-      const created = await loadCheckpointCreatedPaths(id);
-
-      const before = filesRef.current;
-      const restoredNames = restored.map((file) => file.name);
-      const inBuffersOnly = before
-        .map((file) => file.name)
-        .filter((name) => !hasTrackedPath(restoredNames, name) && !hasTrackedPath(created, name));
-      const activeName = before[activeFileIndex]?.name;
-
-      filesRef.current = restored;
-      setWorkspace((previous) => (previous ? { ...previous, files: restored } : previous));
-      setSelectedFileIndex(activeName ? restored.findIndex((file) => pathsEqual(file.name, activeName)) : -1);
-
-      const desktop = getDesktopBridge();
-      const workspaceId = desktopWorkspaceIdRef.current;
-      const leftBehind: string[] = [];
-      if (desktop && workspaceId && created.length > 0) {
-        for (const path of created) {
-          try {
-            await desktop.deletePath(workspaceId, path);
-          } catch {
-            leftBehind.push(path);
-          }
-        }
-      }
-
-      const outcome = restored.length > 0
-        ? await saveFilesAtomic(restored.map((file) => file.name))
-        : { written: 0, failed: false, message: null };
-      const notes = [
-        leftBehind.length > 0
-          ? ` ${leftBehind.length} file${leftBehind.length === 1 ? '' : 's'} created during the run could not be deleted: ${leftBehind.slice(0, 5).join(', ')}.`
-          : created.length > 0
-            ? ` ${created.length} file${created.length === 1 ? '' : 's'} created during the run were removed.`
-            : '',
-        inBuffersOnly.length > 0
-          ? ` ${inBuffersOnly.length} unsaved buffer${inBuffersOnly.length === 1 ? '' : 's'} not in the checkpoint were discarded.`
-          : ''
-      ].join('');
-      setDiskMessage(
-        outcome.failed
-          ? `Rollback could not write every restored file to disk.${notes}`
-          : `Restored to the pre-run checkpoint.${notes}`
-      );
-      return !outcome.failed;
-    },
-    [activeFileIndex, saveFilesAtomic, checkpoints]
-  );
 
   // Keep the local snapshot in step with the live workspace so "Recently opened"
   // can restore it directly instead of asking the user to pick the folder again.
@@ -2477,7 +2004,6 @@ export function useWorkspace(): UseWorkspaceResult {
       createDirectory,
       deleteWorkspaceEntry,
       loadFilesForPatching,
-      noteCheckpointCreated,
       revertActiveFile,
       closeWorkspace,
       canWriteToDisk,
@@ -2488,16 +2014,7 @@ export function useWorkspace(): UseWorkspaceResult {
       setAutoSave,
       saveAll,
       saveFiles: saveFilesToDisk,
-      saveFilesAtomic,
-      checkpoints,
-      markCheckpoint,
-      finishMachineCheckpoint,
-      inspectMachineCheckpoint,
-      exportDeltaReceipt,
-      restoreCheckpoint,
-      previewCheckpointDiff,
-      rollbackToCheckpoint,
-      applyCheckpointRestore
+      saveFilesAtomic
     }),
     [
       directoryPages,
@@ -2545,7 +2062,6 @@ export function useWorkspace(): UseWorkspaceResult {
       createDirectory,
       deleteWorkspaceEntry,
       loadFilesForPatching,
-      noteCheckpointCreated,
       revertActiveFile,
       closeWorkspace,
       canWriteToDisk,
@@ -2555,16 +2071,7 @@ export function useWorkspace(): UseWorkspaceResult {
       autoSave,
       saveAll,
       saveFilesToDisk,
-      saveFilesAtomic,
-      checkpoints,
-      markCheckpoint,
-      finishMachineCheckpoint,
-      inspectMachineCheckpoint,
-      exportDeltaReceipt,
-      restoreCheckpoint,
-      previewCheckpointDiff,
-      rollbackToCheckpoint,
-      applyCheckpointRestore
+      saveFilesAtomic
     ]
   );
 }

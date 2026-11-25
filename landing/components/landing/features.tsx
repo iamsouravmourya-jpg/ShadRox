@@ -5,7 +5,7 @@ import type { ReactNode } from 'react'
 import {
   MessagesSquare, FileCode2, SearchCode, Command,
   Eye, Terminal, GitBranch, Replace, History, ArrowRight,
-  Image as ImageIcon,
+  Image as ImageIcon, Save, Check, X
 } from 'lucide-react'
 import { Reveal } from './reveal'
 import { cn } from '@/lib/utils'
@@ -35,11 +35,6 @@ const features: Feature[] = [
         <div className={`rounded-xl rounded-bl-md bg-emerald-500/10 px-3 py-2 text-emerald-700 dark:text-emerald-400 ${mono}`}>{'+ loading={!ready}'}</div>
       </div>
     ),
-  },
-  {
-    icon: History,
-    title: '1-Click checkpoints',
-    text: 'AI Studio-style checkpoints snapshot your workspace before a risky turn. Press ↺ Restore to rewind files and your local Git position in one click — no manual stashing.',
   },
   {
     icon: ImageIcon,
@@ -73,14 +68,35 @@ const features: Feature[] = [
   },
   {
     icon: GitBranch,
-    title: 'Source control & checkpoints',
-    text: 'Inspect staged and unstaged changes with inline diffs, then Git Push, Pull, or Sync and commit with AI-generated messages — or rewind to an earlier checkpoint.',
+    title: 'Source control',
+    text: 'Inspect staged and unstaged changes with inline diffs, then Git Push, Pull, or Sync and commit with AI-generated messages.',
     wide: 'from-md',
   },
   {
     icon: Replace,
     title: 'Search & replace',
     text: 'Search files on disk and in open buffers with case-sensitive, whole-word, or regex controls, and replace selected or all occurrences.',
+  },
+  {
+    icon: Save,
+    title: 'Accept/Reject bar with Auto-Save',
+    text: 'Cursor-style Accept/Reject bar shows every file change inline. Toggle Auto-Save ON to apply instantly, or OFF to review each diff before it hits disk.',
+    wide: 'from-md',
+    visual: (
+      <div className="mt-6 grid max-w-[280px] gap-1.5 sm:mt-0">
+        <div className="rounded-xl border border-line bg-base p-2.5 text-[11px] font-mono">
+          <div className="flex items-center gap-2 text-ok">
+            <Check className="h-3 w-3" /> Accept src/App.tsx
+          </div>
+          <div className="flex items-center gap-2 text-danger mt-1">
+            <X className="h-3 w-3" /> Skip src/utils.ts
+          </div>
+          <div className="flex items-center gap-2 text-accent mt-1">
+            <Save className="h-3 w-3" /> Auto-Save: ON
+          </div>
+        </div>
+      </div>
+    ),
   },
   {
     icon: History,

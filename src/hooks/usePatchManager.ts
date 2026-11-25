@@ -135,7 +135,6 @@ export function usePatchManager({
               ? await saveFilesAtomicWithHooks(names)
               : { written: 0, failed: false, message: null };
             if (healed.written > 0) {
-              if (buffers.created.length > 0) await workspace.noteCheckpointCreated(buffers.created);
               importPlan.patches.forEach((patch) => merged.set(patch.path, patch.content));
               after = await desktop.diagnostics(nativeWorkspaceId);
               announce(
@@ -271,9 +270,7 @@ export function usePatchManager({
       }
       const paintBeforeWrite = acceptance.paintToken();
 
-      const editCheckpoint = await workspace.markCheckpoint(messageId, 'Apply reviewed changes', true, true);
-      try {
-        const jobs = applyPlan.jobs;
+      const jobs = applyPlan.jobs;
         const applied = applyAtomicJobs(jobs, (updates) => workspace.applyFilePatches(updates));
         const withLanded = applyPlan.patches.map((patch) =>
           patch.status === 'applied' && applied.includes(patch.path)
@@ -398,7 +395,6 @@ export function usePatchManager({
           );
           const createdPaths = jobs.filter((job) => job.created).map((job) => job.path);
           if (createdPaths.length > 0) {
-            await workspace.noteCheckpointCreated(createdPaths);
             for (const directory of new Set(createdPaths.map((path) => path.split('/').slice(0, -1).join('/')))) {
               void workspace.loadDirectory(directory);
             }
@@ -411,8 +407,7 @@ export function usePatchManager({
           ...(verification ? { verification } : {}),
           ...(diagnostics ? { diagnostics } : {})
         };
-      } finally { await workspace.finishMachineCheckpoint(editCheckpoint); }
-    },
+      },
     [workspace, desktop, nativeWorkspaceId, announce, healAfterApply, saveFilesAtomicWithHooks, acceptance, previewStatus, setMessages]
   );
 

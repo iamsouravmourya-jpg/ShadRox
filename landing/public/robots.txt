@@ -1,4 +1,21 @@
 User-agent: *
 Allow: /
 
+# Priority crawl paths
+Allow: /features
+Allow: /download
+Allow: /agent
+Allow: /how-it-works
+Allow: /preview-support
+Allow: /faq
+Allow: /releases
+Allow: /about
+Allow: /contributors
+
+# Disallow admin/internal paths
+Disallow: /api/
+Disallow: /_next/
+Disallow: /static/
+Disallow: /*.json$
+
 Sitemap: https://www.shadrox.cyou/sitemap.xml

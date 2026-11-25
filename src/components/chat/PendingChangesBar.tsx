@@ -1,11 +1,14 @@
 import { useState, useSyncExternalStore } from 'react';
-import { Check, ChevronDown, ChevronRight, FileCode2, FilePlus2, Loader2, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, FileCode2, FilePlus2, Loader2, X, Save } from 'lucide-react';
 import {
   acceptAllPendingChanges,
   acceptPendingChange,
   getPendingSnapshot,
+  isAutoSaveEnabled,
   rejectAllPendingChanges,
   rejectPendingChange,
+  setWorkspaceAutoSave,
+  subscribeAutoSave,
   subscribePendingChanges
 } from '../../lib/agent/pendingChanges';
 
@@ -21,11 +24,17 @@ export function PendingChangesBar({ workspaceId, onOpenFile, onNotify }: Pending
     () => getPendingSnapshot(workspaceId),
     () => getPendingSnapshot(workspaceId)
   );
+  const autoSave = useSyncExternalStore(
+    (listener) => subscribeAutoSave(workspaceId, listener),
+    () => isAutoSaveEnabled(workspaceId),
+    () => isAutoSaveEnabled(workspaceId)
+  );
   const [expanded, setExpanded] = useState(true);
   const [busyPath, setBusyPath] = useState<string | null>(null);
   const [busyAll, setBusyAll] = useState(false);
 
-  if (snapshot.entries.length === 0) return null;
+  // Only show the bar when there are pending changes AND auto-save is OFF
+  if (snapshot.entries.length === 0 || autoSave) return null;
 
   const handleAcceptAll = async () => {
     if (busyAll) return;
@@ -93,6 +102,19 @@ export function PendingChangesBar({ workspaceId, onOpenFile, onNotify }: Pending
         </button>
 
         <div className="flex shrink-0 items-center gap-1.5">
+          <label
+            title="Toggle Auto-Save: when ON, accepted changes are written to disk immediately"
+            className="flex items-center gap-1.5 text-[10.5px] font-medium text-ink-3 cursor-pointer"
+          >
+            <input
+              type="checkbox"
+              checked={autoSave}
+              onChange={(e) => setWorkspaceAutoSave(workspaceId, e.target.checked)}
+              className="accent-[var(--accent)] cursor-pointer"
+            />
+            <Save className="h-3 w-3 shrink-0" />
+            Auto-Save
+          </label>
           <button
             type="button"
             disabled={busyAll || Boolean(busyPath)}

@@ -50,7 +50,7 @@ ShadRox is a native Electron desktop IDE that brings a CodeMirror 6 editor, BYOK
 |    | EXPLORER       +  | page.tsx  layout.tsx  globals.css     | [Sparkles] Model Selector  [BYOK]|
 | [] | [Search files...] | src / app / page.tsx                  +----------------------------------+
 |    | > src             |---------------------------------------|                                  |
-| Q  |   > components    |  1  export default function Home() {  |  You · 10:42   [Restore]         |
+| Q  |   > components    |  1  export default function Home() {  |  You · 10:42   [✓ Accept] [✗ Skip] |
 |    |   > lib           |  2    return <main>...</main>;        |  Build the feature end-to-end    |
 | Y  |   .env (masked)   |  3  }                                 |                                  |
 |    |   package.json    +---------------------------------------+  ShadRox · Thinking & Progress   |
@@ -63,8 +63,8 @@ ShadRox is a native Electron desktop IDE that brings a CodeMirror 6 editor, BYOK
   ^          ^                              ^                                     ^
   |          |                              |                                     |
 Rail:   Sidebar:                       Main Stage:                           Unified AI Panel:
-Code    Explorer / Quick Search /      CodeMirror 6 Split Tabs, Ctrl+K,      Searchable Models, 1-Click
-Preview Git SCM (Push/Pull/Sync/       Live Preview Pane, or Multi-Tab       Prompt Checkpoints, File &
+Code    Explorer / Quick Search /      CodeMirror 6 Split Tabs, Ctrl+K,      Searchable Models, Accept/Reject
+Preview Git SCM (Push/Pull/Sync/       Live Preview Pane, or Multi-Tab       Bar with Auto-Save, File &
 Search  Stage/Discard/AI Commit)       xterm.js + node-pty Dock              Image Paste / Attachments
 Git
 Account
@@ -107,7 +107,7 @@ Account
 
 - **Unified Autonomous Agent (Zero Mode-Switching Friction)** — No manual `Ask / Plan / Agent` switcher in chat. `classifyTurnIntent` automatically scales each turn: pure greetings run on a `<250`-token conversational path with zero tool schemas, read-only questions run in safe inspection mode, and build/fix requests enter the 60-round bounded agent loop.
 - **Parallel Read-Only Scout Swarm** — Complex codebase exploration delegates read-only searches via `spawn_subagent` (capped at `2` concurrent scouts) so main conversation context stays compact.
-- **1-Click Prompt Checkpoints & Windows Safeguards** — Every turn that modifies files attaches a hoverable `↺ Restore` checkpoint button directly on your prompt bubble to rewind workspace edits cleanly. Main-process file operations enforce path-containment, reject symlinks, and block Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`9`, `LPT1`–`9`).
+- **Accept/Reject Bar with Auto-Save** — Every file change the agent proposes appears in a hoverable Accept/Reject bar (Cursor-style). Toggle **Auto-Save ON** to apply instantly to disk, or **OFF** to review each diff before it lands. The bar only shows when there are pending changes and Auto-Save is OFF.
 - **CodeMirror 6 + TypeScript 5.9 + Auto-Save** — Split editor groups, pinned/reorderable tabs, color-coded Explorer tree, go-to-definition (`F12`), find references (`Shift+F12`), rename (`F2`), quick fixes (`Ctrl+.`), inline AI diff edits (`Ctrl+K`), ghost-text FIM completions, and a persistent top-bar **Auto-Save** toggle (1.2s debounce).
 - **Full Git Source Control (`ScmPanel`)** — Stage/unstage individual files, **Stage All**, **Unstage All**, **Discard** unstaged changes cleanly, generate AI commit messages, commit, switch local branches, resolve merge conflicts, and run **Push**, **Pull**, or **Sync** against upstream remotes alongside GitHub repository creation/push.
 - **2-Terminal Parallel Command Execution & Live Preview** — Agents can run up to `2` safe commands concurrently across managed terminal/job sessions while keeping interactive user shells isolated. Embedded Preview detects static, Vite, Next.js, Nuxt, Astro, SvelteKit, Remix, and Python/Go/PHP/Java/.NET apps, tagging runtime errors with their active route pathname (e.g., `[Route: /dashboard]`).
@@ -154,17 +154,6 @@ Base core tools load immediately for execution turns; specialized bundles unlock
 | `restore` | `checkpoints` | Roll back workspace files to a saved checkpoint (user confirmation required) |
 | `delete_file` | `delete` | Delete a file or folder recursively (`confirm: true` + native dialog + read-back verify) |
 | `memory_read` | `memory` | Read persisted project notes and architectural decisions from `.shadrox/memory.json` |
-| `memory_note` | `memory` | Store durable repository conventions and decisions to `.shadrox/memory.json` |
-| `find_references` | `code_intel` | Locate all TypeScript/workspace symbol references |
-| `go_to_definition` | `code_intel` | Resolve symbol declaration and definition positions |
-| `rename_symbol` | `code_intel` | Compute and apply project-wide symbol renames |
-| `semantic_search` | `core` / Search | Local vector + BM25 semantic code search across indexed chunks |
-| `web_search` | `web` | Search web documentation when external APIs or errors require lookup |
-| `fetch_url` | `web` | Fetch clean parsed text/markdown from an external documentation URL |
-| `preview_inspect` | `web` / Preview | Inspect live preview DOM structure, console errors, and active route pathname |
-| `ask_user` | `interaction` | Pause execution to request a clarifying pick from the user |
-| `spawn_subagent` | `interaction` | Launch isolated read-only scout subagents (max 2 concurrent) and receive concise summaries |
-| `diff_review` | `review` | Review full workspace diff before finalizing edits |
 
 ---
 
@@ -306,7 +295,7 @@ Saves write to a temporary file, hard-link/rename (or copy+unlink across OneDriv
 - **Does ShadRox cost anything?** No. ShadRox is free and BYOK-only; your provider bills your own API key directly.
 - **Does ShadRox upload my code to a cloud workspace?** No. Files open and save strictly on your local disk.
 - **Can the agent delete files or run dangerous commands silently?** No. `delete_file` and `DANGEROUS` commands always prompt via native confirmation dialogs; `read_file` masks `.env*` secrets.
-- **How do I undo agent edits quickly?** Click the `↺ Restore` checkpoint pill directly above any prompt in chat, or use Git discard/restore in the Source Control panel.
+- **How do I undo agent edits quickly?** Use the **Accept/Reject bar** above any prompt in chat — click ✗ Skip to discard a change, or toggle **Auto-Save OFF** to review every diff before it hits disk. Git discard/restore in the Source Control panel also works.
 - **Can I send follow-up prompts while the agent is still working?** Yes — up to 5 messages queue cleanly with the active model/workspace state.
 - **Who builds ShadRox?** Founder and developer **Sourav Maurya** ([shadrox.cyou](https://www.shadrox.cyou)).
 

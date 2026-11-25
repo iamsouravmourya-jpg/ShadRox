@@ -14,8 +14,8 @@ const jakarta = Plus_Jakarta_Sans({
 })
 
 const TITLE = 'ShadRox — Project files, editor, autonomous AI agent, preview, Git and terminals in one app'
-const DESCRIPTION = 'A native Windows workspace for local projects: CodeMirror 6 editor, a unified auto-routed AI agent, live preview with console forwarding, Git Push/Pull/Sync, parallel terminals and 1-click checkpoints. Files stay on your computer.'
-const OG_DESCRIPTION = 'A native Windows workspace for local projects with a unified BYOK AI agent, live preview, Git sync, and 1-click checkpoints.'
+const DESCRIPTION = 'A native Windows workspace for local projects: CodeMirror 6 editor, a unified auto-routed AI agent, live preview with console forwarding, Git Push/Pull/Sync, parallel terminals, and Accept/Reject bar with Auto-Save. Files stay on your computer.'
+const OG_DESCRIPTION = 'A native Windows workspace for local projects with a unified BYOK AI agent, live preview, Git sync, and Accept/Reject bar with Auto-Save.'
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -90,6 +90,11 @@ function buildJsonLd(siteUrl: string) {
         url: siteUrl,
         name: 'ShadRox',
         publisher: { '@id': `${siteUrl}/#organization` },
+        potentialAction: {
+          '@type': 'SearchAction',
+          target: { '@type': 'EntryPoint', urlTemplate: `${siteUrl}/search?q={search_term_string}` },
+          'query-input': 'required name=search_term_string',
+        },
       },
       {
         '@type': 'SoftwareApplication',
@@ -97,13 +102,36 @@ function buildJsonLd(siteUrl: string) {
         applicationCategory: 'DeveloperApplication',
         operatingSystem: 'Windows 10, Windows 11 (64-bit)',
         softwareVersion: APP_VERSION,
-        dateModified: '2026-11-18',
+        dateModified: '2026-11-25',
         url: siteUrl,
         downloadUrl: `${siteUrl}/download`,
         offers: { '@type': 'Offer', price: '0', priceCurrency: 'INR', availability: 'https://schema.org/InStock' },
         image: `${siteUrl}/brand-logo.png`,
         author: { '@id': `${siteUrl}/#sourav-maurya` },
         description: 'A native desktop workspace for local projects with a code editor, Markdown preview, BYOK AI chat, project preview, Git tools, and an integrated terminal. Free during beta; bring your own AI provider key.',
+      },
+      {
+        '@type': 'SiteNavigationElement',
+        '@id': `${siteUrl}/#navigation`,
+        name: 'Main Navigation',
+        url: siteUrl,
+        description: 'Primary navigation for ShadRox desktop IDE landing pages.',
+      },
+      {
+        '@type': 'ItemList',
+        '@id': `${siteUrl}/#sitelinks`,
+        name: 'ShadRox Key Pages',
+        description: 'Key landing pages for ShadRox desktop IDE features and resources.',
+        itemListElement: [
+          { '@type': 'ListItem', position: 1, item: { '@type': 'WebPage', '@id': `${siteUrl}/`, url: siteUrl, name: 'Home' } },
+          { '@type': 'ListItem', position: 2, item: { '@type': 'WebPage', '@id': `${siteUrl}/features`, url: `${siteUrl}/features`, name: 'Features' } },
+          { '@type': 'ListItem', position: 3, item: { '@type': 'WebPage', '@id': `${siteUrl}/download`, url: `${siteUrl}/download`, name: 'Download' } },
+          { '@type': 'ListItem', position: 4, item: { '@type': 'WebPage', '@id': `${siteUrl}/agent`, url: `${siteUrl}/agent`, name: 'AI Agent' } },
+          { '@type': 'ListItem', position: 5, item: { '@type': 'WebPage', '@id': `${siteUrl}/how-it-works`, url: `${siteUrl}/how-it-works`, name: 'How It Works' } },
+          { '@type': 'ListItem', position: 6, item: { '@type': 'WebPage', '@id': `${siteUrl}/preview-support`, url: `${siteUrl}/preview-support`, name: 'Preview Support' } },
+          { '@type': 'ListItem', position: 7, item: { '@type': 'WebPage', '@id': `${siteUrl}/faq`, url: `${siteUrl}/faq`, name: 'FAQ' } },
+          { '@type': 'ListItem', position: 8, item: { '@type': 'WebPage', '@id': `${siteUrl}/releases`, url: `${siteUrl}/releases`, name: 'Releases' } },
+        ],
       },
     ],
   }

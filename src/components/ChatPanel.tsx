@@ -848,7 +848,7 @@ export function ChatPanel({
   return (
     <div className="relative h-full flex flex-col bg-base select-text">
       {/* Header */}
-      <header className="h-12 shrink-0 flex items-center justify-between gap-2 px-3 border-b border-line bg-surface/95 backdrop-blur-xl">
+      <header className="h-12 shrink-0 flex items-center justify-between gap-2 px-3 border-b border-line bg-surface/95 backdrop-blur-xl z-50">
         <button
           type="button"
           ref={modelTriggerRef}
@@ -1229,21 +1229,6 @@ export function ChatPanel({
                     </span>
                     <span className="text-[11.5px] font-semibold tracking-tight text-ink">ShadRox</span>
                     <span className="font-mono tabular-nums text-[10px] text-ink-4">{message.timestamp}</span>
-                    {(() => {
-                      const elapsedLabel = message.streaming && message.startedAt
-                        ? formatTurnElapsed(Math.max(0, turnNow - message.startedAt))
-                        : formatTurnElapsed(message.durationMs ?? message.metrics?.durationMs ?? undefined);
-                      if (!elapsedLabel) return null;
-                      return (
-                        <span
-                          title={message.streaming ? 'Elapsed turn time' : 'Total turn completion time'}
-                          className="inline-flex items-center gap-1 rounded border border-line bg-base px-1.5 py-0.5 font-mono text-[9.5px] tabular-nums text-ink-3"
-                        >
-                          <Clock className="h-2.5 w-2.5 text-ink-4" />
-                          {elapsedLabel}
-                        </span>
-                      );
-                    })()}
                     {message.streaming && (
                       <span className="ml-auto inline-flex items-center gap-1.5 text-[10.5px] font-medium text-accent">
                         <Loader2 className="size-3 animate-spin" />

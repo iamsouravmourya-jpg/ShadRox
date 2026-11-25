@@ -33,6 +33,7 @@ const workspaceAutoSave = new Map<string, boolean>();
 const pendingByWorkspace = new Map<string, Map<string, PendingChangeEntry>>();
 const workspaceBridges = new Map<string, WorkspacePendingBridge>();
 const listeners = new Set<() => void>();
+const autoSaveListeners = new Map<string, Set<() => void>>();
 const snapshotVersions = new Map<string, number>();
 const cachedSnapshots = new Map<string, { version: number; snapshot: PendingChangesSnapshot }>();
 
@@ -146,6 +147,17 @@ export function setWorkspaceAutoSave(workspaceId: string | null | undefined, ena
   if (workspaceAutoSave.get(key) === next) return;
   workspaceAutoSave.set(key, next);
   bumpVersion(key);
+  // Notify auto-save specific listeners
+  const keyListeners = autoSaveListeners.get(key);
+  if (keyListeners) {
+    for (const listener of keyListeners) {
+      try {
+        listener();
+      } catch {
+        /* subscriber isolation */
+      }
+    }
+  }
 }
 
 export function registerWorkspaceBridge(
@@ -363,6 +375,19 @@ export function subscribePendingChanges(listener: () => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
+  };
+}
+
+export function subscribeAutoSave(workspaceId: string | null | undefined, listener: () => void): () => void {
+  const key = workspaceKey(workspaceId);
+  let set = autoSaveListeners.get(key);
+  if (!set) {
+    set = new Set();
+    autoSaveListeners.set(key, set);
+  }
+  set.add(listener);
+  return () => {
+    set?.delete(listener);
   };
 }
 
