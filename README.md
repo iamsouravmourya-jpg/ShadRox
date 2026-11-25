@@ -14,7 +14,7 @@
 
 </div>
 
-ShadRox is a native Electron desktop app that puts a code editor, BYOK AI chat and agent, live project preview, Git tools, a bundled Node debugger, and an integrated terminal in one window. Open a local folder, edit files, ask your own AI provider for help, run the project, and commit — without leaving the workspace. Project files stay on your disk; only the prompt and context you choose are sent to the provider you configure. ShadRox is free, bring-your-own-key only, and has no billing.
+ShadRox is a native Electron desktop app that puts a code editor, BYOK AI chat and agent, live project preview, Git tools, and an integrated terminal in one window. Open a local folder, edit files, ask your own AI provider for help, run the project, and commit — without leaving the workspace. Project files stay on your disk; only the prompt and context you choose are sent to the provider you configure. ShadRox is free, bring-your-own-key only, and has no billing.
 
 > **Beta software (v0.1.4).** Agent output and model-generated edits can be incorrect. Review changes, keep backups or use Git, and do not approve commands you do not understand. See [Beta terms](#beta-terms).
 
@@ -60,7 +60,6 @@ ShadRox is a native Electron desktop app that puts a code editor, BYOK AI chat a
 - **Agent with guardrails** — 60-round bounded agent loop with risk-tiered command approval (safe commands auto-run, risky ones ask, dangerous ones always ask in red), background jobs, contract-aware TypeScript repairs, verified file writes, and multi-file atomic patches.
 - **Dynamic Tool Bundles** — Base workspace tools plus on-demand category unlocking (`preview`, `git`, `checkpoints`, `delete`, `web`, `memory`, `code_intel`, `review`, `jobs`, `terminal`, `interaction`, `apply_patch`, `mcp`).
 - **Resilience & Anti-Stall** — Auto-recovery from edit failures (after 2 failed edits, switches to clean rewrite), identical-call capping, progress-based stuck detection, and head+tail output clipping.
-- **Bundled Node debugger** — ships `@vscode/js-debug` with an automatic stdio-to-TCP DAP bridge for breakpoints, step-debugging, and local variable inspection with zero external setup.
 - **Live preview** — static sites, Node web frameworks, and detected Python/Go/PHP/Java/.NET backends, with DOM inspection and bounded health checks.
 - **Terminal** — interactive shell rooted in the workspace (xterm.js + node-pty); PowerShell and bash report cwd and exit codes.
 - **Git & checkpoints** — diffs, staging, AI commit messages, branches, conflict resolution, GitHub push, and rewindable workspace checkpoints with baseline Git comparison.
@@ -399,7 +398,7 @@ ShadRox is proprietary software owned by ShadRox and founder Sourav Maurya, buil
 ```
 electron/    Main process: IPC, consent, command approval, preview, terminal, MCP, proof store, updater
 src/         React UI (components/, hooks/) and lib/ (agent loop, patch engine, autonomy, agents,
-             terminal, preview, proof, intent, behavior, calibratedAuto, capsules, plugins, ...)
+              terminal, preview, proof, behavior, calibratedAuto, plugins, ...)
 api/         Local API routes: ai/, byok/, github/, prompt/
 benchmark/   Model-free agent benchmark cases
 supabase/    Auth schema (profiles table, triggers)
