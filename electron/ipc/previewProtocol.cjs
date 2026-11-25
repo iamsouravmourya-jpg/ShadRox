@@ -634,7 +634,7 @@ function createPreviewProtocolService(deps) {
     const relativeEntry = path.relative(workspaceRoot, entry.filePath).split(path.sep).join('/');
     const url = `${PREVIEW_SCHEME}://${workspaceId}/${relativeEntry.split('/').map(encodeURIComponent).join('/')}`;
     reportStatus(`Serving ${relativeEntry} from ${path.basename(projectRoot)} through the local preview protocol.`);
-    return { url, script: 'static' };
+    return { status: 'ready', url, script: 'static', hmr: false };
   }
 
   return {

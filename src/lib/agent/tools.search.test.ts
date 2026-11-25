@@ -161,3 +161,86 @@ test('preview_control status reports URL, port, recent logs, and runtime error v
     }
   );
 });
+
+test('preview_control start and restart succeed when startPreview omits status or optional fields', async () => {
+  await withBridge(
+    {
+      stopPreview: async () => true,
+      startPreview: async () => ({ url: 'http://127.0.0.1:5173/', port: 5173, script: 'dev', hmr: true })
+    },
+    async () => {
+      const start = await runTool('ws', { name: 'preview_control', args: { action: 'start' } });
+      assert.equal(start.ok, true);
+      assert.match(start.content, /Preview ready at http:\/\/127\.0\.0\.1:5173\//);
+      assert.match(start.content, /port 5173/);
+    }
+  );
+
+  await withBridge(
+    {
+      stopPreview: async () => true,
+      startPreview: async () => ({ url: 'shadrox-preview://ws/index.html', script: 'static' })
+    },
+    async () => {
+      const restart = await runTool('ws', { name: 'preview_control', args: { action: 'restart' } });
+      assert.equal(restart.ok, true);
+      assert.match(restart.content, /Preview ready at shadrox-preview:\/\/ws\/index\.html/);
+      assert.match(restart.content, /script: static/);
+    }
+  );
+});
+
+test('preview_control start/restart/status never throw when selection projects or optional verdict fields are undefined', async () => {
+  await withBridge(
+    {
+      stopPreview: async () => true,
+      startPreview: async () => ({ status: 'selection-required', projects: undefined })
+    },
+    async () => {
+      const start = await runTool('ws', { name: 'preview_control', args: { action: 'start' } });
+      assert.equal(start.ok, false);
+      assert.equal(start.error, 'preview selection required');
+    }
+  );
+
+  await withBridge(
+    {
+      stopPreview: async () => true,
+      startPreview: async () => undefined
+    },
+    async () => {
+      const restart = await runTool('ws', { name: 'preview_control', args: { action: 'restart' } });
+      assert.equal(restart.ok, false);
+      assert.equal(restart.error, 'invalid preview start result');
+    }
+  );
+
+  await withBridge(
+    {
+      getPreviewStatus: async () => ({
+        status: 'starting',
+        url: undefined,
+        port: undefined,
+        script: undefined,
+        hmr: undefined,
+        lastError: undefined,
+        recentOutput: undefined
+      }),
+      assertPreview: async () => ({
+        ok: false,
+        status: 'fatal',
+        errorCount: undefined,
+        detail: undefined,
+        consoleErrors: undefined,
+        failedSelectors: undefined,
+        warningSelectors: undefined
+      })
+    },
+    async () => {
+      const status = await runTool('ws', { name: 'preview_control', args: { action: 'status' } });
+      assert.equal(status.ok, true);
+      assert.match(status.content, /status: starting/);
+      assert.match(status.content, /runtime verdict: 0 error\(s\)/);
+    }
+  );
+});

@@ -39,6 +39,15 @@ function truncatePreviewText(text, max) {
   return text.length > max ? `${text.slice(0, max)}\n... truncated ...` : text;
 }
 
+function normalizePreviewStartResult(result) {
+  if (!result || typeof result !== 'object') return result;
+  if (result.status) return result;
+  if (typeof result.url === 'string' && result.url) {
+    return { status: 'ready', ...result };
+  }
+  return result;
+}
+
 async function scanWorkspacePlugins(workspace) {
   const files = [];
   const errors = [];
@@ -215,17 +224,19 @@ function registerPreviewRuntimeHandlers({
     };
     reportStatus(`Checking ${path.basename(workspace.root)} for a runnable web project...`);
 
-    const projects = await findPreviewProjects(workspace.root);
+    const discoveredProjects = await findPreviewProjects(workspace.root);
+    const projects = Array.isArray(discoveredProjects) ? discoveredProjects : [];
     assertCurrentStart();
     if (projects.length === 0) {
-      const staticProjects = await findStaticPreviewProjects(workspace.root);
+      const discoveredStatic = await findStaticPreviewProjects(workspace.root);
+      const staticProjects = Array.isArray(discoveredStatic) ? discoveredStatic : [];
       assertCurrentStart();
       if (approval.projectKind === 'static' && approval.projectPath) {
         const selected = staticProjects.find((candidate) => candidate.relativePath === approval.projectPath);
         if (!selected) throw new Error('The selected static folder no longer contains an index.html file. Scan the workspace again.');
         const result = await startProtocolPreview(workspaceId, workspace.root, reportStatus, selected.root);
         assertCurrentStart();
-        return result;
+        return normalizePreviewStartResult(result);
       }
       if (approval.projectPath || approval.approved) throw new Error('The selected project no longer has a supported preview entry. Scan the workspace again before previewing.');
       if (staticProjects.length > 1) {
@@ -236,12 +247,12 @@ function registerPreviewRuntimeHandlers({
         reportStatus('No runnable package script found. Streaming the detected static website through shadrox-preview...');
         const result = await startProtocolPreview(workspaceId, workspace.root, reportStatus, staticProjects[0].root);
         assertCurrentStart();
-        return result;
+        return normalizePreviewStartResult(result);
       }
       reportStatus('No runnable package script or nested index.html found. Checking supported static entry folders...');
       const result = await startProtocolPreview(workspaceId, workspace.root, reportStatus);
       assertCurrentStart();
-      return result;
+      return normalizePreviewStartResult(result);
     }
     if (approval.projectKind === 'static') throw new Error('The selected static folder is no longer available. Scan the workspace again before previewing.');
     let project = null;
@@ -255,15 +266,18 @@ function registerPreviewRuntimeHandlers({
       if (rootProject) {
         project = rootProject;
       } else {
-        const choices = await Promise.all(projects.map(async (candidate) => ({
-          kind: 'node',
-          projectPath: candidate.relativePath,
-          manifestHash: candidate.manifestHash,
-          packageManager: candidate.packageManager,
-          scriptName: candidate.script.name,
-          scriptCommand: candidate.script.command,
-          missingDependencies: await findMissingDependencies(candidate.manifest, candidate.root)
-        })));
+        const choices = await Promise.all(projects.map(async (candidate) => {
+          const missing = await findMissingDependencies(candidate.manifest, candidate.root);
+          return {
+            kind: 'node',
+            projectPath: candidate.relativePath,
+            manifestHash: candidate.manifestHash,
+            packageManager: candidate.packageManager,
+            scriptName: candidate.script.name,
+            scriptCommand: candidate.script.command,
+            missingDependencies: Array.isArray(missing) ? missing : []
+          };
+        }));
         assertCurrentStart();
         reportStatus(`Found ${choices.length} runnable web project folders. Choose which one to preview.`);
         return { status: 'selection-required', projects: choices };
@@ -273,7 +287,8 @@ function registerPreviewRuntimeHandlers({
     const script = getPreviewScript(manifest);
 
     const manager = getPackageManager(manifest, project.root);
-    const missingDependencies = await findMissingDependencies(manifest, project.root);
+    const discoveredMissing = await findMissingDependencies(manifest, project.root);
+    const missingDependencies = Array.isArray(discoveredMissing) ? discoveredMissing : [];
     assertCurrentStart();
     const installNotice = missingDependencies.length > 0
       ? `ShadRox will install ${missingDependencies.length} missing package(s) with "${manager} install" before starting the project: ${missingDependencies.slice(0, 12).join(', ')}${missingDependencies.length > 12 ? ', ...' : ''}.`
@@ -313,7 +328,8 @@ function registerPreviewRuntimeHandlers({
       `Detected a runnable project in ${path.relative(workspace.root, project.root) || '.'}. ` +
       `Starting "${manager} run ${script.name}". ${installNotice}`
     );
-    return previewRuntime.start(workspaceId, project.root, project.manifestHash);
+    const started = await previewRuntime.start(workspaceId, project.root, project.manifestHash);
+    return normalizePreviewStartResult(started);
   });
 
   handleMachineSensitive('preview:stop', async (event, workspaceId) => {
@@ -402,18 +418,21 @@ function registerPreviewRuntimeHandlers({
     }
 
     const detected = await detectWorkspaceRuntimes(workspace);
-    const plan = detected.plans.find((candidate) => candidate.kind === 'backend');
+    const detectedPlans = Array.isArray(detected?.plans) ? detected.plans : [];
+    const detectedErrors = Array.isArray(detected?.errors) ? detected.errors : [];
+    const plan = detectedPlans.find((candidate) => candidate && candidate.kind === 'backend');
     if (!plan) {
-      throw new Error(detected.errors.join(' ') || 'No backend runtime was detected for this workspace.');
+      throw new Error(detectedErrors.join(' ') || 'No backend runtime was detected for this workspace.');
     }
 
     const chosenPort = requestedPort === undefined || requestedPort === null ? plan.port : requestedPort;
     if (!Number.isInteger(chosenPort) || chosenPort < 1 || chosenPort > 65535) {
       throw new Error('Backend preview port must be an integer between 1 and 65535.');
     }
+    const planArgs = Array.isArray(plan.args) ? plan.args : [];
     const args = chosenPort === plan.port
-      ? plan.args
-      : plan.args.map((argument) => argument.split(String(plan.port)).join(String(chosenPort)));
+      ? planArgs
+      : planArgs.map((argument) => String(argument).split(String(plan.port)).join(String(chosenPort)));
 
     const absoluteCwd = path.resolve(workspace.root, plan.cwd === '.' ? '' : String(plan.cwd || ''));
     if (!isPathInsideDirectory(workspace.root, absoluteCwd)) {

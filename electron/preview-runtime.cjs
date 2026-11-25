@@ -156,10 +156,11 @@ function getPreviewScript(manifest) {
 }
 
 async function findMissingDependencies(manifest, root) {
+  const safeManifest = manifest && typeof manifest === 'object' ? manifest : {};
   const dependencies = Object.keys({
-    ...manifest.dependencies,
-    ...manifest.devDependencies,
-    ...manifest.optionalDependencies
+    ...(safeManifest.dependencies && typeof safeManifest.dependencies === 'object' ? safeManifest.dependencies : {}),
+    ...(safeManifest.devDependencies && typeof safeManifest.devDependencies === 'object' ? safeManifest.devDependencies : {}),
+    ...(safeManifest.optionalDependencies && typeof safeManifest.optionalDependencies === 'object' ? safeManifest.optionalDependencies : {})
   });
   const missing = [];
   for (const dependency of dependencies) {
@@ -978,7 +979,7 @@ function createPreviewRuntime({
       script: 'static',
       hmr: false
     });
-    return { url, script: 'static' };
+    return { status: 'ready', url, port: address.port, script: 'static', hmr: false };
   }
 
   function stopFrontend(workspaceId) {
@@ -1212,7 +1213,7 @@ function createPreviewRuntime({
                 const finalPort = portOfUrl(finalUrl);
                 const hmr = hasHmrSupport(script.command);
                 emit(workspaceId, 'ready', `Local preview is responding at ${finalUrl}`, { url: finalUrl, port: finalPort, script: script.name, hmr });
-                resolve({ url: finalUrl, port: finalPort, script: script.name, hmr });
+                resolve({ status: 'ready', url: finalUrl, port: finalPort, script: script.name, hmr });
               })();
             }, 350);
           }
@@ -1294,7 +1295,7 @@ function createPreviewRuntime({
             script: script.name,
             hmr: true
           });
-          if (!wasSettled) resolve({ url: existingNextUrl, port: portOfUrl(existingNextUrl), script: script.name, hmr: true });
+          if (!wasSettled) resolve({ status: 'ready', url: existingNextUrl, port: portOfUrl(existingNextUrl), script: script.name, hmr: true });
           return;
         }
         // The server's own lines say why it died (EADDRINUSE, a syntax error,
@@ -1601,7 +1602,7 @@ function createPreviewRuntime({
       backendUrl,
       backendPort: backendUrl ? portOfUrl(backendUrl) : null,
       lastError: state?.lastError ?? null,
-      recentOutput: state?.recentOutput ?? '',
+      recentOutput: typeof state?.recentOutput === 'string' ? state.recentOutput : '',
       previewRunId: state?.previewRunId ?? currentRunId(workspaceId)
     };
   }
