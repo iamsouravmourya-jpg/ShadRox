@@ -18,7 +18,7 @@ import { APP_VERSION, INSTALLER_DOWNLOAD_URL } from '@/lib/download'
 export const metadata: Metadata = {
   title: 'ShadRox — Releases',
   description:
-    'What is new in ShadRox v0.1.04: one auto-routed autonomous agent (conversational / advisory / execution), ultra-lean BYOK token usage, AI Studio-style 1-click checkpoints with ↺ Restore, Git Push/Pull/Sync with inline diff, parallel terminals, Ctrl+V image paste, and inline SVG generation.',
+    'What is new in ShadRox v0.1.4: one auto-routed autonomous agent (conversational / advisory / execution), ultra-lean BYOK token usage, AI Studio-style 1-click checkpoints with ↺ Restore, Git Push/Pull/Sync with inline diff, parallel terminals, Ctrl+V image paste, and inline SVG generation.',
   alternates: { canonical: '/releases' },
 }
 
