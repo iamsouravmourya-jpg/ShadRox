@@ -3,6 +3,13 @@ import test from 'node:test';
 
 import { classifyToolEffect, describeTools, locateUniqueMatch, runTool } from './tools';
 import { beginTurn, noteRead, noteWrite, resetTurns } from './turnState';
+import {
+  acceptAllPendingChanges,
+  clearWorkspacePendingChanges,
+  listPendingChanges,
+  rejectAllPendingChanges,
+  setWorkspaceAutoSave
+} from './pendingChanges';
 
 function withBridge(stub: Record<string, unknown>, body: () => Promise<void>) {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
@@ -372,6 +379,55 @@ test('read_file returns up to 400 lines in one call and write_file allows substa
       assert.equal(disk.files.get('src/component.ts')?.content, rewritten20);
     } finally {
       resetTurns();
+    }
+  });
+});
+
+test('Auto-Save OFF stages write_file and edit_file edits without flushing to disk until accepted', async () => {
+  const disk = diskStub({ 'src/app.ts': 'export const count = 1;\n' });
+  await withBridge(disk.bridge, async () => {
+    clearWorkspacePendingChanges('ws-staging');
+    setWorkspaceAutoSave('ws-staging', false);
+    try {
+      const writeOutcome = await runTool('ws-staging', {
+        name: 'write_file',
+        args: { path: 'src/newUtil.ts', content: 'export const util = true;\n' }
+      });
+      assert.equal(writeOutcome.ok, true);
+      assert.match(writeOutcome.content, /staged pending review/i);
+
+      const editOutcome = await runTool('ws-staging', {
+        name: 'edit_file',
+        args: { path: 'src/app.ts', original: 'count = 1', updated: 'count = 2' }
+      });
+      assert.equal(editOutcome.ok, true);
+      assert.match(editOutcome.content, /staged pending review/i);
+
+      // Nothing flushed to disk yet!
+      assert.equal(disk.writes.length, 0);
+      assert.equal(disk.files.get('src/app.ts')?.content, 'export const count = 1;\n');
+      assert.equal(listPendingChanges('ws-staging').length, 2);
+
+      // Subsequent read_file sees the staged virtual content cleanly
+      const readStaged = await runTool('ws-staging', { name: 'read_file', args: { path: 'src/app.ts' } });
+      assert.equal(readStaged.ok, true);
+      assert.match(readStaged.content, /count = 2/);
+
+      // Reject discards staged changes; Accept flushes them to disk
+      const rejected = rejectAllPendingChanges('ws-staging');
+      assert.equal(rejected.revertedPaths.length, 2);
+      assert.equal(disk.writes.length, 0);
+
+      await runTool('ws-staging', {
+        name: 'edit_file',
+        args: { path: 'src/app.ts', original: 'count = 1', updated: 'count = 3' }
+      });
+      const accepted = await acceptAllPendingChanges('ws-staging');
+      assert.equal(accepted.ok, true);
+      assert.equal(disk.files.get('src/app.ts')?.content, 'export const count = 3;\n');
+    } finally {
+      clearWorkspacePendingChanges('ws-staging');
+      setWorkspaceAutoSave('ws-staging', true);
     }
   });
 });

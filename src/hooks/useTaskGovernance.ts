@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import type { PinnedSymbol } from '../components/ChatPanel';
 import { refinePrompt } from '../lib/ai';
-import { makeId } from '../lib/appHelpers';
-import { applyAtomicJobs, revertAtomicJobs, type AtomicPlanJob } from '../lib/atomicApply';
 import { generateAcceptanceContract } from '../lib/behavior/contract';
 import { appendBehaviorEvent } from '../lib/behavior/recorder';
 import type { AcceptanceContract, BehaviorEvent } from '../lib/behavior/types';
@@ -34,7 +32,6 @@ export interface UseTaskGovernanceOptions {
   };
   saveFilesAtomicWithHooks: (names: string[]) => Promise<SaveOutcome>;
   isGenerating: boolean;
-  chatDispatchLockRef: MutableRefObject<boolean>;
   input: string;
   setInput: Dispatch<SetStateAction<string>>;
   refineMode: RefineMode;
@@ -60,7 +57,6 @@ export function useTaskGovernance({
   byok,
   saveFilesAtomicWithHooks,
   isGenerating,
-  chatDispatchLockRef,
   input,
   setInput,
   refineMode,
@@ -78,7 +74,6 @@ export function useTaskGovernance({
 }: UseTaskGovernanceOptions) {
   const [calibratedTaskType, setCalibratedTaskType] = useState<CalibratedTaskType>('chat');
   const [modelPins, setModelPins] = useState<ModelPreferences>(() => listPreferences());
-  const [restoringCheckpointId, setRestoringCheckpointId] = useState<string | null>(null);
   const [unmergedPaths, setUnmergedPaths] = useState<string[]>([]);
   const [isWritingCommitMessage, setIsWritingCommitMessage] = useState(false);
   const [isRefining, setIsRefining] = useState(false);
@@ -239,38 +234,12 @@ export function useTaskGovernance({
     setPendingRefine(null);
   }, [pendingRefine, refineMode, attachedFiles, pinnedSymbols, setInput, setPendingRefine]);
 
-  const handleRestoreCheckpoint = useCallback(
-    async (checkpointId: string) => {
-      if (chatDispatchLockRef.current) return;
-      setRestoringCheckpointId(checkpointId);
-      try {
-        const result = await workspace.restoreCheckpoint(checkpointId);
-        if (result.ok) {
-          if (result.noop) {
-            setToast('No file changes in this turn to undo.');
-            window.setTimeout(() => setToast(null), 3000);
-            return;
-          }
-          const isMachine = Boolean(workspace.checkpoints.find((entry) => entry.id === checkpointId)?.machine);
-          setToast(isMachine
-            ? result.partial
-              ? 'Rewind was partial: the captured files came back on disk, but some steps did not finish.'
-              : 'Captured changes rewound on disk.'
-            : 'Editor buffers restored; save to persist them on disk.');
-          window.setTimeout(() => setToast(null), 3000);
-        }
-      } finally { setRestoringCheckpointId(null); }
-    },
-    [workspace, chatDispatchLockRef, setToast]
-  );
-
   return {
     calibratedTaskType,
     setCalibratedTaskType,
     calibratedProfiles,
     calibratedRanking,
     pinCalibratedModel,
-    restoringCheckpointId,
     unmergedPaths,
     conflictHunks,
     resolveConflicts,
@@ -281,7 +250,6 @@ export function useTaskGovernance({
     handleRefinePrompt,
     canUndoRefine,
     handleUndoRefine,
-    handleRestoreCheckpoint,
     handleBehaviorEvent,
     handleGenerateContract,
     handleClearBehavior,

@@ -3,7 +3,8 @@ import test from 'node:test';
 import {
   DEFAULT_KEEP_RECENT,
   HISTORY_BUDGET_RATIO,
-  compactHistory
+  compactHistory,
+  compactRollingTurns
 } from './compaction';
 import {
   DEFAULT_KEEP_FIRST_HEAD,
@@ -653,4 +654,50 @@ test('pinned WORKING MEMORY survives compactHistory folding, condensation, and d
   const keptMemory = result.messages.find((entry) => entry.content.includes('PINNED ACROSS COMPACTION'));
   assert.ok(keptMemory, 'working memory must never be dropped or condensed');
   assert.match(keptMemory.content, /api\/ai\/_endpoint\.ts/);
+});
+
+test('compactRollingTurns keeps the newest 3 user/assistant turns verbatim and compacts older turns into receipts', () => {
+  const longBody = 'Detailed multi-step analysis and implementation notes. '.repeat(25);
+  const turn1User = user(`Turn 1 request ${'x'.repeat(250)}`);
+  const turn1Model = model(`${longBody}\n[tools] Edit: src/old.ts`, {
+    toolActivity: [{ name: 'Edit', label: 'src/old.ts', ok: true }]
+  });
+  const turn2User = user('Turn 2 add footer');
+  const turn2Model = model(`${longBody}\nUpdated footer component.`);
+  const turn3User = user('Turn 3 polish colors');
+  const turn3Model = model('Updated colors verbatim turn 3');
+  const turn4User = user('Turn 4 check spacing');
+  const turn4Model = model('Checked spacing verbatim turn 4');
+  const turn5User = user('Turn 5 add icon');
+  const turn5Model = model('Added icon verbatim turn 5');
+
+  const history = [
+    turn1User, turn1Model,
+    turn2User, turn2Model,
+    turn3User, turn3Model,
+    turn4User, turn4Model,
+    turn5User, turn5Model
+  ];
+  const result = compactRollingTurns(history, { keepRecentTurns: 3 });
+
+  assert.equal(result.compactedTurns, 2);
+  assert.ok(result.tokensSaved > 0);
+  // 2 compacted receipts + last 3 turns (6 messages) = 8 messages
+  assert.equal(result.messages.length, 8);
+  assert.equal(result.messages[2], turn3User);
+  assert.equal(result.messages[3], turn3Model);
+  assert.equal(result.messages[6], turn5User);
+  assert.equal(result.messages[7], turn5Model);
+
+  // Older turns become compact receipts preserving intent, files, and outcome
+  assert.match(result.messages[0].content, /^\[Compacted earlier turn\] Ask: Turn 1 request/);
+  assert.ok(result.messages[0].content.includes('Files: src/old.ts'));
+  assert.match(result.messages[1].content, /^\[Compacted earlier turn\] Ask: Turn 2 add footer/);
+  assert.ok(result.messages[0].content.length < turn1User.content.length + turn1Model.content.length);
+
+  // Idempotent on second pass
+  const second = compactRollingTurns(result.messages, { keepRecentTurns: 3 });
+  assert.equal(second.tokensSaved, 0);
+  assert.equal(second.compactedTurns, 0);
+  assert.deepEqual(second.messages, result.messages);
 });

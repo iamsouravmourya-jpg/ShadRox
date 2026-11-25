@@ -124,26 +124,51 @@ export const PREVIEW_BASE_STYLE = `
  */
 export const PREVIEW_ERROR_BRIDGE = `
   (function () {
-    function post(payload) {
-      try { window.parent.postMessage(Object.assign({ source: 'shadrox-preview' }, payload), '*'); } catch (e) {}
+    function currentRoute() {
+      try {
+        if (window.location && typeof window.location.pathname === 'string') {
+          var p = window.location.pathname || '/';
+          var s = window.location.search || '';
+          return p + s;
+        }
+      } catch (e) {}
+      return '/';
     }
-    function stringify(value) {
+    function post(payload) {
+      try { window.parent.postMessage(Object.assign({ source: 'shadrox-preview', route: currentRoute() }, payload), '*'); } catch (e) {}
+    }
+    function stringify(value, depth) {
+      var d = depth || 0;
       if (typeof value === 'string') return value;
-      if (value instanceof Error) return value.message;
+      if (value && typeof value === 'object') {
+        var nested = null;
+        try { if (Array.isArray(value.errors) && value.errors.length > 0) nested = value.errors; } catch (e) {}
+        if (nested && d < 3) {
+          var parts = nested.slice(0, 5).map(function (item) { return stringify(item, d + 1); }).filter(Boolean);
+          var head = (value.message && String(value.message).trim()) || '';
+          if (parts.length > 0) return head ? head + ': ' + parts.join('; ') : parts.join('; ');
+        }
+        if (value instanceof Error) {
+          var base = value.message || value.name || 'Error';
+          if (value.cause && d < 3) return base + ' (' + stringify(value.cause, d + 1) + ')';
+          return base;
+        }
+      }
       try { return JSON.stringify(value); } catch (e) { return String(value); }
     }
     window.addEventListener('error', function (event) {
-      post({ type: 'error', message: event.message, stack: event.error && event.error.stack });
+      var msg = event.message || stringify(event.error, 0) || 'Runtime error';
+      post({ type: 'error', message: msg, stack: event.error && event.error.stack });
     });
     window.addEventListener('unhandledrejection', function (event) {
       var reason = event.reason;
-      post({ type: 'error', message: (reason && reason.message) || String(reason), stack: reason && reason.stack });
+      post({ type: 'error', message: stringify(reason, 0) || 'Unhandled promise rejection', stack: reason && reason.stack });
     });
     [['log', 'console-log'], ['error', 'console-error'], ['warn', 'console-warn'], ['info', 'console-info']].forEach(function (pair) {
       var level = pair[0];
       var original = console[level] || console.log;
       console[level] = function () {
-        post({ type: pair[1], message: Array.prototype.map.call(arguments, stringify).join(' ') });
+        post({ type: pair[1], message: Array.prototype.map.call(arguments, function (arg) { return stringify(arg, 0); }).join(' ') });
         return original.apply(console, arguments);
       };
     });

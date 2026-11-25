@@ -88,7 +88,6 @@ export const TOOL_CATEGORY_MAP: Record<ToolBundleCategory, readonly string[]> = 
   apply_patch: ['apply_patch'],
   preview: ['preview_control', 'preview_inspect'],
   git: ['git_state'],
-  checkpoints: ['checkpoint', 'list_checkpoints', 'restore'],
   delete: ['delete_file'],
   web: ['web_search', 'fetch_url'],
   memory: ['memory_read', 'memory_note'],
@@ -107,7 +106,6 @@ const MUTATING_OR_EXECUTE_TOOLS: ReadonlySet<string> = new Set([
   'delete_file',
   'run_command',
   'verify',
-  'restore',
   'preview_control',
   'terminal_answer',
   'memory_note',
@@ -120,7 +118,6 @@ export function listToolBundleCatalog(): Array<{ category: ToolBundleCategory; t
     { category: 'apply_patch', tools: TOOL_CATEGORY_MAP.apply_patch, summary: 'Atomic multi-file patch transactions' },
     { category: 'preview', tools: TOOL_CATEGORY_MAP.preview, summary: 'Start/restart/inspect embedded browser preview (DOM, console, screenshot)' },
     { category: 'git', tools: TOOL_CATEGORY_MAP.git, summary: 'Git working-tree status and diff' },
-    { category: 'checkpoints', tools: TOOL_CATEGORY_MAP.checkpoints, summary: 'Create, list, and restore workspace checkpoints' },
     { category: 'delete', tools: TOOL_CATEGORY_MAP.delete, summary: 'Approval-gated file or recursive folder deletion' },
     { category: 'web', tools: TOOL_CATEGORY_MAP.web, summary: 'Public web search and allowlisted documentation fetch' },
     { category: 'memory', tools: TOOL_CATEGORY_MAP.memory, summary: 'Read/append durable workspace project memory' },
@@ -175,8 +172,6 @@ function isLegacyToolEnabled(toolName: string, state: WorkspaceToolContext): boo
   if (toolName === 'terminal_state' || toolName === 'terminal_answer') {
     return state.terminalAwaitingInput || state.hasActiveTerminal === true;
   }
-  if (toolName === 'checkpoint') return state.workspaceOpen;
-  if (toolName === 'list_checkpoints' || toolName === 'restore') return state.checkpointCount > 0;
   return true;
 }
 
@@ -209,7 +204,6 @@ export function isToolEnabledInContext(toolName: string, state: WorkspaceToolCon
     if (MUTATING_OR_EXECUTE_TOOLS.has(toolName)) return false;
     if (ADVISORY_READ_ONLY_TOOLS.has(toolName)) return true;
     if (toolName === 'git_state') return activeBundles.has('git');
-    if (toolName === 'list_checkpoints') return activeBundles.has('checkpoints') && state.checkpointCount > 0;
     if (toolName === 'memory_read') return activeBundles.has('memory');
     if (toolName === 'web_search' || toolName === 'fetch_url') {
       return activeBundles.has('web') && state.webAvailable !== false;
@@ -246,12 +240,6 @@ export function isToolEnabledInContext(toolName: string, state: WorkspaceToolCon
   }
   if (toolName === 'git_state') {
     return activeBundles.has('git');
-  }
-  if (toolName === 'checkpoint') {
-    return activeBundles.has('checkpoints');
-  }
-  if (toolName === 'list_checkpoints' || toolName === 'restore') {
-    return activeBundles.has('checkpoints') && state.checkpointCount > 0;
   }
   if (toolName === 'delete_file') {
     return activeBundles.has('delete');

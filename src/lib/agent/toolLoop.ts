@@ -22,7 +22,6 @@ import {
   createFailureRepeatTracker, createPerFileFailureTracker, failureBlockMessage, failureNudge,
   perFileFailureBlockMessage, perFileFailureNudge
 } from './stuck';
-import { ensureTurnCheckpoint } from './checkpoints';
 import { isVerifyCommand } from './verifyProject';
 import { confinePatches, isInsideWorkspaceRoot } from '../autonomy/confinement';
 import type { ToolExecutionEvent } from '../autonomy/types';
@@ -199,8 +198,6 @@ export interface ToolLoopInput {
   existingWorkspace?: boolean;
   /** Called immediately when unlock_tools activates specialized bundles for subsequent rounds. */
   onUnlockTools?: (unlocked: ReadonlySet<ToolBundleCategory>) => void;
-  /** Called before any write/delete tool or path= edit fence modifies the given workspace paths. */
-  onBeforeMutatePaths?: (paths: string[]) => Promise<void> | void;
   /** When true (inside an isolated scout), spawn_subagent is strictly refused to prevent recursion. */
   disallowSubagents?: boolean;
   /** Live per-tool execution hook (used by subagents for real-time card step telemetry). */
@@ -799,34 +796,6 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         continue;
       }
       return stamp({ text, rounds: round, activity, capped: false, error: null, plan, stopReason: 'complete' });
-    }
-
-    // The turn's safety net, taken BEFORE any write lands (reply-edit fences
-    // included): pre-images of exactly the paths about to change, merged into
-    // one checkpoint. Fail-open — a bridge without loadFiles skips it entirely.
-    {
-      const writePaths = new Set<string>();
-      for (const block of blocks) {
-        for (const call of block.calls) {
-          if (classifyToolEffect(call.name) === 'write') {
-            for (const path of writePathsOf(call)) writePaths.add(path);
-          }
-        }
-      }
-      for (const match of streamed.text.matchAll(/```path=([^\n]+)/g)) {
-        const path = normalizePath(match[1].trim());
-        if (path) writePaths.add(path);
-      }
-      if (writePaths.size > 0) {
-        const pathList = [...writePaths];
-        if (input.onBeforeMutatePaths) {
-          await input.onBeforeMutatePaths(pathList);
-        }
-        if (turn) {
-          const desktop = getDesktopBridge();
-          if (desktop) await ensureTurnCheckpoint(turn, desktop, pathList);
-        }
-      }
     }
 
     // The round's edits reach disk before its calls run: a run_command or

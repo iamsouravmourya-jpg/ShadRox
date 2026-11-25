@@ -65,6 +65,19 @@ export interface CompactedHistory {
   folds: string[];
 }
 
+export interface RollingTurnCompactionOptions {
+  /** Number of newest user+assistant turns preserved verbatim. Defaults to 3. */
+  keepRecentTurns?: number;
+  /** Optional message ids carrying unreviewed edits that should keep their edited path hints. */
+  patchedMessageIds?: ReadonlySet<string>;
+}
+
+export interface RollingTurnCompactedResult {
+  messages: ChatMessage[];
+  tokensSaved: number;
+  compactedTurns: number;
+}
+
 export interface CompactionOptions {
   contextWindow: number;
   /** Newest messages that pass through byte-identical. Defaults to 4. */
@@ -616,5 +629,165 @@ export function compactHistory(
     messages: compacted,
     tokensSaved: Math.max(0, tokensOf(messages) - tokensOf(compacted)),
     folds
+  };
+}
+
+const COMPACTED_TURN_RECEIPT_PREFIX = '[Compacted earlier turn] ';
+const MAX_RECEIPT_ASK_CHARS = 140;
+const MAX_RECEIPT_OUTCOME_CHARS = 160;
+const RECEIPT_FILE_RE = /(?:`([^`\n]+\.[a-zA-Z0-9]{1,10})`|([a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)+))/g;
+
+function cleanSingleLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function clipText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+}
+
+function splitConversationTurns(messages: readonly ChatMessage[]): ChatMessage[][] {
+  const turns: ChatMessage[][] = [];
+  let current: ChatMessage[] = [];
+  for (const msg of messages) {
+    if (msg.role === 'user' && current.length > 0) {
+      turns.push(current);
+      current = [msg];
+    } else {
+      current.push(msg);
+    }
+  }
+  if (current.length > 0) turns.push(current);
+  return turns;
+}
+
+function extractFilesFromTurn(turn: readonly ChatMessage[]): string[] {
+  const files: string[] = [];
+  const addFile = (candidate: string) => {
+    const clean = candidate.trim().replace(/^["']|["']$/g, '');
+    if (!clean || clean.length > 96 || clean.startsWith('http://') || clean.startsWith('https://')) return;
+    if (!files.includes(clean)) files.push(clean);
+  };
+
+  for (const msg of turn) {
+    if (msg.attachments) {
+      for (const att of msg.attachments) addFile(att);
+    }
+    if (msg.writeOutcomes) {
+      for (const filePath of Object.keys(msg.writeOutcomes)) addFile(filePath);
+    }
+    if (msg.toolActivity) {
+      for (const item of msg.toolActivity) {
+        if (item.label) {
+          for (const part of item.label.split(',')) addFile(part);
+        }
+      }
+    }
+    for (const fence of scanSegments(msg.content)) {
+      if ('fence' in fence && fence.fence.path) addFile(fence.fence.path);
+    }
+    const cleanText = stripToolBlocks(msg.content).replace(RESULT_FENCE_PATTERN, '');
+    RECEIPT_FILE_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = RECEIPT_FILE_RE.exec(cleanText)) !== null) {
+      addFile(match[1] ?? match[2] ?? '');
+      if (files.length >= 6) break;
+    }
+  }
+  return files.slice(0, 6);
+}
+
+function summarizeTurnAsReceipt(turn: readonly ChatMessage[], receiptIndex: number): ChatMessage | null {
+  if (turn.length === 1 && turn[0].content.startsWith(COMPACTED_TURN_RECEIPT_PREFIX)) {
+    return turn[0];
+  }
+  const userMsgs = turn.filter((m) => m.role === 'user');
+  const modelMsgs = turn.filter((m) => m.role === 'model');
+
+  const askRaw = userMsgs.map((m) => cleanSingleLine(stripToolBlocks(m.content))).filter(Boolean).join(' ');
+  const ask = clipText(askRaw || '(follow-up)', MAX_RECEIPT_ASK_CHARS);
+  const files = extractFilesFromTurn(turn);
+
+  const outcomeRaw = modelMsgs
+    .map((m) => {
+      const stripped = stripToolBlocks(m.content).replace(RESULT_FENCE_PATTERN, '');
+      const firstMeaningful = stripped
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^#+\s*/, '').replace(/^[-*]\s+/, '').trim())
+        .find((line) => line.length > 0 && !line.startsWith('```'));
+      return cleanSingleLine(firstMeaningful ?? stripped);
+    })
+    .filter(Boolean)
+    .join(' ');
+  const outcome = clipText(outcomeRaw || 'Completed.', MAX_RECEIPT_OUTCOME_CHARS);
+
+  const parts = [`${COMPACTED_TURN_RECEIPT_PREFIX}Ask: ${ask}`];
+  if (files.length > 0) parts.push(`Files: ${files.join(', ')}`);
+  parts.push(`Outcome: ${outcome}`);
+
+  const anchor = turn[turn.length - 1];
+  return {
+    id: `turn-receipt:${anchor.id}:${receiptIndex}`,
+    timestamp: anchor.timestamp,
+    role: 'user',
+    content: parts.join(' | ')
+  };
+}
+
+/**
+ * Rolling N-turn compaction: preserves the newest `keepRecentTurns` (default 3)
+ * user+assistant exchanges verbatim so immediate context and follow-ups stay intact,
+ * while collapsing older turns into crisp 1-2 line receipts (`Ask | Files | Outcome`)
+ * to prevent linear token explosion across 15+ turn sessions.
+ */
+export function compactRollingTurns(
+  messages: ChatMessage[],
+  options: RollingTurnCompactionOptions = {}
+): RollingTurnCompactedResult {
+  const keepRecentTurns = Math.max(1, options.keepRecentTurns ?? 3);
+  if (messages.length === 0) return { messages, tokensSaved: 0, compactedTurns: 0 };
+
+  const preservedPinned: ChatMessage[] = [];
+  const regular: ChatMessage[] = [];
+  for (const msg of messages) {
+    if (isWorkingMemoryText(msg.content)) {
+      preservedPinned.push(msg);
+    } else {
+      regular.push(msg);
+    }
+  }
+
+  const turns = splitConversationTurns(regular);
+  if (turns.length <= keepRecentTurns) {
+    return { messages, tokensSaved: 0, compactedTurns: 0 };
+  }
+
+  const splitIndex = turns.length - keepRecentTurns;
+  const olderTurns = turns.slice(0, splitIndex);
+  const recentMessages = turns.slice(splitIndex).flat();
+
+  const receipts: ChatMessage[] = [];
+  let compactedTurns = 0;
+  olderTurns.forEach((turn, idx) => {
+    if (turn.length === 1 && turn[0].content.startsWith(COMPACTED_TURN_RECEIPT_PREFIX)) {
+      receipts.push(turn[0]);
+      return;
+    }
+    const receipt = summarizeTurnAsReceipt(turn, idx);
+    if (receipt) {
+      receipts.push(receipt);
+      compactedTurns += 1;
+    }
+  });
+
+  if (compactedTurns === 0) {
+    return { messages, tokensSaved: 0, compactedTurns: 0 };
+  }
+
+  const nextMessages = [...preservedPinned, ...receipts, ...recentMessages];
+  return {
+    messages: nextMessages,
+    tokensSaved: Math.max(0, tokensOf(messages) - tokensOf(nextMessages)),
+    compactedTurns
   };
 }

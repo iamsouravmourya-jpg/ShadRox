@@ -173,9 +173,13 @@ function createConsoleErrorSink({
  * 'layout ok' is worse than a neutral 'observed'.
  */
 function mergePreviewVerdict(input = {}) {
+  const route = typeof input.route === 'string' && input.route.trim()
+    ? input.route.trim().slice(0, 200)
+    : null;
   const consoleErrors = (Array.isArray(input.consoleErrors) ? input.consoleErrors : [])
     .filter((entry) => typeof entry === 'string' && entry.length > 0)
-    .slice(0, MAX_CONSOLE_ERRORS);
+    .slice(0, MAX_CONSOLE_ERRORS)
+    .map((entry) => (route && !/^\[Route:\s*[^\]]+\]/i.test(entry) ? `[Route: ${route}] ${entry}`.slice(0, MAX_CONSOLE_ERROR_LENGTH + 48) : entry));
   const errorCount = consoleErrors.length;
   const failedSelectors = (Array.isArray(input.failedSelectors) ? input.failedSelectors : [])
     .slice(0, MAX_SELECTORS);
@@ -205,7 +209,7 @@ function mergePreviewVerdict(input = {}) {
     status = 'ok';
   }
 
-  return { ok: status === 'ok', status, failedSelectors, warningSelectors, errorCount, consoleErrors, assertedSelectors, detail };
+  return { ok: status === 'ok', status, ...(route ? { route } : {}), failedSelectors, warningSelectors, errorCount, consoleErrors, assertedSelectors, detail };
 }
 
 module.exports = {

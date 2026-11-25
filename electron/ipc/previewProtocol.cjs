@@ -14,6 +14,7 @@ const {
   sanitizeSelectors,
   summarizeFrameResult
 } = require('../preview-assert.cjs');
+const { unwrapErrorMessage } = require('../error-utils.cjs');
 
 const PREVIEW_SCHEME = 'shadrox-preview';
 const APP_SCHEME = 'shadrox-app';
@@ -338,6 +339,13 @@ function createPreviewProtocolService(deps) {
     }
     const consoleErrors = previewConsoleErrors.drain(workspaceId);
     if (!frame) return mergePreviewVerdict({ frameFound: false, consoleErrors, detail: 'preview-frame-not-found' });
+    let route = null;
+    try {
+      const parsedFrameUrl = new URL(frame.url);
+      route = (parsedFrameUrl.pathname || '/') + (parsedFrameUrl.search || '');
+    } catch {
+      route = null;
+    }
     let html = '';
     try {
       html = await frame.executeJavaScript('document.documentElement ? document.documentElement.outerHTML.slice(0, 200000) : ""', true);
@@ -361,7 +369,8 @@ function createPreviewProtocolService(deps) {
         failedSelectors: summary.failedSelectors,
         warningSelectors: summary.warningSelectors,
         consoleErrors,
-        assertedSelectors: selectors
+        assertedSelectors: selectors,
+        ...(route ? { route } : {})
       });
     } catch {
       return mergePreviewVerdict({
@@ -370,6 +379,7 @@ function createPreviewProtocolService(deps) {
         containerDerived,
         consoleErrors,
         assertedSelectors: selectors,
+        ...(route ? { route } : {}),
         detail: 'assertion-script-did-not-evaluate'
       });
     }
@@ -561,7 +571,7 @@ function createPreviewProtocolService(deps) {
     try {
       return await electronNet.fetch(target.toString(), init);
     } catch (error) {
-      return previewErrorResponse(502, `The local backend is unreachable: ${error instanceof Error ? error.message : String(error)}`);
+      return previewErrorResponse(502, `The local backend is unreachable: ${unwrapErrorMessage(error)}`);
     }
   }
 

@@ -21,7 +21,6 @@ import {
   Play,
   Clock,
   Image,
-  RotateCcw,
   Search,
   Send,
   Sparkles,
@@ -37,9 +36,9 @@ import { computeHunks, groupedHunkId, hunkStats } from '../lib/editor/hunks';
 import type { Skill } from '../lib/skills';
 import { contextManifestTotals, shouldSubmitOnEnter, type ContextManifest } from '../lib/contextManifest';
 import type { ChatMessage, ExternalFileAttachment, PatchSet, RefineMode, SemanticStatus, SettingsTab, WorkspaceFile } from '../lib/types';
-import type { CheckpointMeta } from '../lib/history';
 import { ShadRoxLogo } from './Logo';
 import { ChatEmptyState } from './chat/ChatEmptyState';
+import { PendingChangesBar } from './chat/PendingChangesBar';
 import {
   CollapsiblePatchFailurePill,
   OrchestrationCard,
@@ -95,9 +94,9 @@ interface ChatPanelProps {
   onSend: (pastedTexts?: PastedText[], externalAttachments?: ExternalFileAttachment[]) => void;
   userFirstName?: string | null;
   workspaceKey?: string | null;
-  restorableMessageIds?: ReadonlySet<string>;
-  restorableCheckpointTooltips?: Readonly<Record<string, string>>;
-  onRestorePromptCheckpoint?: (userMessageId: string) => void;
+  pendingWorkspaceId?: string | null;
+  onOpenFile?: (path: string) => void;
+  onNotify?: (message: string) => void;
   queuedMessages?: Array<{ id: string; text: string }>;
   onCancelQueuedMessage?: (id: string) => void;
   onStop: () => void;
@@ -131,9 +130,6 @@ interface ChatPanelProps {
   workspaceFiles: WorkspaceFile[];
   /** Every file in the folder tree, not just the open tabs: powers @-mention and attach. */
   workspaceAllFiles?: Array<{ name: string }>;
-  checkpoints: CheckpointMeta[];
-  onRestoreCheckpoint: (id: string) => void;
-  restoringCheckpointId: string | null;
   patchSets: PatchSet[];
   autoApplyChanges: boolean;
   onToggleAutoApply: () => void;
@@ -397,9 +393,9 @@ export function ChatPanel({
   onSend,
   userFirstName = null,
   workspaceKey = null,
-  restorableMessageIds,
-  restorableCheckpointTooltips,
-  onRestorePromptCheckpoint,
+  pendingWorkspaceId = null,
+  onOpenFile,
+  onNotify,
   queuedMessages = [],
   onCancelQueuedMessage,
   onStop,
@@ -426,9 +422,6 @@ export function ChatPanel({
   onPinnedSymbolsChange,
   workspaceFiles,
   workspaceAllFiles = [],
-  checkpoints,
-  onRestoreCheckpoint,
-  restoringCheckpointId,
   patchSets,
   autoApplyChanges,
   onToggleAutoApply,
@@ -1193,32 +1186,6 @@ export function ChatPanel({
                 <span className="uppercase font-semibold tracking-wider">You</span>
                 <span>·</span>
                 <span className="font-mono tabular-nums">{message.timestamp}</span>
-                {restorableMessageIds?.has(message.id) && onRestorePromptCheckpoint && (() => {
-                  const restoreTooltip =
-                    restorableCheckpointTooltips?.[message.id] ??
-                    'Restore workspace files to before this prompt';
-                  return (
-                    <span className="group/restore relative ml-1 inline-flex">
-                      <button
-                        type="button"
-                        disabled={isGenerating}
-                        onClick={() => onRestorePromptCheckpoint(message.id)}
-                        title={restoreTooltip}
-                        aria-label={`Restore (${restoreTooltip})`}
-                        className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-0.5 font-mono text-[9.5px] text-ink-3 transition-colors hover:border-accent-line hover:text-accent disabled:opacity-40 cursor-pointer"
-                      >
-                        <RotateCcw className="h-2.5 w-2.5" />
-                        Restore
-                      </button>
-                      <span
-                        role="tooltip"
-                        className="pointer-events-none absolute right-0 top-full z-20 mt-1.5 whitespace-nowrap rounded-md border border-line-2 bg-surface px-2 py-1 font-mono text-[10px] text-ink-2 opacity-0 shadow-[var(--shadow-panel)] transition-opacity duration-150 group-hover/restore:opacity-100 group-focus-within/restore:opacity-100"
-                      >
-                        {restoreTooltip}
-                      </span>
-                    </span>
-                  );
-                })()}
               </div>
             )}
 
@@ -1324,15 +1291,7 @@ export function ChatPanel({
                 )}
 
                 {message.selfHealingProof && (
-                  <SelfHealingProofCard
-                    proof={message.selfHealingProof}
-                    checkpointAvailable={Boolean(
-                      message.selfHealingProof.checkpointId
-                      && checkpoints.some((entry) => entry.id === message.selfHealingProof?.checkpointId)
-                    )}
-                    restoring={restoringCheckpointId === message.selfHealingProof.checkpointId}
-                    onUndo={onRestoreCheckpoint}
-                  />
+                  <SelfHealingProofCard proof={message.selfHealingProof} />
                 )}
 
                 {message.reasoning && (
@@ -1879,6 +1838,12 @@ export function ChatPanel({
             </ol>
           </div>
         )}
+
+        <PendingChangesBar
+          workspaceId={pendingWorkspaceId ?? workspaceKey ?? null}
+          onOpenFile={onOpenFile}
+          onNotify={onNotify}
+        />
 
         {/* Prompt Input Box */}
         <div

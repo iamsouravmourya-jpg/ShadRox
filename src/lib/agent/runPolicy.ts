@@ -54,7 +54,6 @@ export type ToolBundleCategory =
   | 'core'
   | 'preview'
   | 'git'
-  | 'checkpoints'
   | 'delete'
   | 'web'
   | 'memory'
@@ -131,10 +130,12 @@ const FRAMEWORK_OR_CODE_QA_RE =
 const GENERAL_CONCEPTUAL_QA_RE =
   /^(?:what\s+(?:is|are)|why\s+(?:does|do|is|are)|how\s+(?:does|do|can\s+i)|explain|describe|compare|difference\s+between)\b/i;
 
+const META_FOLLOWUP_RE =
+  /(?:\b(?:kyu|kyun|kyon)\s+(?:nhi|nahi|nai)\s+(?:kar|kiya|kr|hua|ho)|^(?:why\s+(?:didn'?t|did\s+not|aren'?t|are\s+not|haven'?t|wouldn'?t)\s+you|why\s+did\s+you\s+(?:just|stop|ignore|skip|reply|respond|wait)|what\s+were\s+you\s+doing)\b|\b(?:kya\s+kar\s+raha\s+(?:tha|hai)|kyu\s+bol\s+raha|pehle\s+(?:kyu|kyon)\s+(?:nhi|nahi)\s+kiya|tune\s+(?:kyu|kyon)\s+(?:nhi|nahi)|tumne\s+(?:kyu|kyon)\s+(?:nhi|nahi)|ab\s+(?:jakar|jaake)\s+hua|aise\s+kyu\s+kiya)\b)/i;
+
 const BUNDLE_RULES: Array<[ToolBundleCategory, RegExp]> = [
   ['preview', /\b(?:preview|ui|ux|css|tailwind|style|layout|blank|white\s*screen|screenshot|render|console|dom|viewport|responsive|navbar|sidebar|modal|button|logo|svg|icon|page|route|component|visual|animation|dark\s*mode|theme|frontend)\b/i],
   ['git', /\b(?:git|commit|commits|branch|branches|diff|staged|unstaged|merge|rebase|stash|blame)\b/i],
-  ['checkpoints', /\b(?:checkpoint|checkpoints|restore|rollback|undo\s+run|snapshot|snapshots|revert\s+to)\b/i],
   ['delete', /\b(?:delete|remove|rm|unlink|drop\s+file)\b/i],
   ['web', /\b(?:web|search\s+(?:online|web|google|docs)|internet|url|https?:\/\/|fetch|documentation|mdn|npm\s+package|latest\s+version)\b/i],
   ['memory', /\b(?:memory|remember|project\.md|note\s+for\s+future|conventions?)\b/i],
@@ -142,7 +143,7 @@ const BUNDLE_RULES: Array<[ToolBundleCategory, RegExp]> = [
   ['review', /\b(?:diff\s*review|code\s*review|review\s+(?:my|the|this)\s+(?:diff|changes)|audit\s+diff)\b/i],
   ['jobs', /\b(?:background\s+job|jobs|job_control|running\s+server|dev\s+server|port\s+already\s+in\s+use|eaddrinuse|kill\s+server)\b/i],
   ['terminal', /\b(?:terminal|pty|stdin|waiting\s+for\s+input|interactive\s+prompt|answer\s+prompt)\b/i],
-  ['interaction', /\b(?:ask\s+me|subagent|spawn\s+agent|delegate|agent|agents|parallel|multiple|swarm|scouts?)\b/i],
+  ['interaction', /\b(?:ask\s+me|subagents?|spawn[_\s]+(?:sub)?agents?|spawn\s+agent|delegate|use\s+(?:sub)?agents?|(?:parallel|multiple|2|two|do)\s+(?:sub)?agents?|swarm|scouts?)\b/i],
   ['apply_patch', /\b(?:multi[-\s]?file|across\s+files|refactor|migrate|patch|apply_patch|full[-\s]?stack|end[-\s]?to[-\s]?end)\b/i],
   ['mcp', /\b(?:mcp|external\s+tool|connector|plugin)\b/i]
 ];
@@ -194,11 +195,29 @@ export function classifyTurnIntent(input: TurnIntentInput): TurnIntentResult {
     (input.pinnedSymbols?.length ?? 0) > 0 ||
     input.hasImage === true ||
     input.isSkill === true;
-  const hasFileOrCodeCue =
+  const hasConcreteFileOrStackCue =
     hasAttachments ||
     FILE_PATH_OR_EXT_RE.test(prompt) ||
     STACK_OR_ERROR_RE.test(prompt) ||
-    prompt.includes('`') ||
+    prompt.includes('`');
+
+  if (
+    !hasConcreteFileOrStackCue &&
+    META_FOLLOWUP_RE.test(prompt) &&
+    !POLITE_OR_ACTION_REQUEST_RE.test(prompt)
+  ) {
+    return {
+      kind: 'conversational',
+      enabledBundles: new Set<ToolBundleCategory>(),
+      writesFiles: false,
+      skipVerify: true,
+      effectivePermissionMode: 'ask',
+      reason: 'meta follow-up about assistant behavior without workspace action'
+    };
+  }
+
+  const hasFileOrCodeCue =
+    hasConcreteFileOrStackCue ||
     CODEBASE_NOUN_RE.test(prompt) ||
     FRAMEWORK_OR_CODE_QA_RE.test(prompt);
 

@@ -298,7 +298,19 @@ export const PreviewPane = memo(function PreviewPane({
         const message = typeof data.message === 'string' ? data.message : String(data.message ?? '');
         setLogs((prev) => [...prev.slice(-99), { type: 'warn', message, timestamp: time }]);
       } else if (data.type === 'console-error' || data.type === 'error') {
-        const message = typeof data.message === 'string' ? data.message : 'Runtime error';
+        const rawMessage = typeof data.message === 'string' ? data.message : 'Runtime error';
+        let route = typeof data.route === 'string' && data.route.trim() ? data.route.trim() : '';
+        if (!route) {
+          try {
+            const loc = frame.contentWindow?.location;
+            if (loc && typeof loc.pathname === 'string' && loc.pathname && loc.pathname !== 'blank') {
+              route = `${loc.pathname}${loc.search || ''}`;
+            }
+          } catch {
+            route = '';
+          }
+        }
+        const message = route && !/^\[Route:/i.test(rawMessage) ? `[Route: ${route}] ${rawMessage}` : rawMessage;
         setLogs((prev) => [...prev.slice(-99), { type: 'error', message, timestamp: time }]);
         setIsConsoleOpen(true);
         onRuntimeError(message);

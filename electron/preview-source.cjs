@@ -100,6 +100,10 @@ const SOURCE_BRIDGE_SCRIPT = `(function () {
     try {
       var text = value && value.stack ? String(value.stack) : String(value && value.message ? value.message : value);
       if (file) text += ' @ ' + file + ':' + line;
+      var route = (typeof window !== 'undefined' && window.location && window.location.pathname)
+        ? (window.location.pathname + (window.location.search || ''))
+        : '';
+      if (route && text.indexOf('[Route:') !== 0) text = '[Route: ' + route + '] ' + text;
       if (text.length > 4000) text = text.slice(0, 4000);
       console.error('[shadrox-preview-' + kind + '] ' + text);
     } catch (error) {}

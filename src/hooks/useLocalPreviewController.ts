@@ -15,6 +15,7 @@ import {
   previewCapabilityMessage,
   resolvePreviewDocument
 } from '../lib/preview';
+import { unwrapRuntimeError } from '../lib/preview/errorPrompt';
 import type { AssetMap } from '../lib/assets';
 import type { SecretItem, WorkspaceFile } from '../lib/types';
 import { usePreviewSync } from './usePreviewSync';
@@ -301,14 +302,14 @@ export function useLocalPreviewController({
       });
     } catch (error) {
       if (attempt !== previewStartAttemptRef.current) return;
-      const message = friendlyPreviewError(error instanceof Error ? error.message : String(error));
+      const message = friendlyPreviewError(unwrapRuntimeError(error));
       previewActiveRef.current = false;
       if (requestTimedOut) {
         void desktop.stopPreview(nativeWorkspaceId).then(undefined, (stopError: unknown) => {
           queuePreviewLog({
             workspaceId: nativeWorkspaceId,
             type: 'error',
-            message: `Preview cleanup failed: ${stopError instanceof Error ? stopError.message : String(stopError)}`
+            message: `Preview cleanup failed: ${unwrapRuntimeError(stopError)}`
           });
         });
       }

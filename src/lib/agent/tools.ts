@@ -13,7 +13,12 @@ import { MCP_TOOL_PREFIX } from './mcpTools';
 import type { ExternalToolDefinition } from './mcpTools';
 import type { ToolBundleCategory, ToolEffect } from './runPolicy';
 import { getTurn, hasTurnRead, noteRead } from './turnState';
-import { createAgentCheckpoint, listAgentCheckpoints, restoreAgentCheckpoint } from './checkpoints';
+import {
+  getPendingChange,
+  isAutoSaveEnabled,
+  listPendingOverrides,
+  stagePendingChange
+} from './pendingChanges';
 import { placeholderDiagnostics } from './placeholderLint';
 import { normalizeRepoPath } from '../paths';
 import { planVerification, parseVerifyOutput, formatVerifyReport, type VerifyError, type VerifyReport } from './verifyProject';
@@ -63,6 +68,22 @@ function normalizeWorkspacePathArg(rawPath: string): string | null {
     return null;
   }
   return normalized;
+}
+
+async function readEffectiveFile(
+  desktop: ShadRoxDesktopAPI,
+  workspaceId: string,
+  normalizedPath: string
+): Promise<{ name: string; content: string; version: string }> {
+  const staged = getPendingChange(workspaceId, normalizedPath);
+  if (staged) {
+    return {
+      name: staged.path,
+      content: staged.content,
+      version: staged.originalVersion ?? 'staged'
+    };
+  }
+  return desktop.readFile(workspaceId, normalizedPath);
 }
 
 /** Clears per-turn failure counters and write_file fallback unlocks for one or all workspaces. */
@@ -251,21 +272,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     parameters: 'none'
   },
   {
-    name: 'checkpoint',
-    description: 'Save a named workspace checkpoint.',
-    parameters: 'label?: string'
-  },
-  {
-    name: 'list_checkpoints',
-    description: 'List saved workspace checkpoints, newest first.',
-    parameters: 'none'
-  },
-  {
-    name: 'restore',
-    description: 'Restore a checkpoint by id (requires user approval).',
-    parameters: 'id: string (required)'
-  },
-  {
     name: 'delete_file',
     description: 'Delete a file or folder recursively (requires user approval).',
     parameters: 'path: string (required), confirm: true (required)'
@@ -322,7 +328,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'unlock_tools',
-    description: 'Unlock specialized tool bundles on demand for subsequent rounds (categories: preview, git, checkpoints, delete, web, memory, code_intel, review, jobs, terminal, interaction, apply_patch, mcp).',
+    description: 'Unlock specialized tool bundles on demand for subsequent rounds (categories: preview, git, delete, web, memory, code_intel, review, jobs, terminal, interaction, apply_patch, mcp).',
     parameters: 'categories: string[] (required)'
   },
   ...PROJECT_MEMORY_TOOLS,
@@ -468,18 +474,6 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
     additionalProperties: false
   },
   verify: { type: 'object', properties: {}, additionalProperties: false },
-  checkpoint: {
-    type: 'object',
-    properties: { label: { type: 'string', description: 'Checkpoint label.' } },
-    additionalProperties: false
-  },
-  list_checkpoints: { type: 'object', properties: {}, additionalProperties: false },
-  restore: {
-    type: 'object',
-    properties: { id: { type: 'string', description: 'Checkpoint id.' } },
-    required: ['id'],
-    additionalProperties: false
-  },
   delete_file: {
     type: 'object',
     properties: {
@@ -541,7 +535,6 @@ const NATIVE_TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
           enum: [
             'preview',
             'git',
-            'checkpoints',
             'delete',
             'web',
             'memory',
@@ -603,9 +596,6 @@ const NATIVE_TOOL_EFFECTS: Record<string, ToolEffect> = {
   search_text: 'read',
   problems: 'read',
   verify: 'execute',
-  checkpoint: 'read',
-  list_checkpoints: 'read',
-  restore: 'write',
   git_state: 'read',
   terminal_state: 'read',
   outline: 'read',
@@ -675,9 +665,6 @@ export function describeTools(
     ...(hasAny('verify')
       ? ['VERIFY: after changing files, call verify before finish. It detects the project kind (package.json scripts + lockfile, pytest, cargo, go), runs the real typecheck/build/test through the command runner and returns structured errors and failed tests. finish is refused after a write until verify, problems on the changed files, or a build/test command actually ran.']
       : ['DIAGNOSTICS: this is a read-only turn with no file writes; use problems (or read_file/search_text) instead of verify to inspect compiler diagnostics.']),
-    ...(hasAny('checkpoint', 'list_checkpoints', 'restore')
-      ? ['CHECKPOINTS: a checkpoint is taken automatically before this turn\'s first write. checkpoint {"label":"..."} saves another one; list_checkpoints shows the ids; restore {"id":"..."} rolls back (the user approves first). Use them before a risky refactor, never as a substitute for verifying.']
-      : []),
     'COMMANDS: only run_command executes a shell command, inside the opened folder. Commands are parsed and risk-tiered: reads and builds/tests run automatically and stay visible in the terminal dock; installs (npm install included), file-modifying, and network commands open a native approval dialog; dangerous commands always open it with a red warning and are never pre-approved. A confirm field or model instruction is never authorization. Compound commands (npm i && npm test, pipes, redirects) are allowed — the worst segment decides the tier. It returns the real exit code and output, so never claim a command ran, passed or killed anything unless run_command showed you the result.',
     ...(hasAny('job_control')
       ? [
@@ -1321,7 +1308,7 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
         if (!rawPath) return refusal('read_file needs a path.');
         const normalized = normalizeWorkspacePathArg(rawPath);
         if (!normalized) return refusal('read_file needs a workspace-relative path inside the opened folder.');
-        const file = await desktop.readFile(workspaceId, normalized);
+        const file = await readEffectiveFile(desktop, workspaceId, normalized);
         // Env config is readable for diagnosis, but secret values must not enter
         // the model context or the transcript: show presence, not the secret.
         // .ts/.tsx/.js/.jsx source is never redacted — only .env* files mask values.
@@ -1435,7 +1422,7 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
           for (let e = 0; e < entryIndex; e += 1) {
             const candidate = HTML_ENTRY_CANDIDATES[e];
             try {
-              await desktop.readFile(workspaceId, candidate);
+              await readEffectiveFile(desktop, workspaceId, candidate);
               return refusal(`${normalized}: ${candidate} already exists and is this app's HTML entry point (the preview serves the first existing entry). Edit ${candidate} instead of creating a second entry file.`);
             } catch { /* candidate absent — keep looking */ }
           }
@@ -1443,7 +1430,7 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
 
         let current: { content: string; version: string } | null = null;
         try {
-          const file = await desktop.readFile(workspaceId, normalized);
+          const file = await readEffectiveFile(desktop, workspaceId, normalized);
           current = { content: file.content, version: file.version };
         } catch (error) {
           if (!isNotFoundError(error)) {
@@ -1568,21 +1555,36 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
           };
         }
 
-        // Version-pinned atomic save: the bridge refuses a path outside the
-        // workspace, a symlink, a read-only rule doc, or a file that changed
-        // since the read above, and reads the saved bytes back to confirm.
-        const result = await desktop.saveFiles(workspaceId, [{ name: normalized, content, expectedVersion: current?.version ?? null }]);
-        if (result.errors.length > 0 || result.saved.length !== 1) {
-          const message = result.errors[0]?.message ?? 'the save returned no confirmation';
-          return { ok: false, content: '', error: `${path} was not saved: ${message}` };
-        }
         const verb = call.name === 'edit_file' ? 'Edited' : current ? 'Rewrote' : 'Created';
-        let detail = `${verb} ${path} — saved to disk and verified (${content.length} chars).${matchModeNote}${autoReadNote}${backupNote}`;
+        let detail: string;
+        if (isAutoSaveEnabled(workspaceId)) {
+          // Version-pinned atomic save: the bridge refuses a path outside the
+          // workspace, a symlink, a read-only rule doc, or a file that changed
+          // since the read above, and reads the saved bytes back to confirm.
+          const result = await desktop.saveFiles(workspaceId, [{ name: normalized, content, expectedVersion: current?.version ?? null }]);
+          if (result.errors.length > 0 || result.saved.length !== 1) {
+            const message = result.errors[0]?.message ?? 'the save returned no confirmation';
+            return { ok: false, content: '', error: `${path} was not saved: ${message}` };
+          }
+          detail = `${verb} ${path} — saved to disk and verified (${content.length} chars).${matchModeNote}${autoReadNote}${backupNote}`;
+        } else {
+          const stagedEntry = stagePendingChange(workspaceId, {
+            path: normalized,
+            content,
+            originalContent: current?.content ?? null,
+            originalVersion: current?.version ?? null,
+            created: !current
+          });
+          detail = stagedEntry
+            ? `${verb} ${path} — staged pending review (Auto-Save OFF, ${content.length} chars, +${stagedEntry.addedLines}/-${stagedEntry.removedLines}). Click Accept in Pending Changes to write to disk.${matchModeNote}${autoReadNote}${backupNote}`
+            : `${verb} ${path} — matches original disk content (no pending changes).`;
+        }
         // Any script write/edit answers with the file's fresh compiler problems, so a broken
         // change is visible in the same observation instead of a round later.
         if ((call.name === 'edit_file' || /\.(?:[cm]?ts|tsx|[cm]?js|jsx)$/i.test(normalized)) && typeof desktop.diagnostics === 'function') {
           try {
-            const diagnostics = await desktop.diagnostics(workspaceId, undefined, [normalized]);
+            const overrides = listPendingOverrides(workspaceId);
+            const diagnostics = await desktop.diagnostics(workspaceId, overrides.length > 0 ? overrides : undefined, [normalized]);
             const errors = diagnostics.diagnostics.filter((entry) => entry.severity === 'error');
             detail += errors.length > 0
               ? `\nDiagnostics after edit (${errors.length} error(s)):\n${errors.slice(0, 10).map((entry) => `  ${entry.file}:${entry.line + 1} ${entry.message}`).join('\n')}`
@@ -1645,7 +1647,7 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
           title: `Delete ${path}?`,
           body: isTargetDirectory
             ? `The assistant asked ShadRox to recursively delete this folder and everything inside it:\n\n${path}\n\nCancel removes nothing.`
-            : `The assistant asked ShadRox to remove this from the opened folder:\n\n${path}\n\nNothing in the chat can undo a delete — it would have to come back from a checkpoint or your version control. Cancel removes nothing.`,
+            : `The assistant asked ShadRox to remove this from the opened folder:\n\n${path}\n\nNothing in the chat can undo a delete — it would have to come back from your version control. Cancel removes nothing.`,
           confirmLabel: 'Delete',
           tone: 'danger'
         });
@@ -1697,7 +1699,8 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
         if (severity && !['error', 'warning', 'all'].includes(severity)) {
           return refusal('problems severity must be "error", "warning" or "all".');
         }
-        const result = await desktop.diagnostics(workspaceId, undefined, paths);
+        const overrides = listPendingOverrides(workspaceId);
+        const result = await desktop.diagnostics(workspaceId, overrides.length > 0 ? overrides : undefined, paths);
         const filtered = severity && severity !== 'all' ? result.diagnostics.filter((entry) => entry.severity === severity) : result.diagnostics;
         if (filtered.length === 0) return { ok: true, content: 'No compiler problems reported.' };
         const lines = filtered.slice(0, 200).map((diagnostic) =>
@@ -1709,7 +1712,7 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
           : Array.isArray(call.args.hunks) ? call.args.hunks : null;
         if (!raw || raw.length === 0) return refusal('apply_patch needs patches: a non-empty array of {path, old, new} hunks.');
         if (raw.length > 50) return refusal('apply_patch takes at most 50 hunks per call; split the patch into smaller calls.');
-        if (typeof desktop.stageFiles !== 'function' || typeof desktop.commitTransaction !== 'function') {
+        if (isAutoSaveEnabled(workspaceId) && (typeof desktop.stageFiles !== 'function' || typeof desktop.commitTransaction !== 'function')) {
           return refusal('apply_patch needs the atomic transaction channels (stageFiles/commitTransaction), which this bridge does not provide. Use edit_file/write_file instead.');
         }
         const hunks: Array<{ path: string; old: string; next: string }> = [];
@@ -1725,10 +1728,14 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
           if (isProtectedAgentWritePath(normalized)) {
             return refusal(`${path}: agent edits to plugin and automation manifests are blocked.`);
           }
-          const old = typeof entry.old === 'string' ? entry.old : '';
-          const replacement = typeof entry.new === 'string' ? entry.new : typeof entry.content === 'string' ? entry.content : null;
-          if (replacement === null) return refusal(`apply_patch hunk ${index + 1} (${path}) needs new: the replacement text as a string.`);
-          hunks.push({ path: normalized, old, next: replacement });
+          const rawOld = typeof entry.old === 'string' ? entry.old : '';
+          const rawReplacement = typeof entry.new === 'string' ? entry.new : typeof entry.content === 'string' ? entry.content : null;
+          if (rawReplacement === null) return refusal(`apply_patch hunk ${index + 1} (${path}) needs new: the replacement text as a string.`);
+          hunks.push({
+            path: normalized,
+            old: stripLineNumberPrefixes(rawOld),
+            next: stripLineNumberPrefixes(rawReplacement)
+          });
         }
 
         // One read per unique path, doubling as the read-before-write auto-read.
@@ -1737,7 +1744,7 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
         for (const path of new Set(hunks.map((hunk) => hunk.path))) {
           let current: { content: string; version: string } | null = null;
           try {
-            const file = await desktop.readFile(workspaceId, path);
+            const file = await readEffectiveFile(desktop, workspaceId, path);
             current = { content: file.content, version: file.version };
           } catch (error) {
             if (!isNotFoundError(error)) {
@@ -1772,7 +1779,7 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
               for (let e = 0; e < entryIndex; e += 1) {
                 const candidate = HTML_ENTRY_CANDIDATES[e];
                 try {
-                  await desktop.readFile(workspaceId, candidate);
+                  await readEffectiveFile(desktop, workspaceId, candidate);
                   return { ok: false, content: '', error: `apply_patch hunk ${index + 1} (${hunk.path}): ${candidate} already exists and is this app's HTML entry point (the preview serves the first existing entry). Patch ${candidate} instead of creating a second entry file. ${atomicNote}` };
                 } catch { /* candidate absent — keep looking */ }
               }
@@ -1824,28 +1831,44 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
             error: `Not written — ${first.path}:${first.line} ${first.message} (${prePatchPlaceholderIssues.length} placeholder issue(s) found; NOTHING was written).`
           };
         }
-        const staged = await desktop.stageFiles(workspaceId, writes.map((write) => ({
-          name: write.path,
-          content: write.content,
-          expectedVersion: currents.get(write.path)?.version ?? null
-        })));
-        const committed = await desktop.commitTransaction(workspaceId, staged.transactionId);
-        if (committed.errors.length > 0 || committed.saved.length !== writes.length) {
-          const message = committed.errors[0]?.message ?? 'the commit returned no confirmation';
-          const rollback = committed.rolledBack
-            ? ' The partial write was rolled back; every file is at its pre-patch content.'
-            : committed.rollbackErrors && committed.rollbackErrors.length > 0
-              ? ` ROLLBACK INCOMPLETE: ${committed.rollbackErrors.map((entry) => `${entry.name}: ${entry.message}`).join('; ')}. Check these files before writing again.`
-              : '';
-          return { ok: false, content: '', error: `apply_patch was not committed: ${message}.${rollback}` };
-        }
         const created = writes.filter((write) => currents.get(write.path) === null).map((write) => write.path);
         const writtenPaths = writes.map((write) => write.path);
-        let patchDetail = `apply_patch: ${hunks.length} hunk(s) across ${writes.length} file(s) committed atomically — ${writtenPaths.join(', ')}.${created.length > 0 ? ` Created: ${created.join(', ')}.` : ''}`;
+        let patchDetail: string;
+        if (isAutoSaveEnabled(workspaceId)) {
+          const staged = await desktop.stageFiles(workspaceId, writes.map((write) => ({
+            name: write.path,
+            content: write.content,
+            expectedVersion: currents.get(write.path)?.version ?? null
+          })));
+          const committed = await desktop.commitTransaction(workspaceId, staged.transactionId);
+          if (committed.errors.length > 0 || committed.saved.length !== writes.length) {
+            const message = committed.errors[0]?.message ?? 'the commit returned no confirmation';
+            const rollback = committed.rolledBack
+              ? ' The partial write was rolled back; every file is at its pre-patch content.'
+              : committed.rollbackErrors && committed.rollbackErrors.length > 0
+                ? ` ROLLBACK INCOMPLETE: ${committed.rollbackErrors.map((entry) => `${entry.name}: ${entry.message}`).join('; ')}. Check these files before writing again.`
+                : '';
+            return { ok: false, content: '', error: `apply_patch was not committed: ${message}.${rollback}` };
+          }
+          patchDetail = `apply_patch: ${hunks.length} hunk(s) across ${writes.length} file(s) committed atomically — ${writtenPaths.join(', ')}.${created.length > 0 ? ` Created: ${created.join(', ')}.` : ''}`;
+        } else {
+          for (const write of writes) {
+            const prev = currents.get(write.path) ?? null;
+            stagePendingChange(workspaceId, {
+              path: write.path,
+              content: write.content,
+              originalContent: prev?.content ?? null,
+              originalVersion: prev?.version ?? null,
+              created: prev === null
+            });
+          }
+          patchDetail = `apply_patch: ${hunks.length} hunk(s) across ${writes.length} file(s) staged pending review (Auto-Save OFF) — ${writtenPaths.join(', ')}.${created.length > 0 ? ` Created: ${created.join(', ')}.` : ''}`;
+        }
         const scriptPaths = writtenPaths.filter((p) => /\.(?:[cm]?ts|tsx|[cm]?js|jsx)$/i.test(p));
         if (scriptPaths.length > 0 && typeof desktop.diagnostics === 'function') {
           try {
-            const diagnostics = await desktop.diagnostics(workspaceId, undefined, scriptPaths);
+            const overrides = listPendingOverrides(workspaceId);
+            const diagnostics = await desktop.diagnostics(workspaceId, overrides.length > 0 ? overrides : undefined, scriptPaths);
             const errors = diagnostics.diagnostics.filter((entry) => entry.severity === 'error');
             if (errors.length > 0) {
               patchDetail += `\nDiagnostics after patch (${errors.length} error(s)):\n${errors.slice(0, 10).map((entry) => `  ${entry.file}:${entry.line + 1} ${entry.message}`).join('\n')}`;
@@ -1878,7 +1901,7 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
         const modifiedFiles = activeTurn ? new Set([...activeTurn.changed, ...activeTurn.created]) : null;
         let packageJson: string | null = null;
         try {
-          packageJson = (await desktop.readFile(workspaceId, 'package.json')).content;
+          packageJson = (await readEffectiveFile(desktop, workspaceId, 'package.json')).content;
         } catch {
           /* no package.json — other manifests decide */
         }
@@ -1962,7 +1985,8 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
           try {
             const turn = getTurn(workspaceId);
             const paths = turn && turn.changed.size > 0 ? [...turn.changed] : undefined;
-            const diagnostics = await desktop.diagnostics(workspaceId, undefined, paths);
+            const overrides = listPendingOverrides(workspaceId);
+            const diagnostics = await desktop.diagnostics(workspaceId, overrides.length > 0 ? overrides : undefined, paths);
             diagnosticsRan = true;
             const errorEntries = diagnostics.diagnostics.filter((item) => item.severity === 'error');
             const modifiedDiagErrors: VerifyError[] = [];
@@ -1991,43 +2015,15 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
         // errors in untouched files are reported as warnings, not failures.
         const ok = allOk && errors.length === 0 && failedTests.length === 0;
         const report: VerifyReport = { ok, errors: errors.slice(0, 60), failedTests: failedTests.slice(0, 30), commandsRun };
-        const content = formatVerifyReport(report, plan.kind, {
+        const pendingStagedCount = listPendingOverrides(workspaceId).length;
+        const stagedNote = !isAutoSaveEnabled(workspaceId) && pendingStagedCount > 0
+          ? `\nNote: Auto-Save is OFF (${pendingStagedCount} staged file(s) not yet written to disk; TS diagnostics evaluated staged buffers).`
+          : '';
+        const content = `${formatVerifyReport(report, plan.kind, {
           includeAgentDirective: false,
           preExistingErrors
-        });
+        })}${stagedNote}`;
         return ok ? { ok: true, content, verifyReport: report } : { ok: false, content, error: content, verifyReport: report };
-      }
-      case 'checkpoint': {
-        if (typeof desktop.loadFiles !== 'function') {
-          return refusal('checkpoint needs the loadFiles bridge channel, which this build does not provide.');
-        }
-        const turn = getTurn(workspaceId);
-        const paths = turn ? [...new Set([...turn.reads, ...turn.changed])].slice(0, 200) : [];
-        if (paths.length === 0) {
-          return refusal('checkpoint: nothing to snapshot yet — read or change files first, then checkpoint.');
-        }
-        const loaded = await desktop.loadFiles(workspaceId, paths, { maxBytesPerFile: 512 * 1024, maxTotalBytes: 2 * 1024 * 1024 });
-        const label = asString(call.args.label) ?? 'Agent checkpoint';
-        const meta = await createAgentCheckpoint(workspaceId, label, loaded.files.map((file) => ({ name: file.name, content: file.content })));
-        if (!meta) {
-          return { ok: false, content: '', error: 'The checkpoint could not be saved: workspace history is unavailable or the workspace path is unknown.' };
-        }
-        return { ok: true, content: `Checkpoint "${meta.label}" saved (${meta.fileCount} files, id ${meta.id}). Restore it with restore {"id":"${meta.id}"} — the user approves first.` };
-      }
-      case 'list_checkpoints': {
-        const { path, checkpoints } = await listAgentCheckpoints(workspaceId);
-        if (!path) return { ok: false, content: '', error: 'The workspace path is unknown, so its checkpoint history cannot be opened.' };
-        if (checkpoints.length === 0) return { ok: true, content: 'No checkpoints saved for this workspace yet.' };
-        const lines = checkpoints.slice(0, 30).map((entry) =>
-          `${entry.id} · ${entry.label} · ${new Date(entry.createdAt).toLocaleString()} · ${entry.fileCount} files${entry.machine ? ' · machine' : ''}`);
-        return { ok: true, content: clip(`${checkpoints.length} checkpoint(s), newest first:\n${lines.join('\n')}`) };
-      }
-      case 'restore': {
-        const id = asString(call.args.id);
-        if (!id) return refusal('restore needs id: the checkpoint id from list_checkpoints.');
-        const result = await restoreAgentCheckpoint(workspaceId, desktop, id);
-        if (result.ok) return { ok: true, content: result.message };
-        return { ok: false, content: result.message, error: result.message, refused: /did not approve/i.test(result.message) };
       }
       case 'git_state': {
         const status = await desktop.gitRead(workspaceId);
@@ -2213,6 +2209,17 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
               lines.push(`recent output (latest run, last ${latest.length} lines):\n${latest.join('\n')}`);
             }
           }
+          const activeRoute = (() => {
+            const verdictRoute = typeof (runtimeVerdict as { route?: unknown } | null)?.route === 'string'
+              ? String((runtimeVerdict as { route?: string }).route)
+              : null;
+            if (verdictRoute) return verdictRoute;
+            if (runtimeStatus?.url) {
+              try { return new URL(runtimeStatus.url).pathname || '/'; } catch { return null; }
+            }
+            return null;
+          })();
+          if (activeRoute) lines.push(`route: ${activeRoute}`);
           if (runtimeVerdict) {
             const consoleErrors = Array.isArray(runtimeVerdict.consoleErrors) ? runtimeVerdict.consoleErrors : [];
             const failedSelectors = Array.isArray(runtimeVerdict.failedSelectors) ? runtimeVerdict.failedSelectors : [];
@@ -2220,7 +2227,11 @@ export async function runTool(workspaceId: string, call: ToolCall, options?: Run
             const errorCount = typeof runtimeVerdict.errorCount === 'number' ? runtimeVerdict.errorCount : consoleErrors.length;
             lines.push(`runtime verdict: ${runtimeVerdict.ok ? 'healthy (no console/runtime errors)' : `${errorCount} error(s)${runtimeVerdict.detail ? ` — ${runtimeVerdict.detail}` : ''}`}`);
             if (consoleErrors.length > 0) {
-              lines.push(`console errors: ${consoleErrors.slice(0, 5).map((entry) => String(entry)).join(' | ')}`);
+              const formattedErrors = consoleErrors.slice(0, 5).map((entry) => {
+                const text = String(entry);
+                return activeRoute && !/^\[Route:\s*[^\]]+\]/.test(text) ? `[Route: ${activeRoute}] ${text}` : text;
+              });
+              lines.push(`console errors: ${formattedErrors.join(' | ')}`);
             }
             if (failedSelectors.length > 0) {
               lines.push(`failed selectors: ${failedSelectors.map((entry) => String(entry)).join(', ')}`);

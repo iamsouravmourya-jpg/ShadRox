@@ -29,6 +29,8 @@ export const TOOL_DISCIPLINE_RULES: string[] = [
   '- Never cite file contents you did not read this turn.',
   'ARCHITECTURE FIRST: inspect `package.json`, router/framework configs, and conventions via `read_file`/`list_directory` before writing. Match the stack cleanly and modularly.',
   'READ BEFORE WRITE: read_file (with `start_line`/`end_line` on >400-line files, reading both top and bottom for route/server registration) before edit_file or delete_file. Read in 300–400 line chunks — never 50-line micro-reads — and use `outline`/`search_text` to locate what you need first. Copy original lines verbatim.',
+  'SCREENSHOT / VISIBLE UI TEXT LOOKUP: when asked to edit, remove, or restyle visible UI text, labels, badges, or headings (especially from an attached screenshot), ALWAYS call `search_text` with 1–3 distinctive visible words first to pinpoint the exact file instead of opening components blindly.',
+  'RECENT TURN GROUND TRUTH: older history turns may appear as `[Compacted earlier turn]` receipts; treat the user\'s LATEST message and recent verbatim turns as absolute ground truth if anything conflicts.',
   'SCOPE DISCIPLINE: make minimal, targeted changes strictly scoped to what the user requested — never refactor or rewrite unrelated files, and batch related changes into cohesive edit_file calls instead of tiny fragmented 1-line edits.',
   'NO PLACEHOLDERS: never leave `// ...`, `# ...`, or TODO stubs inside edited/written files.',
   'FORCED VERIFY: after write/edit/apply_patch/delete, run `verify`, `problems` (on changed files), or `run_command` build/test and fix failures before calling `finish` (docs-only turns exempt).',

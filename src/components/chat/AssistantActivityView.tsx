@@ -19,7 +19,6 @@ import {
   Sparkles,
   Square,
   Terminal,
-  Undo2,
   Users,
   X
 } from 'lucide-react';
@@ -305,19 +304,12 @@ export function ThinkingTrace({ reasoning, streaming, durationMs }: { reasoning:
 }
 
 export function SelfHealingProofCard({
-  proof,
-  checkpointAvailable,
-  restoring,
-  onUndo
+  proof
 }: {
   proof: import('../../lib/repairProof').FailureReceipt;
-  checkpointAvailable: boolean;
-  restoring: boolean;
-  onUndo: (checkpointId: string) => void;
 }) {
   const isHealed = proof.status === 'verified_healed';
   const isRejected = proof.status === 'rejected';
-  const checkpointId = proof.checkpointId;
   const surface = isHealed
     ? 'border-ok/30 bg-ok/10'
     : isRejected
@@ -354,25 +346,6 @@ export function SelfHealingProofCard({
       {proof.errorMessage && (
         <div className="mt-2 rounded-lg border border-line bg-surface p-2 font-mono text-[10.5px] text-ink-2">
           {proof.errorMessage}
-        </div>
-      )}
-      {checkpointId && (
-        <div className="mt-1.5 flex items-center justify-between gap-2">
-          <p className="min-w-0 truncate font-mono text-[10px] text-ink-4" title={checkpointId}>
-            Checkpoint {checkpointId}
-          </p>
-          {checkpointAvailable && proof.status !== 'rejected' && (
-            <button
-              type="button"
-              onClick={() => onUndo(checkpointId)}
-              disabled={restoring}
-              title="Restore the workspace to this turn's checkpoint"
-              className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-line bg-surface px-2 py-1 font-mono text-[10px] text-ink-2 transition-colors hover:border-danger/30 hover:text-danger disabled:cursor-wait disabled:opacity-60"
-            >
-              <Undo2 className="h-3 w-3" />
-              {restoring ? 'Restoring…' : 'Undo this turn'}
-            </button>
-          )}
         </div>
       )}
 

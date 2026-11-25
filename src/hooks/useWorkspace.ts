@@ -29,6 +29,12 @@ import { resetProjectRegistry } from '../lib/completionTrie';
 import { resetRetrievalCaches } from '../lib/retrieval';
 import { evictSemanticIndex } from '../lib/agent/semanticIndex';
 import {
+  acceptAllPendingChanges,
+  clearWorkspacePendingChanges,
+  registerWorkspaceBridge,
+  setWorkspaceAutoSave
+} from '../lib/agent/pendingChanges';
+import {
   canonicalPathKey,
   dedupePaths,
   findPathIndex,
@@ -322,6 +328,11 @@ export function useWorkspace(): UseWorkspaceResult {
 
   const setAutoSave = useCallback((value: boolean) => {
     setAutoSaveState(value);
+    const activeWorkspaceId = desktopWorkspaceIdRef.current ?? null;
+    setWorkspaceAutoSave(activeWorkspaceId, value);
+    if (value) {
+      void acceptAllPendingChanges(activeWorkspaceId);
+    }
     try {
       if (typeof window !== 'undefined') {
         window.localStorage.setItem('shadrox:auto-save', String(value));
@@ -1963,6 +1974,7 @@ export function useWorkspace(): UseWorkspaceResult {
     canWriteRef.current = false;
     setCanWriteToDisk(false);
     if (currentId) evictSemanticIndex(currentId);
+    clearWorkspacePendingChanges(currentId ?? null);
     resetRetrievalCaches();
     resetProjectRegistry();
   }, []);
@@ -2286,6 +2298,137 @@ export function useWorkspace(): UseWorkspaceResult {
     void pruneSnapshots(keep);
     void pruneHandles(keep);
   }, [recents]);
+
+  const activeNativeId = workspace?.nativeWorkspaceId ?? null;
+  useEffect(() => {
+    setWorkspaceAutoSave(activeNativeId, autoSave);
+  }, [activeNativeId, autoSave]);
+
+  useEffect(() => {
+    return registerWorkspaceBridge(activeNativeId, {
+      applyVirtualBuffers: (entries) => {
+        if (entries.length === 0) return;
+        const currentFiles = [...filesRef.current];
+        const treeAdditions: Array<{ path: string; kind: 'add' | 'change' }> = [];
+        for (const entry of entries) {
+          const target = normalizeRepoPath(entry.path);
+          if (!target) continue;
+          const idx = currentFiles.findIndex((file) => pathsEqual(file.name, target));
+          if (idx >= 0) {
+            currentFiles[idx] = { ...currentFiles[idx], content: entry.content };
+          } else {
+            currentFiles.push({
+              name: target,
+              content: entry.content,
+              language: detectLanguage(target)
+            });
+            treeAdditions.push({ path: target, kind: entry.created ? 'add' : 'change' });
+          }
+        }
+        filesRef.current = currentFiles;
+        setWorkspace((previous) => (previous ? { ...previous, files: currentFiles } : previous));
+        if (treeAdditions.length > 0) applyDiskTreeChanges(treeAdditions);
+      },
+      flushToDisk: async (entries) => {
+        const desktop = getDesktopBridge();
+        const id = desktopWorkspaceIdRef.current;
+        if (!entries.length) return { saved: [], errors: [] };
+        if (desktop && id) {
+          const result = await desktop.saveFiles(
+            id,
+            entries.map((entry) => ({
+              name: entry.path,
+              content: entry.content,
+              expectedVersion: entry.originalVersion
+            }))
+          );
+          if (result.saved.length > 0) {
+            const savedSet = new Set(result.saved.map((p) => canonicalPathKey(p)));
+            const versions = new Map(
+              await Promise.all(
+                entries
+                  .filter((entry) => savedSet.has(canonicalPathKey(entry.path)))
+                  .map(async (entry) => [canonicalPathKey(entry.path), await contentVersion(entry.content)] as const)
+              )
+            );
+            const nextFiles = [...filesRef.current];
+            for (const entry of entries) {
+              const key = canonicalPathKey(entry.path);
+              if (!savedSet.has(key)) continue;
+              baselineRef.current[baselineKeyFor(baselineRef.current, entry.path)] = entry.content;
+              const idx = nextFiles.findIndex((file) => pathsEqual(file.name, entry.path));
+              if (idx >= 0) {
+                nextFiles[idx] = {
+                  ...nextFiles[idx],
+                  content: entry.content,
+                  version: versions.get(key)
+                };
+              } else {
+                nextFiles.push({
+                  name: entry.path,
+                  content: entry.content,
+                  language: detectLanguage(entry.path),
+                  version: versions.get(key)
+                });
+              }
+            }
+            filesRef.current = nextFiles;
+            setDiskBaseline({ ...baselineRef.current });
+            setWorkspace((previous) => (previous ? { ...previous, files: nextFiles } : previous));
+            applyDiskTreeChanges(
+              entries
+                .filter((entry) => savedSet.has(canonicalPathKey(entry.path)))
+                .map((entry) => ({ path: entry.path, kind: entry.created ? ('add' as const) : ('change' as const) }))
+            );
+            for (const dir of new Set(result.saved.map((p) => p.split('/').slice(0, -1).join('/')))) {
+              void loadDirectory(dir);
+            }
+            setDiskMessage(`${result.saved.length} pending edit${result.saved.length === 1 ? '' : 's'} accepted and saved to disk.`);
+          }
+          return result;
+        }
+        const savedPaths = entries.map((entry) => entry.path);
+        for (const entry of entries) {
+          baselineRef.current[baselineKeyFor(baselineRef.current, entry.path)] = entry.content;
+        }
+        setDiskBaseline({ ...baselineRef.current });
+        return { saved: savedPaths, errors: [] };
+      },
+      revertBuffers: (entries) => {
+        if (entries.length === 0) return;
+        let nextFiles = [...filesRef.current];
+        const removedPaths: string[] = [];
+        for (const entry of entries) {
+          if (entry.created && entry.originalContent === null) {
+            nextFiles = nextFiles.filter((file) => !pathsEqual(file.name, entry.path));
+            deleteBaselineKey(baselineRef.current, entry.path);
+            removedPaths.push(entry.path);
+          } else if (entry.originalContent !== null) {
+            const idx = nextFiles.findIndex((file) => pathsEqual(file.name, entry.path));
+            if (idx >= 0) {
+              nextFiles[idx] = {
+                ...nextFiles[idx],
+                content: entry.originalContent,
+                ...(entry.originalVersion ? { version: entry.originalVersion } : {})
+              };
+            }
+          }
+        }
+        filesRef.current = nextFiles;
+        setDiskBaseline({ ...baselineRef.current });
+        setWorkspace((previous) => (previous ? { ...previous, files: nextFiles } : previous));
+        if (removedPaths.length > 0) {
+          setEditorGroups((previous) => previous.map((group) => ({
+            ...group,
+            tabs: group.tabs.filter((p) => !removedPaths.some((rem) => pathsEqual(rem, p))),
+            pinnedTabs: group.pinnedTabs.filter((p) => !removedPaths.some((rem) => pathsEqual(rem, p))),
+            activePath: group.activePath && removedPaths.some((rem) => pathsEqual(rem, group.activePath as string)) ? null : group.activePath
+          })));
+          applyDiskTreeChanges(removedPaths.map((p) => ({ path: p, kind: 'unlink' as const })));
+        }
+      }
+    });
+  }, [activeNativeId, applyDiskTreeChanges, loadDirectory]);
 
   return useMemo(
     () => ({

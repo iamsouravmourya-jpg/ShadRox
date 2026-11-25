@@ -261,7 +261,6 @@ export default function App() {
       activeJobCount,
       terminalAwaitingInput: termSummary.awaitingInput,
       hasActiveTerminal: terminalStateManager.getSessionIds().length > 0,
-      checkpointCount: workspace.checkpoints.length,
       hasMultiFileEdit: filePaths.length > 1,
       hasGitRepo: filePaths.some((p) => p.includes('.git')),
       webAvailable: true
@@ -271,7 +270,6 @@ export default function App() {
     nativeWorkspaceId,
     workspace.workspace,
     workspace.files,
-    workspace.checkpoints.length,
     localPreview.localRuntime.status
   ]);
 
@@ -378,7 +376,6 @@ export default function App() {
     byok,
     saveFilesAtomicWithHooks,
     isGenerating: orchestration.isGenerating,
-    chatDispatchLockRef: orchestration.chatDispatchLockRef,
     input,
     setInput,
     refineMode,
@@ -897,9 +894,12 @@ export default function App() {
               null
             }
             workspaceKey={workspace.workspace?.id ?? null}
-            restorableMessageIds={orchestration.restorableMessageIds}
-            restorableCheckpointTooltips={orchestration.restorableCheckpointTooltips}
-            onRestorePromptCheckpoint={(id) => void orchestration.handleRestorePromptCheckpoint(id)}
+            pendingWorkspaceId={nativeWorkspaceId}
+            onOpenFile={(filePath) => void workspace.openFile(filePath)}
+            onNotify={(message) => {
+              setToast(message);
+              window.setTimeout(() => setToast(null), 3500);
+            }}
             queuedMessages={orchestration.queuedChatItems}
             onCancelQueuedMessage={orchestration.handleCancelQueuedChat}
             onStop={orchestration.handleStopAll}
@@ -931,9 +931,6 @@ export default function App() {
             workspaceFiles={workspace.files}
             workspaceAllFiles={workspace.allFiles}
             skills={pluginAutomations.projectSkills}
-            checkpoints={workspace.checkpoints}
-            onRestoreCheckpoint={governance.handleRestoreCheckpoint}
-            restoringCheckpointId={governance.restoringCheckpointId}
             patchSets={patchManager.patchSets}
             autoApplyChanges={patchManager.autoApplyChanges}
             onToggleAutoApply={patchManager.toggleAutoApplyChanges}

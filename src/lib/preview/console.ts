@@ -130,24 +130,32 @@ export function parseBridgeMessage(data: unknown): BridgeMessage {
     return target ? { kind: 'reveal', target } : { kind: 'ignored' };
   }
 
-  const message = typeof record.message === 'string' ? record.message : '';
+  const rawMessage = typeof record.message === 'string' ? record.message : '';
+  const route = typeof record.route === 'string' && record.route.trim() ? record.route.trim() : '';
+  const withRoute = (msg: string) =>
+    route && !/^\[Route:/i.test(msg) ? `[Route: ${route}] ${msg}` : msg;
   switch (record.type) {
     case 'console-error':
-      return { kind: 'record', level: 'error', message: message || 'Runtime error', stack: textOf(record.stack) };
+      return {
+        kind: 'record',
+        level: 'error',
+        message: withRoute(rawMessage || 'Runtime error'),
+        stack: textOf(record.stack)
+      };
     case 'error':
       return {
         kind: 'record',
         level: 'error',
-        message: message || 'Runtime error',
+        message: withRoute(rawMessage || 'Runtime error'),
         stack: textOf(record.stack)
       };
     case 'console-warn':
     case 'warn':
-      return { kind: 'record', level: 'warn', message };
+      return { kind: 'record', level: 'warn', message: rawMessage };
     case 'console-log':
     case 'console-info':
     case 'log':
-      return { kind: 'record', level: 'log', message };
+      return { kind: 'record', level: 'log', message: rawMessage };
     default:
       return { kind: 'ignored' };
   }

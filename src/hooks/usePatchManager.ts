@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateA
 import { isProtectedAgentWritePath } from '../lib/agents/applyPolicy';
 import { undoVerdict } from '../lib/agents/scopePreserve';
 import { holdReplyApply, type PermissionMode } from '../lib/agent/runPolicy';
+import { listPendingOverrides, stagePendingChange } from '../lib/agent/pendingChanges';
 import type { RefineModeMeta } from '../lib/ai';
 import type { ReviewSetOutcome } from '../lib/appHelpers';
 import { applyAtomicJobs, planAtomicApply, revertAtomicJobs, type AtomicPlanJob } from '../lib/atomicApply';
@@ -87,7 +88,8 @@ export function usePatchManager({
       messageId: string,
       applied: string[],
       jobs: AtomicPlanJob[],
-      before: Promise<DiagnosticsResult | null>
+      before: Promise<DiagnosticsResult | null>,
+      stageOnly = false
     ): Promise<{ ran: boolean; introduced: number }> => {
       if (!desktop || !nativeWorkspaceId || applied.length === 0) return { ran: false, introduced: 0 };
       try {
@@ -96,7 +98,11 @@ export function usePatchManager({
         jobs.forEach((job) => merged.set(job.path, job.content));
         const files = Array.from(merged, ([name, content]) => ({ name, content }));
 
-        let after = await desktop.diagnostics(nativeWorkspaceId);
+        const initialOverrides = stageOnly ? listPendingOverrides(nativeWorkspaceId) : undefined;
+        let after = await desktop.diagnostics(
+          nativeWorkspaceId,
+          initialOverrides && initialOverrides.length > 0 ? initialOverrides : undefined
+        );
         const firstPass = filterIntroducedDiagnostics(
           beforeResult?.diagnostics ?? [],
           after.diagnostics,
@@ -106,17 +112,37 @@ export function usePatchManager({
         if (importPlan.patches.length > 0) {
           const buffers = workspace.applyFilePatches(importPlan.patches);
           const names = [...buffers.updated, ...buffers.created];
-          const healed = names.length > 0
-            ? await saveFilesAtomicWithHooks(names)
-            : { written: 0, failed: false, message: null };
-          if (healed.written > 0) {
-            if (buffers.created.length > 0) await workspace.noteCheckpointCreated(buffers.created);
+          if (stageOnly) {
+            for (const patch of importPlan.patches) {
+              const existingFile = workspace.files.find((f) => normalizeSlashes(f.name).toLowerCase() === normalizeSlashes(patch.path).toLowerCase());
+              stagePendingChange(nativeWorkspaceId, {
+                path: patch.path,
+                content: patch.content,
+                originalContent: existingFile?.content ?? null,
+                originalVersion: existingFile?.version ?? null,
+                created: !existingFile
+              });
+            }
             importPlan.patches.forEach((patch) => merged.set(patch.path, patch.content));
-            after = await desktop.diagnostics(nativeWorkspaceId);
+            const nextOverrides = listPendingOverrides(nativeWorkspaceId);
+            after = await desktop.diagnostics(nativeWorkspaceId, nextOverrides.length > 0 ? nextOverrides : undefined);
             announce(
-              `Auto-imported ${importPlan.resolved.length} missing symbol${importPlan.resolved.length === 1 ? '' : 's'}.`,
+              `Auto-imported ${importPlan.resolved.length} missing symbol${importPlan.resolved.length === 1 ? '' : 's'} (staged).`,
               4500
             );
+          } else {
+            const healed = names.length > 0
+              ? await saveFilesAtomicWithHooks(names)
+              : { written: 0, failed: false, message: null };
+            if (healed.written > 0) {
+              if (buffers.created.length > 0) await workspace.noteCheckpointCreated(buffers.created);
+              importPlan.patches.forEach((patch) => merged.set(patch.path, patch.content));
+              after = await desktop.diagnostics(nativeWorkspaceId);
+              announce(
+                `Auto-imported ${importPlan.resolved.length} missing symbol${importPlan.resolved.length === 1 ? '' : 's'}.`,
+                4500
+              );
+            }
           }
         }
 
@@ -147,7 +173,7 @@ export function usePatchManager({
     async (
       messageId: string,
       patches: ReviewPatch[],
-      options: { allowDestructive?: boolean; verify?: boolean; onlyIndex?: number; onlyIndexes?: number[] } = {}
+      options: { allowDestructive?: boolean; verify?: boolean; onlyIndex?: number; onlyIndexes?: number[]; stageOnly?: boolean } = {}
     ): Promise<ReviewSetOutcome> => {
       const indexes = options.onlyIndexes
         ?? (options.onlyIndex === undefined
@@ -256,7 +282,26 @@ export function usePatchManager({
         );
         commit(withLanded);
 
-        const outcome = await saveFilesAtomicWithHooks(applied);
+        let outcome: SaveOutcome;
+        if (options.stageOnly) {
+          for (const job of jobs) {
+            const existingFile = buffersForPlan.find((f) => normalizeSlashes(f.name).toLowerCase() === normalizeSlashes(job.path).toLowerCase());
+            stagePendingChange(nativeWorkspaceId, {
+              path: job.path,
+              content: job.content,
+              originalContent: job.created ? null : (job.originalContent ?? existingFile?.content ?? null),
+              originalVersion: existingFile?.version ?? null,
+              created: job.created
+            });
+          }
+          outcome = {
+            written: 0,
+            failed: false,
+            message: `${applied.length} file${applied.length === 1 ? '' : 's'} staged in Pending Changes (Auto-Save OFF).`
+          };
+        } else {
+          outcome = await saveFilesAtomicWithHooks(applied);
+        }
         if (outcome.failed && outcome.written === 0) {
           workspace.applyFilePatches(revertAtomicJobs(jobs));
           const reverted = withLanded.map((patch) => {
@@ -289,7 +334,7 @@ export function usePatchManager({
           outcome.written > 0
             ? `${outcome.written} file${outcome.written === 1 ? '' : 's'} applied as one change set.`
             : outcome.message ?? 'Applied in the editor only — the files were not saved to disk.',
-          outcome.written > 0 ? 3500 : 6000
+          outcome.written > 0 || options.stageOnly ? 3500 : 6000
         );
         if (applied.length > 0) {
           const staticChecksPassed = changeSetVerdict?.ok === true;
@@ -358,7 +403,7 @@ export function usePatchManager({
               void workspace.loadDirectory(directory);
             }
           }
-          diagnostics = await healAfterApply(messageId, applied, jobs, beforeDiagnostics);
+          diagnostics = await healAfterApply(messageId, applied, jobs, beforeDiagnostics, Boolean(options.stageOnly));
         }
         return {
           applied,
@@ -671,7 +716,10 @@ export function usePatchManager({
 
       setToast(`Verifying ${applyIndexes ? applyIndexes.length : review.length} file(s)…`);
       window.setTimeout(() => setToast(null), 4000);
-      const outcome = await applyReviewSet(messageId, review, applyIndexes ? { onlyIndexes: applyIndexes } : {});
+      const outcome = await applyReviewSet(messageId, review, {
+        ...(applyIndexes ? { onlyIndexes: applyIndexes } : {}),
+        stageOnly: !workspace.autoSave
+      });
       const failures = [...blockedPaths, ...outcome.failures];
       if (failures.length > 0) await options.onFailures?.(failures);
       return {

@@ -20,6 +20,7 @@ const { createMachineDelta, LIMITS: MACHINE_LIMITS } = require('./machine-delta.
 const { createMachineGit } = require('./machine-git.cjs');
 const { createMachineReceipt } = require('./machine-receipt.cjs');
 const { initDefaultBetaLogger, getDefaultBetaLogger } = require('./beta-logger.cjs');
+const { unwrapErrorMessage } = require('./error-utils.cjs');
 
 const { PREVIEW_SCHEME, APP_SCHEME, APP_ORIGIN, createPreviewProtocolService } = require('./ipc/previewProtocol.cjs');
 const { createCommandProofRecorder, registerProofHandlers } = require('./ipc/debugProofIpc.cjs');
@@ -368,14 +369,25 @@ async function createWindow() {
     if (details.level === 'error') {
       console.error('[renderer] console error', details.message);
     }
-    const workspaceId = previewProtocol.getPreviewWorkspaceIdForUrl(details.frame?.url || '');
+    const frameUrl = details.frame?.url || '';
+    const workspaceId = previewProtocol.getPreviewWorkspaceIdForUrl(frameUrl);
     if (!workspaceId || typeof details.message !== 'string') return;
     const level = details.level === 'error' ? 'error' : details.level === 'warning' ? 'warn' : 'log';
-    if (level === 'error') previewConsoleErrors.record(workspaceId, details.message);
+    let frameRoute = '';
+    try {
+      const parsedFrame = new URL(frameUrl);
+      frameRoute = `${parsedFrame.pathname || '/'}${parsedFrame.search || ''}`;
+    } catch {
+      frameRoute = '';
+    }
+    const taggedMessage = level === 'error' && frameRoute && !/^\[Route:/i.test(details.message)
+      ? `[Route: ${frameRoute}] ${details.message}`
+      : details.message;
+    if (level === 'error') previewConsoleErrors.record(workspaceId, taggedMessage);
     mainWindow?.webContents.send('preview:output', {
       workspaceId,
       type: 'console',
-      message: `[preview ${level}] ${details.message}`
+      message: `[preview ${level}] ${taggedMessage}`
     });
   });
   mainWindow.on('closed', () => {
@@ -511,7 +523,7 @@ app.whenReady().then(async () => {
   });
 }).catch((error) => {
   console.error('[desktop] failed to start', error);
-  dialog.showErrorBox('ShadRox failed to start', error instanceof Error ? error.message : String(error));
+  dialog.showErrorBox('ShadRox failed to start', unwrapErrorMessage(error));
   app.quit();
 });
 

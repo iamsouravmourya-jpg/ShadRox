@@ -119,3 +119,58 @@ export function errorSignature(message: string, stack?: string): string {
       .find((line) => line.startsWith('at ')) ?? '';
   return `${head}|${firstFrame}`;
 }
+
+/**
+ * Unwraps AggregateError (`.errors` getter arrays, empty `.message`), `.cause`,
+ * and error `.code` strings into a single actionable diagnostic string.
+ */
+export function unwrapRuntimeError(error: unknown, depth = 0): string {
+  if (error == null) return 'Unknown error';
+  if (typeof error === 'string') return error;
+  if (depth > 3) return error instanceof Error ? (error.message || error.name) : String(error);
+
+  if (typeof error === 'object') {
+    const record = error as { errors?: unknown; cause?: unknown; message?: unknown; code?: unknown; name?: unknown };
+    let nestedErrors: unknown[] | null = null;
+    try {
+      if (Array.isArray(record.errors) && record.errors.length > 0) nestedErrors = record.errors;
+    } catch {
+      nestedErrors = null;
+    }
+
+    const headMsg = typeof record.message === 'string' && record.message.trim() ? record.message.trim() : '';
+    const code = typeof record.code === 'string' && record.code.trim() ? record.code.trim() : '';
+
+    if (nestedErrors) {
+      const parts: string[] = [];
+      const seen = new Set<string>();
+      for (const item of nestedErrors.slice(0, 5)) {
+        const text = unwrapRuntimeError(item, depth + 1).trim();
+        if (text && !seen.has(text)) {
+          seen.add(text);
+          parts.push(text);
+        }
+      }
+      if (parts.length > 0) {
+        const joined = parts.join('; ');
+        return headMsg && !joined.includes(headMsg) ? `${headMsg}: ${joined}` : joined;
+      }
+    }
+
+    if (record.cause !== undefined) {
+      const causeText = unwrapRuntimeError(record.cause, depth + 1).trim();
+      if (headMsg && causeText && !headMsg.includes(causeText)) {
+        return `${headMsg} (${causeText})`;
+      }
+      if (!headMsg && causeText) return causeText;
+    }
+
+    if (headMsg) {
+      return code && !headMsg.includes(code) ? `${headMsg} (${code})` : headMsg;
+    }
+    if (code) return `${typeof record.name === 'string' && record.name ? record.name : 'Error'} (${code})`;
+    if (error instanceof Error && error.name) return error.name;
+  }
+
+  return String(error);
+}

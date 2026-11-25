@@ -455,13 +455,13 @@ export async function handleSpawnSubagent(
     // A scout that tries to finish without a single read-only tool call is
     // hallucinating from memory: nudge it to inspect real files and re-run,
     // then refuse if it still returns with zero tool calls.
-    while (loop.finish && stepsCount === 0 && !controller.signal.aborted && zeroStepRetries < ZERO_STEP_RETRIES) {
+    while (stepsCount === 0 && !controller.signal.aborted && zeroStepRetries < ZERO_STEP_RETRIES) {
       zeroStepRetries += 1;
       messages.push({ role: 'assistant', content: loop.text });
       messages.push({ role: 'user', content: ZERO_STEP_NUDGE });
       loop = await runScout(messages, Math.min(maxRounds, 3));
     }
-    if (loop.finish && stepsCount === 0 && !controller.signal.aborted) {
+    if (stepsCount === 0 && !controller.signal.aborted) {
       emitSubagent({
         id: subagentId,
         index: slotIndex,

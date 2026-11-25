@@ -10,15 +10,14 @@ import {
 } from './toolGatekeeper';
 import { describeTools, nativeToolDefinitions } from './tools';
 
-test('idle workspace context strips preview_inspect, job_control, terminal_answer, and checkpoint restore tools', () => {
+test('idle workspace context strips preview_inspect, job_control, terminal_answer, and removed checkpoint tools', () => {
   const idleContext = buildWorkspaceToolContext({
     workspaceOpen: true,
     filePaths: ['README.md'],
     previewStatus: 'idle',
     activeJobCount: 0,
     terminalAwaitingInput: false,
-    hasActiveTerminal: false,
-    checkpointCount: 0
+    hasActiveTerminal: false
   });
 
   const defs = nativeToolDefinitions(true, idleContext);
@@ -34,23 +33,23 @@ test('idle workspace context strips preview_inspect, job_control, terminal_answe
   assert.equal(names.has('terminal_answer'), false);
   assert.equal(names.has('list_checkpoints'), false);
   assert.equal(names.has('restore'), false);
-  assert.equal(names.has('checkpoint'), true);
+  assert.equal(names.has('checkpoint'), false);
 
   const promptSection = describeTools(10, [], [], idleContext).join('\n');
   assert.equal(promptSection.includes('- preview_inspect('), false);
   assert.equal(promptSection.includes('- job_control('), false);
   assert.equal(promptSection.includes('JOBS:'), false);
+  assert.equal(promptSection.includes('CHECKPOINTS:'), false);
 });
 
-test('active preview + jobs + awaiting terminal + checkpoints unlock gated tools', () => {
+test('active preview + jobs + awaiting terminal unlock gated tools without checkpoint tools', () => {
   const activeContext = buildWorkspaceToolContext({
     workspaceOpen: true,
     filePaths: ['src/index.ts', 'package.json'],
     previewStatus: 'ready',
     activeJobCount: 2,
     terminalAwaitingInput: true,
-    hasActiveTerminal: true,
-    checkpointCount: 3
+    hasActiveTerminal: true
   });
 
   const defs = nativeToolDefinitions(true, activeContext);
@@ -61,8 +60,9 @@ test('active preview + jobs + awaiting terminal + checkpoints unlock gated tools
   assert.ok(names.has('job_control'));
   assert.ok(names.has('terminal_state'));
   assert.ok(names.has('terminal_answer'));
-  assert.ok(names.has('list_checkpoints'));
-  assert.ok(names.has('restore'));
+  assert.equal(names.has('list_checkpoints'), false);
+  assert.equal(names.has('restore'), false);
+  assert.equal(names.has('checkpoint'), false);
 
   const promptSection = describeTools(10, [], [], activeContext).join('\n');
   assert.ok(promptSection.includes('preview_inspect'));

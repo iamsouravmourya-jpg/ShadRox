@@ -406,7 +406,7 @@ export interface PreviewInspectResponse {
   dataUrl?: string;
   width?: number;
   height?: number;
-  logs?: Array<{ level: string; message: string; timestamp: number; url?: string }>;
+  logs?: Array<{ level: string; message: string; timestamp: number; url?: string; route?: string }>;
   errors?: Array<{ url: string; status?: number; error?: string; timestamp: number }>;
   found?: boolean;
   count?: number;
@@ -518,7 +518,7 @@ export async function handlePreviewInspect(workspaceId: string, args: Record<str
     if (action === 'console') {
       const logs = Array.isArray(response.logs) ? response.logs : [];
       const runTag = typeof response.previewRunId === 'number' ? ` (run #${response.previewRunId})` : '';
-      const body = logs.slice(-60).map((entry) => `[Route: ${extractRoutePath(entry.url || '/')}] [${entry.level}] ${String(entry.message).slice(0, 300)}`).join('\n');
+      const body = logs.slice(-60).map((entry) => `[Route: ${entry.route || extractRoutePath(entry.url || '/')}] [${entry.level}] ${String(entry.message).slice(0, 300)}`).join('\n');
       return { ok: true, content: `${logs.length} console message(s) buffered since inspection started${runTag}${response.note ? ` (${response.note})` : ''}:\n${body || '(none)'}` };
     }
     if (action === 'network') {

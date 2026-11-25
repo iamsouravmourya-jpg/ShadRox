@@ -138,3 +138,33 @@ test('exploration and mutation combinations always route to execution', () => {
     assert.equal(intent.writesFiles, true);
   }
 });
+
+test('Hinglish and English conversational meta follow-ups route to conversational zero-tool fast-path', () => {
+  for (const prompt of [
+    'kyu nhi kar raha hai',
+    'pehle kyu nahi kiya?',
+    'ab jakar hua',
+    'why didn\'t you do that earlier?',
+    'what were you doing?'
+  ]) {
+    const intent = classifyTurnIntent({ prompt, workspaceOpen: true });
+    assert.equal(intent.kind, 'conversational', `Expected conversational for "${prompt}"`);
+    assert.equal(intent.enabledBundles.size, 0);
+    assert.equal(intent.writesFiles, false);
+  }
+
+  // Follow-up containing concrete file/stack cues still stays in execution/advisory
+  const concrete = classifyTurnIntent({ prompt: 'kyu nhi kar raha hai server.ts ko fix?', workspaceOpen: true });
+  assert.notEqual(concrete.kind, 'conversational');
+});
+
+test('explicit subagent or scout cues unlock interaction bundle for spawn_subagent', () => {
+  for (const prompt of [
+    'use subagents to scan auth and billing',
+    'spawn_subagent on src/hooks',
+    'run 2 scouts in parallel to inspect routes'
+  ]) {
+    const intent = classifyTurnIntent({ prompt, workspaceOpen: true });
+    assert.ok(intent.enabledBundles.has('interaction'), `Expected interaction bundle for "${prompt}"`);
+  }
+});

@@ -162,6 +162,31 @@ test('spawn_subagent cannot finish with zero tool calls: it is re-nudged, then r
   }
 });
 
+test('spawn_subagent re-nudges on zero-step plain prose exit and succeeds if retry inspects a file', async () => {
+  let attempt = 0;
+  sa.configureSubagentStream(async (_messages, round) => {
+    attempt += 1;
+    if (attempt === 1) {
+      return { text: 'Looking at the code from memory, everything is in src/App.tsx.', error: null };
+    }
+    if (round === 1) {
+      return { text: '```shadrox:tools\n{"name":"read_file","args":{"path":"src/App.tsx"}}\n```', error: null };
+    }
+    return {
+      text: '```shadrox:tools\n{"name":"finish","args":{"summary":"Verified src/App.tsx entry structure."}}\n```',
+      error: null
+    };
+  });
+  try {
+    const result = await sa.handleSpawnSubagent('ws', { task: 'Inspect src/App.tsx.' });
+    assert.equal(result.ok, true);
+    assert.ok(result.content.includes('Verified src/App.tsx'));
+    assert.ok(attempt >= 3, 'nudged after zero-step prose and completed after reading a file');
+  } finally {
+    sa.configureSubagentStream(null);
+  }
+});
+
 test('spawn_subagent is read-only by default: writes are refused by policy', async () => {
   let round = 0;
   const savedBridge = (globalThis as Record<string, unknown>).window;

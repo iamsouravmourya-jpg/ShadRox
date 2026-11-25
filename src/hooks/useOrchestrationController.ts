@@ -57,7 +57,7 @@ import type { OutcomeRecord } from '../lib/calibratedAuto/types';
 import { expandChatMentions } from '../lib/chat/contextMentions';
 import { clearConversation, getHistoryStore, loadConversation, saveConversation, shouldSkipHistoryWrite } from '../lib/chatHistory';
 import { dequeueChatItem, enqueueChatItem, MAX_QUEUED_CHAT_MESSAGES, removeQueuedChatItem } from '../lib/chatQueue';
-import { compactHistory } from '../lib/compaction';
+import { compactHistory, compactRollingTurns } from '../lib/compaction';
 import { contextFitNotice, fitChatRequest, type ChatRequestFit, type SystemContext } from '../lib/contextBudget';
 import type { ContextManifest } from '../lib/contextManifest';
 import type { DesktopDiagnostic, ShadRoxDesktopAPI } from '../lib/desktop';
@@ -66,22 +66,7 @@ import { dedupePaths } from '../lib/paths';
 import { decideOrchestration } from '../lib/orchestrate';
 import { DEFAULT_MAX_OUTPUT, modelSupportsVision, resolveBudgetCapabilities, resolveContextWindow } from '../lib/modelCapabilities';
 import { extractUnifiedPatches } from '../lib/patchEngine';
-import {
-  computeRestorePlan,
-  hasCheckpointDelta,
-  normalizeCheckpointPath,
-  recordPreMutationState,
-  summarizeRestoreCheckpoints,
-  upsertPromptCheckpoint,
-  type PromptCheckpointSnapshot
-} from '../lib/chatCheckpoints';
-import {
-  clearWorkspaceCheckpoints,
-  clearWorkspaceSubagents,
-  loadWorkspaceUiState,
-  saveWorkspaceCheckpoints
-} from '../lib/workspaceStateStore';
-import { confirmAction } from '../lib/confirm';
+import { clearWorkspaceSubagents } from '../lib/workspaceStateStore';
 import { createRequestEnvelope, describeEnvelopeDrift, envelopeDrift } from '../lib/requestEnvelope';
 import { renderSkill, skillInvocation, type Skill } from '../lib/skills';
 import { getSessionStore, syncInterruptedSnapshot, takeRestorableSnapshot, type RestoredConversation } from '../lib/streamSnapshot';
@@ -234,9 +219,6 @@ export function useOrchestrationController({
   const [resumePrefixes, setResumePrefixes] = useState<Record<string, string>>({});
   /** Tool loop resume states keyed by model message id, so a Continue button can re-run runToolRounds from where provider_error/step_cap stopped. */
   const toolLoopResumeRef = useRef<Record<string, ToolLoopResumeState>>({});
-  const [promptCheckpoints, setPromptCheckpoints] = useState<PromptCheckpointSnapshot[]>([]);
-  const promptCheckpointsRef = useRef<PromptCheckpointSnapshot[]>([]);
-  const activeUserTurnRef = useRef<{ userMessageId: string; promptText: string } | null>(null);
 
   const snapshotStore = useMemo(() => createBackgroundStore(), []);
   const [resumeSnapshot, setResumeSnapshot] = useState<BackgroundRunSnapshot | null>(null);
@@ -278,105 +260,9 @@ export function useOrchestrationController({
   }, [workspaceRootPath, snapshotStore]);
 
   const restoreWorkspaceId = workspace.workspace?.id ?? null;
-  const restoreWorkspaceIdRef = useRef<string | null>(restoreWorkspaceId);
-  restoreWorkspaceIdRef.current = restoreWorkspaceId;
-  const restoreWorkspaceKey = restoreWorkspaceId ?? workspaceRootPath ?? 'default';
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const historyStore = useRef(getHistoryStore()).current;
-
-  useEffect(() => {
-    promptCheckpointsRef.current = [];
-    setPromptCheckpoints([]);
-    if (!restoreWorkspaceId) return;
-
-    let cancelled = false;
-    void loadWorkspaceUiState(restoreWorkspaceId).then((loaded) => {
-      if (cancelled || restoreWorkspaceIdRef.current !== restoreWorkspaceId) return;
-      if (loaded.promptCheckpoints.length === 0) return;
-      const activeMessages =
-        messagesRef.current.length > 0
-          ? messagesRef.current
-          : (loadConversation(historyStore, restoreWorkspaceId) ?? []);
-      const validUserIds = new Set(
-        activeMessages.filter((m) => m.role === 'user').map((m) => m.id)
-      );
-      const filteredLoaded =
-        validUserIds.size > 0
-          ? loaded.promptCheckpoints.filter((cp) => validUserIds.has(cp.userMessageId))
-          : [];
-      if (filteredLoaded.length === 0) return;
-
-      const currentIds = new Set(promptCheckpointsRef.current.map((cp) => cp.userMessageId));
-      const merged = [
-        ...filteredLoaded.filter((cp) => !currentIds.has(cp.userMessageId)),
-        ...promptCheckpointsRef.current
-      ];
-      promptCheckpointsRef.current = merged;
-      setPromptCheckpoints(merged);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [historyStore, restoreWorkspaceId]);
-
-  const readPreTurnContent = useCallback(async (filePath: string): Promise<string | null> => {
-    const clean = normalizeCheckpointPath(filePath);
-    if (!clean) return null;
-    const lower = clean.toLowerCase();
-    const buffered = workspace.files.find((file) => normalizeSlashes(file.name).toLowerCase() === lower);
-    const isDirty = workspace.dirtyFiles.some((name) => normalizeSlashes(name).toLowerCase() === lower);
-    if (buffered && (isDirty || !desktop || !nativeWorkspaceId)) {
-      return buffered.content;
-    }
-    if (desktop && nativeWorkspaceId) {
-      try {
-        return (await desktop.readFile(nativeWorkspaceId, clean)).content;
-      } catch {
-        return buffered ? buffered.content : null;
-      }
-    }
-    return buffered ? buffered.content : null;
-  }, [desktop, nativeWorkspaceId, workspace.files, workspace.dirtyFiles]);
-
-  const capturePreMutationPaths = useCallback(async (userMessageId: string, promptText: string, rawPaths: string[]) => {
-    const cleaned = [...new Set(rawPaths.map((entry) => normalizeCheckpointPath(entry)).filter((entry): entry is string => Boolean(entry)))];
-    if (cleaned.length === 0) return;
-
-    const currentSnapshot = promptCheckpointsRef.current.find((cp) => cp.userMessageId === userMessageId) ?? {
-      userMessageId,
-      promptText,
-      workspaceKey: restoreWorkspaceKey,
-      createdAt: Date.now(),
-      priorFiles: {},
-      createdPaths: []
-    };
-
-    const untracked = cleaned.filter((path) =>
-      !Object.prototype.hasOwnProperty.call(currentSnapshot.priorFiles, path) &&
-      !currentSnapshot.createdPaths.includes(path)
-    );
-    if (untracked.length === 0) return;
-
-    const entries = await Promise.all(
-      untracked.map(async (path) => ({
-        path,
-        content: await readPreTurnContent(path)
-      }))
-    );
-
-    const latestSnapshot = promptCheckpointsRef.current.find((cp) => cp.userMessageId === userMessageId) ?? currentSnapshot;
-    const updated = recordPreMutationState(latestSnapshot, entries);
-    if (updated === latestSnapshot && promptCheckpointsRef.current.some((cp) => cp.userMessageId === userMessageId)) {
-      return;
-    }
-    const nextCheckpoints = upsertPromptCheckpoint(promptCheckpointsRef.current, updated);
-    promptCheckpointsRef.current = nextCheckpoints;
-    setPromptCheckpoints(nextCheckpoints);
-    if (restoreWorkspaceIdRef.current) {
-      void saveWorkspaceCheckpoints(restoreWorkspaceIdRef.current, nextCheckpoints);
-    }
-  }, [readPreTurnContent, restoreWorkspaceKey]);
 
   const snapshotConsumedFor = useRef(new Set<string>());
   const lastWorkspaceIdRef = useRef<string | null>(null);
@@ -527,13 +413,18 @@ export function useOrchestrationController({
       history = [...historyOverride];
     } else {
       const archived = messages.filter((message) => !message.streaming && message.content.trim());
-      const result = compactHistory(archived, {
+      const patchedMessageIds = new Set(
+        patchSets
+          .filter((set) => set.patches.some((patch) => patch.status === 'pending' || patch.status === 'failed'))
+          .map((set) => set.messageId)
+      );
+      const rolled = compactRollingTurns(archived, {
+        keepRecentTurns: 3,
+        patchedMessageIds
+      });
+      const result = compactHistory(rolled.messages, {
         contextWindow,
-        patchedMessageIds: new Set(
-          patchSets
-            .filter((set) => set.patches.some((patch) => patch.status === 'pending' || patch.status === 'failed'))
-            .map((set) => set.messageId)
-        )
+        patchedMessageIds
       });
       history = result.messages.map(toTurn);
       folded = result.folds;
@@ -739,10 +630,6 @@ export function useOrchestrationController({
       applied = true;
       const remaining = reply.slice(appliedReplyChars);
       if (appliedReplyChars > 0 && !remaining.trim()) return;
-      const parsedPaths = extractUnifiedPatches(remaining, workspace.files).map((patch) => patch.path);
-      if (parsedPaths.length > 0) {
-        await capturePreMutationPaths(userMessageId, visiblePromptText, parsedPaths);
-      }
       mergeApply(await applyPatchesFromReply(modelMessage.id, remaining, effectiveMode, {
         ...(appliedReplyChars > 0 ? { merge: stagedRoundPatches } : {}),
         onFailures: runRepair,
@@ -984,10 +871,6 @@ export function useOrchestrationController({
       try {
         const visible = stripToolBlocks(roundText);
         if (visible.trim()) {
-          const parsedPaths = extractUnifiedPatches(visible, workspace.files).map((patch) => patch.path);
-          if (parsedPaths.length > 0) {
-            await capturePreMutationPaths(userMessageId, visiblePromptText, parsedPaths);
-          }
           mergeApply(await applyPatchesFromReply(modelMessage.id, visible, effectiveMode, {
             merge: stagedRoundPatches,
             onFailures: runRepair,
@@ -1064,7 +947,6 @@ export function useOrchestrationController({
             JSON.stringify(nativeTools).length
           ),
           existingWorkspace: (workspace.workspace?.diskFileTree?.length ?? workspace.files.length) > 0,
-          onBeforeMutatePaths: (paths) => capturePreMutationPaths(userMessageId, visiblePromptText, paths),
           stream: streamOnce,
           applyRoundPatches,
           onRound: (_round, text) => {
@@ -1281,8 +1163,7 @@ export function useOrchestrationController({
     setCalibratedOutcomes,
     setToast,
     setIsSettingsOpen,
-    setSettingsTab,
-    capturePreMutationPaths
+    setSettingsTab
   ]);
 
   const runStore = useMemo(() => browserRunStore(), []);
@@ -1419,9 +1300,6 @@ export function useOrchestrationController({
             runToolRounds: (loopInput) =>
               runToolRounds({
                 ...loopInput,
-                onBeforeMutatePaths: activeUserTurnRef.current
-                  ? (paths) => capturePreMutationPaths(activeUserTurnRef.current!.userMessageId, activeUserTurnRef.current!.promptText, paths)
-                  : undefined,
                 onUnlockTools: (unlocked) => {
                   for (const bundle of unlocked) unlockedBundles.add(bundle);
                 }
@@ -1442,13 +1320,6 @@ export function useOrchestrationController({
               return buffered ? buffered.content : null;
             },
             writePatches: async (patches) => {
-              if (activeUserTurnRef.current && patches.length > 0) {
-                await capturePreMutationPaths(
-                  activeUserTurnRef.current.userMessageId,
-                  activeUserTurnRef.current.promptText,
-                  patches.map((patch) => patch.path)
-                );
-              }
               const review: ReviewPatch[] = patches.map((patch) => ({
                 path: patch.path,
                 kind: patch.kind,
@@ -1799,7 +1670,6 @@ export function useOrchestrationController({
       )
     );
     orchestrationRef.current = null;
-    activeUserTurnRef.current = null;
     setIsGenerating(false);
     chatDispatchLockRef.current = false;
   }, [
@@ -1981,7 +1851,6 @@ export function useOrchestrationController({
       seenRunning: false
     };
     trackedRunRef.current = { kind, goal: modelText };
-    activeUserTurnRef.current = { userMessageId: userMessage.id, promptText: text };
 
     if (kind === 'team') team.start(modelText);
     else autonomy.start(modelText);
@@ -2141,58 +2010,6 @@ export function useOrchestrationController({
     [typeFixOffers, workspace.files, handleSend, setTypeFixOffers]
   );
 
-  const restorableMessageIds = useMemo(
-    () => new Set(promptCheckpoints.filter(hasCheckpointDelta).map((cp) => cp.userMessageId)),
-    [promptCheckpoints]
-  );
-
-  const restorableCheckpointTooltips = useMemo(
-    () => summarizeRestoreCheckpoints(promptCheckpoints),
-    [promptCheckpoints]
-  );
-
-  const handleRestorePromptCheckpoint = useCallback(async (userMessageId: string) => {
-    if (isGenerating || chatDispatchLockRef.current || autonomy.isRunning || team.isRunning) return;
-    const plan = computeRestorePlan(promptCheckpointsRef.current, userMessageId);
-    if (!plan) return;
-    const restoreCount = plan.restoreFiles.length;
-    const deleteCount = plan.deletePaths.length;
-    const confirmed = await confirmAction({
-      title: 'Restore workspace to before this prompt?',
-      body: `This will restore ${restoreCount} modified file${restoreCount === 1 ? '' : 's'}, delete ${deleteCount} newly created path${deleteCount === 1 ? '' : 's'}, and rewind the conversation to this prompt.`,
-      confirmLabel: 'Restore',
-      tone: 'danger'
-    });
-    if (!confirmed) return;
-
-    const outcome = await workspace.applyCheckpointRestore({
-      restoreFiles: plan.restoreFiles,
-      deletePaths: plan.deletePaths
-    });
-    promptCheckpointsRef.current = plan.remainingCheckpoints;
-    setPromptCheckpoints(plan.remainingCheckpoints);
-    if (restoreWorkspaceIdRef.current) {
-      void saveWorkspaceCheckpoints(restoreWorkspaceIdRef.current, plan.remainingCheckpoints);
-    }
-
-    const targetIndex = messages.findIndex((message) => message.id === userMessageId);
-    if (targetIndex >= 0) {
-      const keptIds = new Set(messages.slice(0, targetIndex).map((message) => message.id));
-      setMessages((previous) => {
-        const idx = previous.findIndex((message) => message.id === userMessageId);
-        return idx >= 0 ? previous.slice(0, idx) : previous;
-      });
-      setPatchSets((previous) => previous.filter((set) => keptIds.has(set.messageId)));
-    }
-    setInput(plan.promptText);
-    setToast(
-      outcome.ok
-        ? 'Restored workspace and rewound prompt to composer.'
-        : `Restored with warnings: ${outcome.errors[0] ?? 'some files could not be restored'}`
-    );
-    window.setTimeout(() => setToast(null), 4000);
-  }, [autonomy.isRunning, team.isRunning, isGenerating, messages, setInput, setMessages, setPatchSets, setToast, workspace]);
-
   const handleClearChat = useCallback(() => {
     const active = orchestrationRef.current;
     if (active) {
@@ -2201,14 +2018,11 @@ export function useOrchestrationController({
       orchestrationRef.current = null;
       chatDispatchLockRef.current = false;
     }
-    activeUserTurnRef.current = null;
     abortRef.current?.abort();
     abortRef.current = null;
     if (isGenerating) setIsGenerating(false);
     queuedChatItemsRef.current = [];
     setQueuedChatItems([]);
-    promptCheckpointsRef.current = [];
-    setPromptCheckpoints([]);
     setMessages([]);
     setPatchSets([]);
     setResumePrefixes({});
@@ -2217,7 +2031,6 @@ export function useOrchestrationController({
     setPinnedSymbols([]);
     if (restoreWorkspaceId) {
       clearConversation(historyStore, restoreWorkspaceId);
-      void clearWorkspaceCheckpoints(restoreWorkspaceId);
       void clearWorkspaceSubagents(restoreWorkspaceId);
     }
     setToast('Started a new chat.');
@@ -2369,9 +2182,6 @@ export function useOrchestrationController({
             aborted: () => controller.signal.aborted,
             policy: { mode: effectiveResumeKind === 'execution' ? 'agent' : 'ask' },
             signal: controller.signal,
-            onBeforeMutatePaths: originUser
-              ? (paths) => capturePreMutationPaths(originUser.id, originUser.content, paths)
-              : undefined,
             onUnlockTools: (unlocked) => {
               for (const bundle of unlocked) unlockedBundles.add(bundle);
             },
@@ -2667,12 +2477,6 @@ export function useOrchestrationController({
         setIsGenerating(false);
         abortRef.current = null;
         if (streamCompleted) {
-          if (origin) {
-            const parsedPaths = extractUnifiedPatches(fullReply, workspace.files).map((patch) => patch.path);
-            if (parsedPaths.length > 0) {
-              await capturePreMutationPaths(origin.id, origin.content, parsedPaths);
-            }
-          }
           applyPatchesFromReply(messageId, fullReply, mode);
         }
       }
@@ -2821,9 +2625,6 @@ export function useOrchestrationController({
     handleResumeOrchestration,
     handleResumeBackgroundRun,
     handleDismissBackgroundResume,
-    fixTypeErrors,
-    restorableMessageIds,
-    restorableCheckpointTooltips,
-    handleRestorePromptCheckpoint
+    fixTypeErrors
   };
 }

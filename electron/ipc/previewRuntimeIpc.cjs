@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { isPathInsideDirectory } = require('../desktop-security.cjs');
 const { mergePreviewVerdict } = require('../preview-assert.cjs');
+const { unwrapErrorMessage } = require('../error-utils.cjs');
 const {
   findMissingDependencies,
   findPreviewProjects,
@@ -63,7 +64,7 @@ async function scanWorkspacePlugins(workspace) {
     realPluginsRoot = await fs.promises.realpath(pluginsRoot);
   } catch (error) {
     if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return { files, errors };
-    errors.push(`The plugins folder could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    errors.push(`The plugins folder could not be read: ${unwrapErrorMessage(error)}`);
     return { files, errors };
   }
   if (!isPathInsideDirectory(root, realPluginsRoot)) {
@@ -75,7 +76,7 @@ async function scanWorkspacePlugins(workspace) {
   try {
     entries = await fs.promises.readdir(realPluginsRoot, { withFileTypes: true });
   } catch (error) {
-    errors.push(`The plugins folder could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    errors.push(`The plugins folder could not be read: ${unwrapErrorMessage(error)}`);
     return { files, errors };
   }
 
@@ -107,7 +108,7 @@ async function scanWorkspacePlugins(workspace) {
       files.push({ path: relative, content: await fs.promises.readFile(realManifest, 'utf8') });
     } catch (error) {
       if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue;
-      errors.push(`${relative}: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(`${relative}: ${unwrapErrorMessage(error)}`);
     }
   }
 
@@ -122,7 +123,7 @@ async function collectRuntimeWorkspace(root) {
   try {
     realRoot = await fs.promises.realpath(root);
   } catch (error) {
-    errors.push(`Workspace root could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    errors.push(`Workspace root could not be read: ${unwrapErrorMessage(error)}`);
     return { files, manifests, errors };
   }
 
@@ -166,7 +167,7 @@ async function collectRuntimeWorkspace(root) {
         }
         manifests.set(relative, await fs.promises.readFile(absolute, 'utf8'));
       } catch (error) {
-        errors.push(`${relative} could not be read: ${error instanceof Error ? error.message : String(error)}`);
+        errors.push(`${relative} could not be read: ${unwrapErrorMessage(error)}`);
       }
     }
     if (fileCount >= RUNTIME_MAX_FILES) break;
@@ -373,7 +374,7 @@ function registerPreviewRuntimeHandlers({
       if (image.isEmpty()) return { ok: false, error: 'Nothing is painting in that area yet.' };
       return { ok: true, dataUrl: image.toDataURL() };
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      return { ok: false, error: unwrapErrorMessage(error) };
     }
   });
 

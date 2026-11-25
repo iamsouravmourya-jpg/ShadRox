@@ -12,6 +12,8 @@
  * registration is skipped and only the pure helpers below are exercised.
  */
 
+const { unwrapErrorMessage } = require('./error-utils.cjs');
+
 const MAX_SELECTOR_LENGTH = 200;
 const MAX_TYPE_TEXT_LENGTH = 2000;
 const MAX_DOM_HTML_CHARS = 20000;
@@ -41,6 +43,16 @@ function sanitizeInspectSelector(value) {
 function clipText(value, limit) {
   const text = typeof value === 'string' ? value : String(value ?? '');
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
+function extractRouteFromUrl(rawUrl) {
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    return (parsed.pathname || '/') + (parsed.search || '');
+  } catch {
+    return null;
+  }
 }
 
 /** DOM read: outerHTML of the first match, hard-capped. Never mutates. */
@@ -147,10 +159,16 @@ function createInspectBuffers({ consoleLimit = MAX_CONSOLE_ENTRIES, networkLimit
 
   return {
     pushConsole(entry) {
+      const url = entry.url ? clipText(entry.url, MAX_URL_CHARS) : null;
+      const route = typeof entry.route === 'string' && entry.route.trim()
+        ? entry.route.trim().slice(0, 300)
+        : (url ? extractRouteFromUrl(url) : null);
       pushRing(consoleEntries, {
         level: entry.level === 'error' || entry.level === 'warn' ? entry.level : 'log',
         text: clipText(entry.text, MAX_LOG_TEXT_CHARS),
-        timestamp: Number(entry.timestamp) || Date.now()
+        timestamp: Number(entry.timestamp) || Date.now(),
+        ...(url ? { url } : {}),
+        ...(route ? { route } : {})
       }, consoleLimit);
     },
     pushNetwork(entry) {
@@ -292,6 +310,8 @@ function registerPreviewInspect({ ipcMain, app, BrowserWindow, nativeImage, getW
         buffersFor(workspaceId).pushConsole({
           level: normalizeConsoleLevel(details.level),
           text: details.message,
+          url: frameUrl,
+          route: extractRouteFromUrl(frameUrl),
           timestamp: Date.now()
         });
       } catch {
@@ -434,7 +454,9 @@ function registerPreviewInspect({ ipcMain, app, BrowserWindow, nativeImage, getW
           level: entry.level,
           message: entry.text,
           timestamp: entry.timestamp,
-          previewRunId
+          previewRunId,
+          ...(entry.url ? { url: entry.url } : {}),
+          ...(entry.route ? { route: entry.route } : {})
         }));
         return { ok: true, logs, previewRunId };
       }
@@ -484,7 +506,7 @@ function registerPreviewInspect({ ipcMain, app, BrowserWindow, nativeImage, getW
 
       return { ok: false, error: `Unknown preview inspect action "${clipText(action, 60)}".` };
     } catch (error) {
-      return { ok: false, error: clipText(error instanceof Error ? error.message : String(error), 500) };
+      return { ok: false, error: clipText(unwrapErrorMessage(error), 500) };
     }
   });
 

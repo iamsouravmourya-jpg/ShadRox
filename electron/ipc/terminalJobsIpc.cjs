@@ -12,6 +12,8 @@ const { sanitizeRiskNotice } = require('../command-risk-notice.cjs');
 const { findPlantedShim, WINDOWS_CMD_SHIMS } = require('../verify-allowlist.cjs');
 const { resolveTerminalPlan, systemEnvironment, clampTerminalSize, normalizeTerminalSessionKey, isSafeExternalUrl } = require('../terminal-modes.cjs');
 const { applyShellIntegration } = require('../shell-integration.cjs');
+const { unwrapErrorMessage } = require('../error-utils.cjs');
+const { acquireInstallLock, isPackageInstallCommand } = require('../install-lock.cjs');
 
 let pty = null;
 try { pty = require('node-pty'); } catch { /* PTY support may be unavailable in an unbuilt development install. */ }
@@ -215,8 +217,8 @@ function killProcessTree(child) {
           if (!directKilled) {
             console.error('[jobs] killProcessTree failed on Windows', {
               pid: child.pid,
-              primaryError: primaryError instanceof Error ? primaryError.message : String(primaryError),
-              taskkillError: tkError instanceof Error ? tkError.message : String(tkError)
+              primaryError: unwrapErrorMessage(primaryError),
+              taskkillError: unwrapErrorMessage(tkError)
             });
           }
           done(directKilled);
@@ -238,7 +240,7 @@ function killProcessTree(child) {
       if (!killed) {
         console.error('[jobs] killProcessTree failed on POSIX', {
           pid: child.pid,
-          primaryError: primaryError instanceof Error ? primaryError.message : String(primaryError)
+          primaryError: unwrapErrorMessage(primaryError)
         });
       }
       done(killed);
@@ -285,12 +287,25 @@ function emitJobOutput(payload) {
 }
 
 function executeCommand(command, cwd, meta = {}) {
+  const text = typeof command === 'string' ? command : '';
+  if (!text.trim()) {
+    return Promise.resolve({ stdout: '', stderr: 'Command is empty.', exitCode: 1, timedOut: false });
+  }
+  if (!isPackageInstallCommand(text)) {
+    return executeCommandNow(text, cwd, meta, null);
+  }
+  return acquireInstallLock(cwd).then((releaseLock) => executeCommandNow(text, cwd, meta, releaseLock));
+}
+
+function executeCommandNow(text, cwd, meta = {}, releaseLock = null) {
   return new Promise((resolve) => {
-    const text = typeof command === 'string' ? command : '';
-    if (!text.trim()) {
-      resolve({ stdout: '', stderr: 'Command is empty.', exitCode: 1, timedOut: false });
-      return;
-    }
+    const releaseOnce = () => {
+      if (typeof releaseLock === 'function') {
+        const fn = releaseLock;
+        releaseLock = null;
+        fn();
+      }
+    };
     const risk = meta.risk || classifyCommand(text, { cwd, root: cwd });
     const workspaceId = typeof meta.workspaceId === 'string' ? meta.workspaceId : null;
 
@@ -302,6 +317,7 @@ function executeCommand(command, cwd, meta = {}) {
           try { return fs.existsSync(candidate); } catch { return false; }
         }, process.platform);
         if (planted) {
+          releaseOnce();
           resolve({ stdout: '', stderr: `Refusing to run "${argv[0]}": a file with that name exists in the project folder.`, exitCode: 1, timedOut: false, tier: risk.tier });
           return;
         }
@@ -316,6 +332,7 @@ function executeCommand(command, cwd, meta = {}) {
       if (simple) {
         const argv = tokenizeCommand(text);
         if (argv.length === 0) {
+          releaseOnce();
           resolve({ stdout: '', stderr: 'Command is empty.', exitCode: 1, timedOut: false });
           return;
         }
@@ -327,6 +344,7 @@ function executeCommand(command, cwd, meta = {}) {
           if (isShim) {
             const resolved = resolveWindowsExecutable(base.replace(/\.(cmd|bat)$/i, ''), cwd, env);
             if (!resolved) {
+              releaseOnce();
               resolve({ stdout: '', stderr: `Command not found on PATH: ${base}`, exitCode: 1, timedOut: false, tier: risk.tier });
               return;
             }
@@ -349,7 +367,8 @@ function executeCommand(command, cwd, meta = {}) {
         child = spawn(text, [], { ...spawnOptions, shell: true });
       }
     } catch (error) {
-      resolve({ stdout: '', stderr: `Could not start command: ${error instanceof Error ? error.message : String(error)}`, exitCode: 1, timedOut: false, tier: risk.tier });
+      releaseOnce();
+      resolve({ stdout: '', stderr: `Could not start command: ${unwrapErrorMessage(error)}`, exitCode: 1, timedOut: false, tier: risk.tier });
       return;
     }
 
@@ -497,6 +516,7 @@ function executeCommand(command, cwd, meta = {}) {
 
     const finalize = (exitCode, timedOut, note) => {
       if (job.status !== 'running') return;
+      releaseOnce();
       job.status = job.killedReason === 'user' ? 'killed' : timedOut ? 'timed_out' : 'exited';
       job.exitCode = exitCode;
       job.timedOut = timedOut;
@@ -550,7 +570,7 @@ function executeCommand(command, cwd, meta = {}) {
     child.once('error', (error) => {
       const message = error && error.code === 'ENOENT'
         ? `Command not found: ${text.split(/\s+/)[0]}`
-        : `Could not run command: ${error instanceof Error ? error.message : String(error)}`;
+        : `Could not run command: ${unwrapErrorMessage(error)}`;
       finalize(1, false, message);
     });
 

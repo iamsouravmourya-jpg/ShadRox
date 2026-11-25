@@ -5,6 +5,8 @@ const https = require('node:https');
 const { createServer: createNetServer } = require('node:net');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { unwrapErrorMessage } = require('./error-utils.cjs');
+const { acquireInstallLock } = require('./install-lock.cjs');
 
 const PACKAGE_MANAGERS = {
   npm: { command: 'npm', installArgs: ['install', '--no-audit', '--no-fund'] },
@@ -799,7 +801,7 @@ function createPreviewRuntime({
   }
 
   function emit(workspaceId, type, message, extra = null) {
-    const text = String(message);
+    const text = typeof message === 'string' ? message : unwrapErrorMessage(message);
     const previewRunId = currentRunId(workspaceId);
     recordStatus(workspaceId, type, text, extra);
     if (type === 'stdout' || type === 'stderr') {
@@ -884,12 +886,17 @@ function createPreviewRuntime({
 
   async function installDependencies(manager, root, workspaceId, installArgs) {
     assertManagerAvailable(manager);
-    const child = spawnCommand(manager, installArgs ?? PACKAGE_MANAGERS[manager].installArgs, root);
-    processes.set(workspaceId, { child, url: null, rejectReady: null });
+    const releaseLock = await acquireInstallLock(root);
     try {
-      await waitForExit(child, workspaceId, 'install');
+      const child = spawnCommand(manager, installArgs ?? PACKAGE_MANAGERS[manager].installArgs, root);
+      processes.set(workspaceId, { child, url: null, rejectReady: null });
+      try {
+        await waitForExit(child, workspaceId, 'install');
+      } finally {
+        if (processes.get(workspaceId)?.child === child) processes.delete(workspaceId);
+      }
     } finally {
-      if (processes.get(workspaceId)?.child === child) processes.delete(workspaceId);
+      releaseLock();
     }
   }
 
@@ -1321,11 +1328,14 @@ function createPreviewRuntime({
       // A structured conflict is the user-facing verdict already; retrying it
       // would just re-run the same bind check.
       if (error?.code === 'PREVIEW_PORT_CONFLICT') throw error;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = unwrapErrorMessage(error);
       if (
         retryCount >= 2 ||
         !/(?:EADDRINUSE|address already in use|port \d+ is already in use)/i.test(message)
       ) {
+        if (error instanceof Error && !error.message) {
+          throw new Error(message);
+        }
         throw error;
       }
       emit(workspaceId, 'status', `A port conflict stopped the preview; retrying on another available port (${retryCount + 1}/2).`);
@@ -1592,10 +1602,15 @@ function createPreviewRuntime({
     const status = frontend
       ? (frontend.url ? 'ready' : 'starting')
       : (state?.status ?? 'idle');
+    let route = null;
+    if (frontendUrl) {
+      try { route = new URL(frontendUrl).pathname || '/'; } catch { route = null; }
+    }
     return {
       running: Boolean(frontend?.url || backend?.url || status === 'ready'),
       status,
       url: frontendUrl,
+      route,
       port: frontendUrl ? portOfUrl(frontendUrl) : (state?.port ?? null),
       script: frontend?.script ?? state?.script ?? null,
       hmr: Boolean(frontend?.hmr ?? state?.hmr),
