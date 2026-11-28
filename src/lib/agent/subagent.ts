@@ -169,10 +169,11 @@ export const SUBAGENT_TIMEOUT_MS = 240_000;
 export const MAX_SUBAGENT_SUMMARY_CHARS = 2_400;
 /** How many times a scout that finishes with zero tool calls is re-nudged before being refused. */
 export const ZERO_STEP_RETRIES = 2;
-const ZERO_STEP_NUDGE = 'You returned without calling any read-only tool. Before you may finish, inspect real workspace files: call read_file, search_text, find_files, list_directory, outline, or problems on actual files, then call finish with your file:line findings.';
+const ZERO_STEP_NUDGE = 'You returned without calling any read-only tool. Before you may finish, inspect real workspace files: call read_file, read_files, search_text, find_files, list_directory, outline, or problems on actual files, then call finish with your file:line findings.';
 /** The read-only exploration toolset a scout may use — no writes, shell, git, or recursion. */
 export const SUBAGENT_READ_ONLY_TOOLS: readonly string[] = [
   'read_file',
+  'read_files',
   'search_text',
   'find_files',
   'list_directory',
@@ -236,6 +237,10 @@ function describeScoutStep(name: string, args: Record<string, unknown>): string 
   switch (name) {
     case 'read_file':
       return target ? `Reading ${target}` : 'Reading file';
+    case 'read_files': {
+      const count = Array.isArray(args.paths) ? args.paths.length : 0;
+      return count > 0 ? `Reading ${count} files` : 'Reading files';
+    }
     case 'search_text':
       return target ? `Searching ${target}` : 'Searching text';
     case 'find_files':
@@ -319,10 +324,20 @@ function byokStream(signal: AbortSignal, toolDefinitions?: ChatToolDefinition[])
 function filesFromActivity(activity: Array<{ name: string; ok?: boolean; input?: Record<string, unknown> | string }>): string[] {
   const paths = new Set<string>();
   for (const entry of activity) {
-    if (!entry.ok || (entry.name !== 'read_file' && entry.name !== 'outline')) continue;
+    if (!entry.ok || (entry.name !== 'read_file' && entry.name !== 'read_files' && entry.name !== 'outline')) continue;
     const input = entry.input && typeof entry.input === 'object' ? entry.input as Record<string, unknown> : null;
     const path = input && typeof input.path === 'string' ? input.path : null;
     if (path) paths.add(path.replace(/\\/g, '/'));
+    if (input && Array.isArray(input.paths)) {
+      for (const item of input.paths) {
+        const p = typeof item === 'string'
+          ? item
+          : item && typeof item === 'object' && typeof (item as { path?: unknown }).path === 'string'
+            ? (item as { path: string }).path
+            : null;
+        if (p) paths.add(p.replace(/\\/g, '/'));
+      }
+    }
   }
   return [...paths].slice(0, 40);
 }
@@ -478,7 +493,8 @@ export async function handleSpawnSubagent(
     // then refuse if it still returns with zero tool calls.
     while (stepsCount === 0 && !controller.signal.aborted && zeroStepRetries < ZERO_STEP_RETRIES) {
       zeroStepRetries += 1;
-      messages.push({ role: 'assistant', content: loop.text });
+      const cleanedAssistant = stripToolBlocks(loop.text).trim();
+      if (cleanedAssistant) messages.push({ role: 'assistant', content: cleanedAssistant });
       messages.push({ role: 'user', content: ZERO_STEP_NUDGE });
       loop = await runScout(messages, Math.min(maxRounds, 3));
     }

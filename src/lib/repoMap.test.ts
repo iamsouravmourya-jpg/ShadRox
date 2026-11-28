@@ -197,3 +197,15 @@ test('large personalized files and >200k context windows scale signature caps an
   const oneMillion = repoMapBudgetFor(1_048_576);
   assert.ok(oneMillion > 4_096 && oneMillion <= 8_192, `got ${oneMillion}`);
 });
+
+test('extractSignatures handles SQL DDL and C/C++ declarations natively', () => {
+  const sqlSigs = extractSignatures('db/init.sql', 'CREATE TABLE accounts (\n  id INT\n);\nCREATE OR REPLACE FUNCTION calc_balance() RETURNS INT;\n');
+  assert.ok(sqlSigs.some((s) => s.name === 'accounts' && s.kind === 'type'));
+  assert.ok(sqlSigs.some((s) => s.name === 'calc_balance' && s.kind === 'function'));
+
+  const cppSigs = extractSignatures('native/engine.cpp', '#include "engine.h"\nclass VectorEngine {\n};\nstruct FastNode { int x; };\nenum Mode { Fast };\n');
+  assert.ok(cppSigs.some((s) => s.name === 'VectorEngine' && s.kind === 'class'));
+  assert.ok(cppSigs.some((s) => s.name === 'FastNode' && s.kind === 'class'));
+  assert.ok(cppSigs.some((s) => s.name === 'Mode' && s.kind === 'type'));
+});
+

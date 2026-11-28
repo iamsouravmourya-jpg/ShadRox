@@ -153,6 +153,19 @@ const RUBY_PATTERNS: readonly LanguagePattern[] = [
   { kind: 'other', pattern: /^\s*(?:require|require_relative|load)\b/, module: true },
 ];
 
+const SQL_PATTERNS: readonly LanguagePattern[] = [
+  { kind: 'type', pattern: /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|MATERIALIZED\s+VIEW|TYPE|SCHEMA)\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][\w$.]*)/i },
+  { kind: 'function', pattern: /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|TRIGGER)\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][\w$.]*)/i },
+  { kind: 'other', pattern: /^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][\w$.]*)/i },
+];
+
+const CPP_PATTERNS: readonly LanguagePattern[] = [
+  { kind: 'class', pattern: /^\s*(?:template\s*<[^>]*>\s*)?(?:class|struct)\s+(?:[A-Z_]+\s+)*([A-Za-z_]\w*)\b(?!\s*;)/ },
+  { kind: 'type', pattern: /^\s*(?:(?:namespace|enum(?:\s+(?:class|struct))?)\s+|typedef\b.*\s+|using\s+)([A-Za-z_]\w*)/ },
+  { kind: 'function', pattern: /^(?:[A-Za-z_~][\w:<>*&\s]*?)\s+([A-Za-z_~][\w:]*)\s*\([^;]*\)\s*(?:const\s*)?(?:noexcept\s*)?(?:override\s*)?\{?\s*$/ },
+  { kind: 'other', pattern: /^\s*#include\b/, module: true },
+];
+
 /** Nothing better than a keyword scan: still tells the model the file has shape. */
 const GENERIC_PATTERNS: readonly LanguagePattern[] = [
   { kind: 'function', pattern: /^\s*(?:func|function|sub|proc|lambda)\s*[*(]?\s*([A-Za-z_$][\w$]*)/ },
@@ -190,6 +203,13 @@ const SIGNATURE_PATTERNS: Record<string, readonly LanguagePattern[]> = {
   '.kts': KOTLIN_PATTERNS,
   '.swift': SWIFT_PATTERNS,
   '.rb': RUBY_PATTERNS,
+  '.c': CPP_PATTERNS,
+  '.h': CPP_PATTERNS,
+  '.cpp': CPP_PATTERNS,
+  '.hpp': CPP_PATTERNS,
+  '.cc': CPP_PATTERNS,
+  '.cxx': CPP_PATTERNS,
+  '.hh': CPP_PATTERNS,
   '.md': HELP_PATTERNS,
   '.markdown': HELP_PATTERNS,
   '.txt': HELP_PATTERNS,
@@ -208,7 +228,7 @@ const SIGNATURE_PATTERNS: Record<string, readonly LanguagePattern[]> = {
   '.css': HELP_PATTERNS,
   '.scss': HELP_PATTERNS,
   '.less': HELP_PATTERNS,
-  '.sql': HELP_PATTERNS,
+  '.sql': SQL_PATTERNS,
   '.sh': HELP_PATTERNS,
   '.bash': HELP_PATTERNS,
   '.zsh': HELP_PATTERNS,
@@ -325,14 +345,28 @@ export const MAX_MAP_FILES = 1_500;
  */
 export function mapCandidates(
   tree: readonly MapTreeEntry[],
-  limits: { maxFiles?: number; maxTotalBytes?: number; maxFileBytes?: number } = {}
+  limits: { maxFiles?: number; maxTotalBytes?: number; maxFileBytes?: number; priorityPrefixes?: readonly string[] } = {}
 ): string[] {
   const maxFiles = limits.maxFiles ?? MAX_MAP_FILES;
   const maxTotalBytes = limits.maxTotalBytes ?? MAX_MAP_TOTAL_BYTES;
   const maxFileBytes = limits.maxFileBytes ?? MAX_MAP_FILE_BYTES;
+  const prefixes = limits.priorityPrefixes ?? [];
+  const ordered = tree.length > 3_000 || prefixes.length > 0
+    ? tree.slice().sort((a, b) => {
+        const tier = (p: string): number => {
+          const norm = p.replace(/\\/g, '/').replace(/^\.\//, '');
+          if (prefixes.some((prefix) => norm.startsWith(prefix))) return 0;
+          if (/^(?:src|server|app|api)\//i.test(norm)) return 1;
+          if (ANCHOR_BASENAME.test(basenameOf(norm))) return 2;
+          return 3;
+        };
+        const diff = tier(a.path) - tier(b.path);
+        return diff !== 0 ? diff : a.path.localeCompare(b.path);
+      })
+    : tree;
   const paths: string[] = [];
   let bytes = 0;
-  for (const entry of tree) {
+  for (const entry of ordered) {
     if (paths.length >= maxFiles || bytes >= maxTotalBytes) break;
     if (!entry.path || !isMappablePath(entry.path) || entry.size > maxFileBytes) continue;
     bytes += entry.size;
@@ -733,9 +767,15 @@ function indexSignaturesCached(files: readonly MapInputFile[]): Map<string, Sign
     const path = normalizePath(file.name);
     const key = `${path}:${contentHash(file.content)}`;
     let signatures = signatureCache.get(key);
-    if (!signatures) {
+    if (signatures) {
+      signatureCache.delete(key);
+      signatureCache.set(key, signatures);
+    } else {
       signatures = extractSignatures(file.name, file.content);
-      if (signatureCache.size >= SIGNATURE_CACHE_MAX) signatureCache.clear();
+      if (signatureCache.size >= SIGNATURE_CACHE_MAX) {
+        const oldestKey = signatureCache.keys().next().value;
+        if (oldestKey !== undefined) signatureCache.delete(oldestKey);
+      }
       signatureCache.set(key, signatures);
     }
     out.set(path, signatures);

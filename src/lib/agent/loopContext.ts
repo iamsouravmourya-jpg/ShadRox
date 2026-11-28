@@ -125,6 +125,12 @@ export function summarizeAssistantToolPayload(content: string): string {
               blockChanged = true;
             }
           }
+        } else if (entry.name === 'patch_lines') {
+          if (typeof args.replacement === 'string' && args.replacement.length > ASSISTANT_EDIT_COMPACT_THRESHOLD) {
+            const target = typeof args.path === 'string' && args.path.trim() ? args.path.trim() : 'file';
+            args.replacement = `[compacted patch_lines replacement: ${args.replacement.length} chars for ${target}]`;
+            blockChanged = true;
+          }
         }
         return blockChanged ? { ...entry, args } : entry;
       });

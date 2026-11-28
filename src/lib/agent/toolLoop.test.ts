@@ -1328,5 +1328,84 @@ test('existingWorkspace skips scaffoldNudge when finish is called after creating
   });
 });
 
+test('Agent mode nudges zero-write prose-only file-creation replies once without interfering with informational questions', async () => {
+  const files = new Map<string, string>();
+  await withBridge({
+    readFile: async (_id: string, p: string) => {
+      if (!files.has(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { name: p, content: files.get(p)!, version: 'v1' };
+    },
+    verifyChangeSet: async () => ({ ok: true, issues: [] }),
+    saveFiles: async (_id: string, entries: Array<{ name: string; content: string }>) => {
+      for (const entry of entries) files.set(entry.name, entry.content);
+      return { errors: [], saved: entries.map((e) => e.name) };
+    }
+  }, async () => {
+    const model = scripted([
+      'Here is SystemHealthBadge.tsx you can paste:\n```tsx\nexport const SystemHealthBadge = () => <span />;\n```\n',
+      toolBlock([{ name: 'write_file', args: { path: 'src/SystemHealthBadge.tsx', content: 'export const SystemHealthBadge = () => null;\n' } }]),
+      'Created src/SystemHealthBadge.tsx on disk.'
+    ]);
+    const result = await runToolRounds({
+      messages: [{ role: 'user', content: 'Create src/SystemHealthBadge.tsx for system health' }],
+      workspaceId: 'ws',
+      aborted: () => false,
+      policy: { mode: 'agent' },
+      stream: model.stream
+    });
+    assert.equal(files.get('src/SystemHealthBadge.tsx'), 'export const SystemHealthBadge = () => null;\n');
+    assert.equal(result.rounds, 3);
+    assert.equal(result.text, 'Created src/SystemHealthBadge.tsx on disk.');
+
+    const qaModel = scripted(['a.ts exports const a = 1.']);
+    const qaResult = await runToolRounds({
+      messages: [{ role: 'user', content: 'what is in a.ts?' }],
+      workspaceId: 'ws',
+      aborted: () => false,
+      policy: { mode: 'agent' },
+      stream: qaModel.stream
+    });
+    assert.equal(qaResult.rounds, 1, 'informational questions must not trigger file-work nudge');
+  });
+});
+
+test('read_files and patch_lines run end-to-end inside runToolRounds and update changedPaths cleanly', async () => {
+  const files = new Map<string, string>([
+    ['src/a.ts', 'export const a = 1;\nexport const b = 2;\n'],
+    ['src/b.ts', 'export const c = 3;\n']
+  ]);
+  await withBridge({
+    loadFiles: async (_id: string, paths: string[]) => ({
+      files: paths.filter((p) => files.has(p)).map((p) => ({ name: p, content: files.get(p)!, version: 'v1' })),
+      missing: []
+    }),
+    readFile: async (_id: string, p: string) => {
+      if (!files.has(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { name: p, content: files.get(p)!, version: 'v1' };
+    },
+    verifyChangeSet: async () => ({ ok: true, issues: [] }),
+    saveFiles: async (_id: string, entries: Array<{ name: string; content: string }>) => {
+      for (const entry of entries) files.set(entry.name, entry.content);
+      return { errors: [], saved: entries.map((e) => e.name) };
+    }
+  }, async () => {
+    const model = scripted([
+      toolBlock([{ name: 'read_files', args: { paths: ['src/a.ts', 'src/b.ts'] } }]),
+      toolBlock([{ name: 'patch_lines', args: { path: 'src/a.ts', start_line: 2, end_line: 2, expected_anchor: 'b = 2', replacement: 'export const b = 20;' } }]),
+      'Patched b cleanly.'
+    ]);
+    const result = await runToolRounds({
+      messages: [{ role: 'user', content: 'Update b to 20 in src/a.ts' }],
+      workspaceId: 'ws',
+      aborted: () => false,
+      stream: model.stream
+    });
+    assert.equal(files.get('src/a.ts'), 'export const a = 1;\nexport const b = 20;\n');
+    assert.deepEqual(result.changedPaths, ['src/a.ts']);
+    assert.equal(result.stopReason, 'complete');
+  });
+});
+
+
 
 

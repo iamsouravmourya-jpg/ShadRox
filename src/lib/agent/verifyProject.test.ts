@@ -163,3 +163,39 @@ test('parseVerifyOutput prioritizes modifiedFiles errors even after 65+ pre-exis
     'modified-file error must never be dropped behind 60 untouched errors'
   );
 });
+
+test('planVerification detects Java Maven/Gradle and .NET projects and validates their commands', () => {
+  const maven = planVerification({ packageJson: null, rootEntries: ['pom.xml'] });
+  assert.equal(maven.kind, 'java');
+  assert.deepEqual(maven.commands, ['mvn test -B -q']);
+
+  const gradle = planVerification({ packageJson: null, rootEntries: ['build.gradle.kts'] });
+  assert.equal(gradle.kind, 'java');
+  assert.deepEqual(gradle.commands, ['gradle test --console=plain']);
+
+  const dotnet = planVerification({ packageJson: null, rootEntries: ['App.csproj'] });
+  assert.equal(dotnet.kind, 'dotnet');
+  assert.deepEqual(dotnet.commands, ['dotnet test --nologo']);
+
+  assert.equal(isVerifyCommand('mvn test -B -q'), true);
+  assert.equal(isVerifyCommand('dotnet test --nologo'), true);
+  assert.equal(isVerifyCommand('gradle test'), true);
+});
+
+test('parseVerifyOutput parses mypy, ruff, eslint compact, maven, dotnet, and gcc errors cleanly', () => {
+  const out = [
+    'src/worker.py:18: error: Incompatible return value type  [return-value]',
+    'src/linted.py:4:9: F401 unused import',
+    'src/compact.ts: line 12, col 3, Error - Unexpected debugger statement. (no-debugger)',
+    '[ERROR] /repo/src/Main.java:[27,10] cannot find symbol',
+    'Program.cs(14,21): error CS0103: The name Foo does not exist',
+    'native/core.cpp:42:5: error: use of undeclared identifier bar'
+  ].join('\n');
+  const parsed = parseVerifyOutput(out);
+  assert.ok(parsed.errors.some((e) => e.file === 'src/worker.py' && e.line === 18));
+  assert.ok(parsed.errors.some((e) => e.file === 'src/linted.py' && e.line === 4 && e.msg.includes('F401')));
+  assert.ok(parsed.errors.some((e) => e.file === 'src/compact.ts' && e.line === 12));
+  assert.ok(parsed.errors.some((e) => e.file.endsWith('src/Main.java') && e.line === 27));
+  assert.ok(parsed.errors.some((e) => e.file === 'Program.cs' && e.line === 14 && e.msg.includes('CS0103')));
+  assert.ok(parsed.errors.some((e) => e.file === 'native/core.cpp' && e.line === 42));
+});

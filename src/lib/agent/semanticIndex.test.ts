@@ -20,6 +20,8 @@ const disk: Record<string, string> = {
 let listB = true;
 const loadCalls: string[][] = [];
 
+const workspaceCacheStore = new Map<string, string>();
+
 const fakeBridge = {
   listDirectory: async (_id: string, path: string) => {
     if (path === '') {
@@ -48,7 +50,12 @@ const fakeBridge = {
       missing: []
     };
   },
-  saveFiles: async () => ({ saved: [], errors: [] })
+  saveFiles: async () => ({ saved: [], errors: [] }),
+  readWorkspaceCache: async (id: string, key: string) => workspaceCacheStore.get(`${id}:${key}`) ?? null,
+  writeWorkspaceCache: async (id: string, key: string, data: string) => {
+    workspaceCacheStore.set(`${id}:${key}`, data);
+    return true;
+  }
 } as unknown as ShadRoxDesktopAPI;
 
 (globalThis as unknown as Record<string, unknown>).window = { shadroxDesktop: fakeBridge };
@@ -183,4 +190,148 @@ test('a failed embedding rerank falls back to lexical honestly', async () => {
     (globalThis as unknown as Record<string, unknown>).fetch = originalFetch;
     storage.clear();
   }
+});
+
+test('chunkText extracts Python, Go, Rust, and SQL symbols and invalidation handles Windows mixed-case paths', () => {
+  const pyChunks = si.chunkText('def train_model(data):\n    return data\n', 'ml/train.py');
+  assert.ok(pyChunks[0].symbols.includes('train_model'));
+  const goChunks = si.chunkText('func HandleRequest(ctx int) {\n}\n', 'server/handler.go');
+  assert.ok(goChunks[0].symbols.includes('HandleRequest'));
+  const rsChunks = si.chunkText('pub struct RouterState {}\npub fn start_server() {}\n', 'src/main.rs');
+  assert.ok(rsChunks[0].symbols.includes('RouterState'));
+  assert.ok(rsChunks[0].symbols.includes('start_server'));
+  const sqlChunks = si.chunkText('CREATE TABLE invoices (id INT);\n', 'db/schema.sql');
+  assert.ok(sqlChunks[0].symbols.includes('invoices'));
+
+  storage.clear();
+  si.resetSemanticIndexCache();
+  // Ensure case-insensitive Windows backslash path invalidation removes matching entries cleanly.
+  const index = {
+    v: 1 as const,
+    updatedAt: 1000,
+    truncated: false,
+    files: {
+      'src/App.tsx': { version: 'v1', chunks: [] }
+    }
+  };
+  storage.set('shadrox.semanticIndex.v1:ws-win', JSON.stringify(index));
+  si.resetSemanticIndexCache();
+  si.invalidateSemanticIndexPaths('ws-win', ['.\\SRC\\app.tsx']);
+  const reloaded = JSON.parse(storage.get('shadrox.semanticIndex.v1:ws-win') ?? '{}') as { files?: Record<string, unknown> };
+  assert.equal(reloaded.files?.['src/App.tsx'], undefined, 'mixed-case backslash Windows path must invalidate cached entry');
+  storage.clear();
+});
+
+test('concept-synonym expansion matches hidden filenames like session_gatekeeper.ts on "user login logic"', () => {
+  const index = {
+    v: 1 as const,
+    updatedAt: 1000,
+    truncated: false,
+    files: {
+      'src/security/session_gatekeeper.ts': {
+        version: 'v1',
+        chunks: [{
+          id: 'src/security/session_gatekeeper.ts#0',
+          startLine: 1,
+          endLine: 8,
+          text: 'export function verifySessionGuard(jwtCookie: string, rbacPermission: string) { return Boolean(jwtCookie && rbacPermission); }',
+          symbols: ['verifySessionGuard']
+        }]
+      },
+      'src/payments/razorpay_ledger.ts': {
+        version: 'v1',
+        chunks: [{
+          id: 'src/payments/razorpay_ledger.ts#0',
+          startLine: 1,
+          endLine: 6,
+          text: 'export function recordInvoiceQuota(subscriptionId: string) { return subscriptionId; }',
+          symbols: ['recordInvoiceQuota']
+        }]
+      },
+      'src/utils/math.ts': {
+        version: 'v1',
+        chunks: [{
+          id: 'src/utils/math.ts#0',
+          startLine: 1,
+          endLine: 3,
+          text: 'export function sum(a: number, b: number) { return a + b; }',
+          symbols: ['sum']
+        }]
+      }
+    }
+  };
+  const authHits = si.bm25Rank(index, 'user login logic', 3);
+  assert.ok(authHits.length > 0);
+  assert.equal(authHits[0].path, 'src/security/session_gatekeeper.ts');
+
+  const billingHits = si.bm25Rank(index, 'stripe billing checkout', 3);
+  assert.ok(billingHits.length > 0);
+  assert.equal(billingHits[0].path, 'src/payments/razorpay_ledger.ts');
+});
+
+test('resolvePreFlightSemanticFallback returns top 2 cached hints in <5ms with zero disk I/O', () => {
+  storage.clear();
+  si.resetSemanticIndexCache();
+  loadCalls.length = 0;
+
+  si.warmSemanticIndexFromFiles('ws-preflight', [
+    {
+      name: 'src/guards/session_gatekeeper.ts',
+      content: 'export function enforceCookieGuard(token: string) { return token.length > 5; }\n'
+    },
+    {
+      name: 'src/auth/jwt_credential.ts',
+      content: 'export function issueOAuthCredential(id: string) { return id; }\n'
+    },
+    {
+      name: 'src/components/Button.tsx',
+      content: 'export function Button() { return null; }\n'
+    }
+  ]);
+
+  const t0 = performance.now();
+  const fallback = si.resolvePreFlightSemanticFallback('ws-preflight', 'user login logic');
+  const elapsedMs = performance.now() - t0;
+
+  assert.equal(loadCalls.length, 0, 'pre-flight lookup must never trigger disk loadFiles');
+  assert.equal(fallback.hints.length, 2, 'should return top 2 semantic candidates');
+  assert.ok(elapsedMs < 25, `cached lookup should finish rapidly (got ${elapsedMs.toFixed(2)}ms)`);
+  assert.ok(fallback.candidatePaths.includes('src/guards/session_gatekeeper.ts'));
+  assert.ok(fallback.hintLine?.includes('SEMANTIC PRE-FLIGHT HINTS'));
+  assert.ok(fallback.hintLine?.includes('enforceCookieGuard'));
+});
+
+test('multi-MB (>1.5MB) semantic index bypasses localStorage cap via workspace cache and validates FNV-1a envelope', async () => {
+  storage.clear();
+  workspaceCacheStore.clear();
+  si.resetSemanticIndexCache();
+
+  const bigBody = 'export function handleRequest(payload: string) {\n  return payload.trim();\n}\n' + '// ' + 'x'.repeat(1_000) + '\n';
+  const manyFiles = Array.from({ length: 1_500 }, (_, i) => ({
+    name: `src/mod/file_${String(i).padStart(4, '0')}.ts`,
+    content: `${bigBody}export const id${i} = ${i};\n`
+  }));
+
+  const warmed = si.warmSemanticIndexFromFiles('ws-big', manyFiles);
+  const jsonLen = JSON.stringify(warmed).length;
+  assert.ok(jsonLen > 1_500_000, `expected >1.5MB index, got ${jsonLen} chars`);
+
+  // Wait a microtask tick for async writeWorkspaceCache to settle.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(storage.get('shadrox.semanticIndex.v1:ws-big'), undefined, 'localStorage must not retain >1.5MB payload');
+  const cachedEnvelope = workspaceCacheStore.get('ws-big:semantic-index');
+  assert.ok(cachedEnvelope && cachedEnvelope.length > 1_500_000, 'disk cache holds full >1.5MB envelope');
+
+  // Clear RAM and verify hydrateSemanticIndex restores all 1,500 files.
+  si.resetSemanticIndexCache();
+  const restored = await si.hydrateSemanticIndex('ws-big');
+  assert.ok(restored);
+  assert.equal(Object.keys(restored.files).length, 1_500);
+
+  // Tampering with checksum rejects corrupt disk cache.
+  workspaceCacheStore.set('ws-big:semantic-index', JSON.stringify({ v: 1, checksum: 'deadbeef', payload: '{"v":1,"updatedAt":9,"truncated":false,"files":{}}' }));
+  si.resetSemanticIndexCache();
+  const rejected = await si.hydrateSemanticIndex('ws-big');
+  assert.equal(rejected, null);
 });

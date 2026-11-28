@@ -102,3 +102,9 @@ test('vibe matching abstains on a tie and ignores non-vibe nouns', () => {
   assert.deepEqual(matchVibeComponents('refactor the database migration', ['src/schema.ts']), []);
   assert.equal(bestVibeTarget('refactor the database migration', ['src/schema.ts']), null);
 });
+
+test('matchVibeComponents singularizes UI plurals and inspects parent directory for generic App Router filenames', () => {
+  assert.equal(bestVibeTarget('fix all the modals', ['src/components/Modal.tsx'])?.path, 'src/components/Modal.tsx');
+  assert.equal(bestVibeTarget('redesign the pricing cards', ['src/components/PricingCard.tsx'])?.path, 'src/components/PricingCard.tsx');
+  assert.equal(bestVibeTarget('billing page looks off', ['src/app/billing/page.tsx'])?.path, 'src/app/billing/page.tsx');
+});

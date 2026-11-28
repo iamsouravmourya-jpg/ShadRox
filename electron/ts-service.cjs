@@ -119,7 +119,7 @@ function walkProjectFiles(root) {
   const files = [];
   const queue = [{ directory: root, depth: 0 }];
   while (queue.length > 0 && files.length < MAX_PROJECT_FILES * 4) {
-    const { directory, depth } = queue.pop();
+    const { directory, depth } = queue.shift();
     let entries;
     try {
       entries = fs.readdirSync(directory, { withFileTypes: true });
@@ -138,6 +138,15 @@ function walkProjectFiles(root) {
       files.push(absolute);
     }
   }
+  const priorityScore = (absolute) => {
+    const rel = path.relative(root, absolute).replace(/\\/g, '/').toLowerCase();
+    if (/^(?:src|server|app|api)\//.test(rel)) return 0;
+    if (/^(?:packages|apps)\/[^/]+\/(?:src|server|app|api)\//.test(rel)) return 1;
+    if (!rel.includes('/')) return 2;
+    if (/(?:^|\/)(?:__tests__|tests?|fixtures?|examples?|mocks?)\//.test(rel)) return 4;
+    return 3;
+  };
+  files.sort((a, b) => priorityScore(a) - priorityScore(b) || (a < b ? -1 : a > b ? 1 : 0));
   return files;
 }
 

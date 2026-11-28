@@ -135,16 +135,26 @@ function createGitService({ workspaceAccess }) {
       if (!probe.ok || probe.stdout.trim() !== 'true') return unavailable;
 
       const empty = Promise.resolve({ ok: false, stdout: '', stderr: '' });
-      const [status, diff, log] = await Promise.all([
+      const [status, rawDiff, log] = await Promise.all([
         context.complete ? runGit(workspace.root, context.statusArgs) : empty,
         context.complete ? runGit(workspace.root, context.diffArgs) : empty,
         runGit(workspace.root, context.logArgs)
       ]);
 
+      let diffStdout = rawDiff.stdout;
+      if (context.complete && !rawDiff.ok && /HEAD|unknown revision|bad revision|ambiguous argument/i.test(rawDiff.stderr || '')) {
+        const driverOpts = { filterDrivers: context.filterDrivers, safeDirectories: [workspace.root] };
+        const [cachedDiff, workingDiff] = await Promise.all([
+          runGit(workspace.root, buildGitArgv(['diff', '--cached', '--no-color', '--unified=2'], driverOpts)),
+          runGit(workspace.root, buildGitArgv(['diff', '--no-color', '--unified=2'], driverOpts))
+        ]);
+        diffStdout = [cachedDiff.stdout, workingDiff.stdout].filter(Boolean).join('\n');
+      }
+
       return {
         isRepo: true,
         status: truncateText(status.stdout, 4_000),
-        diff: truncateText(diff.stdout, 60_000),
+        diff: truncateText(diffStdout, 60_000),
         log: truncateText(log.stdout, 2_000),
         dirty: status.stdout.split('\n').filter((line) => line && !line.startsWith('##')).length
       };

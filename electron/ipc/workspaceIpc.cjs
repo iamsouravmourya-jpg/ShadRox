@@ -395,6 +395,46 @@ function createWorkspaceService({
       return verifyChangeSet({ root: workspace.root, files });
     });
 
+    const ALLOWED_CACHE_KEYS = new Set(['semantic-index', 'ory-tags']);
+    const MAX_WORKSPACE_CACHE_CHARS = 16 * 1024 * 1024;
+
+    function resolveWorkspaceCacheFile(workspaceId, cacheKey) {
+      const workspace = workspaceAccess.getWorkspace(workspaceId);
+      if (!workspace?.root) return null;
+      if (typeof cacheKey !== 'string' || !ALLOWED_CACHE_KEYS.has(cacheKey)) {
+        throw new Error('Unsupported workspace cache key.');
+      }
+      const workspaceHash = createHash('sha256').update(workspace.root).digest('hex').slice(0, 16);
+      const cacheDir = path.join(app.getPath('userData'), 'workspace-cache', workspaceHash);
+      return { cacheDir, cacheFile: path.join(cacheDir, `${cacheKey}.json`) };
+    }
+
+    ipcMain.handle('workspace:read-cache', async (event, workspaceId, cacheKey) => {
+      assertTrustedRenderer(event);
+      const resolved = resolveWorkspaceCacheFile(workspaceId, cacheKey);
+      if (!resolved) return null;
+      try {
+        const raw = await fs.promises.readFile(resolved.cacheFile, 'utf8');
+        return raw.length <= MAX_WORKSPACE_CACHE_CHARS ? raw : null;
+      } catch {
+        return null;
+      }
+    });
+
+    ipcMain.handle('workspace:write-cache', async (event, workspaceId, cacheKey, data) => {
+      assertTrustedRenderer(event);
+      const resolved = resolveWorkspaceCacheFile(workspaceId, cacheKey);
+      if (!resolved) return false;
+      if (typeof data !== 'string' || data.length > MAX_WORKSPACE_CACHE_CHARS) {
+        throw new Error('Workspace cache payload exceeds size limit.');
+      }
+      await fs.promises.mkdir(resolved.cacheDir, { recursive: true });
+      const tmpFile = `${resolved.cacheFile}.tmp`;
+      await fs.promises.writeFile(tmpFile, data, 'utf8');
+      await fs.promises.rename(tmpFile, resolved.cacheFile);
+      return true;
+    });
+
     ipcMain.handle('ts:diagnostics', async (event, workspaceId, overrides, files) => {
       assertTrustedRenderer(event);
       return typeScriptService.diagnostics(workspaceId, overrides, files);

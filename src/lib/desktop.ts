@@ -647,6 +647,12 @@ export interface ShadRoxDesktopAPI {
    */
   runCommand: (workspaceId: string, command: string, riskNotice?: string) => Promise<DesktopCommandResult>;
   /**
+   * Persist and restore large (>1.5 MB) workspace index snapshots in Electron
+   * userData storage (allowlisted to semantic-index and ory-tags).
+   */
+  readWorkspaceCache?: (workspaceId: string, key: 'semantic-index' | 'ory-tags') => Promise<string | null>;
+  writeWorkspaceCache?: (workspaceId: string, key: 'semantic-index' | 'ory-tags', data: string) => Promise<boolean>;
+  /**
    * Inspect and control command jobs (auto-backgrounded long runs, dev servers).
    * Confined to the given workspace; unknown job ids resolve `{ ok: false }`.
    */

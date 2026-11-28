@@ -286,20 +286,23 @@ Legend:
  7. PHASE 7 — TOOL DISPATCH  (src/lib/agent/tools.ts :: runTool)
 ================================================================================
 
-  runTool(workspaceId, call, options)   (lines ~1248-2370)  switch(call.name):
+  runTool(workspaceId, call, options)   (38 active tools)  switch(call.name):
 
   READ
-    list_directory    (1264)  depth<=3, .gitignore, <=400 entries/60 dirs
-    read_file         (1306)  line ranges, masks .env*, <=400 lines
-    find_files        (1346)  path substring, <=80 results
-    search_text       (1360)  content search + partialWordSearch() (1133)
-    outline           (2329)  symbols + line numbers
+    list_directory           depth<=3, .gitignore, <=400 entries/60 dirs
+    read_file                line ranges, masks .env*, <=400 lines
+    read_files               batch-read <=12 files/line slices (loadFiles + staged overlay)
+    find_files               path substring, <=80 results
+    find_by_glob             bounded glob walk + fail-open .gitignore filter
+    search_text              content search + partialWordSearch()
+    outline                  symbols + line numbers (TS LSP + Py/Go/Rust/SQL/C++ fallback)
 
   WRITE
-    write_file        (1402)  create/overwrite, read-before-write, backup,
-    edit_file         (1402)  exact snippet; locateUniqueMatch() (909) 5 passes:
+    write_file               create/overwrite, read-before-write, backup,
+    edit_file                exact snippet; locateUniqueMatch() 5 passes:
                              exact | CRLF | trimmed | indent | whitespace
-    apply_patch       (1710)  atomic multi-file (<=50 hunks); stage+commit
+    patch_lines              1-based inclusive [start_line, end_line] + expected_anchor
+    apply_patch              atomic multi-file (<=50 hunks); stage+commit
 
   EXECUTE
     run_command       (2033)  shell via desktop bridge, risk-tiered,
@@ -619,13 +622,76 @@ Legend:
      longer re-walks every chunk. MAX_BM25_ENTRIES byte cap; invalidation bumps
      updatedAt so the table rebuilds only on real change.
 
-   STATUS (this pass, typecheck + 2618 tests + vite build green):
-     Incremental FileTags hash cache         VERIFIED   repoMap.ts extractFileTagsCached
+   STATUS (OryTree pass, typecheck + 2618 tests + vite build green):
+     Incremental FileTags hash cache         VERIFIED   repoMap.ts extractFileTagsCached (LRU)
      OryTree domain grouping + badges        VERIFIED   repoMap.ts buildOryTree/renderOryTree
      Live OryTree wiring (not legacy map)    VERIFIED   useContextBuilder.ts buildOryTree+renderOryTree
      classifyOryDomain backslash/edge cases   VERIFIED   repoMap.ts (+tests)
      Blast-radius refs + dependents          VERIFIED   dependentsFromGraph (+tests)
      BM25 precomputed DF table + byte cap    VERIFIED   semanticIndex.ts bm25Stats
      get_dependents tool (read-only)         VERIFIED   codeIntel.ts + tools.ts dispatch
+
+================================================================================
+ 17. DEEP CORE ENGINE AUDIT & 38-TOOL HARDENING (typecheck + 2632/2633 tests green)
+================================================================================
+  NEW HIGH-LEVERAGE TOOLS (36 -> 38 active tools, >=55% Tier-1 schema savings kept):
+    read_files       Batch-read <=12 paths/line slices via desktop.loadFiles (fallback
+                     to staged PendingChanges, masks .env*, marks conflict markers,
+                     250-line batch default cap, noteRead + workingMemory sync).
+    patch_lines      Explicit 1-based inclusive [start_line, end_line] patch with CRLF
+                     preservation, optional expected_anchor + 25k-line closestRegion
+                     hint, pre-apply verifyChangeSet, Auto-Save OFF staging, and
+                     post-edit compiler diagnostics.
+
+  DEEP ENGINE & ELECTRON HARDENING VERIFIED THIS PASS:
+    TargetLock -> Downstream Contracts      VERIFIED   useContextBuilder.ts passes resolvedLockPath
+                                                       into selectDependentFiles; targetLock.ts
+                                                       handles plurals & App Router parent folders
+    OryTree Pre-Slice & Polyglot Symbols    VERIFIED   agent/repoMap.ts ranks before MAX_TOTAL_NODES
+                                                       cap; extracts Go/Rust/Py/SQL/C++ exports;
+                                                       repoMap.ts adds SQL/C++ patterns + LRU cache
+    Cold-Cache Semantic Index Invalidation  VERIFIED   semanticIndex.ts falls back to loadPersisted()
+                                                       + case-insensitive Windows key matching
+    CodeIntel Staged Buffers & Regex Esc    VERIFIED   codeIntel.ts escapeRegExp(), staged readEffective(),
+                                                       handleGetDependents maps MapTreeEntry properly
+    Prose File-Work Nudge & Scout Retry     VERIFIED   toolLoop.ts nudges prose-only file work in
+                                                       agent/team mode; subagent strips fences on 0-step
+    Polyglot Verify + Monorepo Probing      VERIFIED   verifyProject.ts adds Java/Maven/Gradle/.NET +
+                                                       mypy/ruff/eslint/gcc/javac parsers; tools.ts
+                                                       probes monorepo subdirs on root-less repos
+    Electron Large-Repo & Unborn-HEAD       VERIFIED   ts-service.cjs BFS queue walk + priority sort;
+                                                       gitIpc.cjs fallback to --cached diff on init repo
+
+================================================================================
+ 18. CONCEPT SYNONYMS, PRE-FLIGHT SEMANTIC FALLBACK & 50K ENTERPRISE GUARD
+================================================================================
+  CONCEPT-TO-CODE SYNONYM GRAPH (100% local, zero cloud, zero duplicate tables):
+    src/lib/agent/conceptSynonyms.ts  (CONCEPT_SYNONYM_CLUSTERS + expandConceptTokens)
+      |-- auth    <-> login, session, token, jwt, cookie, credential, guard, gatekeeper, oauth, rbac
+      |-- billing <-> payment, stripe, razorpay, ledger, quota, subscription, webhook, checkout, invoice
+      |-- db      <-> database, prisma, drizzle, schema, migration, query, repository, model, postgres
+      |-- api/ui  <-> shared token clusters for semantic BM25 & domain classification
+      |
+      +--> semanticIndex.ts :: bm25Rank()     exact tokens 1.0x weight, concept synonyms 0.6x weight
+      +--> agent/repoMap.ts :: classifyOryDomain()  matches hidden filenames (session_gatekeeper -> AUTH)
+
+  PRE-FLIGHT SEMANTIC FALLBACK (<5ms, zero disk walk, zero API key):
+    useContextBuilder.ts
+      |-- resolveTargetLock() (VIBE_WORDS + DOM + symbol + style)
+      |-- if corroborated -> emits "TARGET LOCK"
+      `-- if abstained -> resolvePreFlightSemanticFallback() (semanticIndex.ts)
+            queries cached BM25 index -> emits "SEMANTIC PRE-FLIGHT HINTS" (top 2 file:symbol)
+            + feeds candidatePaths into selectDependentFiles() for downstream contracts
+
+  50,000-FILE ENTERPRISE SCALE GUARD & MULTI-MB PERSISTENCE:
+    agent/repoMap.ts :: LARGE_REPO_THRESHOLD = 3_000
+      |-- >3,000 files -> partitionEnterprisePaths():
+      |     deep-indexes ONLY active file/tabs/package + priority roots (src/server/app/api) + 1-hop imports
+      |     <= MAX_MAP_FILES (1,500) + renders lightweight path-only directoryIndex summary
+    agent/indexPersistence.ts + workspaceIpc.cjs (workspace:read-cache / write-cache)
+      |-- payloads <= 1.5 MB -> localStorage + Electron disk / IndexedDB
+      `-- payloads > 1.5 MB  -> skips localStorage quota; persists FNV-1a enveloped snapshots (<=16 MiB)
+            for both semantic-index (semanticIndex.ts) and ory-tags (agent/repoMap.ts),
+            hydrated early by useRepoMapFiles (useRepoMap.ts) with per-file FNV-1a validation.
 
   ── End of file ──

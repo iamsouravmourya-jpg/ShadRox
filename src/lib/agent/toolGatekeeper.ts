@@ -43,11 +43,13 @@ export interface WorkspaceToolContext {
 export const ALWAYS_ON_TOOL_NAMES: ReadonlySet<string> = new Set([
   'list_directory',
   'read_file',
+  'read_files',
   'find_files',
   'find_by_glob',
   'search_text',
   'outline',
   'edit_file',
+  'patch_lines',
   'write_file',
   'delete_file',
   'problems',
@@ -60,11 +62,13 @@ export const ALWAYS_ON_TOOL_NAMES: ReadonlySet<string> = new Set([
 export const TIER1_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'list_directory',
   'read_file',
+  'read_files',
   'find_files',
   'find_by_glob',
   'search_text',
   'outline',
   'edit_file',
+  'patch_lines',
   'write_file',
   'problems',
   'run_command',
@@ -77,6 +81,7 @@ export const TIER1_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
 export const ADVISORY_READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'list_directory',
   'read_file',
+  'read_files',
   'find_files',
   'find_by_glob',
   'search_text',
@@ -105,6 +110,7 @@ export const TOOL_CATEGORY_MAP: Record<ToolBundleCategory, readonly string[]> = 
 const MUTATING_OR_EXECUTE_TOOLS: ReadonlySet<string> = new Set([
   'write_file',
   'edit_file',
+  'patch_lines',
   'apply_patch',
   'delete_file',
   'run_command',

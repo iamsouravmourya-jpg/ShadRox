@@ -4,6 +4,7 @@ import { analyzeProjectStack, formatArchitectureSummary } from '../lib/agent/pro
 import { buildProjectMemoryContext } from '../lib/agent/projectMemory';
 import { createMcpToolHandle, discoveryNotes, type McpToolHandle } from '../lib/agent/mcpTools';
 import { buildRepoMap as buildRankedRepoMap, buildOryTree, renderOryTree } from '../lib/agent/repoMap';
+import { resolvePreFlightSemanticFallback } from '../lib/agent/semanticIndex';
 import { CHAT_PROMPT_CORE, TOOL_DISCIPLINE_RULES } from '../lib/agent/promptDiscipline';
 import { buildConversationalSystemContext, isConversationalTurn } from '../lib/agent/conversationalContext';
 import type { TurnIntentResult } from '../lib/agent/runPolicy';
@@ -537,6 +538,8 @@ export function useContextBuilder({
           contentHash: buffered ? hashContent(buffered.content) : undefined
         });
       }
+      let resolvedLockPath: string | null = vibe?.path ?? null;
+      let hasCorroboratedLock = false;
       if (targetHints.length > 0) {
         const currentHashes: Record<string, string> = {};
         for (const file of workspace.files) currentHashes[normalizeContextPath(file.name)] = hashContent(file.content);
@@ -553,12 +556,27 @@ export function useContextBuilder({
           && best.confidence >= 0.7
           && (best.agreedBy.length > 1 || Boolean(best.symbol) || best.line !== undefined);
         if (best && corroborated) {
+          resolvedLockPath = best.path;
+          hasCorroboratedLock = true;
           const via = best.agreedBy.join('+');
           const where = best.line ? `${best.path}:${best.line}` : best.path;
           core.push(
             `TARGET LOCK — the most likely edit target, resolved before this round (confidence ${best.confidence.toFixed(2)} via ${via}): ${where}. Start here instead of searching for the file.`
           );
         }
+      }
+      const semanticFallback = hasCorroboratedLock
+        ? { hints: [], candidatePaths: [] as string[], hintLine: null }
+        : resolvePreFlightSemanticFallback(
+            nativeWorkspaceId ?? folder?.id ?? folder?.name ?? '',
+            query,
+            {
+              limit: 2,
+              fallbackFiles: repoMapFiles.files.length > 0 ? repoMapFiles.files : workspace.files
+            }
+          );
+      if (semanticFallback.hintLine) {
+        core.push(semanticFallback.hintLine);
       }
 
       if (mode.writesFiles && pathOnly > 0) {
@@ -647,7 +665,11 @@ export function useContextBuilder({
             query,
             files: uniqueRepoFiles,
             signaturesByFile: repoMapFiles.signatures,
-            openTabs: activePaths
+            openTabs: activePaths,
+            activeFile: workspace.activeFile?.name,
+            totalFileCount: folder.diskFileCount,
+            treeTruncated: folder.diskFileCountTruncated,
+            allTreePaths: tree.map((entry) => entry.path)
           });
           signatureMap = renderOryTree(oryTree, mapBudget);
           if (!signatureMap) {
@@ -660,7 +682,11 @@ export function useContextBuilder({
             });
           }
         }
-        const editTargets = activePaths;
+        const editTargets = dedupeContextPaths([
+          ...activePaths,
+          ...(resolvedLockPath ? [resolvedLockPath] : []),
+          ...semanticFallback.candidatePaths
+        ]);
         const dependentFiles = selectDependentFiles(
           uniqueRepoFiles,
           editTargets,

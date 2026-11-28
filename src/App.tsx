@@ -118,7 +118,8 @@ export default function App() {
   }, [desktopBridge]);
 
   const folderTree = workspace.workspace?.kind === 'folder' ? workspace.workspace.diskFileTree ?? [] : [];
-  const repoMapFiles = useRepoMapFiles(nativeWorkspaceId, folderTree);
+  const openTabPaths = useMemo(() => files.map((file) => file.name), [files]);
+  const repoMapFiles = useRepoMapFiles(nativeWorkspaceId, folderTree, { activeFilePath, openTabPaths });
   const terminalAvailable = Boolean(desktop && nativeWorkspaceId);
 
   const headerFileLabel = workspace.workspace?.kind === 'folder'

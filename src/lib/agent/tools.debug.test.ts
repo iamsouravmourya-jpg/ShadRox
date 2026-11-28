@@ -15,16 +15,18 @@ test('debugger_state has been removed from the active built-in tools', () => {
   assert.equal(definition, undefined);
 });
 
-test('the tool registry holds thirty-six active tools including write, preview, and upgrade tools', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 36);
+test('the tool registry holds thirty-eight active tools including write, preview, and upgrade tools', () => {
+  assert.equal(TOOL_DEFINITIONS.length, 38);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'debugger_state').length, 0);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'write_file').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'edit_file').length, 1);
+  assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'patch_lines').length, 1);
+  assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'read_files').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'job_control').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'preview_control').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'unlock_tools').length, 1);
   for (const name of [
-    'apply_patch', 'verify', 'test_changed', 'unlock_tools',
+    'apply_patch', 'read_files', 'patch_lines', 'verify', 'test_changed', 'unlock_tools',
     'memory_read', 'memory_note', 'find_references', 'go_to_definition', 'rename_symbol', 'get_dependents',
     'semantic_search', 'web_search', 'fetch_url', 'preview_inspect', 'ask_user', 'spawn_subagent', 'diff_review',
     'find_by_glob', 'git_diff'

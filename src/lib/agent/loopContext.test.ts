@@ -124,7 +124,8 @@ test('summarizeAssistantToolPayload and compactToolObservations shrink older wri
     'Applying file.\n```shadrox:tools\n' +
     JSON.stringify([
       { name: 'write_file', args: { path: 'src/Quiz.tsx', content: largeCode } },
-      { name: 'apply_patch', args: { patches: [{ path: 'server.ts', old: largeCode, new: largeCode }] } }
+      { name: 'apply_patch', args: { patches: [{ path: 'server.ts', old: largeCode, new: largeCode }] } },
+      { name: 'patch_lines', args: { path: 'server.ts', start_line: 10, end_line: 40, replacement: largeCode } }
     ]) +
     '\n```'
   );
@@ -132,6 +133,7 @@ test('summarizeAssistantToolPayload and compactToolObservations shrink older wri
   assert.match(direct, /\[compacted write_file content:/);
   assert.match(direct, /\[compacted old:/);
   assert.match(direct, /\[compacted new:/);
+  assert.match(direct, /\[compacted patch_lines replacement:/);
 
   const messages: ChatTurn[] = [{ role: 'user', content: 'implement feature' }];
   const assistantIndices: number[] = [];

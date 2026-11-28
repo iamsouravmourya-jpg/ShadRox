@@ -226,12 +226,17 @@ function normalizePath(value: unknown): string | null {
 /** The workspace paths a call names, so a mutation can invalidate precisely. */
 function pathsOf(call: ToolCall): string[] {
   const paths: string[] = [];
-  const single = normalizePath(call.args.path);
-  if (single) paths.push(single);
-  if (Array.isArray(call.args.paths)) {
-    for (const entry of call.args.paths) {
-      const path = normalizePath(entry);
-      if (path && !paths.includes(path)) paths.push(path);
+  const pushPath = (raw: unknown): void => {
+    const p = normalizePath(raw);
+    if (p && !paths.includes(p)) paths.push(p);
+  };
+  pushPath(call.args.path);
+  for (const listField of ['paths', 'ranges', 'files'] as const) {
+    const rawList = call.args[listField];
+    if (!Array.isArray(rawList)) continue;
+    for (const entry of rawList) {
+      if (typeof entry === 'string') pushPath(entry);
+      else if (entry && typeof entry === 'object') pushPath((entry as Record<string, unknown>).path);
     }
   }
   return paths;
@@ -586,17 +591,31 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
   const wantsExploration = EXPLORATION_INTENT.test(latestUserAsk);
   let nudgeUsed = false;
   let mutationNudgeUsed = false;
+  let proseFileWorkNudged = false;
   const hasPendingPathFence = (rawText: string): boolean => /```[^\n]*\bpath=/.test(rawText);
   const hasTurnWrites = (): boolean => changedFilesTotal > 0 || changedPathsSet.size > 0;
-  const FILE_WORK_VERBS = /\b(create|write|edit|modify|update|add|make|generate|implement|build|new)\b/i;
-  const FILE_WORK_NOUNS = /\b(file|component|page|script|stylesheet|module|document|program|class|function|feature)\b/i;
+  const FILE_WORK_VERBS = /\b(create|write|edit|modify|update|add|make|generate|implement|build|new|refactor|fix)\b/i;
+  const HINGLISH_FILE_WORK_VERBS = /\b(banao|bana\s*de|likho|likh\s*de|jod\s*de|daal\s*de|kar\s*de)\b/i;
+  const FILE_WORK_NOUNS = /\b(file|component|page|script|stylesheet|module|document|program|class|function|feature|route|endpoint|leaderboard|dashboard|api)\b/i;
   const FILE_PATH_RE = /\b[\w/.-]+\.(ts|tsx|js|jsx|html|css|json|md|py|go|rs|txt|env)\b/;
+  const INFORMATIONAL_QUESTION_START = /^\s*(?:what|where|why|how|when|who|which|explain|describe|show\s+me|tell\s+me|summarize|list)\b/i;
   /** True when the user's ask is about creating or editing a file (or running a check on one). */
   function userRequestedFileWork(ask: string): boolean {
     return (FILE_WORK_VERBS.test(ask) && FILE_WORK_NOUNS.test(ask)) || FILE_PATH_RE.test(ask);
   }
+  function isActionableFileWorkRequest(ask: string): boolean {
+    if (INFORMATIONAL_QUESTION_START.test(ask) && !FILE_WORK_VERBS.test(ask)) return false;
+    return (FILE_WORK_VERBS.test(ask) && (FILE_WORK_NOUNS.test(ask) || FILE_PATH_RE.test(ask)))
+      || (HINGLISH_FILE_WORK_VERBS.test(ask) && (FILE_WORK_NOUNS.test(ask) || FILE_PATH_RE.test(ask)));
+  }
   const mayNudgeMutation = (): boolean =>
     input.requireFileMutation === true && !mutationNudgeUsed && !hasTurnWrites() && round < maxRounds;
+  const mayNudgeAgentProseFileWork = (): boolean =>
+    !proseFileWorkNudged
+    && (policy?.mode === 'agent' || policy?.mode === 'team')
+    && !hasTurnWrites()
+    && round < maxRounds
+    && isActionableFileWorkRequest(latestUserAsk);
   const inspectedWorkspace = () => activity.some((entry) => !isControlTool(entry.name));
   /** One nudge per turn, and only while a round is left to spend on it. */
   const mayNudgeExploration = () => !nudgeUsed && wantsExploration && !inspectedWorkspace() && round < maxRounds;
@@ -779,6 +798,15 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
         messages.push({ role: 'user', content: MUTATION_REQUIRED_NUDGE });
         continue;
       }
+      if (mayNudgeAgentProseFileWork() && !hasPendingPathFence(streamed.text)) {
+        proseFileWorkNudged = true;
+        if (streamed.text.trim()) messages.push({ role: 'assistant', content: streamed.text });
+        messages.push({
+          role: 'user',
+          content: 'You described code or next steps in prose without applying any workspace tool writes. Call write_file, edit_file, patch_lines, or apply_patch to land the real changes now, then verify before finishing.'
+        });
+        continue;
+      }
       // Never end the turn mid-plan: if tasks are still pending/doing, nudge to continue
       // instead of returning complete. The model may have written prose and forgotten to
       // call finish or update_tasks.
@@ -838,7 +866,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
           }
         }
         const key = serializeCallKey(call);
-        if (call.name === 'edit_file' || call.name === 'write_file' || call.name === 'apply_patch') {
+        if (call.name === 'edit_file' || call.name === 'patch_lines' || call.name === 'write_file' || call.name === 'apply_patch') {
           const blockedPath = writePathsOf(call).find((targetPath) => perFileTracker.isBlocked(targetPath));
           if (blockedPath) {
             const message = perFileFailureBlockMessage(blockedPath);
@@ -1215,7 +1243,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
           const base = verdict === 'nudge' ? failureNudge(summarizeCall(call)) : failureBlockMessage(summarizeCall(call));
           problems.push(isPortLoopFailure(outcome) ? `${base} ${PORT_LOOP_ADVICE}` : base);
         }
-        if (call.name === 'edit_file' || call.name === 'write_file' || call.name === 'apply_patch') {
+        if (call.name === 'edit_file' || call.name === 'patch_lines' || call.name === 'write_file' || call.name === 'apply_patch') {
           const targets = outcome.ok && outcome.changedPaths && outcome.changedPaths.length > 0
             ? outcome.changedPaths
             : writePathsOf(call);
@@ -1267,7 +1295,7 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
             tier: 'execute'
           }, runId);
         }
-        if ((call.name === 'write_file' || call.name === 'edit_file' || call.name === 'apply_patch') && /^Not written —/.test(outcome.error ?? '')) {
+        if ((call.name === 'write_file' || call.name === 'edit_file' || call.name === 'patch_lines' || call.name === 'apply_patch') && /^Not written —/.test(outcome.error ?? '')) {
           flightRecorder.record('verify_result', { ok: false, stage: 'pre-apply', path: normalizePath(call.args.path) }, runId);
         }
         return;
@@ -1386,6 +1414,12 @@ export async function runToolRounds(input: ToolLoopInput): Promise<ToolLoopResul
               }
             : { path: paths[0] }
         );
+      } else if (call.name === 'read_files' && paths.length > 0) {
+        contentHash = hashText(outcome.content);
+        for (const p of paths) {
+          if (turn) noteRead(turn, p);
+          workingMemory.inspectedRanges.push({ path: p });
+        }
       }
       cache.set(serializeCallKey(call), { outcome, step: round, epoch, paths, effect, contentHash });
     });

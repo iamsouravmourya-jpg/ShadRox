@@ -1,5 +1,12 @@
 import { getDesktopBridge, type ShadRoxDesktopAPI } from '../desktop';
 import { getApiKey } from '../storage';
+import { expandConceptTokens } from './conceptSynonyms';
+import {
+  fnv1aHash,
+  loadWorkspaceIndexCache,
+  MAX_LOCAL_STORAGE_CACHE_CHARS,
+  saveWorkspaceIndexCache
+} from './indexPersistence';
 import type { ToolDefinition, ToolOutcome } from './tools';
 
 /**
@@ -9,23 +16,21 @@ import type { ToolDefinition, ToolOutcome } from './tools';
  * content-hash version, so a refresh re-chunks ONLY files whose bytes changed
  * (the bridge exposes no mtime; its `version` IS a content hash). Enumeration
  * walks listDirectory (the bridge already hides dot/generated dirs); contents
- * arrive through the bounded batch loadFiles path. The index persists in
- * localStorage per workspace and is mirrored best-effort to
- * `.shadrox/index.json` (the save path refuses to overwrite unmapped dot-files
- * after a restart, so the local copy stays authoritative — same contract as
- * project memory).
+ * arrive through the bounded batch loadFiles path. Small indexes (<1.5 MB)
+ * cache synchronously in localStorage; multi-megabyte enterprise indexes
+ * persist in Electron userData cache / IndexedDB with FNV-1a envelope integrity.
  *
- * Ranking: BM25 over camelCase-split tokens with symbol and path boosts —
- * strong, dependency-free, and ALWAYS available. When (and only when) the user
- * has a Gemini BYOK key configured, the BM25 shortlist is re-ranked with
- * text-embedding-004 cosine similarity (hybrid). No key is ever required; an
- * embedding failure degrades to the lexical result with an honest note.
+ * Ranking: BM25 over camelCase-split tokens with concept-synonym expansion,
+ * symbol boosts, and path boosts — strong, dependency-free, and ALWAYS
+ * available. When (and only when) the user has a Gemini BYOK key configured,
+ * the BM25 shortlist is re-ranked with text-embedding-004 cosine similarity
+ * (hybrid). No key is ever required; an embedding failure degrades honestly.
  */
 
 export const SEMANTIC_INDEX_PATH = '.shadrox/index.json';
-const MAX_INDEX_FILES = 1_200;
-const MAX_INDEX_CHUNKS = 6_000;
-const MAX_INDEX_JSON_CHARS = 1_500_000;
+const MAX_INDEX_FILES = 3_000;
+const MAX_INDEX_CHUNKS = 12_000;
+const MAX_INDEX_JSON_CHARS = MAX_LOCAL_STORAGE_CACHE_CHARS;
 const MAX_FILE_BYTES = 200_000;
 const MAX_BATCH_BYTES = 3_000_000;
 const LOAD_BATCH_SIZE = 40;
@@ -38,6 +43,7 @@ const EMBED_SHORTLIST = 16;
 const EMBED_MODEL = 'text-embedding-004';
 const EMBED_TIMEOUT_MS = 12_000;
 const STORE_PREFIX = 'shadrox.semanticIndex.v1:';
+const SYNONYM_TOKEN_WEIGHT = 0.6;
 
 const STOP_WORDS = new Set([
   'the', 'and', 'for', 'with', 'from', 'that', 'this', 'are', 'was', 'were', 'have', 'has', 'had',
@@ -88,12 +94,13 @@ export function tokenize(text: string): string[] {
   return tokens;
 }
 
-const SYMBOL_PATTERN = /\b(?:function|class|interface|type|enum|const|let|var|namespace)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
+const SYMBOL_PATTERN = /\b(?:function|class|interface|type|enum|const|let|var|namespace|struct|trait|impl|fn|func|def)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
 const EXPORT_PATTERN = /\bexport\s+(?:async\s+)?(?:function|class|const|let|var|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
+const SQL_SYMBOL_PATTERN = /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|MATERIALIZED\s+VIEW|FUNCTION|PROCEDURE|TYPE)\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)/gi;
 
 export function extractChunkSymbols(text: string): string[] {
   const symbols = new Set<string>();
-  for (const pattern of [SYMBOL_PATTERN, EXPORT_PATTERN]) {
+  for (const pattern of [SYMBOL_PATTERN, EXPORT_PATTERN, SQL_SYMBOL_PATTERN]) {
     pattern.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(text)) !== null && symbols.size < 24) symbols.add(match[1]);
@@ -183,8 +190,12 @@ function bm25Stats(index: SemanticIndex): Bm25Stats {
 }
 
 export function bm25Rank(index: SemanticIndex, query: string, limit: number): ScoredChunk[] {
-  const queryTokens = [...new Set(tokenize(query))];
-  if (queryTokens.length === 0) return [];
+  const { exact, synonyms } = expandConceptTokens(tokenize(query));
+  if (exact.length === 0) return [];
+  const weightedTerms: Array<{ token: string; weight: number }> = [
+    ...exact.map((token) => ({ token, weight: 1.0 })),
+    ...synonyms.map((token) => ({ token, weight: SYNONYM_TOKEN_WEIGHT }))
+  ];
   const { entries, documentFrequency, averageLength } = bm25Stats(index);
   if (entries.length === 0) return [];
   const k1 = 1.5;
@@ -196,17 +207,17 @@ export function bm25Rank(index: SemanticIndex, query: string, limit: number): Sc
     let score = 0;
     const lowerPath = entry.path.toLowerCase();
     const symbolSet = new Set(entry.chunk.symbols.map((symbol) => symbol.toLowerCase()));
-    for (const token of queryTokens) {
+    for (const { token, weight } of weightedTerms) {
       const tf = frequencies.get(token) ?? 0;
       const df = documentFrequency.get(token) ?? 0;
       if (df > 0 && tf > 0) {
         const idf = Math.log(1 + (entries.length - df + 0.5) / (df + 0.5));
-        score += idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (entry.tokens.length / averageLength))));
+        score += weight * idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (entry.tokens.length / averageLength))));
       }
       // Symbol and path evidence: a chunk DEFINING the queried name outranks a
       // chunk that merely mentions it, and a matching file name is a strong hint.
-      if (symbolSet.has(token)) score += 2.0;
-      if (lowerPath.includes(token)) score += 0.75;
+      if (symbolSet.has(token)) score += 2.0 * weight;
+      if (lowerPath.includes(token)) score += 0.75 * weight;
     }
     if (score > 0) scored.push({ path: entry.path, chunk: entry.chunk, score });
   }
@@ -263,14 +274,23 @@ function indexKey(path: string): string {
  */
 export function invalidateSemanticIndexPaths(workspaceId: string, paths: readonly string[]): void {
   if (!workspaceId || paths.length === 0) return;
-  const index = memoryIndexes.get(workspaceId);
+  const index = memoryIndexes.get(workspaceId) ?? loadPersisted(workspaceId);
   if (index) {
     let changed = false;
     for (const raw of paths) {
       const key = indexKey(raw);
-      if (key && index.files[key]) {
+      if (!key) continue;
+      if (index.files[key]) {
         delete index.files[key];
         changed = true;
+        continue;
+      }
+      const lower = key.toLowerCase();
+      for (const existingKey of Object.keys(index.files)) {
+        if (existingKey.toLowerCase() === lower) {
+          delete index.files[existingKey];
+          changed = true;
+        }
       }
     }
     if (changed) {
@@ -290,6 +310,7 @@ function emptyIndex(): SemanticIndex {
 
 function loadPersisted(workspaceId: string): SemanticIndex | null {
   try {
+    if (typeof localStorage === 'undefined') return null;
     const raw = localStorage.getItem(`${STORE_PREFIX}${workspaceId}`);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as SemanticIndex;
@@ -304,12 +325,176 @@ function persist(workspaceId: string, index: SemanticIndex): void {
   memoryIndexes.set(workspaceId, index);
   try {
     const json = JSON.stringify(index);
-    if (json.length <= MAX_INDEX_JSON_CHARS) {
-      localStorage.setItem(`${STORE_PREFIX}${workspaceId}`, json);
+    if (typeof localStorage !== 'undefined') {
+      if (json.length <= MAX_INDEX_JSON_CHARS) {
+        localStorage.setItem(`${STORE_PREFIX}${workspaceId}`, json);
+      } else {
+        localStorage.removeItem(`${STORE_PREFIX}${workspaceId}`);
+      }
     }
+    void saveWorkspaceIndexCache(workspaceId, 'semantic-index', json);
   } catch {
     /* quota: the in-memory index still serves this session */
   }
+}
+
+/**
+ * Restore a persisted semantic index (including >1.5 MB enterprise indexes)
+ * from Electron userData cache / IndexedDB / localStorage into RAM so Round-0
+ * pre-flight queries answer in <5ms.
+ */
+export async function hydrateSemanticIndex(workspaceId: string): Promise<SemanticIndex | null> {
+  if (!workspaceId) return null;
+  const raw = await loadWorkspaceIndexCache(workspaceId, 'semantic-index', `${STORE_PREFIX}${workspaceId}`);
+  if (!raw) return memoryIndexes.get(workspaceId) ?? null;
+  try {
+    const parsed = JSON.parse(raw) as SemanticIndex;
+    if (!parsed || parsed.v !== 1 || typeof parsed.files !== 'object' || parsed.files === null) {
+      return memoryIndexes.get(workspaceId) ?? null;
+    }
+    const existing = memoryIndexes.get(workspaceId);
+    if (!existing || parsed.updatedAt >= existing.updatedAt) {
+      memoryIndexes.set(workspaceId, parsed);
+      return parsed;
+    }
+    return existing;
+  } catch {
+    return memoryIndexes.get(workspaceId) ?? null;
+  }
+}
+
+/**
+ * Incrementally seed/update the cached semantic index from in-memory files
+ * (e.g. files already loaded by `useRepoMapFiles`), keyed by FNV-1a version
+ * so unchanged files are skipped and large indexes persist cleanly off-localStorage.
+ */
+export function warmSemanticIndexFromFiles(
+  workspaceId: string,
+  files: ReadonlyArray<{ name: string; content: string }>
+): SemanticIndex {
+  const index: SemanticIndex = memoryIndexes.get(workspaceId) ?? loadPersisted(workspaceId) ?? emptyIndex();
+  if (!workspaceId || files.length === 0) return index;
+
+  let chunkCount = Object.values(index.files).reduce((total, file) => total + file.chunks.length, 0);
+  let changed = false;
+  for (const file of files) {
+    const key = indexKey(file.name);
+    if (!key || file.content.length > MAX_FILE_BYTES) continue;
+    if (Object.keys(index.files).length >= MAX_INDEX_FILES && !index.files[key]) {
+      index.truncated = true;
+      break;
+    }
+    const version = `v:${file.content.length}:${fnv1aHash(file.content)}`;
+    const existing = index.files[key];
+    if (existing && existing.version === version) continue;
+    if (chunkCount >= MAX_INDEX_CHUNKS && !existing) {
+      index.truncated = true;
+      continue;
+    }
+    const chunks = chunkText(file.content, key);
+    chunkCount += chunks.length - (existing?.chunks.length ?? 0);
+    index.files[key] = { version, chunks };
+    changed = true;
+  }
+  if (changed) {
+    index.updatedAt = Date.now();
+    persist(workspaceId, index);
+  } else if (!memoryIndexes.has(workspaceId)) {
+    memoryIndexes.set(workspaceId, index);
+  }
+  return index;
+}
+
+export interface SemanticHint {
+  path: string;
+  symbol?: string;
+  line: number;
+  score: number;
+}
+
+/**
+ * Fast (<5ms hot-cache) pre-flight semantic lookup used by `useContextBuilder`
+ * when `resolveTargetLock()` abstains. Reads ONLY cached BM25 state (zero disk
+ * walk, zero network requests), optionally seeding a bounded slice from
+ * already-loaded in-memory files if cache is cold.
+ */
+export function queryCachedSemanticHints(
+  workspaceId: string,
+  query: string,
+  options: {
+    limit?: number;
+    excludePaths?: readonly string[];
+    fallbackFiles?: ReadonlyArray<{ name: string; content: string }>;
+    maxFallbackFiles?: number;
+  } = {}
+): SemanticHint[] {
+  const trimmed = query.trim();
+  if (trimmed.length < 2) return [];
+  const limit = Math.max(1, Math.min(options.limit ?? 2, 10));
+
+  let index = (workspaceId ? memoryIndexes.get(workspaceId) ?? loadPersisted(workspaceId) : null);
+  if ((!index || Object.keys(index.files).length === 0) && options.fallbackFiles && options.fallbackFiles.length > 0) {
+    const cap = Math.max(1, options.maxFallbackFiles ?? 250);
+    index = warmSemanticIndexFromFiles(workspaceId || '__ephemeral__', options.fallbackFiles.slice(0, cap));
+  }
+  if (!index || Object.keys(index.files).length === 0) return [];
+
+  const excluded = new Set((options.excludePaths ?? []).map((p) => indexKey(p).toLowerCase()));
+  const ranked = bm25Rank(index, trimmed, Math.max(limit * 4, 8));
+  const hints: SemanticHint[] = [];
+  const seenPaths = new Set<string>();
+  for (const hit of ranked) {
+    const norm = indexKey(hit.path).toLowerCase();
+    if (seenPaths.has(norm) || excluded.has(norm)) continue;
+    seenPaths.add(norm);
+    hints.push({
+      path: hit.path,
+      ...(hit.chunk.symbols[0] ? { symbol: hit.chunk.symbols[0] } : {}),
+      line: hit.chunk.startLine,
+      score: hit.score
+    });
+    if (hints.length >= limit) break;
+  }
+  return hints;
+}
+
+export interface PreFlightSemanticFallback {
+  hints: SemanticHint[];
+  candidatePaths: string[];
+  hintLine: string | null;
+}
+
+/**
+ * Pure pre-flight helper used by `useContextBuilder` when `resolveTargetLock()`
+ * abstains. Formats Top-2 local BM25 + concept-synonym candidate `file:symbol`
+ * hints cleanly for Round-0 context injection and feeds their paths into
+ * downstream dependency lookup.
+ */
+export function resolvePreFlightSemanticFallback(
+  workspaceId: string,
+  query: string,
+  options: {
+    limit?: number;
+    excludePaths?: readonly string[];
+    fallbackFiles?: ReadonlyArray<{ name: string; content: string }>;
+    maxFallbackFiles?: number;
+  } = {}
+): PreFlightSemanticFallback {
+  const hints = queryCachedSemanticHints(workspaceId, query, {
+    ...options,
+    limit: options.limit ?? 2
+  });
+  if (hints.length === 0) {
+    return { hints: [], candidatePaths: [], hintLine: null };
+  }
+  const formatted = hints
+    .map((hint) => `${hint.path}${hint.symbol ? `:${hint.symbol}` : ''} (L${hint.line})`)
+    .join(', ');
+  return {
+    hints,
+    candidatePaths: hints.map((hint) => hint.path),
+    hintLine: `SEMANTIC PRE-FLIGHT HINTS — Target Lock abstained; top ${hints.length} local semantic match(es) (verify with read_file before editing): ${formatted}.`
+  };
 }
 
 /** Best-effort on-disk mirror; a refusal never fails the search. */

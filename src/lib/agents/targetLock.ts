@@ -125,16 +125,36 @@ export interface VibeMatch {
  * words it shares with the query (a `HeroSection.tsx` hit on "hero" + "section"
  * beats a lone `Card.tsx`).
  */
+const GENERIC_BASENAMES = new Set(['index', 'page', 'route', 'routes', 'layout']);
+
+function normalizeVibeToken(word: string): string {
+  if ((VIBE_WORDS as readonly string[]).includes(word)) return word;
+  if (word.endsWith('ies') && word.length > 4) {
+    const singular = `${word.slice(0, -3)}y`;
+    if ((VIBE_WORDS as readonly string[]).includes(singular)) return singular;
+  }
+  if (word.endsWith('s') && word.length > 3) {
+    const singular = word.slice(0, -1);
+    if ((VIBE_WORDS as readonly string[]).includes(singular)) return singular;
+  }
+  return '';
+}
+
 export function matchVibeComponents(query: string, files: readonly string[]): VibeMatch[] {
   const words = new Set(
-    (query.toLowerCase().match(/[a-z]+/g) ?? []).filter((word) => (VIBE_WORDS as readonly string[]).includes(word))
+    (query.toLowerCase().match(/[a-z0-9]+/g) ?? [])
+      .map(normalizeVibeToken)
+      .filter((word) => word.length > 0)
   );
   if (words.size === 0) return [];
   const matches: VibeMatch[] = [];
   for (const file of files) {
     if (!COMPONENT_EXT.test(file)) continue;
-    const base = file.split('/').pop()!.replace(COMPONENT_EXT, '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    const hit = [...words].filter((word) => base.includes(word));
+    const parts = file.replace(/\\/g, '/').split('/');
+    const rawBase = parts.pop()!.replace(COMPONENT_EXT, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const parent = parts.length > 0 ? parts[parts.length - 1].toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+    const candidate = GENERIC_BASENAMES.has(rawBase) && parent ? `${parent}${rawBase}` : rawBase;
+    const hit = [...words].filter((word) => candidate.includes(word));
     if (hit.length > 0) matches.push({ path: file, words: hit, score: hit.length });
   }
   matches.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));

@@ -169,3 +169,27 @@ test('rename_symbol validates names and reports service refusals', async () => {
   assert.equal(outside.ok, false);
   assert.ok(outside.error?.includes('outside the workspace root'));
 });
+
+test('find_references safely escapes regex metacharacters like $store and reads staged pending buffers', async () => {
+  const pc = await import('./pendingChanges');
+  files['src/store.ts'] = { content: 'export const $store = { count: 1 };\n', version: 'hash-s' };
+  const dollarRes = await ci.handleFindReferences('ws', { file: 'src/store.ts', line: 1, symbol: '$store' });
+  assert.equal(dollarRes.ok, true);
+  assert.deepEqual(referenceCalls.at(-1), { path: 'src/store.ts', line: 0, character: 13 });
+
+  pc.clearWorkspacePendingChanges('ws-staged-ci');
+  pc.stagePendingChange('ws-staged-ci', {
+    path: 'src/a.ts',
+    content: "export function greetStaged(name: string) {\n  return 'yo ' + name;\n}\n",
+    originalContent: A_CONTENT,
+    originalVersion: 'hash-a',
+    created: false
+  });
+  try {
+    const stagedRes = await ci.handleGoToDefinition('ws-staged-ci', { file: 'src/a.ts', line: 1, symbol: 'greetStaged' });
+    assert.equal(stagedRes.ok, true);
+  } finally {
+    pc.clearWorkspacePendingChanges('ws-staged-ci');
+    delete files['src/store.ts'];
+  }
+});

@@ -494,3 +494,146 @@ test('edit_file on a conflicted file names the markers and the write_file escape
     assert.equal(disk.writes.length, 0, 'a refused ambiguous edit writes nothing');
   });
 });
+
+test('patch_lines replaces 1-based inclusive spans, preserves CRLF, enforces expected_anchor, and stages when Auto-Save is OFF', async () => {
+  const crlf = 'const first = 1;\r\nconst targetA = 10;\r\nconst targetB = 20;\r\nconst last = 99;\r\n';
+  const disk = diskStub({ 'src/crlf.ts': crlf });
+  await withBridge(disk.bridge, async () => {
+    const mismatch = await runTool('ws', {
+      name: 'patch_lines',
+      args: {
+        path: 'src/crlf.ts',
+        start_line: 2,
+        end_line: 3,
+        expected_anchor: 'targetZ',
+        replacement: 'const targetA = 11;\nconst targetB = 22;'
+      }
+    });
+    assert.equal(mismatch.ok, false);
+    assert.match(mismatch.error ?? '', /anchor mismatch/i);
+    assert.equal(disk.writes.length, 0);
+
+    const oob = await runTool('ws', {
+      name: 'patch_lines',
+      args: { path: 'src/crlf.ts', start_line: 2, end_line: 99, replacement: 'x' }
+    });
+    assert.equal(oob.ok, false);
+    assert.match(oob.error ?? '', /out of range/i);
+
+    const patched = await runTool('ws', {
+      name: 'patch_lines',
+      args: {
+        path: 'src/crlf.ts',
+        start_line: 2,
+        end_line: 3,
+        expected_anchor: 'targetA',
+        replacement: 'const targetA = 11;\nconst targetB = 22;'
+      }
+    });
+    assert.equal(patched.ok, true);
+    assert.match(patched.content, /Patched src\/crlf\.ts/);
+    assert.equal(
+      disk.files.get('src/crlf.ts')?.content,
+      'const first = 1;\r\nconst targetA = 11;\r\nconst targetB = 22;\r\nconst last = 99;\r\n'
+    );
+
+    setWorkspaceAutoSave('ws-patch-stage', false);
+    clearWorkspacePendingChanges('ws-patch-stage');
+    try {
+      const staged = await runTool('ws-patch-stage', {
+        name: 'patch_lines',
+        args: { path: 'src/crlf.ts', start_line: 1, end_line: 1, replacement: 'const first = 2;' }
+      });
+      assert.equal(staged.ok, true);
+      assert.match(staged.content, /staged pending review/);
+      assert.equal(listPendingChanges('ws-patch-stage').length, 1);
+    } finally {
+      clearWorkspacePendingChanges('ws-patch-stage');
+      setWorkspaceAutoSave('ws-patch-stage', true);
+    }
+  });
+});
+
+test('closestRegion finds matches past line 4,000 and read_files unlocks large-file patch_lines gate', async () => {
+  const giantLines = Array.from({ length: 4505 }, (_, i) =>
+    i === 4320
+      ? 'export function calculateReferralBonus(credits: number) { return credits + 50; }'
+      : `const fillerLine${i} = ${i};`
+  );
+  const giant = giantLines.join('\n');
+  assert.ok(giant.length > 24_000);
+  const disk = diskStub({ 'src/giant.ts': giant });
+  resetTurns();
+  beginTurn('ws-giant', 'patch giant', { scaffold: false, addPage: false });
+  await withBridge(disk.bridge, async () => {
+    const blocked = await runTool('ws-giant', {
+      name: 'patch_lines',
+      args: { path: 'src/giant.ts', start_line: 4321, end_line: 4321, replacement: 'export const x = 1;' }
+    });
+    assert.equal(blocked.refused, true, 'large unread file blocks blind write');
+
+    const readOk = await runTool('ws-giant', {
+      name: 'read_files',
+      args: { ranges: [{ path: 'src/giant.ts', start_line: 4318, end_line: 4324 }] }
+    });
+    assert.equal(readOk.ok, true);
+
+    const missedEdit = await runTool('ws-giant', {
+      name: 'edit_file',
+      args: {
+        path: 'src/giant.ts',
+        original: 'export function calculateReferralBonus(credits: number) { return credits + 999; }',
+        updated: 'export function calculateReferralBonus(credits: number) { return credits + 75; }'
+      }
+    });
+    assert.equal(missedEdit.ok, false);
+    assert.match(missedEdit.error ?? '', /Closest region on disk \(around line 432\d\)/);
+
+    const patchOk = await runTool('ws-giant', {
+      name: 'patch_lines',
+      args: {
+        path: 'src/giant.ts',
+        start_line: 4321,
+        end_line: 4321,
+        expected_anchor: 'calculateReferralBonus',
+        replacement: 'export function calculateReferralBonus(credits: number) { return credits + 100; }'
+      }
+    });
+    assert.equal(patchOk.ok, true);
+    assert.match(disk.files.get('src/giant.ts')?.content ?? '', /credits \+ 100/);
+  });
+  resetTurns();
+});
+
+test('verify detects monorepo package manifests in modified subdirectories when root has no manifest', async () => {
+  const ranCommands: string[] = [];
+  const files: Record<string, string> = {
+    'frontend/package.json': JSON.stringify({ name: 'frontend', scripts: { typecheck: 'tsc --noEmit' } }),
+    'frontend/src/App.tsx': 'export const App = () => null;\n'
+  };
+  resetTurns();
+  const turn = beginTurn('ws-mono', 'verify monorepo', { scaffold: false, addPage: false });
+  noteRead(turn, 'frontend/src/App.tsx');
+  noteWrite(turn, ['frontend/src/App.tsx']);
+  await withBridge({
+    readFile: async (_id: string, p: string) => {
+      if (!(p in files)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { name: p, content: files[p], version: 'v1' };
+    },
+    listDirectory: async (_id: string, dir: string) => {
+      if (dir === '') return { entries: [{ path: 'frontend', kind: 'directory' }], nextCursor: null };
+      if (dir === 'frontend') return { entries: [{ path: 'frontend/package.json', kind: 'file' }], nextCursor: null };
+      return { entries: [], nextCursor: null };
+    },
+    runCommand: async (_id: string, cmd: string) => {
+      ranCommands.push(cmd);
+      return { stdout: '', stderr: '', exitCode: 0 };
+    },
+    diagnostics: async () => ({ diagnostics: [], truncated: false })
+  }, async () => {
+    const res = await runTool('ws-mono', { name: 'verify', args: {} });
+    assert.equal(res.ok, true);
+    assert.ok(ranCommands.some((cmd) => cmd.includes('frontend') && cmd.includes('typecheck')), `expected subdir verify command, got ${ranCommands.join(', ')}`);
+  });
+  resetTurns();
+});

@@ -28,7 +28,7 @@ export interface VerifyReport {
 }
 
 export interface VerifyPlan {
-  kind: 'node' | 'python' | 'rust' | 'go' | 'unknown';
+  kind: 'node' | 'python' | 'rust' | 'go' | 'java' | 'dotnet' | 'unknown';
   packageManager: string | null;
   commands: string[];
 }
@@ -109,12 +109,21 @@ export function planVerification(
   if (entries.has('pytest.ini') || entries.has('pyproject.toml') || entries.has('setup.cfg') || entries.has('requirements.txt') || entries.has('setup.py')) {
     return { kind: 'python', packageManager: null, commands: ['python -m pytest -x -q'] };
   }
+  if (entries.has('pom.xml')) {
+    return { kind: 'java', packageManager: 'maven', commands: ['mvn test -B -q'] };
+  }
+  if (entries.has('build.gradle') || entries.has('build.gradle.kts')) {
+    return { kind: 'java', packageManager: 'gradle', commands: ['gradle test --console=plain'] };
+  }
+  if ([...entries].some((entry) => /\.(?:sln|csproj)$/i.test(entry))) {
+    return { kind: 'dotnet', packageManager: 'dotnet', commands: ['dotnet test --nologo'] };
+  }
   return { kind: 'unknown', packageManager: null, commands: [] };
 }
 
 /** A run_command line that counts as verification when it exits for real. */
 export const VERIFY_COMMAND_PATTERN =
-  /\b(typecheck|type-check|tsc|vitest|jest|pytest|cargo\s+(check|test|build|clippy)|go\s+(vet|test|build)|npm\s+(run\s+)?(build|test|lint)|pnpm\s+(run\s+)?(build|test|lint|typecheck)|yarn\s+(build|test|lint|typecheck)|bun\s+(run\s+)?(build|test)|eslint|flake8|mypy|ruff)\b/i;
+  /\b(typecheck|type-check|tsc|vitest|jest|pytest|cargo\s+(check|test|build|clippy)|go\s+(vet|test|build)|npm\s+(run\s+)?(build|test|lint)|pnpm\s+(run\s+)?(build|test|lint|typecheck)|yarn\s+(build|test|lint|typecheck)|bun\s+(run\s+)?(build|test)|mvn\s+test|gradle\s+test|dotnet\s+test|eslint|flake8|mypy|ruff)\b/i;
 
 export function isVerifyCommand(command: string): boolean {
   return VERIFY_COMMAND_PATTERN.test(command);
@@ -197,6 +206,33 @@ export function parseVerifyOutput(
     if (stylish && currentFile && stylish[3] === 'error') {
       pushError(currentFile, Number(stylish[1]), stylish[4]);
     }
+  }
+  // eslint compact format: path: line 12, col 5, Error - message
+  for (const match of text.matchAll(/^(.+?):\s*line\s+(\d+),\s*col\s+(\d+),\s*Error\s*-\s*(.*)$/gm)) {
+    pushError(match[1], Number(match[2]), match[4]);
+  }
+  // mypy: src/app.py:12: error: Incompatible types ...
+  for (const match of text.matchAll(/^([^\s:]+\.pyi?):(\d+):(?:\d+:)?\s*error:\s*(.*)$/gm)) {
+    pushError(match[1], Number(match[2]), match[3]);
+  }
+  // ruff: src/app.py:12:5: F401 ...
+  for (const match of text.matchAll(/^([^\s:]+\.pyi?):(\d+):(\d+):\s*([A-Z]+\d+.*)$/gm)) {
+    pushError(match[1], Number(match[2]), match[4]);
+  }
+  // javac / maven: [ERROR] /path/File.java:[12,5] error message OR File.java:12: error: message
+  for (const match of text.matchAll(/^(?:\[ERROR\]\s+)?([^\s:]+\.java):\[(\d+),(\d+)\]\s*(.*)$/gm)) {
+    pushError(match[1], Number(match[2]), match[4]);
+  }
+  for (const match of text.matchAll(/^([^\s:]+\.java):(\d+):\s*error:\s*(.*)$/gm)) {
+    pushError(match[1], Number(match[2]), match[3]);
+  }
+  // dotnet / csc / msbuild: File.cs(12,5): error CS1002: ...
+  for (const match of text.matchAll(/^(.+?\.cs)\((\d+),(\d+)\):\s*error\s+(CS\d+:.*)$/gm)) {
+    pushError(match[1], Number(match[2]), match[4]);
+  }
+  // gcc / clang / g++: file.cpp:12:5: error: ...
+  for (const match of text.matchAll(/^([^\s:]+\.(?:c|cc|cpp|cxx|h|hpp)):(\d+):(\d+):\s*(?:fatal )?error:\s*(.*)$/gm)) {
+    pushError(match[1], Number(match[2]), match[4]);
   }
   // go: ./main.go:12:5: message
   for (const match of text.matchAll(/^(\.?\/?[^\s:]+\.go):(\d+):(\d+):\s*(.*)$/gm)) {

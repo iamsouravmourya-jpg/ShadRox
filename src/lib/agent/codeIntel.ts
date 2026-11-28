@@ -3,6 +3,8 @@ import { relativeToRoot } from '../diagnostics';
 import { groupEditsByFile, planFileEdits } from '../editor/edits';
 import type { MapInputFile } from '../repoMap';
 import { buildOryTree, dependentsFromGraph } from './repoMap';
+import { mapCandidates } from '../repoMap';
+import { getPendingChange } from './pendingChanges';
 import { enumerateWorkspaceFiles } from './semanticIndex';
 import type { ToolDefinition, ToolOutcome } from './tools';
 
@@ -60,6 +62,28 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function normalizeCodeIntelPath(value: unknown): string | null {
+  const raw = asString(value);
+  return raw ? raw.replace(/\\/g, '/').replace(/^\.\//, '') : null;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function readEffective(
+  desktop: ShadRoxDesktopAPI,
+  workspaceId: string,
+  normalizedPath: string
+): Promise<{ content: string; version: string }> {
+  const staged = getPendingChange(workspaceId, normalizedPath);
+  if (staged) {
+    return { content: staged.content, version: staged.originalVersion ?? 'staged' };
+  }
+  const read = await desktop.readFile(workspaceId, normalizedPath);
+  return { content: read.content, version: read.version };
+}
+
 function asLine(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   const line = Math.trunc(value);
@@ -100,8 +124,11 @@ function positionOnLine(lineText: string, symbol: string | null, line: number): 
 /** Find a declaration-looking occurrence of `symbol` in the file, else the first. */
 function declarationPosition(content: string, symbol: string): Position | null {
   const lines = content.split('\n');
-  const declaration = new RegExp(`\\b(?:const|let|var|function|class|interface|type|enum|namespace)\\s+${symbol}\\b`);
-  const importExport = new RegExp(`\\b(?:import|export)\\b[^;\\n]*\\b${symbol}\\b`);
+  const safeSymbol = escapeRegExp(symbol);
+  const symbolBoundary = /^[A-Za-z0-9_]/.test(symbol) ? `\\b${safeSymbol}` : safeSymbol;
+  const symbolEnd = /[A-Za-z0-9_]$/.test(symbol) ? `${symbolBoundary}\\b` : symbolBoundary;
+  const declaration = new RegExp(`\\b(?:const|let|var|function|class|interface|type|enum|namespace)\\s+${symbolEnd}`);
+  const importExport = new RegExp(`\\b(?:import|export)\\b[^;\\n]*${symbolEnd}`);
   let first: Position | null = null;
   for (let index = 0; index < lines.length; index += 1) {
     const identifiers = identifiersOnLine(lines[index]).filter((entry) => entry.name === symbol);
@@ -120,7 +147,7 @@ async function resolveSymbolPosition(
   file: string | null
 ): Promise<{ path: string; position: Position } | null> {
   if (file) {
-    const read = await desktop.readFile(workspaceId, file);
+    const read = await readEffective(desktop, workspaceId, file);
     const position = declarationPosition(read.content, symbol);
     return position ? { path: file, position } : null;
   }
@@ -145,7 +172,7 @@ async function previewLines(desktop: ShadRoxDesktopAPI, workspaceId: string, pat
   const cache = new Map<string, string[]>();
   for (const path of [...new Set(paths)].slice(0, 40)) {
     try {
-      const file = await desktop.readFile(workspaceId, path);
+      const file = await readEffective(desktop, workspaceId, path);
       cache.set(path, file.content.split('\n'));
     } catch {
       /* unreadable target: the location still stands, without a preview */
@@ -163,14 +190,14 @@ export async function handleFindReferences(workspaceId: string, args: Record<str
   if (!desktop) return refusal('The desktop bridge is unavailable, so code intelligence cannot run.');
   if (!workspaceId) return refusal('find_references needs an opened folder workspace.');
   const symbol = asString(args.symbol);
-  const file = asString(args.file);
+  const file = normalizeCodeIntelPath(args.file);
   const line = asLine(args.line);
   if (!symbol && !(file && line)) return refusal('find_references needs symbol, or file plus line (1-based).');
   if (file && !isSupportedFile(file)) return notSupported(file);
   try {
     let target: { path: string; position: Position } | null = null;
     if (file && line) {
-      const read = await desktop.readFile(workspaceId, file);
+      const read = await readEffective(desktop, workspaceId, file);
       const lines = read.content.split('\n');
       if (line > lines.length) return refusal(`${file} has ${lines.length} lines; line ${line} does not exist.`);
       const position = positionOnLine(lines[line - 1], symbol, line);
@@ -207,12 +234,12 @@ export async function handleGoToDefinition(workspaceId: string, args: Record<str
   const desktop = getDesktopBridge();
   if (!desktop) return refusal('The desktop bridge is unavailable, so code intelligence cannot run.');
   if (!workspaceId) return refusal('go_to_definition needs an opened folder workspace.');
-  const file = asString(args.file);
+  const file = normalizeCodeIntelPath(args.file);
   const line = asLine(args.line);
   if (!file || !line) return refusal('go_to_definition needs file and line (1-based).');
   if (!isSupportedFile(file)) return notSupported(file);
   try {
-    const read = await desktop.readFile(workspaceId, file);
+    const read = await readEffective(desktop, workspaceId, file);
     const lines = read.content.split('\n');
     if (line > lines.length) return refusal(`${file} has ${lines.length} lines; line ${line} does not exist.`);
     const position = positionOnLine(lines[line - 1], asString(args.symbol), line);
@@ -257,7 +284,7 @@ export async function handleRenameSymbol(workspaceId: string, args: Record<strin
   const desktop = getDesktopBridge();
   if (!desktop) return refusal('The desktop bridge is unavailable, so code intelligence cannot run.');
   if (!workspaceId) return refusal('rename_symbol needs an opened folder workspace.');
-  const file = asString(args.file);
+  const file = normalizeCodeIntelPath(args.file);
   const symbol = asString(args.symbol);
   const newName = asString(args.newName);
   if (!file || !symbol || !newName) return refusal('rename_symbol needs file, symbol and newName.');
@@ -267,7 +294,7 @@ export async function handleRenameSymbol(workspaceId: string, args: Record<strin
   if (newName === symbol) return { ok: true, content: 'newName equals the current name — nothing to rename.' };
   if (!workspaceRoot) return refusal('The workspace root is not registered with code intelligence yet; reopen the folder and retry.');
   try {
-    const read = await desktop.readFile(workspaceId, file);
+    const read = await readEffective(desktop, workspaceId, file);
     const position = declarationPosition(read.content, symbol);
     if (!position) return refusal(`Symbol "${symbol}" does not occur in ${file}. Read the file and check the exact name.`);
     const result = await desktop.rename(workspaceId, file, position.line, position.character, newName);
@@ -375,10 +402,12 @@ export async function handleGetDependents(workspaceId: string, args: Record<stri
   const limit = Math.min(Math.max(asNumber(args.limit) ?? 20, 1), 50);
   try {
     const { paths } = await enumerateWorkspaceFiles(desktop, workspaceId);
-    if (paths.length === 0) return { ok: true, content: 'No files to analyze in this workspace.' };
+    const candidatePaths = mapCandidates(paths.map((path) => ({ path, size: 1 })));
+    const analysisPaths = candidatePaths.length > 0 ? candidatePaths : paths;
+    if (analysisPaths.length === 0) return { ok: true, content: 'No files to analyze in this workspace.' };
     const files: MapInputFile[] = [];
-    for (let offset = 0; offset < paths.length && files.length < MAX_DEPENDENT_FILES; offset += DEPENDENT_LOAD_BATCH) {
-      const batch = paths.slice(offset, offset + DEPENDENT_LOAD_BATCH);
+    for (let offset = 0; offset < analysisPaths.length && files.length < MAX_DEPENDENT_FILES; offset += DEPENDENT_LOAD_BATCH) {
+      const batch = analysisPaths.slice(offset, offset + DEPENDENT_LOAD_BATCH);
       let loaded;
       try {
         loaded = await desktop.loadFiles(workspaceId, batch, { maxBytesPerFile: MAX_DEPENDENT_READ_BYTES, maxTotalBytes: MAX_DEPENDENT_BATCH_BYTES });

@@ -54,6 +54,12 @@ import {
   extractSignatures,
   mapCandidates
 } from '../repoMap';
+import { countConceptClusterHits } from './conceptSynonyms';
+import {
+  fnv1aHash,
+  loadWorkspaceIndexCache,
+  saveWorkspaceIndexCache
+} from './indexPersistence';
 
 /** One symbol occurrence; the TypeScript shape of aider's Tag namedtuple. */
 export interface RepoMapTag {
@@ -93,11 +99,21 @@ export interface RepoMapOptions {
   listFiles?: () => Promise<readonly MapTreeEntry[]>;
   /** Read one relative path. Required when `files` is absent. */
   readFile?: (relPath: string) => Promise<string | null>;
+  /** Currently focused editor file (used for Active-Package Enterprise scoping). */
+  activeFile?: string;
+  /** True total file count when `files` / `diskFileTree` is truncated at 5,000. */
+  totalFileCount?: number;
+  /** Whether the workspace explorer tree walk hit its limit. */
+  treeTruncated?: boolean;
+  /** Optional full/discovered path list for computing the lightweight directory summary. */
+  allTreePaths?: readonly string[];
 }
 
 export const DEFAULT_MAP_TOKENS = 1024;
 /** The billing rate of `../repoMap`; changing it here desynchronizes the two map layers. */
 export const CHARS_PER_TOKEN = 4;
+/** Above this discovered file count, switch automatically to Active-Package + Priority-Root mode. */
+export const LARGE_REPO_THRESHOLD = 3_000;
 const MAX_LINE_CHARS = 400;
 const MAX_REF_TOKENS_PER_FILE = 20_000;
 /** Bounds for the read-from-disk path; the pre-read path is already bounded by useRepoMapFiles. */
@@ -275,24 +291,36 @@ interface CachedFileTags {
   exports: string[];
 }
 const fileTagsCache = new Map<string, CachedFileTags>();
-const FILE_TAGS_CACHE_MAX = 2_000;
+const FILE_TAGS_CACHE_MAX = 3_500;
+const ORY_TAGS_STORE_PREFIX = 'shadrox.oryTags.v1:';
 
-/** FNV-1a over the file bytes; the same content always yields the same key. */
+/** FNV-1a over the file bytes; delegates to shared indexPersistence hash. */
 function contentHash(content: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < content.length; index += 1) {
-    hash ^= content.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
+  return fnv1aHash(content);
 }
 
-/** Exported (non-`other`) declaration names, de-duplicated, in source order. */
-function exportedSymbolNames(signatures: readonly Signature[]): string[] {
+const JS_TS_EXT = /\.(?:[cm]?ts|tsx|[cm]?js|jsx)$/i;
+
+/** Exported / public (non-`other`) declaration names, de-duplicated, in source order. */
+function exportedSymbolNames(signatures: readonly Signature[], relFname = ''): string[] {
   const names: string[] = [];
   const seen = new Set<string>();
+  const isJsTs = !relFname || JS_TS_EXT.test(relFname);
+  const lower = relFname.toLowerCase();
+  const isGo = lower.endsWith('.go');
+  const isRust = lower.endsWith('.rs');
   for (const sig of signatures) {
-    if (sig.kind === 'other' || !sig.text.startsWith('export ')) continue;
+    if (sig.kind === 'other') continue;
+    if (isJsTs) {
+      if (!sig.text.startsWith('export ')) continue;
+    } else if (isGo) {
+      const bare = sig.name.includes('.') ? sig.name.split('.').pop() ?? sig.name : sig.name;
+      if (!/^[A-Z]/.test(bare)) continue;
+    } else if (isRust) {
+      if (!/^pub(?:\s|\()/.test(sig.text)) continue;
+    } else {
+      if (sig.name.startsWith('_')) continue;
+    }
     if (seen.has(sig.name)) continue;
     seen.add(sig.name);
     names.push(sig.name);
@@ -312,11 +340,18 @@ export function extractFileTagsCached(
 ): FileTags {
   const hash = contentHash(content);
   const cached = fileTagsCache.get(relFname);
-  if (cached && cached.hash === hash) return cached.tags;
+  if (cached && cached.hash === hash) {
+    fileTagsCache.delete(relFname);
+    fileTagsCache.set(relFname, cached);
+    return cached.tags;
+  }
   const sigs = signatures ?? extractSignatures(relFname, content);
   const tags = extractFileTags(relFname, relFname, content, sigs);
-  if (fileTagsCache.size >= FILE_TAGS_CACHE_MAX) fileTagsCache.clear();
-  fileTagsCache.set(relFname, { hash, tags, exports: exportedSymbolNames(sigs) });
+  if (fileTagsCache.size >= FILE_TAGS_CACHE_MAX) {
+    const oldest = fileTagsCache.keys().next().value;
+    if (oldest !== undefined) fileTagsCache.delete(oldest);
+  }
+  fileTagsCache.set(relFname, { hash, tags, exports: exportedSymbolNames(sigs, relFname) });
   return tags;
 }
 
@@ -338,6 +373,117 @@ export function repoMapCacheSize(): number {
 /** Drop the incremental cache (test seam; a long session is otherwise bounded). */
 export function clearRepoMapCache(): void {
   fileTagsCache.clear();
+}
+
+interface SerializedFileTagEntry {
+  relFname: string;
+  hash: string;
+  defs: RepoMapTag[];
+  refs: Array<[string, number]>;
+  exports: string[];
+}
+
+interface SerializedFileTagsSnapshot {
+  v: 1;
+  updatedAt: number;
+  entries: SerializedFileTagEntry[];
+}
+
+/** Serialize the incremental FileTags cache (including >1.5 MB snapshots) for persistent storage. */
+export function serializeFileTagsCache(): string {
+  const entries: SerializedFileTagEntry[] = [];
+  for (const [relFname, cached] of fileTagsCache) {
+    entries.push({
+      relFname,
+      hash: cached.hash,
+      defs: cached.tags.defs,
+      refs: [...cached.tags.refs.entries()],
+      exports: cached.exports
+    });
+  }
+  const snapshot: SerializedFileTagsSnapshot = {
+    v: 1,
+    updatedAt: Date.now(),
+    entries
+  };
+  return JSON.stringify(snapshot);
+}
+
+/**
+ * Restore FileTags entries from JSON snapshot into `fileTagsCache`, validating
+ * schema and optional expected FNV-1a file hashes so changed files never reuse
+ * stale tags.
+ */
+export function hydrateFileTagsFromJson(
+  raw: string,
+  expectedHashes?: ReadonlyMap<string, string>
+): number {
+  let parsed: Partial<SerializedFileTagsSnapshot>;
+  try {
+    parsed = JSON.parse(raw) as Partial<SerializedFileTagsSnapshot>;
+  } catch {
+    return 0;
+  }
+  if (!parsed || parsed.v !== 1 || !Array.isArray(parsed.entries)) return 0;
+
+  let restored = 0;
+  for (const item of parsed.entries) {
+    if (
+      !item ||
+      typeof item.relFname !== 'string' ||
+      !item.relFname ||
+      typeof item.hash !== 'string' ||
+      !/^[0-9a-f]{8}$/i.test(item.hash) ||
+      !Array.isArray(item.defs) ||
+      !Array.isArray(item.refs) ||
+      !Array.isArray(item.exports)
+    ) {
+      continue;
+    }
+    if (expectedHashes && expectedHashes.has(item.relFname) && expectedHashes.get(item.relFname) !== item.hash) {
+      continue;
+    }
+    const refs = new Map<string, number>();
+    for (const pair of item.refs) {
+      if (Array.isArray(pair) && typeof pair[0] === 'string' && typeof pair[1] === 'number' && pair[1] > 0) {
+        refs.set(pair[0], pair[1]);
+      }
+    }
+    if (fileTagsCache.size >= FILE_TAGS_CACHE_MAX && !fileTagsCache.has(item.relFname)) {
+      const oldest = fileTagsCache.keys().next().value;
+      if (oldest !== undefined) fileTagsCache.delete(oldest);
+    }
+    fileTagsCache.set(item.relFname, {
+      hash: item.hash,
+      tags: {
+        relFname: item.relFname,
+        fname: item.relFname,
+        defs: item.defs,
+        refs
+      },
+      exports: item.exports.filter((sym): sym is string => typeof sym === 'string')
+    });
+    restored += 1;
+  }
+  return restored;
+}
+
+/** Persist the incremental FileTags cache beyond `localStorage` limits via Electron disk / IndexedDB. */
+export async function persistFileTagsCache(workspaceId: string): Promise<void> {
+  if (!workspaceId || fileTagsCache.size === 0) return;
+  const json = serializeFileTagsCache();
+  await saveWorkspaceIndexCache(workspaceId, 'ory-tags', json, `${ORY_TAGS_STORE_PREFIX}${workspaceId}`);
+}
+
+/** Restore persisted FileTags entries from Electron userData cache / IndexedDB / localStorage. */
+export async function hydrateFileTagsCache(
+  workspaceId: string,
+  expectedHashes?: ReadonlyMap<string, string>
+): Promise<number> {
+  if (!workspaceId) return 0;
+  const raw = await loadWorkspaceIndexCache(workspaceId, 'ory-tags', `${ORY_TAGS_STORE_PREFIX}${workspaceId}`);
+  if (!raw) return 0;
+  return hydrateFileTagsFromJson(raw, expectedHashes);
 }
 
 // ---------------------------------------------------------------------------
@@ -775,48 +921,286 @@ function toRel(path: string, rootPath: string): string {
   return normalized.replace(/^\.\//, '');
 }
 
+export interface OryDirectorySummary {
+  dir: string;
+  fileCount: number;
+}
+
+function directoryBucket(relPath: string): string {
+  const norm = relPath.replace(/\\/g, '/').replace(/^\.\//, '');
+  const parts = norm.split('/').filter(Boolean);
+  if (parts.length <= 1) return '(root)';
+  if (/^(?:packages|apps|services|modules|libs)$/i.test(parts[0]) && parts.length >= 2) {
+    return `${parts[0]}/${parts[1]}/`;
+  }
+  return `${parts[0]}/`;
+}
+
+export function buildDirectoryIndex(allPaths: readonly string[]): OryDirectorySummary[] {
+  const counts = new Map<string, number>();
+  for (const raw of allPaths) {
+    const bucket = directoryBucket(raw);
+    counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([dir, fileCount]) => ({ dir, fileCount }))
+    .sort((a, b) => b.fileCount - a.fileCount || (a.dir < b.dir ? -1 : a.dir > b.dir ? 1 : 0));
+}
+
+function activePackagePrefixes(seeds: readonly string[]): string[] {
+  const prefixes = new Set<string>();
+  for (const raw of seeds) {
+    const norm = raw.replace(/\\/g, '/').replace(/^\.\//, '');
+    const parts = norm.split('/').filter(Boolean);
+    if (parts.length <= 1) continue;
+    if (/^(?:packages|apps|services|modules|libs)$/i.test(parts[0]) && parts.length >= 2) {
+      prefixes.add(`${parts[0]}/${parts[1]}/`);
+    } else if (parts.length >= 3) {
+      prefixes.add(`${parts[0]}/${parts[1]}/`);
+      prefixes.add(`${parts[0]}/`);
+    } else {
+      prefixes.add(`${parts[0]}/`);
+    }
+  }
+  return [...prefixes];
+}
+
+const RELATIVE_IMPORT_SPEC = /(?:import|export)\s+(?:[^'"]{0,200}\s+from\s+)?['"](\.[^'"]{1,160})['"]|require\(\s*['"](\.[^'"]{1,160})['"]\s*\)/g;
+const RELATIVE_TARGET_EXTS = ['', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '/index.ts', '/index.tsx', '/index.js', '/index.jsx'];
+
+function resolveOneHopImports(
+  seedPaths: readonly string[],
+  contents: ReadonlyMap<string, string>,
+  availablePaths: ReadonlySet<string>
+): string[] {
+  const targets = new Set<string>();
+  for (const seed of seedPaths) {
+    const text = contents.get(seed);
+    if (!text) continue;
+    const baseParts = seed.split('/').slice(0, -1);
+    RELATIVE_IMPORT_SPEC.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = RELATIVE_IMPORT_SPEC.exec(text)) !== null) {
+      const spec = match[1] ?? match[2] ?? '';
+      if (!spec.startsWith('.')) continue;
+      const combined = [...baseParts];
+      for (const seg of spec.split('/')) {
+        if (!seg || seg === '.') continue;
+        if (seg === '..') combined.pop();
+        else combined.push(seg);
+      }
+      const normalizedBase = combined.join('/');
+      for (const ext of RELATIVE_TARGET_EXTS) {
+        const candidate = `${normalizedBase}${ext}`;
+        if (availablePaths.has(candidate)) {
+          targets.add(candidate);
+          break;
+        }
+      }
+    }
+  }
+  return [...targets];
+}
+
+export interface EnterprisePartition {
+  scopedPaths: string[];
+  directoryIndex: OryDirectorySummary[];
+  isEnterprise: boolean;
+  totalFiles: number;
+}
+
+/**
+ * Scope huge (>3,000-file) enterprise repositories down to Active-Package +
+ * Priority-Root paths (max `MAX_MAP_FILES = 1,500`) while summarizing every
+ * remaining directory in a lightweight path-only directory index.
+ */
+export function partitionEnterprisePaths(
+  allPaths: readonly string[],
+  options: {
+    activeFile?: string;
+    openTabs?: readonly string[];
+    mentionedPaths?: readonly string[];
+    maxFiles?: number;
+    totalFileCount?: number;
+    treeTruncated?: boolean;
+  } = {}
+): EnterprisePartition {
+  const normalized = [...new Set(allPaths.map((p) => p.replace(/\\/g, '/').replace(/^\.\//, '')).filter(Boolean))];
+  const totalFiles = Math.max(normalized.length, options.totalFileCount ?? 0);
+  const isEnterprise = totalFiles > LARGE_REPO_THRESHOLD || Boolean(options.treeTruncated);
+  const directoryIndex = buildDirectoryIndex(normalized);
+  const maxFiles = options.maxFiles ?? MAX_MAP_FILES;
+  if (!isEnterprise && normalized.length <= maxFiles) {
+    return { scopedPaths: normalized, directoryIndex, isEnterprise, totalFiles };
+  }
+
+  const exactSeeds = new Set<string>(
+    [options.activeFile, ...(options.openTabs ?? []), ...(options.mentionedPaths ?? [])]
+      .filter((v): v is string => typeof v === 'string' && v.length > 0)
+      .map((p) => p.replace(/\\/g, '/').replace(/^\.\//, ''))
+  );
+  const pkgPrefixes = activePackagePrefixes([...exactSeeds]);
+
+  const tierOf = (rel: string): number => {
+    if (exactSeeds.has(rel)) return 0;
+    if (pkgPrefixes.some((prefix) => rel.startsWith(prefix))) return 1;
+    if (isImportantFile(rel)) return 2;
+    if (/^(?:src|server|app|api)\//i.test(rel)) return 3;
+    if (/^(?:packages|apps)\/[^/]+\/(?:src|server|app|api)\//i.test(rel)) return 4;
+    return isDemotedFile(rel) ? 6 : 5;
+  };
+
+  const ordered = normalized.slice().sort((a, b) => {
+    const diff = tierOf(a) - tierOf(b);
+    if (diff !== 0) return diff;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+
+  return {
+    scopedPaths: ordered.slice(0, maxFiles),
+    directoryIndex,
+    isEnterprise,
+    totalFiles
+  };
+}
+
+interface CollectedMapInputs {
+  relSet: Set<string>;
+  contents: Map<string, string>;
+  enterpriseMode: boolean;
+  totalWorkspaceFiles: number;
+  directoryIndex?: OryDirectorySummary[];
+}
+
 /**
  * Resolve the folder bytes both map layers read: either pre-read `opts.files`
  * (the zero-open-tab invariant fed by `useRepoMapFiles`) or the disk adapters
  * `opts.listFiles` + `opts.readFile` (which keeps this module free of
  * node/electron imports and renderer-safe). Returns null when nothing is
- * readable. `relSet`/`contents` are keyed by workspace-relative path.
+ * readable. Automatically engages Active-Package + Priority-Root Enterprise
+ * Mode above `LARGE_REPO_THRESHOLD` (3,000 files).
  */
 async function collectMapInputs(
   rootPath: string,
   opts: RepoMapOptions
-): Promise<{ relSet: Set<string>; contents: Map<string, string> } | null> {
-  let inputs: readonly MapInputFile[];
+): Promise<CollectedMapInputs | null> {
+  const mentions = opts.query ? parseMentions(opts.query) : { paths: new Set<string>(), idents: new Set<string>() };
+  const seedOptions = {
+    activeFile: opts.activeFile ? toRel(opts.activeFile, rootPath) : undefined,
+    openTabs: (opts.openTabs ?? []).map((p) => toRel(p, rootPath)),
+    mentionedPaths: [...mentions.paths, ...(opts.mentionedPaths ?? []).map((p) => toRel(p, rootPath))],
+    totalFileCount: opts.totalFileCount,
+    treeTruncated: opts.treeTruncated
+  };
+
   if (opts.files) {
-    inputs = opts.files;
-  } else if (opts.listFiles && opts.readFile) {
+    if (opts.files.length === 0) return null;
+    const byRel = new Map<string, string>();
+    for (const file of opts.files) {
+      const rel = toRel(file.name, rootPath);
+      if (!rel || byRel.has(rel)) continue;
+      byRel.set(rel, file.content);
+    }
+    const allPaths = opts.allTreePaths
+      ? [...new Set([...opts.allTreePaths.map((p) => toRel(p, rootPath)), ...byRel.keys()])]
+      : [...byRel.keys()];
+    const partition = partitionEnterprisePaths(allPaths, seedOptions);
+    if (!partition.isEnterprise) {
+      return {
+        relSet: new Set(byRel.keys()),
+        contents: byRel,
+        enterpriseMode: false,
+        totalWorkspaceFiles: partition.totalFiles
+      };
+    }
+
+    const availableKeys = new Set(byRel.keys());
+    const activeSeedList = [seedOptions.activeFile, ...seedOptions.openTabs, ...seedOptions.mentionedPaths].filter(
+      (v): v is string => Boolean(v && byRel.has(v))
+    );
+    const oneHop = resolveOneHopImports(activeSeedList, byRel, availableKeys);
+    const chosen = new Set<string>();
+    for (const rel of [...activeSeedList, ...oneHop, ...partition.scopedPaths]) {
+      if (!byRel.has(rel)) continue;
+      chosen.add(rel);
+      if (chosen.size >= MAX_MAP_FILES) break;
+    }
+    const scopedContents = new Map<string, string>();
+    for (const rel of chosen) {
+      scopedContents.set(rel, byRel.get(rel) as string);
+    }
+    return {
+      relSet: chosen,
+      contents: scopedContents,
+      enterpriseMode: true,
+      totalWorkspaceFiles: partition.totalFiles,
+      directoryIndex: partition.directoryIndex
+    };
+  }
+
+  if (opts.listFiles && opts.readFile) {
     const tree = await opts.listFiles();
-    const paths = mapCandidates(tree).slice(0, MAX_MAP_FILES);
-    const collected: MapInputFile[] = [];
+    const totalDiscovered = Math.max(tree.length, opts.totalFileCount ?? 0);
+    const enterpriseMode = totalDiscovered > LARGE_REPO_THRESHOLD || Boolean(opts.treeTruncated);
+    const allTreeRelPaths = tree.map((entry) => toRel(entry.path, rootPath));
+    const directoryIndex = enterpriseMode ? buildDirectoryIndex(allTreeRelPaths) : undefined;
+
+    let paths: string[];
+    if (enterpriseMode) {
+      const mappableSet = new Set(
+        mapCandidates(tree, { maxFiles: tree.length, maxTotalBytes: Number.MAX_SAFE_INTEGER })
+      );
+      const partition = partitionEnterprisePaths([...mappableSet], {
+        ...seedOptions,
+        totalFileCount: totalDiscovered
+      });
+      paths = partition.scopedPaths;
+    } else {
+      paths = mapCandidates(tree).slice(0, MAX_MAP_FILES);
+    }
+
+    const relSet = new Set<string>();
+    const contents = new Map<string, string>();
     let read = 0;
     for (const path of paths) {
-      if (collected.length >= MAX_MAP_FILES || read >= MAX_MAP_TOTAL_BYTES) break;
+      if (relSet.size >= MAX_MAP_FILES || read >= MAX_MAP_TOTAL_BYTES) break;
       const content = await opts.readFile(path);
       if (content === null) continue;
       if (read + content.length > MAX_MAP_TOTAL_BYTES) break;
       read += content.length;
-      collected.push({ name: path, content });
+      const rel = toRel(path, rootPath);
+      if (!rel || relSet.has(rel)) continue;
+      relSet.add(rel);
+      contents.set(rel, content);
     }
-    inputs = collected;
-  } else {
-    return null;
-  }
-  if (inputs.length === 0) return null;
 
-  const relSet = new Set<string>();
-  const contents = new Map<string, string>();
-  for (const file of inputs) {
-    const rel = toRel(file.name, rootPath);
-    if (!rel || relSet.has(rel)) continue;
-    relSet.add(rel);
-    contents.set(rel, file.content);
+    if (enterpriseMode && relSet.size < MAX_MAP_FILES && read < MAX_MAP_TOTAL_BYTES) {
+      const allAvailable = new Set(allTreeRelPaths);
+      const seedRel = [seedOptions.activeFile, ...seedOptions.openTabs, ...seedOptions.mentionedPaths].filter(
+        (v): v is string => Boolean(v && contents.has(v))
+      );
+      const oneHop = resolveOneHopImports(seedRel, contents, allAvailable);
+      for (const hop of oneHop) {
+        if (relSet.has(hop) || relSet.size >= MAX_MAP_FILES || read >= MAX_MAP_TOTAL_BYTES) continue;
+        const content = await opts.readFile(hop);
+        if (content === null || read + content.length > MAX_MAP_TOTAL_BYTES) continue;
+        read += content.length;
+        relSet.add(hop);
+        contents.set(hop, content);
+      }
+    }
+
+    if (relSet.size === 0) return null;
+    return {
+      relSet,
+      contents,
+      enterpriseMode,
+      totalWorkspaceFiles: totalDiscovered,
+      ...(directoryIndex ? { directoryIndex } : {})
+    };
   }
-  return { relSet, contents };
+
+  return null;
 }
 
 /**
@@ -920,7 +1304,7 @@ const DOMAIN_KEYWORDS: Record<Exclude<OryDomainId, 'SHARED'>, RegExp> = {
   DASHBOARD: /(?:^|\/)(?:dashboard|overview|analytics|feed|timeline|activity|reports?|charts?|metrics?)(?:\/|\.|$)|dashboard|overview|analytics|feed|timeline|report|chart|metric/i,
   BILLING: /(?:^|\/)(?:billing|pricing|price|payment|checkout|subscription|invoice|stripe|plans?|quota|usage)(?:\/|\.|$)|billing|pricing|payment|checkout|subscription|invoice|stripe|quota/i,
   SETTINGS: /(?:^|\/)(?:settings|preferences|prefs|profile|account|config)(?:\/|\.|$)|settings|preference|profile|account/i,
-  API: /(?:^|\/)(?:api|server|backend|routes?|controllers?|handlers?|middleware|endpoints?|graphql|trpc|resolvers?|schema|services?)(?:\/|\.|$)|controller|middleware|resolver|endpoint|handler/i
+  API: /(?:^|\/)(?:api|server|backend|routes?|controllers?|handlers?|middleware|endpoints?|graphql|trpc|resolvers?|schema|services?|prisma|migrations?|routers?|webhooks?|workers?|jobs?|models?|repositories?)(?:\/|\.|$)|controller|middleware|resolver|endpoint|handler|webhook|repository/i
 };
 
 export interface OryFileNode {
@@ -948,6 +1332,12 @@ export interface OryTree {
   refCounts: Map<string, number>;
   fileCount: number;
   truncated: boolean;
+  /** True when discovered files exceeded `LARGE_REPO_THRESHOLD` (Active-Package Mode). */
+  enterpriseMode?: boolean;
+  /** Total discovered file count across the whole repo (e.g. 50,000). */
+  totalWorkspaceFiles?: number;
+  /** Lightweight path-only directory index for the unindexed remainder of the repo. */
+  directoryIndex?: OryDirectorySummary[];
 }
 
 export type OryTreeOptions = RepoMapOptions;
@@ -955,10 +1345,17 @@ export type OryTreeOptions = RepoMapOptions;
 /** Max exported symbols shown per node; keeps one file from eating the budget. */
 const ORY_MAX_SYMBOLS = 4;
 
+const DOMAIN_CLUSTER_MAP: Partial<Record<Exclude<OryDomainId, 'SHARED'>, readonly ('auth' | 'billing' | 'db' | 'api')[]>> = {
+  AUTH: ['auth'],
+  BILLING: ['billing'],
+  API: ['api', 'db']
+};
+
 /**
- * Classify one file into a product domain from its path and exported symbols.
- * `importDomains` (domains of files it references) breaks ties toward the
- * feature it actually serves, so a `helpers.ts` next to auth code reads as AUTH.
+ * Classify one file into a product domain from its path, exported symbols,
+ * and shared Concept-Synonym Graph clusters (so hidden semantic names like
+ * `session_gatekeeper.ts` classify as `AUTH` and `razorpay_webhook.ts` as `BILLING`).
+ * `importDomains` breaks ties toward the feature it actually serves.
  */
 export function classifyOryDomain(
   relFname: string,
@@ -974,9 +1371,14 @@ export function classifyOryDomain(
   for (const id of ORY_DOMAIN_ORDER) {
     if (id === 'SHARED') continue;
     const probe = DOMAIN_KEYWORDS[id];
+    const clusters = DOMAIN_CLUSTER_MAP[id];
     let score = 0;
     if (probe.test(lower)) score += 2;
     if (probe.test(symbolText)) score += 1;
+    if (clusters) {
+      score += 2 * Math.min(countConceptClusterHits(lower, clusters), 3);
+      score += Math.min(countConceptClusterHits(symbolText, clusters), 3);
+    }
     if (score > bestScore) {
       bestScore = score;
       best = id;
@@ -1025,7 +1427,7 @@ export async function buildOryTree(rootPath: string, opts: OryTreeOptions = {}):
   if (!collected) {
     return { domains: [], graph: { nodes: [], edges: [], personalization: new Map(), chatRelFnames: new Set(), definitions: new Map() }, nodeRank: new Map(), refCounts: new Map(), fileCount: 0, truncated: false };
   }
-  const { relSet, contents } = collected;
+  const { relSet, contents, enterpriseMode, totalWorkspaceFiles, directoryIndex } = collected;
   const chatRelFnames = new Set<string>((opts.openTabs ?? []).map((tab) => toRel(tab, rootPath)));
 
   const files: FileTags[] = [];
@@ -1068,12 +1470,28 @@ export async function buildOryTree(rootPath: string, opts: OryTreeOptions = {}):
   const grouped = new Map<OryDomainId, OryFileNode[]>();
   for (const id of ORY_DOMAIN_ORDER) grouped.set(id, []);
   const MAX_TOTAL_NODES = 1_500;
-  let truncated = false;
-  let nodeCount = 0;
-  for (const rel of [...relSet].sort()) {
-    if (chatFiltered.has(rel)) continue;
-    if (nodeCount >= MAX_TOTAL_NODES) { truncated = true; break; }
-    nodeCount += 1;
+  const priorityDirScore = (rel: string): number => {
+    const norm = rel.replace(/\\/g, '/').toLowerCase();
+    if (/^(?:src|server|app|api)\//.test(norm)) return 0;
+    if (/^(?:packages|apps)\/[^/]+\/(?:src|server|app|api)\//.test(norm)) return 1;
+    if (/^[^/]+\.[a-z0-9]+$/i.test(norm)) return 2;
+    return 3;
+  };
+  const candidates = [...relSet]
+    .filter((rel) => !chatFiltered.has(rel))
+    .sort((a, b) => {
+      const demoDiff = (isDemotedFile(a) ? 1 : 0) - (isDemotedFile(b) ? 1 : 0);
+      if (demoDiff !== 0) return demoDiff;
+      const rankDiff = (nodeRank.get(b) ?? 0) - (nodeRank.get(a) ?? 0);
+      if (rankDiff !== 0) return rankDiff;
+      const refDiff = (refCounts.get(b) ?? 0) - (refCounts.get(a) ?? 0);
+      if (refDiff !== 0) return refDiff;
+      const dirDiff = priorityDirScore(a) - priorityDirScore(b);
+      if (dirDiff !== 0) return dirDiff;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+  const truncated = candidates.length > MAX_TOTAL_NODES;
+  for (const rel of candidates.slice(0, MAX_TOTAL_NODES)) {
     const id = domainByFile.get(rel) ?? 'SHARED';
     const node: OryFileNode = {
       relFname: rel,
@@ -1093,7 +1511,15 @@ export async function buildOryTree(rootPath: string, opts: OryTreeOptions = {}):
     domains.push({ id, label: ORY_DOMAIN_LABELS[id], files: nodes, totalRefs });
   }
 
-  return { domains, graph, nodeRank, refCounts, fileCount: relSet.size, truncated };
+  return {
+    domains,
+    graph,
+    nodeRank,
+    refCounts,
+    fileCount: relSet.size,
+    truncated: truncated || enterpriseMode,
+    ...(enterpriseMode ? { enterpriseMode, totalWorkspaceFiles, directoryIndex } : {})
+  };
 }
 
 /** Directory prefix of a relative path, '' for a root file. */
@@ -1113,6 +1539,17 @@ export function renderOryTree(tree: OryTree, tokenBudget = DEFAULT_MAP_TOKENS): 
   const maxChars = Math.max(0, Math.floor(tokenBudget)) * CHARS_PER_TOKEN;
   const lines: string[] = [];
   let used = 0;
+  if (tree.enterpriseMode) {
+    const dirSummary = (tree.directoryIndex ?? [])
+      .slice(0, 8)
+      .map((d) => `${d.dir} (${d.fileCount})`)
+      .join(', ');
+    const enterpriseHeader = `[ENTERPRISE REPO MODE: ${tree.fileCount}/${tree.totalWorkspaceFiles ?? tree.fileCount} active/priority files indexed${dirSummary ? `; dirs: ${dirSummary}` : ''}]`;
+    if (used + enterpriseHeader.length + 1 <= maxChars || lines.length === 0) {
+      lines.push(enterpriseHeader);
+      used += enterpriseHeader.length + 1;
+    }
+  }
   for (const domain of tree.domains) {
     const header = `${domain.label} (${domain.files.length} files · refs ${domain.totalRefs})`;
     if (used + header.length + 1 > maxChars && lines.length > 0) break;
