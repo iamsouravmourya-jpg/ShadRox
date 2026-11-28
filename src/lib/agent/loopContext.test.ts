@@ -6,7 +6,7 @@ import {
   compactToolObservations, computeLoopContextBudgetChars, summarizeAssistantToolPayload, summarizeObservation, isToolObservation, transcriptChars,
   upsertWorkingMemory, WORKING_MEMORY_HEADER,
   LOOP_CONTEXT_BUDGET_CHARS, MIN_LOOP_CONTEXT_BUDGET_CHARS, COMPACT_TRIGGER_SHARE, KEEP_RECENT_OBSERVATIONS,
-  CAP_RECENT_OBSERVATION_CHARS
+  CAP_RECENT_OBSERVATION_CHARS, hardCapChatHistory
 } from './loopContext';
 
 const observation = (text: string, name = 'read_file'): ChatTurn => ({
@@ -149,4 +149,34 @@ test('summarizeAssistantToolPayload and compactToolObservations shrink older wri
   for (const idx of assistantIndices.slice(2)) {
     assert.equal(result.messages[idx].content, messages[idx].content, 'newest 4 assistant tool turns stay verbatim');
   }
+});
+
+test('hardCapChatHistory pins the system/first-user/working-memory turns and the tail, dropping the middle in order', () => {
+  const messages: ChatTurn[] = [
+    { role: 'system', content: 'WORKSPACE TOOLS — you have live access.' },
+    { role: 'user', content: 'the original ask' },
+    { role: 'user', content: `${WORKING_MEMORY_HEADER}\n- did: nothing yet` }
+  ];
+  for (let i = 0; i < 27; i += 1) messages.push(observation(`mid ${i}`));
+  assert.equal(messages.length, 30);
+
+  const capped = hardCapChatHistory(messages, 12);
+  // Pinned (system, first user, working memory) + a 10-slot tail survive; the
+  // middle is dropped. 3 pinned + 10 tail = 13.
+  assert.equal(capped.length, 13);
+  assert.equal(capped[0].content, messages[0].content, 'system pinned first');
+  assert.ok(capped.some((m) => m.content === 'the original ask'), 'first user pinned');
+  assert.ok(capped.some((m) => m.content.startsWith(WORKING_MEMORY_HEADER)), 'working memory pinned');
+  assert.equal(capped[capped.length - 1].content, messages[messages.length - 1].content, 'tail end kept');
+  assert.ok(!capped.some((m) => m.content === observation('mid 0').content), 'an early middle turn is dropped');
+  // Order is preserved: the kept turns are a subsequence of the input.
+  let cursor = 0;
+  for (const turn of capped) {
+    while (cursor < messages.length && messages[cursor] !== turn) cursor += 1;
+    assert.ok(cursor < messages.length, 'kept turns stay in input order');
+    cursor += 1;
+  }
+  // A transcript already under the cap is returned by reference (cache-stable).
+  const short = messages.slice(0, 5);
+  assert.equal(hardCapChatHistory(short, 12), short);
 });

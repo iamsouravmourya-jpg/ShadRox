@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { classifyToolEffect, describeTools, locateUniqueMatch, runTool } from './tools';
+import { classifyToolEffect, describeTools, hasConflictMarkers, locateUniqueMatch, runTool } from './tools';
 import { beginTurn, noteRead, noteWrite, resetTurns } from './turnState';
 import {
   acceptAllPendingChanges,
@@ -210,6 +210,19 @@ test('write tools are write-effect and documented in the prompt', () => {
   assert.match(prompt, /edit_file/);
   assert.doesNotMatch(prompt, /there is no create_file, write_file or edit_file tool/, 'the prompt must not deny the tools it lists');
   assert.match(prompt, /read and write access/);
+});
+
+test('lean profile keeps every tool name but drops the verbose advanced guidance', () => {
+  const full = describeTools(5).join('\n');
+  const lean = describeTools(5, [], [], undefined, 'lean').join('\n');
+  for (const name of ['read_file', 'write_file', 'edit_file', 'run_command', 'verify']) {
+    assert.ok(lean.includes(name), `lean still lists ${name}`);
+  }
+  assert.ok(lean.length < full.length, 'lean prompt is smaller than full');
+  assert.doesNotMatch(lean, /WRITE TOOL CHOICE/, 'lean drops the write-choice detail');
+  assert.doesNotMatch(lean, /ATOMIC PATCHES/, 'lean drops the atomic-patch detail');
+  assert.doesNotMatch(lean, /PORT CONFLICTS/, 'lean drops the port-conflict detail');
+  assert.match(full, /WRITE TOOL CHOICE/, 'full keeps the detail lean drops');
 });
 
 test('edit_file matches uniquely across CRLF differences and trailing whitespace', async () => {
@@ -429,5 +442,55 @@ test('Auto-Save OFF stages write_file and edit_file edits without flushing to di
       clearWorkspacePendingChanges('ws-staging');
       setWorkspaceAutoSave('ws-staging', true);
     }
+  });
+});
+
+test('hasConflictMarkers detects real git markers without false positives', () => {
+  assert.equal(hasConflictMarkers('const a = 1;\n'), false);
+  assert.equal(hasConflictMarkers('========\n'), false, 'an 8-char rule line is not a conflict separator');
+  assert.equal(hasConflictMarkers('a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> feature\n'), true);
+  assert.equal(hasConflictMarkers('=======\n'), true, 'a bare 7-char separator counts');
+});
+
+test('read_file warns up front on a conflicted file so the model resolves it in one write', async () => {
+  const conflicted = [
+    'const x = 1;',
+    '<<<<<<< HEAD',
+    'const y = 2;',
+    '=======',
+    'const y = 3;',
+    '>>>>>>> feature',
+    ''
+  ].join('\n');
+  const disk = diskStub({ 'src/conflict.ts': conflicted });
+  await withBridge(disk.bridge, async () => {
+    const outcome = await runTool('ws', { name: 'read_file', args: { path: 'src/conflict.ts' } });
+    assert.equal(outcome.ok, true);
+    assert.match(outcome.content, /merge conflict markers/);
+    assert.match(outcome.content, /write_file/);
+  });
+});
+
+test('edit_file on a conflicted file names the markers and the write_file escape', async () => {
+  const conflicted = [
+    'const x = 1;',
+    '<<<<<<< HEAD',
+    'const z = 0;',
+    'const y = 2;',
+    '=======',
+    'const z = 0;',
+    'const y = 3;',
+    '>>>>>>> feature',
+    ''
+  ].join('\n');
+  const disk = diskStub({ 'src/conflict.ts': conflicted });
+  await withBridge(disk.bridge, async () => {
+    // `const z = 0;` is identical on both sides of the conflict, so it is ambiguous.
+    const outcome = await runTool('ws', { name: 'edit_file', args: { path: 'src/conflict.ts', original: 'const z = 0;', updated: 'const z = 9;' } });
+    assert.equal(outcome.ok, false);
+    assert.match(outcome.error ?? '', /more than once|not found/);
+    assert.match(outcome.error ?? '', /merge conflict markers/);
+    assert.match(outcome.error ?? '', /write_file/);
+    assert.equal(disk.writes.length, 0, 'a refused ambiguous edit writes nothing');
   });
 });

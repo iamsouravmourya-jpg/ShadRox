@@ -42,7 +42,7 @@ function workspaceKey(workspaceId: string | null | undefined): string {
 }
 
 function normalizePathKey(filePath: string): string {
-  return normalizeSlashes(filePath).replace(/^\/+/, '');
+  return normalizeSlashes(filePath).replace(/^\/+/, '').replace(/^\.\//, '');
 }
 
 function bumpVersion(key: string): void {

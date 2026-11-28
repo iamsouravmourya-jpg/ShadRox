@@ -15,8 +15,8 @@ test('debugger_state has been removed from the active built-in tools', () => {
   assert.equal(definition, undefined);
 });
 
-test('the tool registry holds thirty-five active tools including write, preview, and upgrade tools', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 35);
+test('the tool registry holds thirty-six active tools including write, preview, and upgrade tools', () => {
+  assert.equal(TOOL_DEFINITIONS.length, 36);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'debugger_state').length, 0);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'write_file').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'edit_file').length, 1);
@@ -24,9 +24,10 @@ test('the tool registry holds thirty-five active tools including write, preview,
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'preview_control').length, 1);
   assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === 'unlock_tools').length, 1);
   for (const name of [
-    'apply_patch', 'verify', 'checkpoint', 'list_checkpoints', 'restore', 'unlock_tools',
-    'memory_read', 'memory_note', 'find_references', 'go_to_definition', 'rename_symbol',
-    'semantic_search', 'web_search', 'fetch_url', 'preview_inspect', 'ask_user', 'spawn_subagent', 'diff_review'
+    'apply_patch', 'verify', 'test_changed', 'unlock_tools',
+    'memory_read', 'memory_note', 'find_references', 'go_to_definition', 'rename_symbol', 'get_dependents',
+    'semantic_search', 'web_search', 'fetch_url', 'preview_inspect', 'ask_user', 'spawn_subagent', 'diff_review',
+    'find_by_glob', 'git_diff'
   ]) {
     assert.equal(TOOL_DEFINITIONS.filter((tool) => tool.name === name).length, 1, `${name} is registered once`);
     assert.ok(nativeToolDefinitions().some((tool) => tool.name === name), `${name} is exposed to native providers`);

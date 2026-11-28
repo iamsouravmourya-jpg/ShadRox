@@ -1,0 +1,37 @@
+:root {
+  --bg: #0b0d10;
+  --fg: #e6e6e6;
+  --accent: #4f8cff;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+}
+
+.app {
+  max-width: 640px;
+  margin: 64px auto;
+  padding: 0 16px;
+}
+
+.title {
+  font-size: 2rem;
+  color: var(--accent);
+}
+
+.subtitle {
+  color: #9aa4b2;
+}
+
+.counter {
+  margin-top: 16px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}

@@ -1,5 +1,6 @@
 import { streamChat, type ChatTurn, type ChatToolDefinition } from '../ai';
 import { getActiveProvider, getApiKey, getCustomBaseUrl, getSelectedModel } from '../storage';
+import { scoutModelFor } from '../providers';
 import type { ToolDefinition, ToolOutcome } from './tools';
 
 /**
@@ -266,20 +267,33 @@ export function configureSubagentStream(stream: SubagentStream | null): void {
   injectedStream = stream;
 }
 
+/**
+ * Retry budget for a scout's model call. A scout is a cheap, read-only helper
+ * that runs in parallel with its siblings, so a flaky free-tier endpoint must
+ * not burn the full writer budget (4 attempts / 30 s) on it: two quick attempts
+ * inside 15 s, then the scout reports the error and the writer carries on. The
+ * writer's own stream keeps the default budget.
+ */
+export const SCOUT_RETRY_BUDGET = { maxAttempts: 2, maxElapsedMs: 15_000 } as const;
+
 /** The default helper stream: the user's own BYOK provider, plain text protocol. */
 function byokStream(signal: AbortSignal, toolDefinitions?: ChatToolDefinition[]): SubagentStream | { error: string } {
   const provider = getActiveProvider();
   const apiKey = getApiKey(provider);
   if (!apiKey) return { error: 'spawn_subagent needs a configured provider key (BYOK). None is set — ask the user to add one in Settings. No helper was started.' };
-  const model = getSelectedModel(provider);
-  if (!model) return { error: `spawn_subagent: no model is selected for provider "${provider}". Ask the user to pick one in Settings.` };
+  const mainModel = getSelectedModel(provider);
+  if (!mainModel) return { error: `spawn_subagent: no model is selected for provider "${provider}". Ask the user to pick one in Settings.` };
+  // Scouts are read-only and run in parallel: send them to the cheapest fast-tier
+  // model the provider can serve, and fall back to the user's main model if that
+  // cheaper one is unavailable. The single writer keeps the main (stronger) model.
+  const scoutModel = scoutModelFor(provider, mainModel);
   const baseUrl = provider === 'custom' ? getCustomBaseUrl() : undefined;
   if (provider === 'custom' && !baseUrl) return { error: 'spawn_subagent: the custom endpoint has no base URL configured.' };
-  return async (messages) => {
+  const run = async (model: string, messages: ChatTurn[]) => {
     let text = '';
     let error: string | null = null;
     await streamChat(
-      { provider, model, apiKey, baseUrl, messages, temperature: 0.2, signal, toolDefinitions },
+      { provider, model, apiKey, baseUrl, messages, temperature: 0.2, signal, toolDefinitions, retry: SCOUT_RETRY_BUDGET },
       {
         onDelta: (delta) => { text += delta; },
         onToolCalls: (calls) => {
@@ -292,6 +306,13 @@ function byokStream(signal: AbortSignal, toolDefinitions?: ChatToolDefinition[])
       }
     );
     return { text, error };
+  };
+  return async (messages) => {
+    const first = await run(scoutModel, messages);
+    const modelUnavailable = first.error && scoutModel !== mainModel
+      && /model|not found|404|unsupported|does not exist|invalid|unavailable/i.test(first.error);
+    if (modelUnavailable) return run(mainModel, messages);
+    return first;
   };
 }
 
@@ -472,7 +493,7 @@ export async function handleSpawnSubagent(
         stepsCount: 0,
         summary: 'The scout did not inspect any files.'
       });
-      return { ok: false, content: `Subagent inspected no files · ${loop.rounds}/${maxRounds} rounds.`, error: 'The scout returned without calling any read-only tool. It must read real workspace files first.', refused: true };
+      return { ok: false, content: `Subagent inspected no files · ${loop.rounds}/${maxRounds} rounds (read-only scout).`, error: 'The scout returned without calling any read-only tool. It must read real workspace files first.', refused: true, changedFiles: 0 };
     }
 
     const stopped = controller.signal.aborted;
@@ -513,9 +534,9 @@ export async function handleSpawnSubagent(
     });
     if (loop.error) {
       lines.push(`ERROR: ${loop.error}`);
-      return { ok: false, content: lines.join('\n'), error: loop.error, changedFiles: loop.changedFiles };
+      return { ok: false, content: lines.join('\n'), error: loop.error, changedFiles: loop.changedFiles ?? 0 };
     }
-    return { ok: true, content: lines.join('\n'), changedFiles: loop.changedFiles };
+    return { ok: true, content: lines.join('\n'), changedFiles: loop.changedFiles ?? 0 };
   } catch (error) {
     emitSubagent({
       id: subagentId,

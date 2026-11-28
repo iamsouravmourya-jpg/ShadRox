@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   approvedSharedModel,
+  buildFallbackLadder,
+  fallbackModelKey,
   manualModelAllowed,
+  nextFallback,
   roleBudgetRupees,
   routeRequest,
   routeSharedTask,
@@ -132,4 +135,52 @@ test('the no-model-in-class fallback keeps taking the cheapest, ranked list or n
   assert.equal(fallback.model, 'deepseek/deepseek-v4-pro');
   assert.equal(fallback.withinBudget, false);
   assert.match(fallback.reason, /this key serves no edit-class model/);
+});
+
+test('buildFallbackLadder orders same-provider first, then other consented providers, bounded', () => {
+  const ladder = buildFallbackLadder({
+    failedProvider: 'groq',
+    failedModel: 'llama-3.3-70b',
+    consented: [
+      { provider: 'groq', models: ['llama-3.3-70b', 'gpt-oss-20b', 'qwen3-32b'] },
+      { provider: 'gemini', models: ['gemini-3.8-flash'] }
+    ],
+    now: 1_000
+  });
+  assert.deepEqual(ladder.map((c) => fallbackModelKey(c.provider, c.model)), [
+    'groq:gpt-oss-20b',
+    'groq:qwen3-32b',
+    'gemini:gemini-3.8-flash'
+  ]);
+  assert.equal(ladder[0].reason, 'same-provider');
+  assert.equal(ladder[2].reason, 'other-consented-provider');
+});
+
+test('buildFallbackLadder skips the failed model and any model still cooling down, and respects the cap', () => {
+  const ladder = buildFallbackLadder({
+    failedProvider: 'groq',
+    failedModel: 'llama-3.3-70b',
+    consented: [{ provider: 'groq', models: ['llama-3.3-70b', 'gpt-oss-20b', 'qwen3-32b', 'mixtral'] }],
+    coolingUntil: { 'groq:gpt-oss-20b': 2_000 },
+    now: 1_000,
+    maxCandidates: 2
+  });
+  // Failed model excluded, gpt-oss-20b cooling (until 2000 > now 1000) skipped,
+  // cap of 2 reached with qwen3-32b and mixtral.
+  assert.deepEqual(ladder.map((c) => c.model), ['qwen3-32b', 'mixtral']);
+});
+
+test('nextFallback returns the first untried candidate, or null when spent', () => {
+  const ladder = buildFallbackLadder({
+    failedProvider: 'gemini',
+    failedModel: 'argon',
+    consented: [{ provider: 'gemini', models: ['argon', 'gemini-3.8-flash', 'gemini-3.8-flash-lite'] }],
+    now: 1_000
+  });
+  const first = nextFallback(ladder, []);
+  assert.equal(first?.model, 'gemini-3.8-flash');
+  const after = nextFallback(ladder, [fallbackModelKey('gemini', 'gemini-3.8-flash')]);
+  assert.equal(after?.model, 'gemini-3.8-flash-lite');
+  const spent = nextFallback(ladder, ladder.map((c) => fallbackModelKey(c.provider, c.model)));
+  assert.equal(spent, null);
 });

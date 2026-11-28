@@ -258,6 +258,89 @@ export function extractFileTags(
 }
 
 // ---------------------------------------------------------------------------
+// Incremental content-hash cache (fixes the O(n^2) token x symbol rebuild)
+// ---------------------------------------------------------------------------
+
+/**
+ * A file's tags depend only on its bytes, so re-tokenizing every file on every
+ * turn is the quadratic cost that makes a 1,500-file repo slow. Keying the
+ * extraction by `relFname + contentHash` lets an unchanged file reuse the tags
+ * (and exported-symbol list) it already paid for; a changed file gets a fresh
+ * key. The map bytes stay deterministic, so the prompt-cache prefix is stable.
+ */
+interface CachedFileTags {
+  hash: string;
+  tags: FileTags;
+  /** Top exported symbol names, in declaration order (the OryTree badges). */
+  exports: string[];
+}
+const fileTagsCache = new Map<string, CachedFileTags>();
+const FILE_TAGS_CACHE_MAX = 2_000;
+
+/** FNV-1a over the file bytes; the same content always yields the same key. */
+function contentHash(content: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < content.length; index += 1) {
+    hash ^= content.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/** Exported (non-`other`) declaration names, de-duplicated, in source order. */
+function exportedSymbolNames(signatures: readonly Signature[]): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const sig of signatures) {
+    if (sig.kind === 'other' || !sig.text.startsWith('export ')) continue;
+    if (seen.has(sig.name)) continue;
+    seen.add(sig.name);
+    names.push(sig.name);
+  }
+  return names;
+}
+
+/**
+ * `extractFileTags` with a content-hash cache. Unchanged files return the
+ * cached tags object (===) so a rebuild only re-folds references, never
+ * re-tokenizes. `signaturesByFile` is honoured when the bytes are unchanged.
+ */
+export function extractFileTagsCached(
+  relFname: string,
+  content: string,
+  signatures?: readonly Signature[]
+): FileTags {
+  const hash = contentHash(content);
+  const cached = fileTagsCache.get(relFname);
+  if (cached && cached.hash === hash) return cached.tags;
+  const sigs = signatures ?? extractSignatures(relFname, content);
+  const tags = extractFileTags(relFname, relFname, content, sigs);
+  if (fileTagsCache.size >= FILE_TAGS_CACHE_MAX) fileTagsCache.clear();
+  fileTagsCache.set(relFname, { hash, tags, exports: exportedSymbolNames(sigs) });
+  return tags;
+}
+
+/** Exported symbol names for a file, reusing the cached extraction. */
+export function cachedExportedSymbols(
+  relFname: string,
+  content: string,
+  signatures?: readonly Signature[]
+): string[] {
+  extractFileTagsCached(relFname, content, signatures);
+  return fileTagsCache.get(relFname)?.exports ?? [];
+}
+
+/** Number of files held in the incremental cache (test/observability seam). */
+export function repoMapCacheSize(): number {
+  return fileTagsCache.size;
+}
+
+/** Drop the incremental cache (test seam; a long session is otherwise bounded). */
+export function clearRepoMapCache(): void {
+  fileTagsCache.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Graph construction (1:1 with the update_graph half of get_ranked_tags)
 // ---------------------------------------------------------------------------
 
@@ -693,22 +776,16 @@ function toRel(path: string, rootPath: string): string {
 }
 
 /**
- * Build the aider-style ranked repo map for the folder at `rootPath`.
- *
- * Files arrive either pre-read (`opts.files` — the zero-open-tab invariant is
- * fed by the folder bytes `useRepoMapFiles` already loaded once per tree
- * change) or through the disk adapters (`opts.listFiles` + `opts.readFile`),
- * which keeps this module free of node/electron imports and renderer-safe.
- *
- * Returns the packed map string: ranked definitions of the files the rest
- * of the repo points at, cut to `tokenBudget`; '' when there is nothing to
- * rank. Files named in `openTabs` are excluded — their contents are already
- * in the prompt, exactly like aider's chat_fnames.
+ * Resolve the folder bytes both map layers read: either pre-read `opts.files`
+ * (the zero-open-tab invariant fed by `useRepoMapFiles`) or the disk adapters
+ * `opts.listFiles` + `opts.readFile` (which keeps this module free of
+ * node/electron imports and renderer-safe). Returns null when nothing is
+ * readable. `relSet`/`contents` are keyed by workspace-relative path.
  */
-export async function buildRepoMap(rootPath: string, opts: RepoMapOptions = {}): Promise<string> {
-  const tokenBudget = Math.floor(opts.tokenBudget ?? DEFAULT_MAP_TOKENS);
-  if (tokenBudget <= 0) return '';
-
+async function collectMapInputs(
+  rootPath: string,
+  opts: RepoMapOptions
+): Promise<{ relSet: Set<string>; contents: Map<string, string> } | null> {
   let inputs: readonly MapInputFile[];
   if (opts.files) {
     inputs = opts.files;
@@ -727,9 +804,9 @@ export async function buildRepoMap(rootPath: string, opts: RepoMapOptions = {}):
     }
     inputs = collected;
   } else {
-    return '';
+    return null;
   }
-  if (inputs.length === 0) return '';
+  if (inputs.length === 0) return null;
 
   const relSet = new Set<string>();
   const contents = new Map<string, string>();
@@ -739,6 +816,28 @@ export async function buildRepoMap(rootPath: string, opts: RepoMapOptions = {}):
     relSet.add(rel);
     contents.set(rel, file.content);
   }
+  return { relSet, contents };
+}
+
+/**
+ * Build the aider-style ranked repo map for the folder at `rootPath`.
+ *
+ * Files arrive either pre-read (`opts.files` — the zero-open-tab invariant is
+ * fed by the folder bytes `useRepoMapFiles` already loaded once per tree
+ * change) or through the disk adapters (`opts.listFiles` + `opts.readFile`).
+ *
+ * Returns the packed map string: ranked definitions of the files the rest
+ * of the repo points at, cut to `tokenBudget`; '' when there is nothing to
+ * rank. Files named in `openTabs` are excluded — their contents are already
+ * in the prompt, exactly like aider's chat_fnames.
+ */
+export async function buildRepoMap(rootPath: string, opts: RepoMapOptions = {}): Promise<string> {
+  const tokenBudget = Math.floor(opts.tokenBudget ?? DEFAULT_MAP_TOKENS);
+  if (tokenBudget <= 0) return '';
+
+  const collected = await collectMapInputs(rootPath, opts);
+  if (!collected) return '';
+  const { relSet, contents } = collected;
 
   const chatRelFnames = new Set<string>((opts.openTabs ?? []).map((tab) => toRel(tab, rootPath)));
   const mentions = opts.query ? parseMentions(opts.query) : { paths: new Set<string>(), idents: new Set<string>() };
@@ -755,10 +854,11 @@ export async function buildRepoMap(rootPath: string, opts: RepoMapOptions = {}):
   }
   const mentionedIdents = new Set<string>([...mentions.idents, ...(opts.mentionedIdents ?? [])]);
 
+  // Reuse the incremental cache: unchanged files keep their cached tags, so a
+  // 1,500-file rebuild only re-folds references instead of re-tokenizing bytes.
   const files: FileTags[] = [];
   for (const rel of [...relSet].sort()) {
-    const content = contents.get(rel) as string;
-    files.push(extractFileTags(rel, rel, content, opts.signaturesByFile?.get(rel)));
+    files.push(extractFileTagsCached(rel, contents.get(rel) as string, opts.signaturesByFile?.get(rel)));
   }
 
   const graph = buildTagGraph(files, {
@@ -787,4 +887,289 @@ export async function buildRepoMap(rootPath: string, opts: RepoMapOptions = {}):
   // aider widens the map when nothing is in the chat (map_mul_no_files), but only against
   // max_context_window, which this layer does not know; the caller bills one fixed budget.
   return fitToBudget([...specials, ...entries, ...stragglers], contents, chatRelFnames, tokenBudget);
+}
+
+// ===========================================================================
+// OryTree — unified RepoMap + Feature-Grouped Architecture Tree
+// ===========================================================================
+//
+// The ranked repo map answers "which definitions matter most". OryTree adds the
+// other half a refactor needs: which PRODUCT DOMAIN a file belongs to, and how
+// big its blast radius is. It reuses the same aider graph (so the incremental
+// FileTags cache and PageRank are shared, not duplicated) and renders each
+// domain as a compact tree whose nodes carry a `[refs: N]` badge and top
+// exported symbols — feature locality and blast-radius awareness in one budget.
+
+export const ORY_DOMAIN_ORDER = ['LANDING', 'AUTH', 'DASHBOARD', 'BILLING', 'SETTINGS', 'API', 'SHARED'] as const;
+export type OryDomainId = (typeof ORY_DOMAIN_ORDER)[number];
+
+export const ORY_DOMAIN_LABELS: Record<OryDomainId, string> = {
+  LANDING: '[LANDING / HOME]',
+  AUTH: '[AUTH]',
+  DASHBOARD: '[DASHBOARD]',
+  BILLING: '[BILLING / PRICING]',
+  SETTINGS: '[SETTINGS]',
+  API: '[API / BACKEND]',
+  SHARED: '[SHARED CORE]'
+};
+
+/** Path/symbol keyword probes per domain; SHARED is the unmatched fallback. */
+const DOMAIN_KEYWORDS: Record<Exclude<OryDomainId, 'SHARED'>, RegExp> = {
+  LANDING: /(?:^|\/)(?:landing|marketing|public|home|hero|cta)(?:\/|\.|$)|landing|marketing|hero|call[-_]?to[-_]?action/i,
+  AUTH: /(?:^|\/)(?:auth|login|signin|sign-in|signup|sign-up|logout|session|oauth|jwt|password|credentials?|rbac|permissions?)(?:\/|\.|$)|auth|login|signin|signup|logout|session|oauth|jwt|password|credential|permission|rbac/i,
+  DASHBOARD: /(?:^|\/)(?:dashboard|overview|analytics|feed|timeline|activity|reports?|charts?|metrics?)(?:\/|\.|$)|dashboard|overview|analytics|feed|timeline|report|chart|metric/i,
+  BILLING: /(?:^|\/)(?:billing|pricing|price|payment|checkout|subscription|invoice|stripe|plans?|quota|usage)(?:\/|\.|$)|billing|pricing|payment|checkout|subscription|invoice|stripe|quota/i,
+  SETTINGS: /(?:^|\/)(?:settings|preferences|prefs|profile|account|config)(?:\/|\.|$)|settings|preference|profile|account/i,
+  API: /(?:^|\/)(?:api|server|backend|routes?|controllers?|handlers?|middleware|endpoints?|graphql|trpc|resolvers?|schema|services?)(?:\/|\.|$)|controller|middleware|resolver|endpoint|handler/i
+};
+
+export interface OryFileNode {
+  relFname: string;
+  /** Reference count = distinct files that point at this one (blast radius). */
+  refs: number;
+  /** PageRank importance over the symbol graph (0..1). */
+  rank: number;
+  /** Top exported symbol names, declaration order, capped. */
+  symbols: string[];
+}
+
+export interface OryDomain {
+  id: OryDomainId;
+  label: string;
+  files: OryFileNode[];
+  totalRefs: number;
+}
+
+export interface OryTree {
+  domains: OryDomain[];
+  /** The aider graph this tree was built from, cached for `get_dependents`. */
+  graph: RepoMapGraph;
+  nodeRank: Map<string, number>;
+  refCounts: Map<string, number>;
+  fileCount: number;
+  truncated: boolean;
+}
+
+export type OryTreeOptions = RepoMapOptions;
+
+/** Max exported symbols shown per node; keeps one file from eating the budget. */
+const ORY_MAX_SYMBOLS = 4;
+
+/**
+ * Classify one file into a product domain from its path and exported symbols.
+ * `importDomains` (domains of files it references) breaks ties toward the
+ * feature it actually serves, so a `helpers.ts` next to auth code reads as AUTH.
+ */
+export function classifyOryDomain(
+  relFname: string,
+  symbols: readonly string[],
+  importDomains: readonly OryDomainId[] = []
+): OryDomainId {
+  // Normalize Windows separators so a raw `src\auth\login.ts` classifies the
+  // same as the `/`-form the build loop passes in.
+  const lower = relFname.replace(/\\/g, '/').toLowerCase();
+  const symbolText = symbols.join(' ').toLowerCase();
+  let best: OryDomainId = 'SHARED';
+  let bestScore = 0;
+  for (const id of ORY_DOMAIN_ORDER) {
+    if (id === 'SHARED') continue;
+    const probe = DOMAIN_KEYWORDS[id];
+    let score = 0;
+    if (probe.test(lower)) score += 2;
+    if (probe.test(symbolText)) score += 1;
+    if (score > bestScore) {
+      bestScore = score;
+      best = id;
+    }
+  }
+  if (bestScore > 0) return best;
+  // Import-edge inheritance: a SHARED file that only points at one feature
+  // domain is part of that feature.
+  const counts = new Map<OryDomainId, number>();
+  for (const domain of importDomains) {
+    if (domain === 'SHARED') continue;
+    counts.set(domain, (counts.get(domain) ?? 0) + 1);
+  }
+  let inherited: OryDomainId = 'SHARED';
+  let inheritedCount = 0;
+  for (const [domain, count] of counts) {
+    if (count > inheritedCount) {
+      inheritedCount = count;
+      inherited = domain;
+    }
+  }
+  return inherited;
+}
+
+/** Distinct files that reference each file, from the aider edge list. */
+function referenceCountsFromGraph(graph: RepoMapGraph): Map<string, number> {
+  const referencers = new Map<string, Set<string>>();
+  for (const edge of graph.edges) {
+    if (edge.src === edge.dst) continue;
+    const set = referencers.get(edge.dst);
+    if (set) set.add(edge.src);
+    else referencers.set(edge.dst, new Set([edge.src]));
+  }
+  const counts = new Map<string, number>();
+  for (const [file, set] of referencers) counts.set(file, set.size);
+  return counts;
+}
+
+/**
+ * Build the unified OryTree for the folder at `rootPath`. Reads the same bytes
+ * as `buildRepoMap` (pre-read `files` or the disk adapters) and reuses the
+ * incremental FileTags cache, so a 1,500-file repo rebuilds in milliseconds.
+ */
+export async function buildOryTree(rootPath: string, opts: OryTreeOptions = {}): Promise<OryTree> {
+  const collected = await collectMapInputs(rootPath, opts);
+  if (!collected) {
+    return { domains: [], graph: { nodes: [], edges: [], personalization: new Map(), chatRelFnames: new Set(), definitions: new Map() }, nodeRank: new Map(), refCounts: new Map(), fileCount: 0, truncated: false };
+  }
+  const { relSet, contents } = collected;
+  const chatRelFnames = new Set<string>((opts.openTabs ?? []).map((tab) => toRel(tab, rootPath)));
+
+  const files: FileTags[] = [];
+  const exportsByFile = new Map<string, string[]>();
+  for (const rel of [...relSet].sort()) {
+    const content = contents.get(rel) as string;
+    const signatures = opts.signaturesByFile?.get(rel);
+    files.push(extractFileTagsCached(rel, content, signatures));
+    exportsByFile.set(rel, cachedExportedSymbols(rel, content, signatures));
+  }
+
+  const graph = buildTagGraph(files, {
+    chatRelFnames: new Set([...chatRelFnames].filter((rel) => relSet.has(rel)))
+  });
+  const { nodeRank } = rankTags(graph);
+  const refCounts = referenceCountsFromGraph(graph);
+
+  // File -> the domains of the files it references (one hop), for tie-breaking.
+  const importDomainsByFile = new Map<string, OryDomainId[]>();
+  const domainByFile = new Map<string, OryDomainId>();
+  for (const file of files) domainByFile.set(file.relFname, classifyOryDomain(file.relFname, exportsByFile.get(file.relFname) ?? []));
+  const outNeighbors = new Map<string, string[]>();
+  for (const edge of graph.edges) {
+    if (edge.src === edge.dst) continue;
+    const row = outNeighbors.get(edge.src);
+    if (row) row.push(edge.dst);
+    else outNeighbors.set(edge.src, [edge.dst]);
+  }
+  for (const file of files) {
+    const neighbors = outNeighbors.get(file.relFname) ?? [];
+    importDomainsByFile.set(file.relFname, neighbors.map((neighbor) => domainByFile.get(neighbor) ?? 'SHARED'));
+  }
+  // Second pass: SHARED files inherit the dominant domain of what they reference.
+  for (const file of files) {
+    if (domainByFile.get(file.relFname) !== 'SHARED') continue;
+    domainByFile.set(file.relFname, classifyOryDomain(file.relFname, exportsByFile.get(file.relFname) ?? [], importDomainsByFile.get(file.relFname) ?? []));
+  }
+
+  const chatFiltered = new Set([...chatRelFnames].filter((rel) => relSet.has(rel)));
+  const grouped = new Map<OryDomainId, OryFileNode[]>();
+  for (const id of ORY_DOMAIN_ORDER) grouped.set(id, []);
+  const MAX_TOTAL_NODES = 1_500;
+  let truncated = false;
+  let nodeCount = 0;
+  for (const rel of [...relSet].sort()) {
+    if (chatFiltered.has(rel)) continue;
+    if (nodeCount >= MAX_TOTAL_NODES) { truncated = true; break; }
+    nodeCount += 1;
+    const id = domainByFile.get(rel) ?? 'SHARED';
+    const node: OryFileNode = {
+      relFname: rel,
+      refs: refCounts.get(rel) ?? 0,
+      rank: nodeRank.get(rel) ?? 0,
+      symbols: (exportsByFile.get(rel) ?? []).slice(0, ORY_MAX_SYMBOLS)
+    };
+    (grouped.get(id) as OryFileNode[]).push(node);
+  }
+
+  const domains: OryDomain[] = [];
+  for (const id of ORY_DOMAIN_ORDER) {
+    const nodes = grouped.get(id) as OryFileNode[];
+    if (nodes.length === 0) continue;
+    nodes.sort((a, b) => b.rank - a.rank || b.refs - a.refs || (a.relFname < b.relFname ? -1 : a.relFname > b.relFname ? 1 : 0));
+    const totalRefs = nodes.reduce((sum, node) => sum + node.refs, 0);
+    domains.push({ id, label: ORY_DOMAIN_LABELS[id], files: nodes, totalRefs });
+  }
+
+  return { domains, graph, nodeRank, refCounts, fileCount: relSet.size, truncated };
+}
+
+/** Directory prefix of a relative path, '' for a root file. */
+function dirOf(relFname: string): string {
+  const slash = relFname.lastIndexOf('/');
+  return slash >= 0 ? relFname.slice(0, slash + 1) : '';
+}
+
+/**
+ * Render an OryTree as a compact domain-grouped tree. Each file node shows its
+ * relative path, a `[refs: N]` blast-radius badge, and its top exported
+ * symbols. The render is cut to `tokenBudget` (chars/4), dropping whole domains
+ * from the tail once the budget is spent — the strongest domains stay.
+ */
+export function renderOryTree(tree: OryTree, tokenBudget = DEFAULT_MAP_TOKENS): string {
+  if (tree.domains.length === 0) return '';
+  const maxChars = Math.max(0, Math.floor(tokenBudget)) * CHARS_PER_TOKEN;
+  const lines: string[] = [];
+  let used = 0;
+  for (const domain of tree.domains) {
+    const header = `${domain.label} (${domain.files.length} files · refs ${domain.totalRefs})`;
+    if (used + header.length + 1 > maxChars && lines.length > 0) break;
+    lines.push(header);
+    used += header.length + 1;
+    let lastDir: string | null = null;
+    for (const node of domain.files) {
+      const dir = dirOf(node.relFname);
+      if (dir !== lastDir) {
+        if (dir) {
+          const dirLine = `  ${dir}`;
+          if (used + dirLine.length + 1 > maxChars) return `${lines.join('\n')}\n`;
+          lines.push(dirLine);
+          used += dirLine.length + 1;
+        }
+        lastDir = dir;
+      }
+      const base = dir ? node.relFname.slice(dir.length) : node.relFname;
+      const badge = `[refs: ${node.refs}]`;
+      const symbols = node.symbols.length > 0 ? ` {${node.symbols.join(', ')}}` : '';
+      const nodeLine = `${dir ? '    ' : '  '}${base} ${badge}${symbols}`;
+      if (used + nodeLine.length + 1 > maxChars) return `${lines.join('\n')}\n`;
+      lines.push(nodeLine);
+      used += nodeLine.length + 1;
+    }
+  }
+  return lines.length === 0 ? '' : `${lines.join('\n')}\n`;
+}
+
+export interface OryDependent {
+  file: string;
+  weight: number;
+  symbols: string[];
+}
+
+/**
+ * Exact downstream dependents of the target files, read from the OryTree's
+ * cached import graph (aider edges: src references dst). This is the blast
+ * radius a refactor must check before touching shared code.
+ */
+export function dependentsFromGraph(
+  graph: RepoMapGraph,
+  targetPaths: readonly string[],
+  limit = 20
+): OryDependent[] {
+  const targets = new Set(targetPaths.map((path) => path.replace(/\\/g, '/').replace(/^\.\//, '')));
+  if (targets.size === 0 || limit <= 0) return [];
+  const consumers = new Map<string, { weight: number; symbols: Set<string> }>();
+  for (const edge of graph.edges) {
+    if (!targets.has(edge.dst) || targets.has(edge.src)) continue;
+    const entry = consumers.get(edge.src) ?? { weight: 0, symbols: new Set<string>() };
+    entry.weight += edge.weight;
+    entry.symbols.add(edge.ident);
+    consumers.set(edge.src, entry);
+  }
+  return [...consumers]
+    .map(([file, entry]) => ({ file, weight: entry.weight, symbols: [...entry.symbols].sort() }))
+    .sort((a, b) => b.weight - a.weight || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
+    .slice(0, limit);
 }

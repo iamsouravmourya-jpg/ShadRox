@@ -707,6 +707,43 @@ export function repoMapBudgetFor(contextWindowTokens: number): number {
 }
 
 /**
+ * Content-hash signature cache.
+ *
+ * The map is rebuilt every turn, but signature extraction depends only on a
+ * file's bytes. Keying by `path + contentHash` lets an unchanged workspace reuse
+ * the extraction it already paid for — no re-scan — while a changed file gets a
+ * fresh key. The map bytes stay deterministic, so the prompt-cache prefix is
+ * unaffected. Bounded so a long session cannot grow it without limit.
+ */
+const SIGNATURE_CACHE_MAX = 600;
+const signatureCache = new Map<string, Signature[]>();
+
+function contentHash(content: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < content.length; i += 1) {
+    hash ^= content.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function indexSignaturesCached(files: readonly MapInputFile[]): Map<string, Signature[]> {
+  const out = new Map<string, Signature[]>();
+  for (const file of files) {
+    const path = normalizePath(file.name);
+    const key = `${path}:${contentHash(file.content)}`;
+    let signatures = signatureCache.get(key);
+    if (!signatures) {
+      signatures = extractSignatures(file.name, file.content);
+      if (signatureCache.size >= SIGNATURE_CACHE_MAX) signatureCache.clear();
+      signatureCache.set(key, signatures);
+    }
+    out.set(path, signatures);
+  }
+  return out;
+}
+
+/**
  * The map the system instruction gets.
  *
  * Anchors go first even when pinned: they cost one metadata line, not their
@@ -728,7 +765,7 @@ export function buildSignatureMap(
   const budget = CHARS_PER_TOKEN * Math.max(0, Math.floor(options.tokenBudget));
   if (budget <= 0) return '';
 
-  const signatures = signaturesByFile ?? indexSignatures(files);
+  const signatures = signaturesByFile ?? indexSignaturesCached(files);
   const sizes = new Map<string, number>();
   const anchors: string[] = [];
   const paths = new Map<string, MapInputFile>();

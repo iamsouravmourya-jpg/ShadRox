@@ -146,24 +146,47 @@ export interface ScoredChunk {
   score: number;
 }
 
+/**
+ * Precomputed BM25 statistics (tokenized entries + document-frequency table +
+ * average length). Rebuilding these every query is a full re-walk of every
+ * chunk; caching them per index version means an unchanged index answers
+ * `semantic_search` from the table in O(matching chunks), not O(all chunks).
+ */
+interface Bm25Stats {
+  updatedAt: number;
+  entries: Array<{ path: string; chunk: IndexChunk; tokens: string[] }>;
+  documentFrequency: Map<string, number>;
+  averageLength: number;
+}
+/** A hard byte cap so one giant workspace cannot make the table unbounded. */
+const MAX_BM25_ENTRIES = 20_000;
+const bm25StatsCache = new WeakMap<SemanticIndex, Bm25Stats>();
+
+function bm25Stats(index: SemanticIndex): Bm25Stats {
+  const cached = bm25StatsCache.get(index);
+  if (cached && cached.updatedAt === index.updatedAt) return cached;
+  const entries: Array<{ path: string; chunk: IndexChunk; tokens: string[] }> = [];
+  const documentFrequency = new Map<string, number>();
+  let totalLength = 0;
+  for (const [path, file] of Object.entries(index.files)) {
+    for (const chunk of file.chunks) {
+      if (entries.length >= MAX_BM25_ENTRIES) break;
+      const tokens = tokenize(`${chunk.text} ${chunk.symbols.join(' ')}`);
+      entries.push({ path, chunk, tokens });
+      totalLength += tokens.length;
+      for (const token of new Set(tokens)) documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
+    }
+  }
+  const stats: Bm25Stats = { updatedAt: index.updatedAt, entries, documentFrequency, averageLength: totalLength / entries.length || 1 };
+  bm25StatsCache.set(index, stats);
+  return stats;
+}
+
 export function bm25Rank(index: SemanticIndex, query: string, limit: number): ScoredChunk[] {
   const queryTokens = [...new Set(tokenize(query))];
   if (queryTokens.length === 0) return [];
-  const entries: Array<{ path: string; chunk: IndexChunk; tokens: string[] }> = [];
-  for (const [path, file] of Object.entries(index.files)) {
-    for (const chunk of file.chunks) {
-      entries.push({ path, chunk, tokens: tokenize(`${chunk.text} ${chunk.symbols.join(' ')}`) });
-    }
-  }
+  const { entries, documentFrequency, averageLength } = bm25Stats(index);
   if (entries.length === 0) return [];
-  const documentFrequency = new Map<string, number>();
-  let totalLength = 0;
-  for (const entry of entries) {
-    totalLength += entry.tokens.length;
-    const seen = new Set(entry.tokens);
-    for (const token of seen) documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
-  }
-  const averageLength = totalLength / entries.length || 1;
   const k1 = 1.5;
   const b = 0.75;
   const scored: ScoredChunk[] = [];
@@ -223,6 +246,44 @@ export function evictSemanticIndex(workspaceId: string): void {
   lastRefresh.delete(workspaceId);
 }
 
+/** Match the index's key form: forward slashes, no leading `./`. */
+function indexKey(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+/**
+ * Drop the given paths from the in-memory index and clear the refresh throttle,
+ * so the next `semantic_search` re-reads and re-chunks exactly those files
+ * instead of serving a throttled cache that still holds their pre-edit chunks.
+ *
+ * The turn loop reports the paths it mutated; without this, a search in the
+ * 20s throttle window right after an edit could rank stale text. An empty list
+ * is a no-op, and a path the index never held is ignored. The reduced index is
+ * persisted so a restart cannot reload the pre-edit chunks either.
+ */
+export function invalidateSemanticIndexPaths(workspaceId: string, paths: readonly string[]): void {
+  if (!workspaceId || paths.length === 0) return;
+  const index = memoryIndexes.get(workspaceId);
+  if (index) {
+    let changed = false;
+    for (const raw of paths) {
+      const key = indexKey(raw);
+      if (key && index.files[key]) {
+        delete index.files[key];
+        changed = true;
+      }
+    }
+    if (changed) {
+      // Bump the version so the precomputed BM25 stats cache invalidates too.
+      index.updatedAt = Date.now();
+      persist(workspaceId, index);
+    }
+  }
+  // Force the next refresh to run a real pass (re-read + re-chunk) rather than
+  // returning the throttled cache that is now missing the invalidated files.
+  lastRefresh.delete(workspaceId);
+}
+
 function emptyIndex(): SemanticIndex {
   return { v: 1, updatedAt: 0, truncated: false, files: {} };
 }
@@ -263,7 +324,7 @@ async function mirrorIndex(desktop: ShadRoxDesktopAPI, workspaceId: string, inde
 }
 
 /** Enumerate visible files through the bridge's own filtered directory walk. */
-async function enumerateFiles(desktop: ShadRoxDesktopAPI, workspaceId: string): Promise<{ paths: string[]; capped: boolean }> {
+export async function enumerateWorkspaceFiles(desktop: ShadRoxDesktopAPI, workspaceId: string): Promise<{ paths: string[]; capped: boolean }> {
   const paths: string[] = [];
   const queue: Array<{ path: string; depth: number }> = [{ path: '', depth: 0 }];
   let calls = 0;
@@ -317,7 +378,7 @@ export async function refreshSemanticIndex(workspaceId: string, force = false): 
     return { index: cached, scanned: 0, rechunked: 0, removed: 0, capped: cached.truncated };
   }
   const index: SemanticIndex = cached ?? emptyIndex();
-  const { paths, capped } = await enumerateFiles(desktop, workspaceId);
+  const { paths, capped } = await enumerateWorkspaceFiles(desktop, workspaceId);
   const live = new Set(paths);
   let removed = 0;
   for (const path of Object.keys(index.files)) {

@@ -232,3 +232,72 @@ export function classifyFailure(events: FlightEvent[]): FailureTag | null {
   }
   return { code: 'F12', confidence: 'low', reason: reason ? `unexplained stop: ${reason}` : 'run never recorded a stop event' };
 }
+
+/**
+ * The Failure Black Box categories: the small, stable set a human reads off a
+ * failed turn without parsing F-codes. Each maps onto the taxonomy above so the
+ * two never disagree; `other` is the honest bucket for everything else.
+ */
+export type FailureCategory =
+  | 'edit_anchor_miss'
+  | 'wrong_target'
+  | 'bad_tool_json'
+  | 'loop'
+  | 'verification_false_fail'
+  | 'provider_error'
+  | 'other';
+
+export const FAILURE_CATEGORY_LABELS: Record<FailureCategory, string> = {
+  edit_anchor_miss: 'edit anchor not found or ambiguous',
+  wrong_target: 'never read/edited the right file',
+  bad_tool_json: 'malformed or unparsable tool call',
+  loop: 'looped without progress',
+  verification_false_fail: 'verification said no but real evidence said yes',
+  provider_error: 'provider error, truncation or broken stream',
+  other: 'unclassified failure'
+};
+
+/** The stop reasons that mean the loop made no progress (the `loop` category). */
+const LOOP_STOP_REASONS = new Set(['stuck', 'no_progress']);
+
+/**
+ * Collapse a taxonomy tag into a Black Box category. `loop` is a stop-reason
+ * fact the F-code alone does not always carry (F06 vs F12), so the caller passes
+ * the stop reason when it has one.
+ */
+export function categoryForTag(tag: FailureTag, stopReason?: string): FailureCategory {
+  if (stopReason && LOOP_STOP_REASONS.has(stopReason)) return 'loop';
+  switch (tag.code) {
+    case 'F02': return 'bad_tool_json';
+    case 'F03': return 'edit_anchor_miss';
+    case 'F06': return 'wrong_target';
+    case 'F07': return 'verification_false_fail';
+    case 'F09': return 'provider_error';
+    default: return 'other';
+  }
+}
+
+/** Category directly from a run's recorded events (the full Black Box path). */
+export function categorizeFailure(events: FlightEvent[]): FailureCategory | null {
+  const tag = classifyFailure(events);
+  if (!tag) return null;
+  const stop = [...events].reverse().find((event) => event.type === 'stop');
+  const reason = stop ? text(dataOf(stop).reason) : undefined;
+  return categoryForTag(tag, reason);
+}
+
+/**
+ * Category from a stop reason and error text alone, for hosts that hold a turn
+ * result but not the raw flight events. Same precedence the event path uses,
+ * derived from the message shapes `toolErrorCode` already recognises.
+ */
+export function categorizeFailureText(stopReason: string | null | undefined, errorText?: string | null): FailureCategory {
+  if (stopReason && LOOP_STOP_REASONS.has(stopReason)) return 'loop';
+  if (stopReason === 'provider_error') return 'provider_error';
+  const error = errorText ?? '';
+  if (/original snippet was not found|appears more than once/i.test(error)) return 'edit_anchor_miss';
+  if (/not valid JSON|incomplete or invalid JSON|no usable calls|is not a tool|needs a |needs path|needs content|needs original/i.test(error)) return 'bad_tool_json';
+  if (/verification|verify/i.test(error) && /false|passed|exit 0/i.test(error)) return 'verification_false_fail';
+  if (/timed?\s?out|timeout/i.test(error) && /provider|stream|upstream/i.test(error)) return 'provider_error';
+  return 'other';
+}

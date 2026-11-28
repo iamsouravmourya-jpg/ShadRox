@@ -1,6 +1,7 @@
 import { getDesktopBridge } from '../desktop';
 import { getApiKey, getSelectedModel } from '../storage';
 import { markUntrustedData } from '../untrustedData';
+import { evaluateMobileOverflow, formatMobileOverflow } from '../agents/mobileOverflow';
 import type { ToolDefinition, ToolOutcome } from './tools';
 
 /**
@@ -391,7 +392,7 @@ export async function handleWebSearch(workspaceId: string, args: Record<string, 
  * preview_inspect — renderer half of electron/preview-inspect.cjs.
  * ------------------------------------------------------------------ */
 
-export type PreviewInspectAction = 'screenshot' | 'console' | 'network' | 'dom' | 'click' | 'type';
+export type PreviewInspectAction = 'screenshot' | 'console' | 'network' | 'dom' | 'click' | 'type' | 'mobile';
 
 export interface PreviewInspectRequest {
   action: PreviewInspectAction;
@@ -416,6 +417,7 @@ export interface PreviewInspectResponse {
   clicked?: boolean;
   typed?: boolean;
   note?: string;
+  mobileOverflow?: { scrollWidth?: number; clientWidth?: number; offendingSelectors?: string[] };
   previewRunId?: number;
 }
 
@@ -472,9 +474,9 @@ function extractRoutePath(urlStr: string): string {
 export async function handlePreviewInspect(workspaceId: string, args: Record<string, unknown>): Promise<ToolOutcome> {
   if (!workspaceId) return inspectRefusal('preview_inspect needs an opened folder workspace with a running preview.');
   const action = typeof args.action === 'string' ? args.action : '';
-  const actions: PreviewInspectAction[] = ['screenshot', 'console', 'network', 'dom', 'click', 'type'];
+  const actions: PreviewInspectAction[] = ['screenshot', 'console', 'network', 'dom', 'click', 'type', 'mobile'];
   if (!actions.includes(action as PreviewInspectAction)) {
-    return inspectRefusal('preview_inspect needs action "screenshot", "console", "network", "dom", "click" or "type".');
+    return inspectRefusal('preview_inspect needs action "screenshot", "console", "network", "dom", "click", "type" or "mobile".');
   }
   const desktop = getDesktopBridge() as (ReturnType<typeof getDesktopBridge> & PreviewInspectBridge) | null;
   if (!desktop || typeof desktop.previewInspect !== 'function') {
@@ -536,6 +538,10 @@ export async function handlePreviewInspect(workspaceId: string, args: Record<str
     if (action === 'click') {
       return { ok: true, content: response.clicked ? `Clicked the first "${selector}" (<${response.tag ?? '?'}>) in the preview.` : `Nothing was clicked: "${selector}" was not found.` };
     }
+    if (action === 'mobile') {
+      const result = evaluateMobileOverflow(response.mobileOverflow);
+      return { ok: true, content: formatMobileOverflow(result) };
+    }
     return { ok: true, content: response.typed ? `Typed ${text?.length ?? 0} character(s) into the first "${selector}" (<${response.tag ?? '?'}>) and dispatched input/change events.` : `Nothing was typed: "${selector}" was not found or is not an input.` };
   } catch (error) {
     return { ok: false, content: '', error: error instanceof Error ? error.message : String(error) };
@@ -559,8 +565,8 @@ export const WEB_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'preview_inspect',
-    description: 'Inspect/interact with the localhost preview pane: screenshot, console, network, dom, click, type.',
-    parameters: 'action: "screenshot"|"console"|"network"|"dom"|"click"|"type", selector?: string, text?: string'
+    description: 'Inspect/interact with the localhost preview pane: screenshot, console, network, dom, click, type, mobile (responsive overflow check at a 375x812 target).',
+    parameters: 'action: "screenshot"|"console"|"network"|"dom"|"click"|"type"|"mobile", selector?: string, text?: string'
   }
 ];
 
@@ -586,7 +592,7 @@ export const FETCH_URL_SCHEMA: Record<string, unknown> = {
 export const PREVIEW_INSPECT_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
-    action: { type: 'string', enum: ['screenshot', 'console', 'network', 'dom', 'click', 'type'], description: 'Preview inspection action.' },
+    action: { type: 'string', enum: ['screenshot', 'console', 'network', 'dom', 'click', 'type', 'mobile'], description: 'Preview inspection action.' },
     selector: { type: 'string', description: 'CSS selector for dom/click/type.' },
     text: { type: 'string', description: 'Text to type (dispatches input/change events).' }
   },

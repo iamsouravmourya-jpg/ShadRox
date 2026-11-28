@@ -212,6 +212,22 @@ export function classifyTier(provider: ProviderId, modelId: string): ModelTier {
   return 'pro';
 }
 
+/**
+ * The model a read-only scout should use: the cheapest fast-tier option that
+ * the same provider/key can serve, so parallel scouts spend little while the
+ * single writer keeps the user's chosen (stronger) model. Returns the selected
+ * model unchanged when it is already free/own, or when no safe downgrade exists
+ * (a custom endpoint's catalog is unknown, so we never guess there). The caller
+ * falls back to the main model if the cheaper one is unavailable.
+ */
+export function scoutModelFor(provider: ProviderId, selectedModel: string): string {
+  if (!selectedModel) return selectedModel;
+  if (classifyTier(provider, selectedModel) !== 'pro') return selectedModel;
+  if (provider === 'gemini') return 'gemini-3.8-flash';
+  if (provider === 'groq') return 'openai/gpt-oss-20b';
+  return selectedModel;
+}
+
 export function prettifyModelId(modelId: string): string {
   const raw = modelId.replace(/^models\//, '');
   const tail = raw.includes('/') ? raw.split('/').slice(1).join('/') : raw;

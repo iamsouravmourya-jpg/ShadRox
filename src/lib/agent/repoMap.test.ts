@@ -10,11 +10,17 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  buildOryTree,
   buildRepoMap,
+  cachedExportedSymbols,
+  classifyOryDomain,
+  dependentsFromGraph,
   estimateTokens,
+  extractFileTagsCached,
   filterImportantFiles,
   isDemotedFile,
   pageRank,
+  renderOryTree,
   type RepoMapOptions
 } from './repoMap';
 import { type MapInputFile, type MapTreeEntry } from '../repoMap';
@@ -237,4 +243,128 @@ test('page_rank port: damping 0.85, normalized mass, hubs accumulate', () => {
     new Map([['c', 100]])
   );
   assert.ok((pinned.get('c') ?? 0) > (pinned.get('a') ?? 0), 'personalization pulls toward the pinned node');
+});
+
+// ---------------------------------------------------------------------------
+// OryTree: the unified feature-grouped architecture tree (one tree, no
+// duplicate subsystems). Each file appears in exactly one domain; domains
+// carry a ref-count badge and their top exported symbols.
+// ---------------------------------------------------------------------------
+
+const ORY_FIXTURE: Record<string, string> = {
+  'src/auth/login.ts': [
+    "import { hashPassword } from '../shared/crypto';",
+    'export function login(user: string, pass: string) {',
+    '  return hashPassword(pass) && user.length > 0;',
+    '}'
+  ].join('\n'),
+  'src/auth/session.ts': [
+    "import { login } from './login';",
+    'export function startSession(user: string, pass: string) {',
+    '  return login(user, pass);',
+    '}'
+  ].join('\n'),
+  'src/billing/invoice.ts': [
+    "import { hashPassword } from '../shared/crypto';",
+    'export function buildInvoice(total: number) {',
+    '  return { total, id: hashPassword(String(total)) };',
+    '}'
+  ].join('\n'),
+  'src/shared/crypto.ts': 'export function hashPassword(value: string) {\n  return value.length.toString(16);\n}\n',
+  'src/shared/util.ts': 'export function noop() {\n  return undefined;\n}\n'
+};
+
+async function writeOryFixture(): Promise<string> {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'orytree-fixture-'));
+  for (const [rel, content] of Object.entries(ORY_FIXTURE)) {
+    const target = path.join(root, rel);
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    await fsp.writeFile(target, content, 'utf8');
+  }
+  return root;
+}
+
+const oryDiskTree = (root: string): RepoMapOptions => ({
+  listFiles: () => listTree(root),
+  readFile: (rel) => fsp.readFile(path.join(root, rel), 'utf8').catch(() => null)
+});
+
+test('OryTree groups files into domains with ref badges and symbols, each file once', async () => {
+  const root = await writeOryFixture();
+  const tree = await buildOryTree(root, { ...oryDiskTree(root), tokenBudget: 4096 });
+  const rendered = renderOryTree(tree, 4096);
+
+  // Domain headers are present and labelled.
+  assert.ok(rendered.includes('[AUTH]'), `AUTH domain missing:\n${rendered}`);
+  assert.ok(rendered.includes('[SHARED CORE]'), `SHARED domain missing:\n${rendered}`);
+
+  // auth/login.ts is referenced by session.ts, so it carries a non-zero badge.
+  assert.match(rendered, /login\.ts \[refs: [1-9]\d*\]/, 'the referenced login carries a refs badge');
+  // Exported symbols ride along on the node line.
+  assert.ok(rendered.includes('{login}'), 'top exported symbol is shown');
+  assert.ok(rendered.includes('{hashPassword}'), 'shared crypto symbol is shown');
+
+  // No duplicate subsystems: every file path appears exactly once across the tree.
+  const allFiles = tree.domains.flatMap((d) => d.files.map((f) => f.relFname));
+  assert.equal(allFiles.length, new Set(allFiles).size, 'each file lands in exactly one domain');
+  assert.equal(allFiles.length, Object.keys(ORY_FIXTURE).length, 'every fixture file is mapped once');
+});
+
+test('OryTree: an empty workspace renders nothing (caller falls back)', async () => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'orytree-empty-'));
+  const tree = await buildOryTree(root, {
+    listFiles: async () => [],
+    readFile: async () => null
+  });
+  assert.equal(tree.domains.length, 0, 'no domains for an empty folder');
+  assert.equal(tree.fileCount, 0);
+  assert.equal(renderOryTree(tree, 4096), '', 'an empty tree renders the empty string');
+});
+
+test('classifyOryDomain: keyword, inheritance, backslash and empty cases', () => {
+  assert.equal(classifyOryDomain('src/anything.ts', [], []), 'SHARED', 'no signal falls to SHARED');
+  assert.equal(classifyOryDomain('src/auth/login.ts', [], []), 'AUTH', 'path keyword classifies');
+  assert.equal(classifyOryDomain('src/billing/invoice.ts', [], []), 'BILLING');
+  // Windows separators classify the same as the /-form.
+  assert.equal(classifyOryDomain('src\\auth\\login.ts', [], []), 'AUTH', 'backslash paths normalize');
+  // A SHARED file that only points at one feature inherits that feature.
+  assert.equal(classifyOryDomain('src/helpers.ts', [], ['AUTH', 'AUTH', 'BILLING']), 'AUTH', 'majority import domain wins');
+  // Symbols can carry the signal when the path cannot.
+  assert.equal(classifyOryDomain('src/thing.ts', ['export function authenticate() {}'], []), 'AUTH', 'symbol keyword classifies');
+});
+
+test('extractFileTagsCached: identity reuse when unchanged, fresh tags on edit', () => {
+  const first = extractFileTagsCached('src/x.ts', 'export const a = 1;\n');
+  const again = extractFileTagsCached('src/x.ts', 'export const a = 1;\n');
+  assert.equal(first, again, 'unchanged bytes return the cached object (===)');
+
+  const edited = extractFileTagsCached('src/x.ts', 'export function a() {}\nexport function b() {}\n');
+  assert.notEqual(first, edited, 'a content change invalidates the cache entry');
+  assert.ok(cachedExportedSymbols('src/x.ts', 'export function a() {}\nexport function b() {}\n').includes('b'), 'the edited tags reflect the new export');
+});
+
+test('dependentsFromGraph: real blast radius, missing target, and circular imports', async () => {
+  const root = await writeOryFixture();
+  const tree = await buildOryTree(root, { ...oryDiskTree(root), tokenBudget: 4096 });
+
+  // crypto.ts is imported by login.ts and invoice.ts — both are dependents.
+  const dependents = dependentsFromGraph(tree.graph, ['src/shared/crypto.ts']).map((d) => d.file).sort();
+  assert.deepEqual(dependents, ['src/auth/login.ts', 'src/billing/invoice.ts'], 'exact downstream consumers');
+
+  // A target nobody imports has an empty blast radius (honest "safe to change").
+  assert.deepEqual(dependentsFromGraph(tree.graph, ['src/shared/util.ts']), [], 'an unimported file has no dependents');
+
+  // A path that is not in the graph at all yields nothing, never a throw.
+  assert.deepEqual(dependentsFromGraph(tree.graph, ['src/does-not-exist.ts']), []);
+
+  // Circular imports terminate: A->B and B->A is a single pass, not a loop.
+  const circular = await buildOryTree('/root', {
+    files: [
+      { name: 'src/alpha.ts', content: "import { beta } from './beta';\nexport function alpha() { return beta; }\n" },
+      { name: 'src/beta.ts', content: "import { alpha } from './alpha';\nexport function beta() { return alpha; }\n" }
+    ],
+    tokenBudget: 1024
+  });
+  const aDeps = dependentsFromGraph(circular.graph, ['src/alpha.ts']).map((d) => d.file);
+  assert.deepEqual(aDeps, ['src/beta.ts'], 'a circular import reports the one real consumer and stops');
 });

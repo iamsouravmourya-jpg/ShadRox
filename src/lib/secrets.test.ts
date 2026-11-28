@@ -67,3 +67,13 @@ test('a short value nobody could confuse with a key is left alone', () => {
   assert.equal(redactSecrets('retry token: 5'), 'retry token: 5');
   assert.equal(redactSecrets('sk-short'), 'sk-short');
 });
+
+test('inline connection-string credentials are redacted, bare URLs are not', () => {
+  assert.equal(
+    redactSecrets('db postgres://admin:s3cr3tPass@db.internal:5432/app'),
+    'db postgres://[redacted]@db.internal:5432/app'
+  );
+  assert.equal(containsSecret('mongodb://root:toor@10.0.0.5:27017'), true);
+  // A URL with no credentials is ordinary text and must survive.
+  assert.equal(redactSecrets('see https://react.dev/learn for docs'), 'see https://react.dev/learn for docs');
+});

@@ -135,6 +135,22 @@ test('refresh is incremental: re-chunks only changed files, removes deleted ones
   assert.ok(persisted.index.files['a.ts']);
 });
 
+test('invalidateSemanticIndexPaths drops changed files and forces a re-chunk', async () => {
+  storage.clear();
+  si.resetSemanticIndexCache();
+  await si.refreshSemanticIndex('ws-inv', true);
+  // Edit a.ts on disk, then invalidate it the way the turn loop does after a
+  // write. The next (throttled) search must NOT serve the old chunk.
+  disk['a.ts'] = "export function validateToken(token: string) {\n  return token.length > 99;\n}\n";
+  si.invalidateSemanticIndexPaths('ws-inv', ['./a.ts']);
+  const report = await si.refreshSemanticIndex('ws-inv'); // no force: throttle was cleared
+  assert.equal(report.rechunked, 1, 'invalidated file is re-chunked despite the throttle window');
+  assert.ok(report.index.files['a.ts'].chunks[0].text.includes('> 99'));
+  // A path the index never held is ignored, and an empty list is a no-op.
+  assert.doesNotThrow(() => si.invalidateSemanticIndexPaths('ws-inv', []));
+  assert.doesNotThrow(() => si.invalidateSemanticIndexPaths('ws-inv', ['nope/never.ts']));
+});
+
 test('handleSemanticSearch ranks without any API key and reports file:line', async () => {
   storage.clear();
   si.resetSemanticIndexCache();

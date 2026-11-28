@@ -25,6 +25,9 @@ const MAX_SCREENSHOT_WIDTH = 1024;
 const MAX_SCREENSHOT_DATAURL_CHARS = 1_500_000;
 const FRAME_SCRIPT_TIMEOUT_MS = 8000;
 const PREVIEW_SCHEME = 'shadrox-preview';
+const MAX_MOBILE_OFFENDERS = 10;
+const MOBILE_VIEWPORT_WIDTH = 375;
+const MOBILE_VIEWPORT_HEIGHT = 812;
 
 /**
  * A selector is interpolated into frame scripts via JSON.stringify, so quotes
@@ -145,6 +148,110 @@ function buildPreviewRectsScript() {
       return [];
     }
   })()`;
+}
+
+/**
+ * Mobile overflow probe: read raw geometry in the preview frame. No selector,
+ * no mutation, no navigation. scrollWidth is the document's true content width;
+ * clientWidth is the viewport. Offenders are elements whose right edge crosses
+ * the viewport, capped so a hostile page cannot flood the context budget.
+ */
+function buildMobileScript() {
+  return `(() => {
+    try {
+      const viewport = window.innerWidth || document.documentElement.clientWidth || 0;
+      const scrollWidth = Math.max(
+        document.documentElement ? document.documentElement.scrollWidth : 0,
+        document.body ? document.body.scrollWidth : 0
+      );
+      const offenders = [];
+      const nodes = document.querySelectorAll('body *');
+      for (const el of nodes) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 1 && rect.height < 1) continue;
+        if (rect.right > viewport + 1 || rect.left < -1) {
+          let sel = el.tagName ? el.tagName.toLowerCase() : '?';
+          if (el.id) sel += '#' + el.id;
+          else if (el.className && typeof el.className === 'string') {
+            const cls = el.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2).join('.');
+            if (cls) sel += '.' + cls;
+          }
+          offenders.push(sel.slice(0, 120));
+          if (offenders.length >= ${MAX_MOBILE_OFFENDERS}) break;
+        }
+      }
+      return { scrollWidth, clientWidth: viewport, offendingSelectors: offenders };
+    } catch (error) {
+      return { error: String(error && error.message || error) };
+    }
+  })()`;
+}
+
+/**
+ * Resize the preview iframe ELEMENT in the top document to a true mobile
+ * viewport. The probe runs INSIDE the iframe, so its window.innerWidth is the
+ * iframe element's width — the only lever that genuinely makes the layout 375px
+ * wide (device-emulating the top webContents would not change a cross-site
+ * iframe's innerWidth). Returns the previous inline style so the caller can put
+ * it back. `__SHADROX_RESIZE__` is a stable marker for tests.
+ */
+function buildResizePreviewScript(frameUrl, width, height) {
+  const target = JSON.stringify(String(frameUrl || ''));
+  const w = Math.max(1, Math.round(Number(width) || MOBILE_VIEWPORT_WIDTH));
+  const h = Math.max(1, Math.round(Number(height) || MOBILE_VIEWPORT_HEIGHT));
+  return `/* __SHADROX_RESIZE__ */ (() => {
+    try {
+      const target = ${target};
+      const frames = Array.prototype.slice.call(document.querySelectorAll('iframe'));
+      let el = frames.find((f) => f.getAttribute('src') === target) || frames.find((f) => f.src === target);
+      if (!el) return { found: false };
+      const prevStyle = el.getAttribute('style');
+      el.style.width = ${w} + 'px';
+      el.style.height = ${h} + 'px';
+      if (el.style.maxWidth) el.style.maxWidth = 'none';
+      el.style.flex = '0 0 auto';
+      return { found: true, prevStyle: prevStyle === null ? null : prevStyle };
+    } catch (error) {
+      return { found: false, error: String(error && error.message || error) };
+    }
+  })()`;
+}
+
+/** Restore the iframe's original inline style after the probe. */
+function buildRestorePreviewScript(frameUrl, prevStyle) {
+  const target = JSON.stringify(String(frameUrl || ''));
+  const style = typeof prevStyle === 'string' ? JSON.stringify(prevStyle) : 'null';
+  return `/* __SHADROX_RESTORE__ */ (() => {
+    try {
+      const target = ${target};
+      const frames = Array.prototype.slice.call(document.querySelectorAll('iframe'));
+      let el = frames.find((f) => f.getAttribute('src') === target) || frames.find((f) => f.src === target);
+      if (!el) return { found: false };
+      const prev = ${style};
+      if (prev === null) el.removeAttribute('style'); else el.setAttribute('style', prev);
+      return { found: true };
+    } catch (error) {
+      return { found: false, error: String(error && error.message || error) };
+    }
+  })()`;
+}
+
+/**
+ * Wait one paint so the resized iframe reflows before geometry is read. Resolves
+ * in the iframe's own frame; falls back to a timer where rAF is unavailable.
+ */
+function buildReflowScript() {
+  return `/* __SHADROX_REFLOW__ */ new Promise((resolve) => {
+    try {
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+      } else {
+        setTimeout(() => resolve(true), 50);
+      }
+    } catch (error) {
+      resolve(true);
+    }
+  })`;
 }
 
 /** Bounded ring buffers, one set per workspace. Oldest entries fall off. */
@@ -474,6 +581,45 @@ function registerPreviewInspect({ ipcMain, app, BrowserWindow, nativeImage, getW
         return await captureScreenshot(win, workspaceId);
       }
 
+      if (action === 'mobile') {
+        // True 375x812 emulation: the probe reads window.innerWidth INSIDE the
+        // iframe, so we resize the iframe element in the top document (a top
+        // webContents device-emulation would not change a cross-site iframe's
+        // innerWidth), wait a paint for reflow, measure, and ALWAYS restore.
+        const frameUrl = (() => { try { return frame.url || ''; } catch { return ''; } })();
+        const top = win.webContents.mainFrame;
+        let prevStyle = null;
+        let resized = false;
+        try {
+          const resize = await withTimeout(top.executeJavaScript(buildResizePreviewScript(frameUrl, MOBILE_VIEWPORT_WIDTH, MOBILE_VIEWPORT_HEIGHT), true), FRAME_SCRIPT_TIMEOUT_MS, 'mobile resize');
+          if (!resize || resize.found !== true) {
+            return { ok: false, error: 'Could not resize the preview to a 375x812 mobile viewport (pane not mounted). Open the preview, then run the mobile check again.' };
+          }
+          prevStyle = resize.prevStyle ?? null;
+          resized = true;
+          await runFrameScript(frame, buildReflowScript(), 'mobile reflow');
+          const result = await runFrameScript(frame, buildMobileScript(), 'mobile');
+          if (!result || typeof result !== 'object') return { ok: false, error: 'The preview did not return a mobile layout result.' };
+          if (result.error) return { ok: false, error: clipText(result.error, 500) };
+          return {
+            ok: true,
+            mobileOverflow: {
+              scrollWidth: Number(result.scrollWidth) || 0,
+              clientWidth: Number(result.clientWidth) || 0,
+              offendingSelectors: Array.isArray(result.offendingSelectors) ? result.offendingSelectors.slice(0, MAX_MOBILE_OFFENDERS) : []
+            }
+          };
+        } finally {
+          if (resized) {
+            try {
+              await withTimeout(top.executeJavaScript(buildRestorePreviewScript(frameUrl, prevStyle), true), FRAME_SCRIPT_TIMEOUT_MS, 'mobile restore');
+            } catch {
+              // Restoration is best-effort; never fail the probe on a restore error.
+            }
+          }
+        }
+      }
+
       const selector = sanitizeInspectSelector(request.selector ?? 'body');
       if (!selector) {
         return { ok: false, error: `Provide a CSS selector of 1-${MAX_SELECTOR_LENGTH} characters without control characters.` };
@@ -519,10 +665,16 @@ module.exports = {
   MAX_DOM_HTML_CHARS,
   MAX_CONSOLE_ENTRIES,
   MAX_NETWORK_ENTRIES,
+  MOBILE_VIEWPORT_WIDTH,
+  MOBILE_VIEWPORT_HEIGHT,
   sanitizeInspectSelector,
   buildDomScript,
   buildClickScript,
   buildTypeScript,
+  buildMobileScript,
+  buildResizePreviewScript,
+  buildRestorePreviewScript,
+  buildReflowScript,
   buildPreviewRectsScript,
   createInspectBuffers,
   isLoopbackPreviewUrl,

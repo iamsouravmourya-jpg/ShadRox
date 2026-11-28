@@ -1,0 +1,186 @@
+{
+  "version": 1,
+  "description": "ShadRox-Bench: 30 small, fixed vibecoder tasks across 3 tiny fixtures. Each check is a shell command run in the task's temp workspace; exit 0 = pass.",
+  "tasks": [
+    {
+      "id": "vite-01",
+      "fixture": "vite-react",
+      "prompt": "Change the main heading text from 'Hello Bench' to 'Welcome to ShadRox'.",
+      "check": "node -e \"process.exit(require('fs').readFileSync('src/App.tsx','utf8').includes('Welcome to ShadRox')?0:1)\""
+    },
+    {
+      "id": "vite-02",
+      "fixture": "vite-react",
+      "prompt": "Change the accent color to green (#10b981) in the CSS.",
+      "check": "node -e \"process.exit(require('fs').readFileSync('src/index.css','utf8').includes('#10b981')?0:1)\""
+    },
+    {
+      "id": "vite-03",
+      "fixture": "vite-react",
+      "prompt": "Rename the counter button's CSS class from 'counter' to 'count-btn' in the component.",
+      "check": "node -e \"const s=require('fs').readFileSync('src/App.tsx','utf8');process.exit(s.includes('count-btn')&&!s.includes('className=\"counter\"')?0:1)\""
+    },
+    {
+      "id": "vite-04",
+      "fixture": "vite-react",
+      "prompt": "Change the subtitle paragraph text to 'Your AI-native desktop IDE'.",
+      "check": "node -e \"process.exit(require('fs').readFileSync('src/App.tsx','utf8').includes('Your AI-native desktop IDE')?0:1)\""
+    },
+    {
+      "id": "vite-05",
+      "fixture": "vite-react",
+      "prompt": "Add a new paragraph under the subtitle that says 'Made with ShadRox'.",
+      "check": "node -e \"process.exit(require('fs').readFileSync('src/App.tsx','utf8').includes('Made with ShadRox')?0:1)\""
+    },
+    {
+      "id": "vite-06",
+      "fixture": "vite-react",
+      "prompt": "Widen the app container: change max-width from 640px to 720px.",
+      "check": "node -e \"const s=require('fs').readFileSync('src/index.css','utf8');process.exit(s.includes('720px')&&!s.includes('640px')?0:1)\""
+    },
+    {
+      "id": "vite-07",
+      "fixture": "vite-react",
+      "prompt": "Rename the state variable 'count' to 'clicks' everywhere in the component.",
+      "check": "node -e \"const s=require('fs').readFileSync('src/App.tsx','utf8');process.exit(s.includes('clicks')&&!s.includes('count')?0:1)\""
+    },
+    {
+      "id": "vite-08",
+      "fixture": "vite-react",
+      "prompt": "Make the title bigger: change .title font-size from 2rem to 3rem.",
+      "check": "node -e \"const s=require('fs').readFileSync('src/index.css','utf8');process.exit(s.includes('3rem')?0:1)\""
+    },
+    {
+      "id": "vite-09",
+      "fixture": "vite-react",
+      "prompt": "Add a footer at the bottom of the app that contains the text 'ShadRox Bench'.",
+      "check": "node -e \"process.exit(require('fs').readFileSync('src/App.tsx','utf8').includes('ShadRox Bench')?0:1)\""
+    },
+    {
+      "id": "vite-10",
+      "fixture": "vite-react",
+      "prompt": "Change the button label prefix from 'Count is' to 'Total:'.",
+      "check": "node -e \"const s=require('fs').readFileSync('src/App.tsx','utf8');process.exit(s.includes('Total:')&&!s.includes('Count is')?0:1)\""
+    },
+    {
+      "id": "html-01",
+      "fixture": "plain-html",
+      "prompt": "Change the hero title text from 'Build something small.' to 'Ship something great.'.",
+      "check": "node -e \"process.exit(require('fs').readFileSync('index.html','utf8').includes('Ship something great.')?0:1)\""
+    },
+    {
+      "id": "html-02",
+      "fixture": "plain-html",
+      "prompt": "Change the accent color to sky blue (#0ea5e9).",
+      "check": "node -e \"process.exit(require('fs').readFileSync('styles.css','utf8').includes('#0ea5e9')?0:1)\""
+    },
+    {
+      "id": "html-03",
+      "fixture": "plain-html",
+      "prompt": "Change the logo text in the header from 'PlainBench' to 'ShadRox'.",
+      "check": "node -e \"const s=require('fs').readFileSync('index.html','utf8');process.exit(s.includes('ShadRox')&&!s.includes('PlainBench')?0:1)\""
+    },
+    {
+      "id": "html-04",
+      "fixture": "plain-html",
+      "prompt": "Widen the hero section: change max-width from 720px to 800px.",
+      "check": "node -e \"const s=require('fs').readFileSync('styles.css','utf8');process.exit(s.includes('800px')&&!s.includes('720px')?0:1)\""
+    },
+    {
+      "id": "html-05",
+      "fixture": "plain-html",
+      "prompt": "Change the call-to-action button's initial label from 'Click me' to 'Start'.",
+      "check": "node -e \"const s=require('fs').readFileSync('index.html','utf8');process.exit(s.includes('>Start<')?0:1)\""
+    },
+    {
+      "id": "html-06",
+      "fixture": "plain-html",
+      "prompt": "Add a new nav link labeled 'Contact' to the header navigation.",
+      "check": "node -e \"process.exit(require('fs').readFileSync('index.html','utf8').includes('Contact')?0:1)\""
+    },
+    {
+      "id": "html-07",
+      "fixture": "plain-html",
+      "prompt": "Change the hero copy text to 'A static fixture with zero dependencies.'.",
+      "check": "node -e \"process.exit(require('fs').readFileSync('index.html','utf8').includes('zero dependencies')?0:1)\""
+    },
+    {
+      "id": "html-08",
+      "fixture": "plain-html",
+      "prompt": "Change the header bottom border color from #eee to #ddd.",
+      "check": "node -e \"const s=require('fs').readFileSync('styles.css','utf8');process.exit(s.includes('#ddd')?0:1)\""
+    },
+    {
+      "id": "html-09",
+      "fixture": "plain-html",
+      "prompt": "Make the logo text bigger: set .logo font-size to 1.5rem.",
+      "check": "node -e \"const s=require('fs').readFileSync('styles.css','utf8');process.exit(s.includes('1.5rem')?0:1)\""
+    },
+    {
+      "id": "html-10",
+      "fixture": "plain-html",
+      "prompt": "Change the button click message to 'Clicked N time(s)!' (keep the counter).",
+      "check": "node -e \"process.exit(require('fs').readFileSync('script.js','utf8').includes('time(s)')?0:1)\""
+    },
+    {
+      "id": "api-01",
+      "fixture": "express-api",
+      "prompt": "Add a GET /ping route that responds with the text 'pong'.",
+      "check": "node -e \"const s=require('fs').readFileSync('src/routes.js','utf8');process.exit(s.includes('/ping')&&s.includes('pong')?0:1)\""
+    },
+    {
+      "id": "api-02",
+      "fixture": "express-api",
+      "prompt": "Change the /health response to { status: 'healthy' } instead of { ok: true }.",
+      "check": "node -e \"const s=require('fs').readFileSync('server.js','utf8');process.exit(s.includes('healthy')?0:1)\""
+    },
+    {
+      "id": "api-03",
+      "fixture": "express-api",
+      "prompt": "Add a third seed user with name 'Grace' to the users array.",
+      "check": "node -e \"process.exit(require('fs').readFileSync('src/routes.js','utf8').includes('Grace')?0:1)\""
+    },
+    {
+      "id": "api-04",
+      "fixture": "express-api",
+      "prompt": "Change the 404 error message from 'not found' to 'user missing'.",
+      "check": "node -e \"const s=require('fs').readFileSync('src/routes.js','utf8');process.exit(s.includes('user missing')?0:1)\""
+    },
+    {
+      "id": "api-05",
+      "fixture": "express-api",
+      "prompt": "Change the default server port from 3000 to 4000.",
+      "check": "node -e \"const s=require('fs').readFileSync('server.js','utf8');process.exit(s.includes('4000')?0:1)\""
+    },
+    {
+      "id": "api-06",
+      "fixture": "express-api",
+      "prompt": "Add a DELETE /users/:id route that removes the user and returns 204.",
+      "check": "node -e \"const s=require('fs').readFileSync('src/routes.js','utf8');process.exit(s.includes('delete')&&s.includes('204')?0:1)\""
+    },
+    {
+      "id": "api-07",
+      "fixture": "express-api",
+      "prompt": "Change the POST /users success status from 201 to 200.",
+      "check": "node -e \"const s=require('fs').readFileSync('src/routes.js','utf8');process.exit(s.includes('status(200)')?0:1)\""
+    },
+    {
+      "id": "api-08",
+      "fixture": "express-api",
+      "prompt": "Parse URL-encoded bodies too: add express.urlencoded middleware in server.js.",
+      "check": "node -e \"process.exit(require('fs').readFileSync('server.js','utf8').includes('urlencoded')?0:1)\""
+    },
+    {
+      "id": "api-09",
+      "fixture": "express-api",
+      "prompt": "Rename the first seed user from 'Ada' to 'Ada Lovelace'.",
+      "check": "node -e \"const s=require('fs').readFileSync('src/routes.js','utf8');process.exit(s.includes('Ada Lovelace')?0:1)\""
+    },
+    {
+      "id": "api-10",
+      "fixture": "express-api",
+      "prompt": "Add a GET /version route that returns { version: '1.0.0' }.",
+      "check": "node -e \"const s=require('fs').readFileSync('src/routes.js','utf8');process.exit(s.includes('/version')&&s.includes('1.0.0')?0:1)\""
+    }
+  ]
+}

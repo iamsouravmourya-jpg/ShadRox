@@ -47,12 +47,20 @@ const ASSIGNED_SECRET =
 /** `Authorization: Bearer …` */
 const BEARER = /\b(bearer\s+)([A-Za-z0-9._~+/=-]{10,})/gi;
 
+/**
+ * `postgres://user:password@host` — the scheme and host are not secret, the
+ * inline credentials are. The match requires `user:pass@` so an ordinary URL
+ * with no credentials is left untouched.
+ */
+const CONNECTION_STRING = /\b([a-z][a-z0-9+.-]*):\/\/[^\/\s:@]+:[^\/\s@]+@/gi;
+
 const MARKER = '[redacted]';
 
 /** Replaces anything that reads like a credential with a marker. */
 export function redactSecrets(text: string): string {
   let redacted = text.replace(PEM_PRIVATE_KEY, MARKER);
   redacted = redacted.replace(BEARER, (_all, scheme: string) => `${scheme}${MARKER}`);
+  redacted = redacted.replace(CONNECTION_STRING, (_all, scheme: string) => `${scheme}://${MARKER}@`);
   for (const shape of KEY_SHAPES) redacted = redacted.replace(shape, MARKER);
   return redacted.replace(ASSIGNED_SECRET, (_all, name: string, separator: string) => `${name}${separator}${MARKER}`);
 }

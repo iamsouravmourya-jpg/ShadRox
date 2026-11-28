@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   createFailureReceipt,
   buildRepairBrief,
+  buildTurnFailureReceipt,
   failureSourceForCommand,
   proposeRepair,
   verifyHealing,
@@ -137,4 +138,39 @@ test('verifyHealing marks healing_failed when verification fails', () => {
 
   assert.equal(failed.status, 'healing_failed');
   assert.match(failed.verificationEvidence || '', /Syntax error still present/);
+});
+
+test('buildTurnFailureReceipt captures a structured, categorized turn receipt', () => {
+  const receipt = buildTurnFailureReceipt({
+    stopReason: 'provider_error',
+    error: 'The AI stream was interrupted before it finished.',
+    changedFiles: ['src/App.tsx', 'src/lib.ts'],
+    category: 'provider_error'
+  });
+  assert.equal(receipt.source, 'terminal');
+  assert.equal(receipt.target, 'turn:provider_error');
+  assert.equal(receipt.status, 'captured');
+  assert.equal(receipt.category, 'provider_error');
+  assert.deepEqual(receipt.relevantFiles, ['src/App.tsx', 'src/lib.ts']);
+  assert.match(receipt.errorMessage, /interrupted/);
+  // A turn with no error text still names the stop reason honestly.
+  const bare = buildTurnFailureReceipt({ stopReason: 'stuck', category: 'loop' });
+  assert.equal(bare.errorMessage, 'Turn stopped: stuck');
+  assert.equal(bare.category, 'loop');
+});
+
+test('createFailureReceipt redacts credentials from every persisted text field', () => {
+  const receipt = createFailureReceipt({
+    source: 'test',
+    target: 'npm test',
+    errorMessage: 'auth failed with sk-abcdefghijklmnop1234',
+    stackTrace: 'at foo (token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123)',
+    consoleErrors: ['api_key: "sk-zzzzzzzzzzzzzzzzzzzz"'],
+    diffSummary: 'leaked AIzaSyA1234567890abcdefghijklmnop'
+  });
+  const blob = JSON.stringify(receipt);
+  assert.doesNotMatch(blob, /sk-abcdefghijklmnop1234/);
+  assert.doesNotMatch(blob, /ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123/);
+  assert.doesNotMatch(blob, /AIzaSyA1234567890abcdefghijklmnop/);
+  assert.match(blob, /\[redacted]/);
 });

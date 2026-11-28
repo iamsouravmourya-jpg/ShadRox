@@ -10,6 +10,7 @@
 
 import { CREDIT_RATES, RUPEES_PER_CREDIT, type CreditRate } from './plans';
 import { USD_TO_INR, costRupees, costUsd, isPriced, type TokenSplit } from './modelRates';
+import type { ProviderId } from './providers';
 
 /**
  * Keys for the operator-owned shared stack. ShadRox sells no plans, so nothing
@@ -303,4 +304,82 @@ export function routeSharedTask({ plan, taskClass, tokens }: SharedRouteInput): 
  */
 export function manualModelAllowed(): boolean {
   return true;
+}
+
+/**
+ * BYOK Provider Router — the bounded fallback ladder.
+ *
+ * When a model call fails terminally (a rate limit that never cleared, a 5xx,
+ * a broken stream), the turn should try the NEXT model the user has actually
+ * consented to — never a provider they never keyed, and never the operator's
+ * shared stack. Consent is expressed by the caller as the set of providers with
+ * a working key; this file only orders and bounds that set.
+ *
+ * Ordering: the failed model's own provider first (its other models are the
+ * closest substitutes and share the key the user already trusts), then the
+ * other consented providers. The ladder is hard-capped so a turn cannot fan out
+ * into a retry storm, and any model still in a rate-limit cooldown is skipped —
+ * the per-model backoff the stream layer already applies is respected, not
+ * fought. Candidates carry no secrets: only a provider id and a model id.
+ */
+export interface FallbackCandidate {
+  provider: ProviderId;
+  model: string;
+  reason: 'same-provider' | 'other-consented-provider';
+}
+
+export interface FallbackLadderInput {
+  failedProvider: ProviderId;
+  failedModel: string;
+  /** Providers the user has keyed, each with the model ids that provider serves. */
+  consented: ReadonlyArray<{ provider: ProviderId; models: readonly string[] }>;
+  /** modelKey (`provider:model`) → epoch ms until which it is cooling down. */
+  coolingUntil?: Readonly<Record<string, number>>;
+  /** Clock seam for tests; production uses Date.now(). */
+  now?: number;
+  /** Hard cap on candidates (default 3). */
+  maxCandidates?: number;
+}
+
+export function fallbackModelKey(provider: ProviderId, model: string): string {
+  return `${provider}:${model}`;
+}
+
+export function buildFallbackLadder(input: FallbackLadderInput): FallbackCandidate[] {
+  const now = input.now ?? Date.now();
+  const cooling = input.coolingUntil ?? {};
+  const max = Math.max(0, input.maxCandidates ?? 3);
+  const failedKey = fallbackModelKey(input.failedProvider, input.failedModel);
+  const seen = new Set<string>([failedKey]);
+  const ladder: FallbackCandidate[] = [];
+
+  const push = (provider: ProviderId, model: string, reason: FallbackCandidate['reason']): void => {
+    if (ladder.length >= max || !model) return;
+    const key = fallbackModelKey(provider, model);
+    if (seen.has(key)) return;
+    if (typeof cooling[key] === 'number' && cooling[key] > now) return;
+    seen.add(key);
+    ladder.push({ provider, model, reason });
+  };
+
+  // Same provider first: closest substitutes, same trusted key.
+  for (const entry of input.consented) {
+    if (entry.provider !== input.failedProvider) continue;
+    for (const model of entry.models) push(entry.provider, model, 'same-provider');
+  }
+  // Then the other consented providers, in the order the caller listed them.
+  for (const entry of input.consented) {
+    if (entry.provider === input.failedProvider) continue;
+    for (const model of entry.models) push(entry.provider, model, 'other-consented-provider');
+  }
+  return ladder;
+}
+
+/** The next candidate not already tried, or null when the ladder is spent. */
+export function nextFallback(
+  ladder: readonly FallbackCandidate[],
+  alreadyTried: readonly string[]
+): FallbackCandidate | null {
+  const tried = new Set(alreadyTried);
+  return ladder.find((candidate) => !tried.has(fallbackModelKey(candidate.provider, candidate.model))) ?? null;
 }

@@ -13,6 +13,7 @@ import {
 } from '../lib/agent/runPolicy';
 import { DEFAULT_MAX_TOOL_ROUNDS, runToolRounds, type ToolLoopResumeState } from '../lib/agent/toolLoop';
 import { abortActiveSubagents } from '../lib/agent/subagent';
+import { invalidateSemanticIndexPaths } from '../lib/agent/semanticIndex';
 import { parseToolBlocks, repairAndParseNativeToolArgs, stripToolBlocks } from '../lib/agent/toolProtocol';
 import { buildWorkspaceToolContext, type WorkspaceToolContext } from '../lib/agent/toolGatekeeper';
 import { nativeToolDefinitions, summarizeCall } from '../lib/agent/tools';
@@ -60,6 +61,7 @@ import { dequeueChatItem, enqueueChatItem, MAX_QUEUED_CHAT_MESSAGES, removeQueue
 import { compactHistory, compactRollingTurns } from '../lib/compaction';
 import { contextFitNotice, fitChatRequest, type ChatRequestFit, type SystemContext } from '../lib/contextBudget';
 import type { ContextManifest } from '../lib/contextManifest';
+import { revalidateManifestAfterTurn } from '../lib/contextManifest';
 import type { DesktopDiagnostic, ShadRoxDesktopAPI } from '../lib/desktop';
 import { normalizeSlashes, warnBridgeError } from '../lib/diagnostics';
 import { dedupePaths } from '../lib/paths';
@@ -73,6 +75,12 @@ import { getSessionStore, syncInterruptedSnapshot, takeRestorableSnapshot, type 
 import type { AttemptRecord } from '../lib/taskUsage';
 import { buildTypeFixPrompt } from '../lib/typeErrorRefine';
 import type { ModelInfo, ProviderId } from '../lib/providers';
+import { scoutModelFor } from '../lib/providers';
+import { buildInstantTweakSystemPrompt, isInstantTweakCandidate } from '../lib/agent/instantTweak';
+import { globalProofLedger } from '../lib/proofLedger';
+import { buildTurnFailureReceipt } from '../lib/repairProof';
+import { categorizeFailureText, isSuccessStopReason } from '../lib/observability/failureTaxonomy';
+import { buildFallbackLadder, nextFallback, fallbackModelKey, type FallbackCandidate } from '../lib/modelRouter';
 import type { ChatMessage, ExternalFileAttachment, PatchSet, RefineMode, RefinedPromptMeta, ReviewPatch, SettingsTab } from '../lib/types';
 import { useAutonomyRun } from './useAutonomyRun';
 import { useTeamRun } from './useTeamRun';
@@ -159,6 +167,15 @@ export interface UseOrchestrationControllerOptions {
   setSettingsTab: (tab: SettingsTab) => void;
   getToolContext?: () => Promise<WorkspaceToolContext> | WorkspaceToolContext;
 }
+
+/**
+ * A stream failure worth retrying on a fallback model. Kept module-level so the
+ * main answer loop and the instant-tweak loop share one definition: only
+ * transient upstream conditions (rate limits, 5xx, timeouts, dropped
+ * connections) advance the ladder — a bad key or a missing model stops it.
+ */
+const isTransientStreamError = (error: string): boolean =>
+  /\b(?:429|5\d{2})\b|rate.?limit|timeout|timed\s?out|temporarily|unavailable|overloaded|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|ECONNREFUSED|fetch failed|stream.*(?:error|closed)|certificate|tls|ssl error/i.test(error);
 
 export function useOrchestrationController({
   desktop,
@@ -514,6 +531,9 @@ export function useOrchestrationController({
         : autoReaderModel(text, effectiveMode.writesFiles ? 'edit' : 'chatter');
     const pickerReport: PickerReport = { model: readerModel ?? '', ran: false, shortlist: 0, answered: false, picked: 0, durationMs: 0 };
     let fit: ChatRequestFit;
+    // The manifest built for this turn, kept outside the try so the post-loop
+    // freshness pass can mark sources the turn itself edited as stale.
+    let turnManifest: ContextManifest | null = null;
     const toolContext = buildRoundToolContext(baseToolContext);
     const nativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), toolContext);
     try {
@@ -530,6 +550,7 @@ export function useOrchestrationController({
         }
       );
       if (systemContext.manifest) setContextManifest(systemContext.manifest);
+      turnManifest = systemContext.manifest;
       fit = fitChatRequest({
         contextWindow,
         messages: history,
@@ -701,74 +722,99 @@ export function useOrchestrationController({
         const roundToolContext = buildRoundToolContext(roundBaseToolContext);
         const roundNativeTools = nativeToolDefinitions(Boolean(nativeWorkspaceId), roundToolContext);
 
-        await streamChat(
-          {
-            provider: byok.activeProvider,
-            baseUrl: byok.baseUrl,
-            model: answerModel,
-            apiKey: byok.activeKey,
-            messages: loopMessages,
-            systemInstruction: fit.systemInstruction,
-            temperature: byok.temperature,
-            thinking: effectiveTurnIntent.kind === 'conversational' ? 'low' : effectiveMode.thinking,
-            signal: controller.signal,
-            toolDefinitions: roundNativeTools.length > 0 ? roundNativeTools : undefined
-          },
-          {
-            onDelta: (chunk) => {
-              roundText += chunk;
-              paint(stripToolBlocks(roundText));
+        // BYOK fallback ladder for transient provider/rate-limit failures: try the
+        // answer model, then (consent-respecting, same key) the cheap scout model,
+        // bounded to one fallback. A non-transient error stops immediately.
+        const scoutModel = scoutModelFor(byok.activeProvider, answerModel);
+        const fallbackLadder = buildFallbackLadder({
+          failedProvider: byok.activeProvider,
+          failedModel: answerModel,
+          consented: [{ provider: byok.activeProvider, models: scoutModel && scoutModel !== answerModel ? [scoutModel] : [] }],
+          maxCandidates: 1
+        });
+        let candidate: FallbackCandidate = { provider: byok.activeProvider, model: answerModel, reason: 'same-provider' };
+        const triedModels: string[] = [fallbackModelKey(candidate.provider, candidate.model)];
+        const transient = isTransientStreamError;
+        while (true) {
+          if (controller.signal.aborted) break;
+          roundText = '';
+          roundError = null;
+          roundTruncated = false;
+          await streamChat(
+            {
+              provider: byok.activeProvider,
+              baseUrl: byok.baseUrl,
+              model: candidate.model,
+              apiKey: byok.activeKey,
+              messages: loopMessages,
+              systemInstruction: fit.systemInstruction,
+              temperature: byok.temperature,
+              thinking: effectiveTurnIntent.kind === 'conversational' ? 'low' : effectiveMode.thinking,
+              signal: controller.signal,
+              toolDefinitions: roundNativeTools.length > 0 ? roundNativeTools : undefined
             },
-            onReasoning: (chunk) => {
-              setMessages((previous) => previous.map((message) => (
-                message.id === modelMessage.id ? { ...message, reasoning: (message.reasoning ?? '') + chunk } : message
-              )));
-            },
-            onToolCalls: (calls) => {
-              const normalized = calls.map((call) => ({
-                name: call.name,
-                args: repairAndParseNativeToolArgs(call.arguments)
-              }));
-              const serialized = JSON.stringify(normalized).replaceAll('`', '\\u0060');
-              roundText += `${roundText ? '\n\n' : ''}\`\`\`shadrox:tools\n${serialized}\n\`\`\``;
-              paint(stripToolBlocks(roundText));
-            },
-            onDone: (info) => {
-              turnUsage.tokens += info.tokens;
-              turnUsage.inputTokens += info.inputTokens ?? 0;
-              turnUsage.outputTokens += info.outputTokens ?? 0;
-              turnUsage.cachedTokens += info.cachedInputTokens ?? 0;
-              turnUsage.durationMs += info.durationMs ?? 0;
-              if (turnUsage.firstTokenMs === null) turnUsage.firstTokenMs = info.firstTokenMs ?? null;
-              const finish = (info.finishReason ?? '').toLowerCase();
-              if (info.truncated === true || finish === 'length' || finish === 'max_tokens') {
-                roundTruncated = true;
-                announce('The model hit its output limit — this part of the reply is incomplete.', 6000);
-              }
-              if (info.droppedFeatures && info.droppedFeatures.length > 0) {
-                announce(`The provider dropped unsupported request features: ${info.droppedFeatures.join(', ')}.`, 6000);
-              }
-              const attemptId = `${modelMessage.id}:answer:${round}`;
-              recordAttempt({
-                taskId: modelMessage.id,
-                attemptId,
-                role: 'answer',
-                provider: byok.activeProvider,
-                requestedModel: answerModel,
-                servedModel: info.servedModel ?? null,
-                state: info.incomplete || roundTruncated ? 'incomplete' : 'completed',
-                usageSource: info.usageSource ?? (Number.isFinite(info.inputTokens) && Number.isFinite(info.outputTokens) ? 'provider' : 'unknown'),
-                inputTokens: info.inputTokens ?? null,
-                outputTokens: info.outputTokens ?? null,
-                cachedInputTokens: info.cachedInputTokens ?? null,
-                durationMs: info.durationMs ?? null,
-                startedAt: roundStartedAt,
-                reason: 'answer route'
-              });
-            },
-            onError: (error) => { roundError = error; }
-          }
-        );
+            {
+              onDelta: (chunk) => {
+                roundText += chunk;
+                paint(stripToolBlocks(roundText));
+              },
+              onReasoning: (chunk) => {
+                setMessages((previous) => previous.map((message) => (
+                  message.id === modelMessage.id ? { ...message, reasoning: (message.reasoning ?? '') + chunk } : message
+                )));
+              },
+              onToolCalls: (calls) => {
+                const normalized = calls.map((call) => ({
+                  name: call.name,
+                  args: repairAndParseNativeToolArgs(call.arguments)
+                }));
+                const serialized = JSON.stringify(normalized).replaceAll('`', '\\u0060');
+                roundText += `${roundText ? '\n\n' : ''}\`\`\`shadrox:tools\n${serialized}\n\`\`\``;
+                paint(stripToolBlocks(roundText));
+              },
+              onDone: (info) => {
+                turnUsage.tokens += info.tokens;
+                turnUsage.inputTokens += info.inputTokens ?? 0;
+                turnUsage.outputTokens += info.outputTokens ?? 0;
+                turnUsage.cachedTokens += info.cachedInputTokens ?? 0;
+                turnUsage.durationMs += info.durationMs ?? 0;
+                if (turnUsage.firstTokenMs === null) turnUsage.firstTokenMs = info.firstTokenMs ?? null;
+                const finish = (info.finishReason ?? '').toLowerCase();
+                if (info.truncated === true || finish === 'length' || finish === 'max_tokens') {
+                  roundTruncated = true;
+                  announce('The model hit its output limit — this part of the reply is incomplete.', 6000);
+                }
+                if (info.droppedFeatures && info.droppedFeatures.length > 0) {
+                  announce(`The provider dropped unsupported request features: ${info.droppedFeatures.join(', ')}.`, 6000);
+                }
+                const attemptId = `${modelMessage.id}:answer:${round}`;
+                recordAttempt({
+                  taskId: modelMessage.id,
+                  attemptId,
+                  role: 'answer',
+                  provider: byok.activeProvider,
+                  requestedModel: candidate.model,
+                  servedModel: info.servedModel ?? null,
+                  state: info.incomplete || roundTruncated ? 'incomplete' : 'completed',
+                  usageSource: info.usageSource ?? (Number.isFinite(info.inputTokens) && Number.isFinite(info.outputTokens) ? 'provider' : 'unknown'),
+                  inputTokens: info.inputTokens ?? null,
+                  outputTokens: info.outputTokens ?? null,
+                  cachedInputTokens: info.cachedInputTokens ?? null,
+                  durationMs: info.durationMs ?? null,
+                  startedAt: roundStartedAt,
+                  reason: 'answer route'
+                });
+              },
+              onError: (error) => { roundError = error; }
+            }
+          );
+          if (!roundError || controller.signal.aborted || !transient(roundError)) break;
+          const next = nextFallback(fallbackLadder, triedModels);
+          if (!next) break;
+          triedModels.push(fallbackModelKey(next.provider, next.model));
+          candidate = next;
+          announce(`Primary model failed (${roundError.slice(0, 80)}); retrying on ${next.model}.`, 6000);
+        }
       } catch (error) {
         if (!controller.signal.aborted) roundError = error instanceof Error ? error.message : 'Unknown error';
       }
@@ -879,12 +925,110 @@ export function useOrchestrationController({
       }
     };
 
+    // N4 Instant Tweak: a short, concrete edit to the open file takes a one-shot
+    // cheap-model path — a focused prompt, a single stream, no tool loop — then
+    // the reply's edit fences go through the normal patch engine. Everything
+    // else falls through to the full turn below.
+    if (isInstantTweakCandidate({ text, writesFiles: effectiveMode.writesFiles, hasActiveFile: Boolean(workspace.activeFile) })) {
+      const active = workspace.activeFile;
+      const tweakModel = scoutModelFor(byok.activeProvider, answerModel);
+      const startedAt = Date.now();
+      const paintTweak = (partial: string) => {
+        setMessages((previous) => previous.map((message) => (
+          message.id === modelMessage.id ? { ...message, content: partial } : message
+        )));
+      };
+      const tweakMessages: ChatTurn[] = [
+        { role: 'system', content: buildInstantTweakSystemPrompt(active?.name ?? null).join('\n\n') },
+        { role: 'user', content: active ? `File: ${active.name}\n\n${active.content}` : text }
+      ];
+      // Bounded BYOK fallback ladder: the cheap model first, then (only if it
+      // fails terminally) the user's own answer model on the same consented key.
+      const tweakLadder = buildFallbackLadder({
+        failedProvider: byok.activeProvider,
+        failedModel: tweakModel,
+        consented: [{ provider: byok.activeProvider, models: answerModel ? [answerModel] : [] }],
+        maxCandidates: 1
+      });
+      let tweakError: string | null = null;
+      let usedModel = tweakModel;
+      let candidate: FallbackCandidate | null = { provider: byok.activeProvider, model: tweakModel, reason: 'same-provider' };
+      const triedModels: string[] = [];
+      while (candidate) {
+        triedModels.push(fallbackModelKey(candidate.provider, candidate.model));
+        usedModel = candidate.model;
+        reply = '';
+        tweakError = null;
+        await streamChat(
+          {
+            provider: candidate.provider,
+            model: candidate.model,
+            apiKey: byok.activeKey,
+            baseUrl: byok.baseUrl,
+            messages: tweakMessages,
+            temperature: 0,
+            signal: controller.signal
+          },
+          {
+            onDelta: (delta) => { reply += delta; paintTweak(reply); },
+            onError: (message) => { tweakError = message; }
+          }
+        );
+        if (!tweakError || controller.signal.aborted || !isTransientStreamError(tweakError)) break;
+        candidate = nextFallback(tweakLadder, triedModels);
+      }
+      const wallDurationMs = Math.max(1, Date.now() - startedAt);
+      if (tweakError && !reply.trim() && !controller.signal.aborted) {
+        turnSignals.streamError = tweakError;
+        setMessages((previous) => previous.map((message) => (
+          message.id === modelMessage.id
+            ? { ...message, streaming: false, durationMs: wallDurationMs, content: `**Generation Error:** ${tweakError}` }
+            : message
+        )));
+      } else {
+        await applyReplyPatches();
+        turnSignals.answerEmpty = !reply.trim();
+        setMessages((previous) => previous.map((message) => (
+          message.id === modelMessage.id
+            ? {
+                ...message,
+                streaming: false,
+                durationMs: wallDurationMs,
+                content: reply,
+                metrics: {
+                  tokens: turnUsage.tokens,
+                  inputTokens: turnUsage.inputTokens,
+                  outputTokens: turnUsage.outputTokens,
+                  cachedTokens: turnUsage.cachedTokens || undefined,
+                  model: usedModel,
+                  servedModel: null,
+                  usageState: 'pending',
+                  attempts: turnAttempts.length || 1,
+                  firstTokenMs: turnUsage.firstTokenMs,
+                  durationMs: wallDurationMs
+                }
+              }
+            : message
+        )));
+        streamCompleted = !controller.signal.aborted && !tweakError;
+      }
+      setIsGenerating(false);
+      if (abortRef.current === controller) abortRef.current = null;
+      if (ownsDispatchLock) chatDispatchLockRef.current = false;
+      return;
+    }
+
     try {
       if (effectiveTurnIntent.kind === 'conversational') {
         const streamed = await streamOnce(fit.messages, 0);
         if (streamed.error && !controller.signal.aborted) {
           turnSignals.streamError = streamed.error;
           markInterrupted(streamed.error);
+          globalProofLedger.recordFailureReceipt(buildTurnFailureReceipt({
+            stopReason: 'provider_error',
+            error: streamed.error,
+            category: categorizeFailureText('provider_error', streamed.error)
+          }));
         } else {
           const answer = reply || stripToolBlocks(streamed.text) || streamed.text;
           const wallDurationMs = Math.max(1, Date.now() - turnStartedAt);
@@ -988,6 +1132,28 @@ export function useOrchestrationController({
             )));
           }
         });
+        // The turn edited files mid-loop: any manifest source it mutated was
+        // captured before the edit, so revalidate freshness against the loop's
+        // changed paths and surface the now-stale sources in the composer.
+        if (turnManifest && loop.changedPaths && loop.changedPaths.length > 0) {
+          setContextManifest(revalidateManifestAfterTurn(turnManifest, loop.changedPaths));
+        }
+        // Black Box: a failed turn leaves a durable, structured diagnostic
+        // receipt (category + stop reason + touched files), not just a chat line.
+        if (!controller.signal.aborted && (loop.error || !isSuccessStopReason(loop.stopReason ?? ''))) {
+          globalProofLedger.recordFailureReceipt(buildTurnFailureReceipt({
+            stopReason: loop.stopReason,
+            error: loop.error,
+            changedFiles: loop.changedPaths,
+            category: categorizeFailureText(loop.stopReason, loop.error)
+          }));
+        }
+        // The turn also edited files on disk: drop them from the semantic index
+        // and clear its throttle so the next semantic_search re-chunks the new
+        // bytes instead of ranking pre-edit chunks from a throttled cache.
+        if (nativeWorkspaceId && loop.changedPaths && loop.changedPaths.length > 0) {
+          invalidateSemanticIndexPaths(nativeWorkspaceId, loop.changedPaths);
+        }
         if (loop.error && !controller.signal.aborted) {
           turnSignals.streamError = loop.error;
           // provider_error / step_cap / stuck carry a resumable snapshot: store it so

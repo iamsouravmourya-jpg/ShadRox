@@ -35,6 +35,7 @@ import { type ModelInfo, type ModelTier } from '../lib/providers';
 import { computeHunks, groupedHunkId, hunkStats } from '../lib/editor/hunks';
 import type { Skill } from '../lib/skills';
 import { contextManifestTotals, shouldSubmitOnEnter, type ContextManifest } from '../lib/contextManifest';
+import { cacheHitRate } from '../lib/taskUsage';
 import type { ChatMessage, ExternalFileAttachment, PatchSet, RefineMode, SemanticStatus, SettingsTab, WorkspaceFile } from '../lib/types';
 import { ShadRoxLogo } from './Logo';
 import { ChatEmptyState } from './chat/ChatEmptyState';
@@ -1535,12 +1536,18 @@ export function ChatPanel({
                         </summary>
                         <span
                           className="mt-1 block"
-                          title="Route model · attempts · duration"
+                          title="Route model · attempts · latency · tokens · prompt-cache hit"
                         >
                           {describeAnswerRoute(message.metrics, models)}
                           {message.metrics.attempts && message.metrics.attempts > 1 ? ` · ${message.metrics.attempts} attempts` : ''}
                           {message.metrics.firstTokenMs !== null ? ` · ${message.metrics.firstTokenMs}ms` : ''}
                           {message.metrics.durationMs ? ` · ${(message.metrics.durationMs / 1000).toFixed(1)}s` : ''}
+                          {message.metrics.inputTokens ? ` · ${message.metrics.inputTokens.toLocaleString('en-US')} in` : ''}
+                          {message.metrics.outputTokens ? ` · ${message.metrics.outputTokens.toLocaleString('en-US')} out` : ''}
+                          {(() => {
+                            const hit = cacheHitRate(message.metrics.cachedTokens, message.metrics.inputTokens);
+                            return hit !== null ? ` · cache ${hit}%` : '';
+                          })()}
                         </span>
                       </details>
                     )}

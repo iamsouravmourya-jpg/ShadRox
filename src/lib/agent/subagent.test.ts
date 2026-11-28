@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { SubagentProgress } from './subagent';
+import { SCOUT_RETRY_BUDGET } from './subagent';
+import { DEFAULT_RETRY_SETTINGS } from '../ai/backoff';
 
 const storage = new Map<string, string>();
 (globalThis as unknown as Record<string, unknown>).localStorage = {
@@ -164,12 +166,12 @@ test('spawn_subagent cannot finish with zero tool calls: it is re-nudged, then r
 
 test('spawn_subagent re-nudges on zero-step plain prose exit and succeeds if retry inspects a file', async () => {
   let attempt = 0;
-  sa.configureSubagentStream(async (_messages, round) => {
+  sa.configureSubagentStream(async () => {
     attempt += 1;
     if (attempt === 1) {
       return { text: 'Looking at the code from memory, everything is in src/App.tsx.', error: null };
     }
-    if (round === 1) {
+    if (attempt === 2) {
       return { text: '```shadrox:tools\n{"name":"read_file","args":{"path":"src/App.tsx"}}\n```', error: null };
     }
     return {
@@ -177,12 +179,20 @@ test('spawn_subagent re-nudges on zero-step plain prose exit and succeeds if ret
       error: null
     };
   });
+  const savedBridge = (globalThis as Record<string, unknown>).window;
+  (globalThis as Record<string, unknown>).window = {
+    shadroxDesktop: {
+      readFile: async (_id: string, path: string) => ({ name: path, content: 'export const x = 1;\n', version: 'v1' })
+    },
+    dispatchEvent: () => true
+  };
   try {
     const result = await sa.handleSpawnSubagent('ws', { task: 'Inspect src/App.tsx.' });
     assert.equal(result.ok, true);
     assert.ok(result.content.includes('Verified src/App.tsx'));
     assert.ok(attempt >= 3, 'nudged after zero-step prose and completed after reading a file');
   } finally {
+    (globalThis as Record<string, unknown>).window = savedBridge;
     sa.configureSubagentStream(null);
   }
 });
@@ -417,4 +427,9 @@ test('subagent runs up to 5 rounds, emits live SubagentProgress telemetry, and r
   assert.equal(nested.ok, false);
   assert.equal(nested.refused, true);
   assert.match(nested.error ?? '', /Nested spawn_subagent/);
+});
+
+test('a scout gets a strictly tighter retry budget than the writer', () => {
+  assert.ok(SCOUT_RETRY_BUDGET.maxAttempts < DEFAULT_RETRY_SETTINGS.maxAttempts, 'fewer attempts');
+  assert.ok(SCOUT_RETRY_BUDGET.maxElapsedMs < DEFAULT_RETRY_SETTINGS.maxElapsedMs, 'shorter wall-clock');
 });

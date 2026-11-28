@@ -177,6 +177,16 @@ test('a precomputed signature index produces the same map', () => {
   );
 });
 
+test('the signature cache is content-keyed: a changed file is re-indexed, never served stale', () => {
+  const first = buildSignatureMap([file('src/App.tsx', 'export function App() { return 1; }\n')], { tokenBudget: 2_000 });
+  const second = buildSignatureMap(
+    [file('src/App.tsx', 'export function App() { return 2; }\nexport function Extra() {}\n')],
+    { tokenBudget: 2_000 }
+  );
+  assert.notEqual(first, second, 'same path, new bytes must produce a new map');
+  assert.match(second, /Extra/, 'the newly added declaration is picked up despite the identical path');
+});
+
 test('large personalized files and >200k context windows scale signature caps and token budgets cleanly', () => {
   const monolith = file('src/App.tsx', Array.from({ length: 260 }, (_, i) => `export function fn${i}() {}\n`).join(''));
   const map = buildSignatureMap([monolith], { tokenBudget: 4_000, personalization: ['src/App.tsx'] });

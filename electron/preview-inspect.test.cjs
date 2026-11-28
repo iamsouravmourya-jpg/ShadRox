@@ -11,6 +11,12 @@ const {
   buildDomScript,
   buildClickScript,
   buildTypeScript,
+  buildMobileScript,
+  buildResizePreviewScript,
+  buildRestorePreviewScript,
+  buildReflowScript,
+  MOBILE_VIEWPORT_WIDTH,
+  MOBILE_VIEWPORT_HEIGHT,
   buildPreviewRectsScript,
   createInspectBuffers,
   isLoopbackPreviewUrl,
@@ -122,14 +128,31 @@ test('clampRect rejects degenerate geometry and bounds huge rects', () => {
   assert.deepEqual(clampRect({ x: -5, y: 10.4, width: 9000, height: 600 }), { x: 0, y: 10, width: 8192, height: 600 });
 });
 
-function fakeElectron({ frameUrl = 'http://localhost:5173/', frameResult = { found: true, tag: 'div', html: '<div>ok</div>' } } = {}) {
+function fakeElectron({
+  frameUrl = 'http://localhost:5173/',
+  frameResult = { found: true, tag: 'div', html: '<div>ok</div>' },
+  resizeResult = { found: true, prevStyle: '' },
+  restoreResult = { found: true }
+} = {}) {
   const handlers = new Map();
+  const topScripts = [];
+  const frameScripts = [];
   const frame = {
     url: frameUrl,
     isDestroyed: () => false,
-    executeJavaScript: async () => frameResult
+    executeJavaScript: async (script) => { frameScripts.push(String(script)); return frameResult; }
   };
-  const mainFrame = { url: 'shadrox-app://renderer/index.html', framesInSubtree: [frame], executeJavaScript: async () => [] };
+  const mainFrame = {
+    url: 'shadrox-app://renderer/index.html',
+    framesInSubtree: [frame],
+    executeJavaScript: async (script) => {
+      const s = String(script);
+      topScripts.push(s);
+      if (s.includes('__SHADROX_RESTORE__')) return restoreResult;
+      if (s.includes('__SHADROX_RESIZE__')) return resizeResult;
+      return [];
+    }
+  };
   const webContents = { mainFrame, isDestroyed: () => false };
   const win = { webContents, isDestroyed: () => false, capturePage: async () => ({ isEmpty: () => true }) };
   const electron = {
@@ -142,7 +165,7 @@ function fakeElectron({ frameUrl = 'http://localhost:5173/', frameResult = { fou
     nativeImage: {}
   };
   const trustedEvent = { sender: webContents, senderFrame: mainFrame };
-  return { electron, handlers, trustedEvent, win, frame, mainFrame, webContents };
+  return { electron, handlers, trustedEvent, win, frame, mainFrame, webContents, topScripts, frameScripts };
 }
 
 test('registerPreviewInspect is a no-op without ipcMain', () => {
@@ -188,6 +211,72 @@ test('inspect handler serves dom/click/type through the preview frame only', asy
 
   const tooLongText = await run(trustedEvent, 'ws-1', { action: 'type', selector: 'input', text: 'x'.repeat(3000) });
   assert.equal(tooLongText.ok, false);
+});
+
+test('mobile script reads geometry without navigating or mutating', () => {
+  const script = buildMobileScript();
+  assert.ok(script.includes('scrollWidth'));
+  assert.ok(script.includes('innerWidth'));
+  assert.ok(script.includes('getBoundingClientRect'));
+  assert.ok(script.includes('offendingSelectors'));
+  assert.ok(!/location\s*(?:\.href\s*)?=/.test(script));
+  assert.ok(!script.includes('window.open('));
+  assert.ok(!script.includes('document.write'));
+});
+
+test('resize/restore/reflow scripts are bounded and interpolate via JSON', () => {
+  const hostile = '"); window.location = "https://evil.example"; ("';
+  const resize = buildResizePreviewScript(hostile, 375, 812);
+  assert.ok(resize.includes('__SHADROX_RESIZE__'));
+  assert.ok(resize.includes(JSON.stringify(hostile)));
+  assert.ok(resize.includes('375'));
+  assert.ok(resize.includes('812'));
+  assert.ok(!resize.includes(hostile)); // only JSON-escaped
+  const restore = buildRestorePreviewScript(hostile, 'width: 900px');
+  assert.ok(restore.includes('__SHADROX_RESTORE__'));
+  assert.ok(restore.includes(JSON.stringify('width: 900px')));
+  const reflow = buildReflowScript();
+  assert.ok(reflow.includes('requestAnimationFrame'));
+  assert.equal(MOBILE_VIEWPORT_WIDTH, 375);
+  assert.equal(MOBILE_VIEWPORT_HEIGHT, 812);
+});
+
+test('inspect handler serves the mobile overflow probe through the preview frame', async () => {
+  const { electron, handlers, trustedEvent, topScripts, frameScripts } = fakeElectron({
+    frameResult: { scrollWidth: 820, clientWidth: 375, offendingSelectors: ['div.hero', 'img#banner'] }
+  });
+  const runtime = (url) => (url.startsWith('http://localhost:5173') ? 'ws-1' : null);
+  registerPreviewInspect({ ...electron, getWorkspaceIdForUrl: runtime });
+  const run = handlers.get('preview-inspect:run');
+
+  const mobile = await run(trustedEvent, 'ws-1', { action: 'mobile' });
+  assert.equal(mobile.ok, true);
+  assert.equal(mobile.mobileOverflow.scrollWidth, 820);
+  assert.equal(mobile.mobileOverflow.clientWidth, 375);
+  assert.deepEqual(mobile.mobileOverflow.offendingSelectors, ['div.hero', 'img#banner']);
+  // True emulation: the iframe was resized to 375x812 in the top document, a
+  // reflow ran in the frame, and the original style was restored afterwards.
+  const resizeCall = topScripts.find((s) => s.includes('__SHADROX_RESIZE__'));
+  const restoreCall = topScripts.find((s) => s.includes('__SHADROX_RESTORE__'));
+  assert.ok(resizeCall && resizeCall.includes('375'));
+  assert.ok(restoreCall);
+  assert.ok(frameScripts.some((s) => s.includes('__SHADROX_REFLOW__')));
+  assert.ok(topScripts.indexOf(resizeCall) < topScripts.indexOf(restoreCall));
+
+  const missing = await run(trustedEvent, 'ws-2', { action: 'mobile' });
+  assert.equal(missing.ok, false);
+  assert.match(missing.error, /not open/);
+});
+
+test('mobile probe fails honestly when the pane cannot be resized, and still restores', async () => {
+  const { electron, handlers, trustedEvent, topScripts } = fakeElectron({ resizeResult: { found: false } });
+  registerPreviewInspect({ ...electron, getWorkspaceIdForUrl: () => 'ws-1' });
+  const run = handlers.get('preview-inspect:run');
+  const result = await run(trustedEvent, 'ws-1', { action: 'mobile' });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /375x812|resize/i);
+  // No resize succeeded, so no restore should be attempted.
+  assert.ok(!topScripts.some((s) => s.includes('__SHADROX_RESTORE__')));
 });
 
 test('inspect handler refuses non-loopback preview frames', async () => {

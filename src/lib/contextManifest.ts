@@ -249,3 +249,76 @@ export function shouldSubmitOnEnter(event: { key: string; shiftKey?: boolean; is
   if (event.shiftKey) return false;
   return true;
 }
+
+/**
+ * FNV-1a content hash (deterministic, dependency-free). Used to give every
+ * injected file slice a content identity so staleness can be detected without
+ * trusting a line number or a timestamp.
+ */
+export function hashContextContent(content: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < content.length; i += 1) {
+    hash ^= content.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * Content-hash freshness revalidation.
+ *
+ * The composer builds context once per turn, but a file can change mid-loop
+ * (the model edited it, a watcher rewrote it). This marks each source against
+ * the CURRENT content version so the loop re-reads a stale slice instead of
+ * trusting bytes it captured earlier — the difference between a cheap correct
+ * turn and a wasted re-read round.
+ *
+ * - no entry in `currentVersions`  → unknown, source left untouched
+ * - entry is `null` (file gone)    → stale
+ * - entry is a string, no `source.version` → unknown (we never hashed it), adopt it
+ * - entry matches `source.version` → fresh
+ * - entry differs                  → stale
+ */
+export function revalidateContextFreshness(
+  sources: readonly ContextSource[],
+  currentVersions: Readonly<Record<string, string | null | undefined>>
+): ContextSource[] {
+  return sources.map((source) => {
+    if (source.kind === 'map' || source.kind === 'rule') return source;
+    const key = normalizeContextPath(source.path);
+    const current = currentVersions[key] ?? currentVersions[source.path];
+    if (current === undefined) return source;
+    if (current === null) return { ...source, freshness: 'stale' };
+    if (!source.version) return { ...source, freshness: 'unknown', version: current };
+    return { ...source, freshness: source.version === current ? 'fresh' : 'stale' };
+  });
+}
+
+/** A token that can never equal a real content hash, so a mutated source reads
+ *  as changed while an untouched one keeps its content-hash version. */
+const CHANGED_TOKEN = '\u0000changed';
+
+/**
+ * The live-path consumer of {@link revalidateContextFreshness}.
+ *
+ * After a turn's tool rounds, the loop reports the exact paths it mutated. A
+ * manifest source whose file the model edited mid-turn was captured BEFORE that
+ * edit, so its bytes are now stale; untouched sources keep their content-hash
+ * version and read fresh. Only versioned file sources are revalidated — pins,
+ * the repo map and rules carry no content identity and are left as they were.
+ * The composer then shows which sent sources the turn itself invalidated.
+ */
+export function revalidateManifestAfterTurn(
+  manifest: ContextManifest,
+  changedPaths: readonly string[]
+): ContextManifest {
+  if (changedPaths.length === 0) return manifest;
+  const changed = new Set(changedPaths.map((path) => normalizeContextPath(path)));
+  const currentVersions: Record<string, string> = {};
+  for (const source of manifest.sources) {
+    if (!source.version) continue;
+    const key = normalizeContextPath(source.path);
+    currentVersions[key] = changed.has(key) ? `${CHANGED_TOKEN}:${source.version}` : source.version;
+  }
+  return { ...manifest, sources: revalidateContextFreshness(manifest.sources, currentVersions) };
+}

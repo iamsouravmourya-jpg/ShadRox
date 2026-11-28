@@ -391,7 +391,10 @@ function controlOutcome(call: ToolCall, plan: TaskPlan, guardUsed: boolean, turn
     const docsOnly = turn ? isDocsOnlyTurn(turn) : false;
     const mutated = turn ? hasMutations(turn) : false;
     const satisfying = turn ? satisfyingVerification(turn) : null;
-    const verified = docsOnly ? false : (details.verified ?? (mutated ? (satisfying?.ok ?? false) : true));
+    // A mutating turn's "verified" is the real post-change check, never the
+    // model's own claim: a FAIL or NOT_RUN gate cannot be reported as verified.
+    // Only a non-mutating turn may take the model's word (details.verified).
+    const verified = docsOnly ? false : (mutated ? (satisfying?.ok ?? false) : (details.verified ?? true));
     const filesChanged = turn ? changedPathList(turn) : (details.filesChanged ?? []);
     const summary = renderFinishSummary(details, { verified, filesChanged, docsOnly });
     return { outcome: { ok: true, content: 'Turn finished.' }, plan, finish: { summary, blocked: details.blocked }, stop: true };

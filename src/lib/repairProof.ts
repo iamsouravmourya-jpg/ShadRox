@@ -4,6 +4,9 @@
  * into immutable failure receipts and coordinates atomic self-healing repair proposals.
  */
 
+import type { FailureCategory } from './observability/failureTaxonomy';
+import { redactSecrets } from './secrets';
+
 export type FailureSource = 'test' | 'preview' | 'verify' | 'compiler' | 'terminal';
 
 export type RepairProofStatus =
@@ -40,6 +43,8 @@ export interface FailureReceipt {
   repairPatch?: string;
   healedAt?: number;
   verificationEvidence?: string;
+  /** Failure Black Box category, when this receipt came from a classified turn. */
+  category?: FailureCategory;
 }
 
 const PACKAGE_MANAGERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
@@ -199,21 +204,52 @@ export function createFailureReceipt(params: {
   diffSummary?: string;
   checkpointId?: string;
 }): FailureReceipt {
+  // Receipts are persisted to disk (proof ledger) and may be read by a model the
+  // user did not configure, so every free-text field passes the shared redactor
+  // first — a key echoed in a stack trace or console line never reaches storage.
+  const safe = (value: string | undefined): string | undefined =>
+    value === undefined ? undefined : redactSecrets(value);
   return {
     id: `proof-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     source: params.source,
     target: params.target,
     timestamp: Date.now(),
     exitCode: params.exitCode ?? null,
-    errorMessage: params.errorMessage.trim(),
-    stackTrace: params.stackTrace?.trim(),
-    diagnostics: params.diagnostics ? [...params.diagnostics] : [],
-    consoleErrors: params.consoleErrors ? [...params.consoleErrors] : [],
+    errorMessage: safe(params.errorMessage.trim()) ?? '',
+    stackTrace: safe(params.stackTrace?.trim()),
+    diagnostics: params.diagnostics
+      ? params.diagnostics.map((diag) => ({ ...diag, message: safe(diag.message) ?? diag.message }))
+      : [],
+    consoleErrors: params.consoleErrors ? params.consoleErrors.map((line) => safe(line) ?? line) : [],
     relevantFiles: params.relevantFiles ? Array.from(new Set(params.relevantFiles)) : [],
-    diffSummary: params.diffSummary,
+    diffSummary: safe(params.diffSummary),
     checkpointId: params.checkpointId,
     status: 'captured'
   };
+}
+
+/**
+ * Builds a structured Black Box receipt for a whole failed turn (not a single
+ * failed command): the stop reason, the error text and the files the turn
+ * touched, tagged with its Failure Category. The caller persists it through the
+ * proof ledger so a failed turn leaves a durable diagnostic trail, not just a
+ * command failure.
+ */
+export function buildTurnFailureReceipt(input: {
+  stopReason: string | null | undefined;
+  error?: string | null;
+  changedFiles?: readonly string[];
+  category: FailureCategory;
+}): FailureReceipt {
+  const reason = input.stopReason?.trim() || 'unknown';
+  const errorMessage = (input.error ?? '').trim() || `Turn stopped: ${reason}`;
+  const receipt = createFailureReceipt({
+    source: 'terminal',
+    target: `turn:${reason}`,
+    errorMessage,
+    relevantFiles: input.changedFiles ? [...input.changedFiles] : []
+  });
+  return { ...receipt, category: input.category };
 }
 
 /**

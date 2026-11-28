@@ -197,6 +197,7 @@ test('handlePreviewInspect validates actions and refuses without the bridge', as
       previewInspect: async (_id: string, request: { action: string }) => {
         if (request.action === 'console') return { ok: true, logs: [{ level: 'error', message: 'boom', timestamp: 1 }] };
         if (request.action === 'dom') return { ok: true, found: true, count: 1, tag: 'div', html: '<div id="root">hi</div>' };
+        if (request.action === 'mobile') return { ok: true, mobileOverflow: { scrollWidth: 820, clientWidth: 375, offendingSelectors: ['div.hero'] } };
         return { ok: false, error: 'preview not open' };
       }
     }
@@ -207,6 +208,11 @@ test('handlePreviewInspect validates actions and refuses without the bridge', as
   const dom = await wt.handlePreviewInspect('ws', { action: 'dom', selector: '#root' });
   assert.equal(dom.ok, true);
   assert.ok(dom.content.includes('<div id="root">hi</div>'));
+  const mobile = await wt.handlePreviewInspect('ws', { action: 'mobile' });
+  assert.equal(mobile.ok, true);
+  assert.match(mobile.content, /Mobile overflow/);
+  assert.match(mobile.content, /820px exceeds the 375px viewport/);
+  assert.match(mobile.content, /div\.hero/);
   const missing = await wt.handlePreviewInspect('ws', { action: 'screenshot' });
   assert.equal(missing.ok, false);
   (globalThis as unknown as Record<string, unknown>).window = { shadroxDesktop: null };

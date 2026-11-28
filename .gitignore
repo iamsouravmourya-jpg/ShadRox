@@ -32,3 +32,5 @@ landing/AGENTS.md
 /PLAN-BIGTASK.md
 
 junk/
+# ShadRox-Bench run artifacts (local measurement, not published).
+bench/results/

@@ -1,6 +1,9 @@
 import { getDesktopBridge, type ShadRoxDesktopAPI, type WorkspaceTextEdit } from '../desktop';
 import { relativeToRoot } from '../diagnostics';
 import { groupEditsByFile, planFileEdits } from '../editor/edits';
+import type { MapInputFile } from '../repoMap';
+import { buildOryTree, dependentsFromGraph } from './repoMap';
+import { enumerateWorkspaceFiles } from './semanticIndex';
 import type { ToolDefinition, ToolOutcome } from './tools';
 
 /**
@@ -334,6 +337,75 @@ export async function handleRenameSymbol(workspaceId: string, args: Record<strin
 }
 
 /* ------------------------------------------------------------------ *
+ * get_dependents — exact downstream consumers from the OryTree import graph.
+ * ------------------------------------------------------------------ */
+
+const MAX_DEPENDENT_FILES = 1_500;
+const MAX_DEPENDENT_READ_BYTES = 200_000;
+const MAX_DEPENDENT_BATCH_BYTES = 3_000_000;
+const DEPENDENT_LOAD_BATCH = 40;
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : undefined;
+}
+
+function asStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const out = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim());
+  return out.length > 0 ? out : null;
+}
+
+function normalizeDependentPath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+/**
+ * Read-only blast-radius lookup. Builds the OryTree import graph from the
+ * current workspace bytes (the incremental FileTags cache keeps a 1,500-file
+ * rebuild fast) and reports the exact files that reference the target(s),
+ * with the symbols they use — what to check before refactoring shared code.
+ */
+export async function handleGetDependents(workspaceId: string, args: Record<string, unknown>): Promise<ToolOutcome> {
+  const desktop = getDesktopBridge();
+  if (!desktop) return refusal('The desktop bridge is unavailable, so the dependency graph cannot be built.');
+  if (!workspaceId) return refusal('get_dependents needs an opened folder workspace.');
+  const rawTargets = asStringArray(args.paths) ?? (asString(args.path) ? [asString(args.path) as string] : null);
+  if (!rawTargets) return refusal('get_dependents needs paths: a workspace-relative file, or an array of them, whose dependents to inspect.');
+  const targets = [...new Set(rawTargets.map(normalizeDependentPath))];
+  const limit = Math.min(Math.max(asNumber(args.limit) ?? 20, 1), 50);
+  try {
+    const { paths } = await enumerateWorkspaceFiles(desktop, workspaceId);
+    if (paths.length === 0) return { ok: true, content: 'No files to analyze in this workspace.' };
+    const files: MapInputFile[] = [];
+    for (let offset = 0; offset < paths.length && files.length < MAX_DEPENDENT_FILES; offset += DEPENDENT_LOAD_BATCH) {
+      const batch = paths.slice(offset, offset + DEPENDENT_LOAD_BATCH);
+      let loaded;
+      try {
+        loaded = await desktop.loadFiles(workspaceId, batch, { maxBytesPerFile: MAX_DEPENDENT_READ_BYTES, maxTotalBytes: MAX_DEPENDENT_BATCH_BYTES });
+      } catch {
+        continue;
+      }
+      for (const file of loaded.files) files.push({ name: file.name, content: file.content });
+    }
+    const tree = await buildOryTree('', { files });
+    const dependents = dependentsFromGraph(tree.graph, targets, limit);
+    const targetList = targets.join(', ');
+    if (dependents.length === 0) {
+      return { ok: true, content: `No downstream dependents found for ${targetList} in the import graph (no other file references them, or the graph is empty). Treat them as safe to change, but confirm with find_references for symbol-level proof.` };
+    }
+    const body = dependents.map((dependent, index) => {
+      const symbols = dependent.symbols.length > 0 ? ` via ${dependent.symbols.slice(0, 6).join(', ')}` : '';
+      return `${index + 1}. ${dependent.file}  [weight ${dependent.weight.toFixed(1)}]${symbols}`;
+    }).join('\n');
+    const total = dependents.length;
+    const content = `${total} downstream dependent(s) of ${targetList} (from the workspace import graph; weight = reference strength):\n${body}\n\nThese files import or reference the target and may break when it changes — read them before refactoring. find_references gives symbol-level proof for a specific name.`;
+    return { ok: true, content: clip(content) };
+  } catch (error) {
+    return { ok: false, content: '', error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Registry surface.
  * ------------------------------------------------------------------ */
 
@@ -352,6 +424,11 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
     name: 'rename_symbol',
     description: 'Compute an atomic multi-file EDIT SET to rename a TS/JS symbol across references.',
     parameters: 'file: string, symbol: string, newName: string'
+  },
+  {
+    name: 'get_dependents',
+    description: 'List the exact downstream files that import/reference the given path(s), with strength — blast radius before a refactor.',
+    parameters: 'paths?: string[] (or path: string), limit?: number (default 20, max 50)'
   }
 ];
 
@@ -387,8 +464,19 @@ export const RENAME_SYMBOL_SCHEMA: Record<string, unknown> = {
   additionalProperties: false
 };
 
+export const GET_DEPENDENTS_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    paths: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative file(s) whose dependents to inspect.' },
+    path: { type: 'string', description: 'A single workspace-relative file (alternative to paths).' },
+    limit: { type: 'integer', description: 'Max dependents (default 20, max 50).' }
+  },
+  additionalProperties: false
+};
+
 export const CODE_INTEL_SCHEMAS: Record<string, Record<string, unknown>> = {
   find_references: FIND_REFERENCES_SCHEMA,
   go_to_definition: GO_TO_DEFINITION_SCHEMA,
-  rename_symbol: RENAME_SYMBOL_SCHEMA
+  rename_symbol: RENAME_SYMBOL_SCHEMA,
+  get_dependents: GET_DEPENDENTS_SCHEMA
 };

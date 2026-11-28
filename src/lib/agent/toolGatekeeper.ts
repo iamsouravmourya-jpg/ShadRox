@@ -44,6 +44,7 @@ export const ALWAYS_ON_TOOL_NAMES: ReadonlySet<string> = new Set([
   'list_directory',
   'read_file',
   'find_files',
+  'find_by_glob',
   'search_text',
   'outline',
   'edit_file',
@@ -60,6 +61,7 @@ export const TIER1_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'list_directory',
   'read_file',
   'find_files',
+  'find_by_glob',
   'search_text',
   'outline',
   'edit_file',
@@ -76,6 +78,7 @@ export const ADVISORY_READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'list_directory',
   'read_file',
   'find_files',
+  'find_by_glob',
   'search_text',
   'outline',
   'problems',
@@ -84,14 +87,14 @@ export const ADVISORY_READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 export const TOOL_CATEGORY_MAP: Record<ToolBundleCategory, readonly string[]> = {
-  core: [...TIER1_CORE_TOOL_NAMES, 'verify'],
+  core: [...TIER1_CORE_TOOL_NAMES, 'verify', 'test_changed'],
   apply_patch: ['apply_patch'],
   preview: ['preview_control', 'preview_inspect'],
-  git: ['git_state'],
+  git: ['git_state', 'git_diff'],
   delete: ['delete_file'],
   web: ['web_search', 'fetch_url'],
   memory: ['memory_read', 'memory_note'],
-  code_intel: ['semantic_search', 'find_references', 'go_to_definition', 'rename_symbol', 'outline'],
+  code_intel: ['semantic_search', 'find_references', 'go_to_definition', 'rename_symbol', 'get_dependents', 'outline'],
   review: ['diff_review'],
   jobs: ['job_control'],
   terminal: ['terminal_state', 'terminal_answer'],
@@ -106,6 +109,7 @@ const MUTATING_OR_EXECUTE_TOOLS: ReadonlySet<string> = new Set([
   'delete_file',
   'run_command',
   'verify',
+  'test_changed',
   'preview_control',
   'terminal_answer',
   'memory_note',
@@ -162,9 +166,11 @@ function isLegacyToolEnabled(toolName: string, state: WorkspaceToolContext): boo
   if (toolName === 'unlock_tools') return true;
 
   if (toolName === 'verify') return isVerifyEligible(state);
+  if (toolName === 'test_changed') return isVerifyEligible(state);
   if (ALWAYS_ON_TOOL_NAMES.has(toolName)) return true;
   if (toolName === 'apply_patch') return state.hasMultiFileEdit === true;
   if (toolName === 'git_state') return state.hasGitRepo === true;
+  if (toolName === 'git_diff') return state.hasGitRepo === true;
   if (toolName === 'web_search' || toolName === 'fetch_url') return state.webAvailable === true;
   if (toolName === 'preview_inspect') return state.previewActive === true;
   if (toolName === 'preview_control') return state.previewActive || hasPreviewableFiles(state.filePaths);
@@ -204,12 +210,13 @@ export function isToolEnabledInContext(toolName: string, state: WorkspaceToolCon
     if (MUTATING_OR_EXECUTE_TOOLS.has(toolName)) return false;
     if (ADVISORY_READ_ONLY_TOOLS.has(toolName)) return true;
     if (toolName === 'git_state') return activeBundles.has('git');
+    if (toolName === 'git_diff') return activeBundles.has('git');
     if (toolName === 'memory_read') return activeBundles.has('memory');
     if (toolName === 'web_search' || toolName === 'fetch_url') {
       return activeBundles.has('web') && state.webAvailable !== false;
     }
     if (toolName === 'preview_inspect') return state.previewActive && activeBundles.has('preview');
-    if (toolName === 'semantic_search' || toolName === 'find_references' || toolName === 'go_to_definition') {
+    if (toolName === 'semantic_search' || toolName === 'find_references' || toolName === 'go_to_definition' || toolName === 'get_dependents') {
       return activeBundles.has('code_intel');
     }
     if (toolName === 'diff_review') return activeBundles.has('review');
@@ -221,6 +228,7 @@ export function isToolEnabledInContext(toolName: string, state: WorkspaceToolCon
 
   // Execution turn: Tier-1 core + dynamic state essentials + Tier-2/Tier-3 bundles.
   if (toolName === 'verify') return isVerifyEligible(state);
+  if (toolName === 'test_changed') return isVerifyEligible(state);
   if (TIER1_CORE_TOOL_NAMES.has(toolName)) return true;
 
   if (toolName === 'apply_patch') {
@@ -241,6 +249,9 @@ export function isToolEnabledInContext(toolName: string, state: WorkspaceToolCon
   if (toolName === 'git_state') {
     return activeBundles.has('git');
   }
+  if (toolName === 'git_diff') {
+    return activeBundles.has('git');
+  }
   if (toolName === 'delete_file') {
     return activeBundles.has('delete');
   }
@@ -254,7 +265,8 @@ export function isToolEnabledInContext(toolName: string, state: WorkspaceToolCon
     toolName === 'semantic_search' ||
     toolName === 'find_references' ||
     toolName === 'go_to_definition' ||
-    toolName === 'rename_symbol'
+    toolName === 'rename_symbol' ||
+    toolName === 'get_dependents'
   ) {
     return activeBundles.has('code_intel');
   }

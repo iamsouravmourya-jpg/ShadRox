@@ -1,6 +1,6 @@
 import type { ExternalToolDefinition } from './agent/mcpTools';
 import { hasPreviewableFiles, type WorkspaceToolContext } from './agent/toolGatekeeper';
-import type { ContextSource } from './contextManifest';
+import { hashContextContent, type ContextSource } from './contextManifest';
 import { normalizeSlashes } from './diagnostics';
 import type { MapInputFile } from './repoMap';
 import type { WorkspaceFile } from './types';
@@ -137,7 +137,8 @@ export function serializeDescribeToolsCacheKey(
   maxRounds: number,
   external: readonly ExternalToolDefinition[],
   notes: readonly string[],
-  context?: WorkspaceToolContext
+  context?: WorkspaceToolContext,
+  profile: 'full' | 'lean' = 'full'
 ): string {
   const mcpSig = external
     .map((tool) => `${tool.name}\0${tool.parameters}\0${tool.description}`)
@@ -145,7 +146,7 @@ export function serializeDescribeToolsCacheKey(
     .join('\x01');
   const notesSig = notes.join('\x02');
   if (!context) {
-    return `${maxRounds}|no-ctx|${mcpSig}|${notesSig}`;
+    return `${maxRounds}|no-ctx|${profile}|${mcpSig}|${notesSig}`;
   }
   const enabled = context.enabledBundles ? [...context.enabledBundles].sort().join(',') : 'undef';
   const unlocked = context.unlockedBundles ? [...context.unlockedBundles].sort().join(',') : 'undef';
@@ -173,7 +174,7 @@ export function serializeDescribeToolsCacheKey(
     context.hasGitRepo === undefined ? 'undef' : context.hasGitRepo ? '1' : '0',
     context.webAvailable === undefined ? 'undef' : context.webAvailable ? '1' : '0'
   ].join(':');
-  return `${maxRounds}|${ctxSig}|${mcpSig}|${notesSig}`;
+  return `${maxRounds}|${ctxSig}|${profile}|${mcpSig}|${notesSig}`;
 }
 
 /**
@@ -274,13 +275,17 @@ export function dedupeManifestData(input: DedupeManifestInput): {
       (file) => normalizeContextPath(file.name) === key || file.name === name
     );
     seenFiles.add(key);
+    const version = attachedFile
+      ? attachedFile.version ?? hashContextContent(attachedFile.content)
+      : undefined;
     sources.push({
       path: attachedFile?.name ?? name,
       kind: 'attachment',
       reason: 'attached by the user',
       ranges: [],
       fullFile: true,
-      freshness: 'fresh',
+      freshness: version ? 'fresh' : 'unknown',
+      version,
       estimatedTokens: approxTokens(attachedFile?.content ?? '')
     });
     recordResolved(attachedFile?.name ?? name);
@@ -290,13 +295,15 @@ export function dedupeManifestData(input: DedupeManifestInput): {
     const key = normalizeContextPath(input.activeFile.name);
     if (key && !seenFiles.has(key)) {
       seenFiles.add(key);
+      const version = input.activeFile.version ?? hashContextContent(input.activeFile.content);
       sources.push({
         path: input.activeFile.name,
         kind: 'active',
         reason: 'active editor file',
         ranges: [],
         fullFile: true,
-        freshness: 'fresh',
+        freshness: version ? 'fresh' : 'unknown',
+        version,
         estimatedTokens: approxTokens(input.activeFile.content)
       });
     }
@@ -307,13 +314,15 @@ export function dedupeManifestData(input: DedupeManifestInput): {
     const key = normalizeContextPath(file.name);
     if (!key || seenFiles.has(key)) continue;
     seenFiles.add(key);
+    const version = file.version ?? hashContextContent(file.content);
     sources.push({
       path: file.name,
       kind: 'retrieved',
       reason: 'auto-selected dependency',
       ranges: [],
       fullFile: true,
-      freshness: 'fresh',
+      freshness: version ? 'fresh' : 'unknown',
+      version,
       estimatedTokens: approxTokens(file.content)
     });
     recordResolved(file.name);

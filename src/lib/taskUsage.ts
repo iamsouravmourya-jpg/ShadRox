@@ -43,3 +43,19 @@ export function sumAttemptTokens(attempts: readonly AttemptRecord[]): { inputTok
     ? { inputTokens: input, outputTokens: output, cachedInputTokens: cached, complete }
     : { inputTokens: null, outputTokens: null, cachedInputTokens: null, complete };
 }
+
+/**
+ * Prefix-cache hit rate as a whole percentage (0–100), or `null` when it cannot
+ * be measured. Cached tokens are already counted inside `inputTokens`, so the
+ * rate is `cached / input` — the share of the prompt the provider served from
+ * its prompt cache rather than re-reading. Returns `null` (never a misleading
+ * 0%) when either figure is missing or non-positive, so "unknown" stays
+ * distinct from "nothing was cached".
+ */
+export function cacheHitRate(
+  cachedTokens: number | null | undefined,
+  inputTokens: number | null | undefined
+): number | null {
+  if (!inputTokens || inputTokens <= 0 || !cachedTokens || cachedTokens <= 0) return null;
+  return Math.round((cachedTokens / inputTokens) * 100);
+}

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+         IgnorableNamespaces="uap rescap">
+
+  <Identity Name="pyeater.ShadRox"
+            Publisher="CN=BB595925-809C-4DAA-A4E7-114BAE1C5431"
+            Version="0.1.4.0" />
+
+  <Properties>
+    <DisplayName>ShadRox</DisplayName>
+    <PublisherDisplayName>pyeater</PublisherDisplayName>
+    <Description>Native desktop AI engineering workspace with BYOK and live project preview.</Description>
+    <Logo>icon.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26300.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="ShadRox"
+                 Executable="ShadRox.exe"
+                 EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="ShadRox"
+        Description="Native desktop AI engineering workspace with BYOK and live project preview."
+        Square150x150Logo="icon.png"
+        Square44x44Logo="icon.png"
+        BackgroundColor="transparent">
+        <uap:DefaultTile ShortName="ShadRox" />
+        <uap:SplashScreen Image="icon.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+</Package>

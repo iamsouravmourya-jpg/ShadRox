@@ -14,6 +14,9 @@
     "build": "vite build",
     "build:desktop": "node scripts/package-desktop.js",
     "dist:win": "node scripts/package-desktop.js --win nsis",
+    "dist:appx": "node scripts/package-desktop.js --win appx",
+    "build:msix": "node scripts/build-msix.mjs",
+    "bench": "node --import tsx scripts/bench.mjs",
     "release:win": "node scripts/package-desktop.js --win nsis --publish always",
     "dist:mac": "node scripts/package-desktop.js --mac dmg",
     "start": "tsx server.ts",
@@ -78,7 +81,7 @@
     "wait-on": "^8.0.4"
   },
   "build": {
-    "appId": "com.shadrox.desktop",
+    "appId": "pyeater.ShadRox",
     "productName": "ShadRox",
     "icon": "assets/icon.png",
     "artifactName": "ShadRox-v${version}-Setup.${ext}",
@@ -134,8 +137,17 @@
     ],
     "win": {
       "target": [
-        "nsis"
+        "nsis",
+        "appx"
       ]
+    },
+    "appx": {
+      "applicationId": "ShadRox",
+      "identityName": "pyeater.ShadRox",
+      "publisher": "CN=BB595925-809C-4DAA-A4E7-114BAE1C5431",
+      "publisherDisplayName": "pyeater",
+      "displayName": "ShadRox",
+      "artifactName": "ShadRox-v${version}.${ext}"
     },
     "mac": {
       "target": [

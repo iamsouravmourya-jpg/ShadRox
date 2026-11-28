@@ -1,0 +1,8 @@
+{
+  "name": "bench-express-api",
+  "private": true,
+  "version": "0.0.0",
+  "type": "commonjs",
+  "scripts": { "start": "node server.js", "test": "node --test" },
+  "dependencies": { "express": "^4.19.2" }
+}

@@ -13,6 +13,8 @@ const mainSource = [
 ].join('\n');
 const { classifyCommand, READINESS_LOG_PATTERN, extractReadyUrl } = require('./command-risk.cjs');
 const { findPlantedShim, WINDOWS_CMD_SHIMS } = require('./verify-allowlist.cjs');
+const { acquireInstallLock, isPackageInstallCommand } = require('./install-lock.cjs');
+const { unwrapErrorMessage } = require('./error-utils.cjs');
 
 function extractFunction(name) {
   const start = mainSource.indexOf(`function ${name}(`);
@@ -238,7 +240,8 @@ function buildExecutor(overrides = {}) {
     'checkReadyUrl', 'recordCommandProof', 'READINESS_LOG_PATTERN', 'extractReadyUrl', 'stripAnsi',
     'COMMAND_IDLE_TIMEOUT_MS', 'COMMAND_AUTO_BACKGROUND_MS', 'JOB_CEILING_MS',
     'JOB_TAIL_CHARS', 'FOREGROUND_OUTPUT_CAP', 'OUTPUT_FLUSH_MS', 'JOB_BUFFER_BYTES',
-    `${extractFunction('executeCommand')}\nreturn executeCommand;`
+    'acquireInstallLock', 'isPackageInstallCommand', 'unwrapErrorMessage',
+    `${extractFunction('executeCommand')}\n${extractFunction('executeCommandNow')}\nreturn executeCommand;`
   )(
     { platform },
     overrides.fs || { existsSync: () => false },
@@ -269,7 +272,10 @@ function buildExecutor(overrides = {}) {
     JOB_TAIL_CHARS,
     FOREGROUND_OUTPUT_CAP,
     OUTPUT_FLUSH_MS,
-    JOB_BUFFER_BYTES
+    JOB_BUFFER_BYTES,
+    acquireInstallLock,
+    isPackageInstallCommand,
+    unwrapErrorMessage
   );
   return { executeCommand, timers, events, proofs, kills, spawns, registry };
 }
@@ -295,6 +301,7 @@ test('a simple shim command keeps the hardened quoted-line spawn', async () => {
 test('a compound command runs verbatim through the shell after classification', async () => {
   const harness = buildExecutor();
   const pending = harness.executeCommand('npm i && npm test', 'C:\\proj', { workspaceId: 'w1' });
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(harness.spawns.length, 1);
   assert.equal(harness.spawns[0].file, 'npm i && npm test');
   assert.equal(harness.spawns[0].options.shell, true);
@@ -532,38 +539,41 @@ test('constants match the owner decisions: 300s idle, 120s auto-bg, 30min ceilin
 test('killProcessTree tries Windows taskkill and POSIX fallbacks and reports failure accurately', async () => {
   const execCalls = [];
   const winKillTree = new Function(
-    'process', 'treeKill', 'execFile', 'console',
+    'process', 'treeKill', 'execFile', 'console', 'unwrapErrorMessage',
     `${extractFunction('killProcessTree')}\nreturn killProcessTree;`
   )(
     { platform: 'win32', kill: () => {} },
     (_pid, _sig, cb) => cb(new Error('tree-kill failed')),
     (file, args, _opts, cb) => { execCalls.push([file, ...args]); cb(null); },
-    { error: () => {} }
+    { error: () => {} },
+    unwrapErrorMessage
   );
   assert.equal(await winKillTree({ pid: 999, exitCode: null, signalCode: null, kill: () => false }), true);
   assert.deepEqual(execCalls, [['taskkill', '/F', '/T', '/PID', '999']]);
 
   const errors = [];
   const winFailTree = new Function(
-    'process', 'treeKill', 'execFile', 'console',
+    'process', 'treeKill', 'execFile', 'console', 'unwrapErrorMessage',
     `${extractFunction('killProcessTree')}\nreturn killProcessTree;`
   )(
     { platform: 'win32', kill: () => {} },
     (_pid, _sig, cb) => cb(new Error('tree-kill failed')),
     (_file, _args, _opts, cb) => cb(new Error('access denied')),
-    { error: (...args) => errors.push(args) }
+    { error: (...args) => errors.push(args) },
+    unwrapErrorMessage
   );
   assert.equal(await winFailTree({ pid: 999, exitCode: null, signalCode: null, kill: () => false }), false);
   assert.equal(errors.length, 1);
 
   const posixKillTree = new Function(
-    'process', 'treeKill', 'execFile', 'console',
+    'process', 'treeKill', 'execFile', 'console', 'unwrapErrorMessage',
     `${extractFunction('killProcessTree')}\nreturn killProcessTree;`
   )(
     { platform: 'linux', kill: (pid) => { if (pid < 0) throw new Error('no group'); } },
     (_pid, _sig, cb) => cb(new Error('tree-kill failed')),
     () => {},
-    { error: () => {} }
+    { error: () => {} },
+    unwrapErrorMessage
   );
   assert.equal(await posixKillTree({ pid: 888, exitCode: null, signalCode: null, kill: () => false }), true);
 });

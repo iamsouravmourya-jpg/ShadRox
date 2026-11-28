@@ -3,7 +3,7 @@ import type { PinnedSymbol } from '../components/ChatPanel';
 import { analyzeProjectStack, formatArchitectureSummary } from '../lib/agent/projectBrain';
 import { buildProjectMemoryContext } from '../lib/agent/projectMemory';
 import { createMcpToolHandle, discoveryNotes, type McpToolHandle } from '../lib/agent/mcpTools';
-import { buildRepoMap as buildRankedRepoMap } from '../lib/agent/repoMap';
+import { buildRepoMap as buildRankedRepoMap, buildOryTree, renderOryTree } from '../lib/agent/repoMap';
 import { CHAT_PROMPT_CORE, TOOL_DISCIPLINE_RULES } from '../lib/agent/promptDiscipline';
 import { buildConversationalSystemContext, isConversationalTurn } from '../lib/agent/conversationalContext';
 import type { TurnIntentResult } from '../lib/agent/runPolicy';
@@ -47,11 +47,13 @@ import { normalizeSlashes } from '../lib/diagnostics';
 import { detectLanguage } from '../lib/languages';
 import { createTransformersEmbedder, getActiveEmbedder, isTransformersAvailable, setActiveEmbedder } from '../lib/localEmbeddings';
 import { resolveContextWindow } from '../lib/modelCapabilities';
+import { hashContent, resolveTargetLock, bestVibeTarget, type TargetHint } from '../lib/agents/targetLock';
 import { repoMapBudgetFor, selectDependentFiles } from '../lib/repoMap';
 import { buildChunksForTesting, buildRepoMap, renderRetrievedChunks, retrieveContext, retrieveContextSemantic } from '../lib/retrieval';
 import { compileRules, type RuleSource } from '../lib/rules';
 import { describeSkills, type Skill } from '../lib/skills';
 import type { ModelInfo, ProviderId } from '../lib/providers';
+import { classifyTier } from '../lib/providers';
 import type { SecretItem, SemanticStatus, WorkspaceFile } from '../lib/types';
 import { markUntrustedData } from '../lib/untrustedData';
 import type { useWorkspace } from './useWorkspace';
@@ -492,6 +494,73 @@ export function useContextBuilder({
         }
       }
 
+      // TRI-LAYER TARGET LOCK — resolve the most likely edit target(s) BEFORE the
+      // first model round, from the layers already in hand: pinned LSP symbols,
+      // the open/active file (DOM anchor), and a CSS class the query names. A
+      // high-confidence lock lets the model edit the right file first try instead
+      // of spending rounds searching. Content-hash staleness demotes any hint
+      // whose file moved since it was captured.
+      const targetHints: TargetHint[] = [];
+      for (const symbol of selectedSymbols) {
+        if (symbol.file) targetHints.push({ layer: 'symbol', path: symbol.file, line: symbol.line, symbol: symbol.name });
+      }
+      if (workspace.activeFile?.name) {
+        targetHints.push({ layer: 'dom', path: workspace.activeFile.name });
+      }
+      const classMatch = query.match(/\.([a-zA-Z][\w-]{2,})/);
+      if (classMatch) {
+        const cssFile = workspace.files.find(
+          (file) => /\.css$/i.test(file.name) && file.content.includes(classMatch[1])
+        );
+        if (cssFile) targetHints.push({ layer: 'style', path: cssFile.name, selector: `.${classMatch[1]}` });
+      }
+      // VIBE-WORD MATCH: a natural UI section word ("hero", "navbar", "pricing",
+      // "footer", …) with no @symbol and no .class still points at a component
+      // file. Feed the single best filename match as a symbol-layer hint (with a
+      // content hash for staleness) so a corroborated TARGET LOCK fires on round
+      // 1. A tie across files is ambiguous -> bestVibeTarget returns null and we
+      // abstain, leaving search_text to disambiguate.
+      const alreadyPinned = new Set(selectedSymbols.map((symbol) => normalizeContextPath(symbol.file)));
+      const componentFiles = [
+        ...tree.map((entry) => entry.path),
+        ...workspace.files.map((file) => file.name)
+      ];
+      const vibe = bestVibeTarget(query, componentFiles);
+      if (vibe && !alreadyPinned.has(normalizeContextPath(vibe.path))) {
+        const buffered = workspace.files.find(
+          (file) => normalizeContextPath(file.name) === normalizeContextPath(vibe.path)
+        );
+        targetHints.push({
+          layer: 'symbol',
+          path: vibe.path,
+          symbol: vibe.words[0],
+          contentHash: buffered ? hashContent(buffered.content) : undefined
+        });
+      }
+      if (targetHints.length > 0) {
+        const currentHashes: Record<string, string> = {};
+        for (const file of workspace.files) currentHashes[normalizeContextPath(file.name)] = hashContent(file.content);
+        if (workspace.activeFile) {
+          currentHashes[normalizeContextPath(workspace.activeFile.name)] = hashContent(workspace.activeFile.content);
+        }
+        const lock = resolveTargetLock({ hints: targetHints, currentHashes });
+        // Only a CORROBORATED lock is announced: a lone vague active-file hint
+        // (no line, no symbol, single layer) is not enough to claim "start here",
+        // or every turn with an open file would misdirect the model. Require a
+        // pinned line, an explicit @-symbol, or agreement across two layers.
+        const best = lock.best;
+        const corroborated = best
+          && best.confidence >= 0.7
+          && (best.agreedBy.length > 1 || Boolean(best.symbol) || best.line !== undefined);
+        if (best && corroborated) {
+          const via = best.agreedBy.join('+');
+          const where = best.line ? `${best.path}:${best.line}` : best.path;
+          core.push(
+            `TARGET LOCK — the most likely edit target, resolved before this round (confidence ${best.confidence.toFixed(2)} via ${via}): ${where}. Start here instead of searching for the file.`
+          );
+        }
+      }
+
       if (mode.writesFiles && pathOnly > 0) {
         core.push(nativeWorkspaceId
           ? `- ${pathOnly} file(s) are listed by path only, without contents. Run the read_file tool on one before writing ORIGINAL text into it — never guess its lines.`
@@ -544,17 +613,22 @@ export function useContextBuilder({
             baseToolContext && !mode.writesFiles
               ? { ...baseToolContext, isReadOnlyTurn: true, hasMutatedFiles: false, touchedFiles: [] as string[] }
               : baseToolContext;
+          // A weak/cheap answer model gets the lean tool prompt: same tool names,
+          // less verbose guidance, so it spends fewer tokens and stays on track.
+          const toolProfile: 'full' | 'lean' =
+            classifyTier(byok.activeProvider, byok.selectedModel) === 'pro' ? 'full' : 'lean';
           const cacheKey = serializeDescribeToolsCacheKey(
             DEFAULT_MAX_TOOL_ROUNDS,
             mcpDiscovery.tools,
             mcpNotes,
-            toolContext
+            toolContext,
+            toolProfile
           );
           let toolLines: string[];
           if (describeToolsCacheRef.current?.key === cacheKey) {
             toolLines = describeToolsCacheRef.current.lines;
           } else {
-            toolLines = describeTools(DEFAULT_MAX_TOOL_ROUNDS, mcpDiscovery.tools, mcpNotes, toolContext);
+            toolLines = describeTools(DEFAULT_MAX_TOOL_ROUNDS, mcpDiscovery.tools, mcpNotes, toolContext, toolProfile);
             describeToolsCacheRef.current = { key: cacheKey, lines: toolLines };
           }
           core.push(...toolLines);
@@ -562,13 +636,30 @@ export function useContextBuilder({
           if (toolText) coreChars += (coreChars > 0 ? 2 : 0) + toolText.length;
         }
         const uniqueRepoFiles = dedupeMapInputFiles(repoMapFiles.files);
-        const signatureMap = uniqueRepoFiles.length > 0 ? await buildRankedRepoMap(folder.path, {
-          tokenBudget: repoMapBudgetFor(contextWindow),
-          query,
-          files: uniqueRepoFiles,
-          signaturesByFile: repoMapFiles.signatures,
-          openTabs: activePaths
-        }) : '';
+        // OryTree is the live map: one tree, files grouped into domains, each domain
+        // stamped with a PageRank ref-count badge and its top exported symbols. The
+        // ranked aider map stays as a defensive fallback if the tree renders empty.
+        let signatureMap = '';
+        if (uniqueRepoFiles.length > 0) {
+          const mapBudget = repoMapBudgetFor(contextWindow);
+          const oryTree = await buildOryTree(folder.path, {
+            tokenBudget: mapBudget,
+            query,
+            files: uniqueRepoFiles,
+            signaturesByFile: repoMapFiles.signatures,
+            openTabs: activePaths
+          });
+          signatureMap = renderOryTree(oryTree, mapBudget);
+          if (!signatureMap) {
+            signatureMap = await buildRankedRepoMap(folder.path, {
+              tokenBudget: mapBudget,
+              query,
+              files: uniqueRepoFiles,
+              signaturesByFile: repoMapFiles.signatures,
+              openTabs: activePaths
+            });
+          }
+        }
         const editTargets = activePaths;
         const dependentFiles = selectDependentFiles(
           uniqueRepoFiles,
@@ -622,7 +713,7 @@ export function useContextBuilder({
             core,
             coreChars,
             [
-              'REPO MAP — the folder as a reference graph, ranked by PageRank over it: the most-referenced definitions first, with their real lines. Files here are listed by shape only; read one before editing it:',
+              'ORE TREE — the folder as one feature-grouped architecture tree (no duplicate subsystems). Files are grouped into domains; each domain carries a ref-count badge (PageRank over the reference graph — higher = more depended-on) and its top exported symbols. Read a file before editing it:',
               markUntrustedData(signatureMap, 'workspace repo map built from files on disk')
             ],
             optionalCoreCap
